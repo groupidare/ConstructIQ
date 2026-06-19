@@ -315,25 +315,8 @@ export default function LandingPage() {
 
             {/* Right logo */}
             <div className="cta-logo" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-              <div style={{
-                width: 210, height: 210, borderRadius: "50%", background: "#fff",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                boxShadow: "0 10px 40px rgba(0,0,0,0.12)",
-              }}>
-                <svg width="130" height="130" viewBox="0 0 130 130" fill="none">
-                  <rect x="28" y="42" width="62" height="74" rx="4" fill="#1a2235" />
-                  <rect x="38" y="52" width="13" height="13" rx="2" fill="#f97316" />
-                  <rect x="57" y="52" width="13" height="13" rx="2" fill="#f97316" />
-                  <rect x="38" y="71" width="13" height="13" rx="2" fill="#f97316" />
-                  <rect x="57" y="71" width="13" height="13" rx="2" fill="#f97316" />
-                  <rect x="46" y="90" width="26" height="26" rx="2" fill="#f97316" />
-                  <rect x="95" y="75" width="9" height="22" rx="2" fill="#22c55e" opacity="0.85" />
-                  <rect x="82" y="62" width="9" height="35" rx="2" fill="#3b82f6" opacity="0.85" />
-                  <circle cx="92" cy="36" r="15" stroke="#1a2235" strokeWidth="4.5" fill="none" />
-                  <circle cx="92" cy="36" r="6" fill="#f97316" opacity="0.45" />
-                  <line x1="103" y1="47" x2="114" y2="58" stroke="#1a2235" strokeWidth="4.5" strokeLinecap="round" />
-                </svg>
-              </div>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/landlogo.svg" alt="ConstructIQ" style={{ width: 240, height: 240, objectFit: "contain" }} />
               <p style={{ fontWeight: 800, fontSize: "1.1rem", color: "#1a2235" }}>ConstructIQ</p>
               <p style={{ fontSize: "0.62rem", color: "#9ca3af", letterSpacing: "0.07em", textAlign: "center" }}>
                 SMARTER CONSTRUCTION. INTELLIGENT DECISIONS.
