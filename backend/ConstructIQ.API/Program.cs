@@ -106,6 +106,8 @@ using (var scope = app.Services.CreateScope())
         else
         {
             admin.PasswordHash = ConstructIQ.API.Helpers.PasswordHasher.Hash("Admin@123");
+            admin.IsActive     = true;
+            admin.Role         = ConstructIQ.API.Models.Entities.UserRole.Admin;
         }
         db.SaveChanges();
     }
