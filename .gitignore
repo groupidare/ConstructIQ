@@ -1,0 +1,43 @@
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+.env
+.env.local
+.env.production
+
+# .NET
+backend/ConstructIQ.API/bin/
+backend/ConstructIQ.API/obj/
+*.user
+*.suo
+.vs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+ml-service/trained_models/*.pkl
+ml-service/trained_models/*.json
+ml-service/trained_models/*.ubj
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker
+.docker/
+
+# IDE
+.vscode/settings.json
+.idea/

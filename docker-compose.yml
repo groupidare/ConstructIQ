@@ -1,0 +1,74 @@
+version: "3.9"
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: constructiq_db
+    restart: always
+    environment:
+      MYSQL_DATABASE: constructiq_db
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./database/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: constructiq_api
+    restart: always
+    depends_on:
+      - db
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_ISSUER=${JWT_ISSUER}
+      - JWT_AUDIENCE=${JWT_AUDIENCE}
+      - ML_SERVICE_URL=http://ml-service:8000
+    ports:
+      - "5000:5000"
+
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: constructiq_ml
+    restart: always
+    depends_on:
+      - db
+    environment:
+      - ML_DB_HOST=db
+      - ML_DB_PORT=3306
+      - ML_DB_NAME=${ML_DB_NAME}
+      - ML_DB_USER=${ML_DB_USER}
+      - ML_DB_PASSWORD=${ML_DB_PASSWORD}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./ml-service/trained_models:/app/trained_models
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: constructiq_frontend
+    restart: always
+    depends_on:
+      - backend
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:5000/api
+      - NEXT_PUBLIC_ML_URL=http://ml-service:8000
+    ports:
+      - "3000:3000"
+
+volumes:
+  db_data:
