@@ -655,6 +655,9 @@ namespace ConstructIQ.API.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<DateTime?>("LastLogin")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<string>("LastName")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -663,6 +666,10 @@ namespace ConstructIQ.API.Migrations
                     b.Property<string>("PasswordHash")
                         .IsRequired()
                         .HasColumnType("longtext");
+
+                    b.Property<string>("PhoneNumber")
+                        .HasMaxLength(30)
+                        .HasColumnType("varchar(30)");
 
                     b.Property<int>("Role")
                         .HasColumnType("int");

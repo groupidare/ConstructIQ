@@ -32,10 +32,14 @@ public class User
 
     public UserRole Role { get; set; } = UserRole.SiteEngineer;
 
+    [MaxLength(30)]
+    public string? PhoneNumber { get; set; }
+
     public bool IsActive { get; set; } = true;
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? LastLogin  { get; set; }
 
     public ICollection<Project> ManagedProjects { get; set; } = [];
     public ICollection<ActivityLog> ActivityLogs { get; set; } = [];

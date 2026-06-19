@@ -100,12 +100,13 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 
-// Seed admin user on first run
+// Apply pending migrations and seed admin user
 using (var scope = app.Services.CreateScope())
 {
     try
     {
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        db.Database.Migrate();
         var admin = db.Users.FirstOrDefault(u => u.Username == "admin");
         if (admin is null)
         {
