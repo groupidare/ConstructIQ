@@ -259,7 +259,7 @@ export default function LoginPage() {
                 flexShrink: 0, boxShadow: "0 4px 12px rgba(249,115,22,0.4)",
               }}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/logo.svg" alt="ConstructIQ" style={{ width: 28, height: 28 }} />
+                <img src="/landlogo.svg" alt="ConstructIQ" style={{ width: 28, height: 28 }} />
               </div>
               <div>
                 <p style={{ color: "#fff", fontWeight: 700, fontSize: "1.2rem", lineHeight: 1.2 }}>ConstructIQ</p>
