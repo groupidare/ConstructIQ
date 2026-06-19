@@ -74,8 +74,25 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// TEMP: remove after getting the hash
+// TEMP debug endpoints
 app.MapGet("/dev/hash", () => BCrypt.Net.BCrypt.HashPassword("Admin@123"));
+app.MapGet("/dev/debug", (AppDbContext db) =>
+{
+    try
+    {
+        var admin = db.Users.FirstOrDefault(u => u.Username == "admin");
+        if (admin is null) return Results.Ok("NO ADMIN USER IN DATABASE");
+        var hashOk = BCrypt.Net.BCrypt.Verify("Admin@123", admin.PasswordHash);
+        return Results.Ok(new {
+            Found      = true,
+            IsActive   = admin.IsActive,
+            Role       = admin.Role.ToString(),
+            HashOk     = hashOk,
+            HashStored = admin.PasswordHash
+        });
+    }
+    catch (Exception ex) { return Results.Ok($"DB ERROR: {ex.Message}"); }
+});
 
 app.UseCors("FrontendPolicy");
 app.UseMiddleware<ActivityLoggingMiddleware>();
@@ -111,7 +128,7 @@ using (var scope = app.Services.CreateScope())
         }
         db.SaveChanges();
     }
-    catch { /* DB not ready yet — seed skipped */ }
+    catch (Exception ex) { Console.WriteLine($"[SEEDER ERROR] {ex.Message}"); }
 }
 
 app.Run();
