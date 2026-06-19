@@ -315,8 +315,14 @@ export default function LandingPage() {
 
             {/* Right logo */}
             <div className="cta-logo" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src="/landlogo.svg" alt="ConstructIQ" style={{ width: 240, height: 240, objectFit: "contain" }} />
+              <div style={{
+                width: 240, height: 240, borderRadius: "50%", background: "#fff",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                boxShadow: "0 10px 40px rgba(0,0,0,0.12)", overflow: "hidden",
+              }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src="/landlogo.svg" alt="ConstructIQ" style={{ width: 200, height: 200, objectFit: "contain" }} />
+              </div>
               <p style={{ fontWeight: 800, fontSize: "1.1rem", color: "#1a2235" }}>ConstructIQ</p>
               <p style={{ fontSize: "0.62rem", color: "#9ca3af", letterSpacing: "0.07em", textAlign: "center" }}>
                 SMARTER CONSTRUCTION. INTELLIGENT DECISIONS.
