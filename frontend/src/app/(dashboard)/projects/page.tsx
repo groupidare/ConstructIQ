@@ -37,6 +37,16 @@ interface Project {
   forecastReady: boolean;
 }
 
+// ── Demo / seed data (visual enrichment source) ───────────────────────────────
+
+const INIT_PROJECTS: Project[] = [
+  { id:1, name:"Metro Station Phase 3",    location:"EDSA, QC",       startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",    progress:62,  progressColor:"#f97316", budget:"₱45.0M",  spent:"₱27.9M", materials:8,  manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],        type:"Infrastructure",    bom:[{ material:"Portland Cement (40kg)", unit:"bags", qty:250, unitCost:290, supplier:"ABI Corp."     }, { material:"Deformed Steel Bars (12mm)", unit:"pcs",  qty:180, unitCost:540, supplier:"CMC Trading"   }, { material:"CHB 4 inch",                 unit:"pcs",  qty:1200,unitCost:18,  supplier:"DCI Materials"  }], forecastReady:false },
+  { id:2, name:"BGC Tower Complex",         location:"BGC, Taguig",    startDate:"2025-01-15", endDate:"2027-06-30", status:"ACTIVE",    progress:38,  progressColor:"#1e3154", budget:"₱120.0M", spent:"₱45.6M", materials:12, manager:"Remy Santos",  engineers:["Jose Lim"],                        type:"Commercial",        bom:[], forecastReady:false },
+  { id:3, name:"Harbor Bridge Renovation",  location:"Manila Harbor",   startDate:"2024-03-01", endDate:"2025-12-31", status:"ACTIVE",    progress:81,  progressColor:"#22c55e", budget:"₱28.0M",  spent:"₱22.7M", materials:6,  manager:"Remy Santos",  engineers:["Carlos Reyes"],                    type:"Infrastructure",    bom:[], forecastReady:false },
+  { id:4, name:"Southgate Mall Expansion",  location:"BGC, Taguig",    startDate:"2025-06-01", endDate:"2027-09-30", status:"PLANNING",  progress:12,  progressColor:"#374151", budget:"₱75.0M",  spent:"₱9.0M",  materials:4,  manager:"Remy Santos",  engineers:["Ana Cruz","Ben Torres"],           type:"Commercial",        bom:[], forecastReady:false },
+  { id:5, name:"PUP ICTC Building",         location:"Sta. Mesa",       startDate:"2023-01-10", endDate:"2025-01-15", status:"COMPLETED", progress:100, progressColor:"#22c55e", budget:"₱19.3M",  spent:"₱19.1M", materials:9,  manager:"Remy Santos",  engineers:["Ana Cruz"],                        type:"Education",         bom:[], forecastReady:false },
+];
+
 // ── API response shape & mapper ───────────────────────────────────────────────
 
 interface ProjectResponseDto {
@@ -58,27 +68,26 @@ const PROGRESS_COLOR: Record<string, string> = {
 
 function toProject(dto: ProjectResponseDto): Project {
   const status = (STATUS_MAP[dto.status] ?? "PLANNING") as ProjectStatus;
+  const demo = INIT_PROJECTS.find(p => p.name === dto.name);
   return {
-    id: dto.id, name: dto.name, location: dto.location, type: dto.type,
+    id: dto.id,
+    name: dto.name,
+    location: dto.location,
+    type: dto.type,
     startDate: dto.startDate.split("T")[0],
     endDate: dto.targetEndDate.split("T")[0],
-    status, progress: 0, progressColor: PROGRESS_COLOR[status] ?? "#374151",
-    budget: `₱${Number(dto.budget).toLocaleString()}`, spent: "₱0", materials: 0,
-    manager: dto.projectManagerName,
-    engineers: dto.siteEngineerName ? [dto.siteEngineerName] : [],
-    bom: [], forecastReady: false,
+    status,
+    progress:      demo?.progress      ?? (status === "COMPLETED" ? 100 : status === "ACTIVE" ? 50 : 10),
+    progressColor: demo?.progressColor ?? PROGRESS_COLOR[status] ?? "#374151",
+    budget: `₱${Number(dto.budget).toLocaleString()}`,
+    spent:     demo?.spent     ?? "₱0",
+    materials: demo?.materials ?? 0,
+    manager:   demo?.manager   ?? dto.projectManagerName,
+    engineers: demo?.engineers ?? (dto.siteEngineerName ? [dto.siteEngineerName] : []),
+    bom:           demo?.bom           ?? [],
+    forecastReady: demo?.forecastReady ?? false,
   };
 }
-
-// ── Initial data (shown while API loads) ─────────────────────────────────────
-
-const INIT_PROJECTS: Project[] = [
-  { id:1, name:"Metro Station Phase 3",    location:"EDSA, QC",       startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",    progress:62,  progressColor:"#f97316", budget:"₱45.0M",  spent:"₱27.9M", materials:8,  manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],        type:"Infrastructure",    bom:[{ material:"Portland Cement (40kg)", unit:"bags", qty:250, unitCost:290, supplier:"ABI Corp."     }, { material:"Deformed Steel Bars (12mm)", unit:"pcs",  qty:180, unitCost:540, supplier:"CMC Trading"   }, { material:"CHB 4 inch",                 unit:"pcs",  qty:1200,unitCost:18,  supplier:"DCI Materials"  }], forecastReady:false },
-  { id:2, name:"BGC Tower Complex",         location:"BGC, Taguig",    startDate:"2025-01-15", endDate:"2027-06-30", status:"ACTIVE",    progress:38,  progressColor:"#1e3154", budget:"₱120.0M", spent:"₱45.6M", materials:12, manager:"Remy Santos",  engineers:["Jose Lim"],                        type:"Commercial",        bom:[], forecastReady:false },
-  { id:3, name:"Harbor Bridge Renovation",  location:"Manila Harbor",   startDate:"2024-03-01", endDate:"2025-12-31", status:"ACTIVE",    progress:81,  progressColor:"#22c55e", budget:"₱28.0M",  spent:"₱22.7M", materials:6,  manager:"Remy Santos",  engineers:["Carlos Reyes"],                    type:"Infrastructure",    bom:[], forecastReady:false },
-  { id:4, name:"Southgate Mall Expansion",  location:"BGC, Taguig",    startDate:"2025-06-01", endDate:"2027-09-30", status:"PLANNING",  progress:12,  progressColor:"#374151", budget:"₱75.0M",  spent:"₱9.0M",  materials:4,  manager:"Remy Santos",  engineers:["Ana Cruz","Ben Torres"],           type:"Commercial",        bom:[], forecastReady:false },
-  { id:5, name:"PUP ICTC Building",         location:"Sta. Mesa",       startDate:"2023-01-10", endDate:"2025-01-15", status:"COMPLETED", progress:100, progressColor:"#22c55e", budget:"₱19.3M",  spent:"₱19.1M", materials:9,  manager:"Remy Santos",  engineers:["Ana Cruz"],                        type:"Education",         bom:[], forecastReady:false },
-];
 
 const STATUS_STYLE: Record<ProjectStatus, { bg: string; color: string }> = {
   ACTIVE:    { bg: "#dcfce7", color: "#15803d" },
