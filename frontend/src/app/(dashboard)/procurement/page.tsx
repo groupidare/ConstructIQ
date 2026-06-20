@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
 import {
   Clock, CheckCircle2, Truck, AlertTriangle,
   ShoppingCart, Download, Plus, BookOpen, CheckSquare,
-  Send, History,
+  Send, History, X,
 } from "lucide-react";
 
 // ── Types & data ──────────────────────────────────────────────────────────────
@@ -80,6 +81,118 @@ const PERF_SUPPLIERS = [
   { initials: "PS", name: "Pacific Steel Corp.",        badge: "PREFERRED" as const, onTime: 93, lead: 4,  deliveries: 31, rating: 4.6, onTimePct: "#22c55e" },
 ];
 
+// ── Export CSV ────────────────────────────────────────────────────────────────
+
+function exportPOs(orders: PO[]) {
+  const header = ["PO Number","Material","Supplier","Qty","Amount","Status","Expected Date"];
+  const rows = orders.map(p => [p.number, `"${p.material}"`, `"${p.supplier}"`, p.qty, p.amount, p.status, p.expectedDate].join(","));
+  const csv = [header.join(","), ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "purchase-orders.csv"; a.click();
+  URL.revokeObjectURL(url);
+  toast.success("Purchase orders exported");
+}
+
+// ── New PO Modal ──────────────────────────────────────────────────────────────
+
+const SUPPLIERS_LIST = ["Holcim Philippines", "Manila Cement Corp.", "National Steel PH", "PhilCon Aggregates", "PolyCon Philippines"];
+
+function NewPOModal({ onClose, onAdd }: { onClose: () => void; onAdd: (po: PO) => void }) {
+  const [form, setForm] = useState({ material: "", supplier: SUPPLIERS_LIST[0], qty: "", unit: "bags", amount: "", expectedDate: "", notes: "" });
+  function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
+
+  function handleSubmit() {
+    if (!form.material || !form.qty || !form.amount || !form.expectedDate) {
+      toast.error("Please fill in all required fields"); return;
+    }
+    const num = `PO-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9000) + 1000)}`;
+    onAdd({ number: num, material: form.material, supplier: form.supplier, qty: `${form.qty} ${form.unit}`, amount: Number(form.amount), status: "PENDING", expectedDate: form.expectedDate });
+    toast.success(`${num} created`);
+    onClose();
+  }
+
+  const inp = (label: string, key: string, type = "text", placeholder = "", required = true) => (
+    <div>
+      <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>
+        {label}{required && <span style={{ color: "#dc2626" }}> *</span>}
+      </label>
+      <input type={type} value={(form as Record<string, string>)[key]} onChange={e => set(key, e.target.value)} placeholder={placeholder}
+        style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 7, border: "1px solid #e5e7eb", fontSize: "0.85rem", outline: "none", color: "#111827" }}
+        onFocus={e => (e.currentTarget.style.borderColor = "#f97316")}
+        onBlur={e  => (e.currentTarget.style.borderColor = "#e5e7eb")}
+      />
+    </div>
+  );
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 500, boxShadow: "0 24px 60px rgba(0,0,0,0.2)", maxHeight: "90vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 38, height: 38, borderRadius: 10, background: "#fff7ed", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <ShoppingCart style={{ width: 18, height: 18, color: "#f97316" }} />
+            </div>
+            <div>
+              <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>New Purchase Order</h2>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>Fill in the details below</p>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          {inp("Material", "material", "text", "e.g. Portland Cement")}
+
+          <div>
+            <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>
+              Supplier <span style={{ color: "#dc2626" }}>*</span>
+            </label>
+            <select value={form.supplier} onChange={e => set("supplier", e.target.value)}
+              style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #e5e7eb", fontSize: "0.85rem", outline: "none", color: "#111827", appearance: "none" as const }}>
+              {SUPPLIERS_LIST.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "0.75rem" }}>
+            {inp("Quantity", "qty", "number", "e.g. 500")}
+            <div>
+              <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>Unit</label>
+              <select value={form.unit} onChange={e => set("unit", e.target.value)}
+                style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #e5e7eb", fontSize: "0.85rem", outline: "none", color: "#111827", appearance: "none" as const }}>
+                {["bags","pcs","m³","m","rolls","sheets"].map(u => <option key={u}>{u}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+            {inp("Total Amount (₱)", "amount", "number", "e.g. 142500")}
+            {inp("Expected Delivery", "expectedDate", "text", "e.g. Jun 28, 2026")}
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>Notes <span style={{ color: "#9ca3af", fontWeight: 400 }}>(optional)</span></label>
+            <textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="Any additional notes..."
+              rows={3}
+              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 7, border: "1px solid #e5e7eb", fontSize: "0.85rem", outline: "none", color: "#111827", resize: "vertical" as const }}
+              onFocus={e => (e.currentTarget.style.borderColor = "#f97316")}
+              onBlur={e  => (e.currentTarget.style.borderColor = "#e5e7eb")}
+            />
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: "0.75rem", marginTop: "1.5rem" }}>
+          <button onClick={onClose} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 600, fontSize: "0.875rem", cursor: "pointer" }}>Cancel</button>
+          <button onClick={handleSubmit} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.875rem", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+            <Plus style={{ width: 14, height: 14 }} /> Create PO
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Stars({ rating }: { rating: number }) {
   return (
     <span style={{ display: "inline-flex", gap: 2 }}>
@@ -93,21 +206,22 @@ function Stars({ rating }: { rating: number }) {
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ProcurementPage() {
-  const [tab, setTab] = useState<"po" | "suppliers">("po");
+  const [tab,      setTab]      = useState<"po" | "suppliers">("po");
+  const [orders,   setOrders]   = useState<PO[]>(PURCHASE_ORDERS);
+  const [showNewPO, setShowNewPO] = useState(false);
+
+  function countByStatus(s: POStatus) { return orders.filter(p => p.status === s).length; }
 
   const counts = {
-    pending:   PO_LIST_COUNTS("PENDING"),
-    approved:  PO_LIST_COUNTS("APPROVED"),
-    transit:   PO_LIST_COUNTS("TRANSIT"),
-    delayed:   PO_LIST_COUNTS("DELAYED"),
+    pending:   countByStatus("PENDING"),
+    approved:  countByStatus("APPROVED"),
+    transit:   countByStatus("TRANSIT"),
+    delayed:   countByStatus("DELAYED"),
   };
-
-  function PO_LIST_COUNTS(s: POStatus) {
-    return PURCHASE_ORDERS.filter(p => p.status === s).length;
-  }
 
   return (
     <div style={{ background: "#f5f4f0" }}>
+      {showNewPO && <NewPOModal onClose={() => setShowNewPO(false)} onAdd={po => setOrders(prev => [po, ...prev])} />}
       <Header title="Procurement" />
 
       <div style={{ padding: "1.25rem 1.5rem" }}>
@@ -161,10 +275,10 @@ export default function ProcurementPage() {
                   <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Purchase Orders</span>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer" }}>
+                  <button onClick={() => setShowNewPO(true)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer" }}>
                     <Plus style={{ width: 14, height: 14 }} /> New PO
                   </button>
-                  <button style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", fontWeight: 500, cursor: "pointer" }}>
+                  <button onClick={() => exportPOs(orders)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", fontWeight: 500, cursor: "pointer" }}>
                     <Download style={{ width: 14, height: 14 }} /> Export
                   </button>
                 </div>
@@ -179,10 +293,10 @@ export default function ProcurementPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {PURCHASE_ORDERS.map((po, i) => {
+                  {orders.map((po, i) => {
                     const st = PO_STATUS_STYLE[po.status];
                     return (
-                      <tr key={po.number + i} style={{ borderBottom: i < PURCHASE_ORDERS.length - 1 ? "1px solid #f9fafb" : "none" }}>
+                      <tr key={po.number + i} style={{ borderBottom: i < orders.length - 1 ? "1px solid #f9fafb" : "none" }}>
                         <td style={{ padding: "14px 12px" }}>
                           <span style={{ fontWeight: 700, fontSize: "0.8rem", color: "#f97316" }}>{po.number}</span>
                         </td>

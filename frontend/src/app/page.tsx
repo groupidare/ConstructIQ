@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
+import { useAuthStore } from "@/store/authStore";
 
 const GRID_STYLE = `
   .landing-hero {
@@ -109,7 +110,8 @@ function OrangeBtn({ label, onClick }: { label: string; onClick?: () => void }) 
 }
 
 export default function LandingPage() {
-  const router = useRouter();
+  const router  = useRouter();
+  const setAuth = useAuthStore(s => s.setAuth);
   const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
@@ -122,6 +124,24 @@ export default function LandingPage() {
 
   function scrollTo(id: string) {
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+  }
+
+  function startFreeTrial() {
+    // Seed auth store with a demo user so the dashboard renders correctly
+    setAuth(
+      {
+        id: 0,
+        username: "demo",
+        email: "demo@constructiq.ph",
+        firstName: "Demo",
+        lastName: "User",
+        role: "Admin",
+        isActive: true,
+        createdAt: new Date().toISOString(),
+      },
+      "demo"
+    );
+    router.push("/dashboard");
   }
 
   return (
@@ -309,7 +329,7 @@ export default function LandingPage() {
               </p>
               <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
                 <DarkBtn label="Get ConstructIQ" onClick={goLogin} />
-                <OrangeBtn label="Start Free Trial" onClick={goLogin} />
+                <OrangeBtn label="Start Free Trial" onClick={startFreeTrial} />
               </div>
             </div>
 

@@ -12,7 +12,7 @@ var builder = WebApplication.CreateBuilder(args);
 // ── Database ────────────────────────────────────────────────────────────────
 var connStr = $"Server={builder.Configuration["DB_HOST"] ?? "localhost"};" +
               $"Port={builder.Configuration["DB_PORT"] ?? "3306"};" +
-              $"Database={builder.Configuration["DB_NAME"] ?? "constructiq_db"};" +
+              $"Database={builder.Configuration["DB_NAME"] ?? "constructiq"};" +
               $"Uid={builder.Configuration["DB_USER"] ?? "root"};" +
               $"Pwd={builder.Configuration["DB_PASSWORD"]};";
 

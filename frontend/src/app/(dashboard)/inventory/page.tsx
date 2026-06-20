@@ -5,7 +5,7 @@ import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
 import {
   Package, CheckCircle2, AlertTriangle, AlertCircle, TrendingUp,
-  Search, Filter, Download, BookOpen, Pencil, Trash2, X, Plus,
+  Search, Filter, Download, BookOpen, Pencil, Trash2, X,
 } from "lucide-react";
 
 // ── Types & data ──────────────────────────────────────────────────────────────
@@ -186,68 +186,6 @@ function DeleteModal({ item, onClose, onConfirm }: { item: Item; onClose: () => 
   );
 }
 
-// ── Add Material Modal ────────────────────────────────────────────────────────
-
-function AddModal({ onClose, onAdd }: { onClose: () => void; onAdd: (item: Item) => void }) {
-  const [form, setForm] = useState({ name:"", category:"Binders", stock:"", unit:"bags", min:"", max:"", price:"", supplier:"", site:"" });
-  function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
-  function handleAdd() {
-    if (!form.name || !form.stock || !form.min || !form.max || !form.price || !form.supplier || !form.site) {
-      toast.error("Please fill in all fields"); return;
-    }
-    const stock = Number(form.stock), min = Number(form.min), max = Number(form.max);
-    const status = deriveStatus(stock, min, max);
-    onAdd({ id: Date.now(), name:form.name, category:form.category, stock, unit:form.unit, min, max, status, price:Number(form.price), supplier:form.supplier, site:form.site });
-    toast.success(`${form.name} added to inventory`);
-    onClose();
-  }
-  const inp = (label: string, key: string, type = "text", placeholder = "") => (
-    <div>
-      <label style={{ display:"block", fontSize:"0.75rem", fontWeight:600, color:"#374151", marginBottom:4 }}>{label}</label>
-      <input type={type} value={(form as Record<string, string>)[key]} onChange={e => set(key, e.target.value)} placeholder={placeholder}
-        style={{ width:"100%", boxSizing:"border-box", padding:"8px 10px", borderRadius:7, border:"1px solid #e5e7eb", fontSize:"0.85rem", outline:"none", color:"#111827" }}
-        onFocus={e => (e.currentTarget.style.borderColor = "#f97316")}
-        onBlur={e  => (e.currentTarget.style.borderColor = "#e5e7eb")}
-      />
-    </div>
-  );
-  return (
-    <Backdrop onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:480, boxShadow:"0 24px 60px rgba(0,0,0,0.2)", maxHeight:"90vh", overflowY:"auto" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
-          <h2 style={{ fontWeight:800, fontSize:"1.1rem" }}>Add Material</h2>
-          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:18, height:18 }} /></button>
-        </div>
-        <div style={{ display:"flex", flexDirection:"column", gap:"0.875rem" }}>
-          {inp("Material Name", "name", "text", "e.g. Portland Cement")}
-          <div>
-            <label style={{ display:"block", fontSize:"0.75rem", fontWeight:600, color:"#374151", marginBottom:4 }}>Category</label>
-            <select value={form.category} onChange={e => set("category", e.target.value)}
-              style={{ width:"100%", padding:"8px 10px", borderRadius:7, border:"1px solid #e5e7eb", fontSize:"0.85rem", outline:"none", color:"#111827", appearance:"none" as const }}>
-              {["Binders","Aggregates","Steel","Plumbing","Masonry","Formwork"].map(c => <option key={c}>{c}</option>)}
-            </select>
-          </div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-            {inp("Current Stock", "stock", "number", "0")}
-            {inp("Unit", "unit", "text", "bags")}
-            {inp("Min Stock", "min", "number", "0")}
-            {inp("Max Stock", "max", "number", "0")}
-            {inp("Unit Price (₱)", "price", "number", "0")}
-            {inp("Supplier", "supplier", "text", "Supplier name")}
-          </div>
-          {inp("Site", "site", "text", "e.g. BGC Tower")}
-        </div>
-        <div style={{ display:"flex", gap:"0.75rem", marginTop:"1.25rem" }}>
-          <button onClick={onClose} style={{ flex:1, padding:"10px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", fontWeight:600, fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleAdd} style={{ flex:1, padding:"10px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontWeight:700, fontSize:"0.875rem", cursor:"pointer" }}>
-            <Plus style={{ width:14, height:14, display:"inline", marginRight:4 }} />Add Material
-          </button>
-        </div>
-      </div>
-    </Backdrop>
-  );
-}
-
 // ── Filter Panel ──────────────────────────────────────────────────────────────
 
 function FilterPanel({ category, setCategory, onClose }: { category: string; setCategory: (c: string) => void; onClose: () => void }) {
@@ -284,16 +222,15 @@ type ModalState =
   | { type: "view";   item: Item }
   | { type: "edit";   item: Item }
   | { type: "delete"; item: Item }
-  | { type: "add" }
   | null;
 
 export default function InventoryPage() {
-  const [items,         setItems]         = useState<Item[]>(INITIAL_ITEMS);
-  const [search,        setSearch]        = useState("");
-  const [statusFilter,  setStatusFilter]  = useState<"ALL" | Status>("ALL");
-  const [categoryFilter,setCategoryFilter]= useState("All");
-  const [modal,         setModal]         = useState<ModalState>(null);
-  const [filterOpen,    setFilterOpen]    = useState(false);
+  const [items,          setItems]          = useState<Item[]>(INITIAL_ITEMS);
+  const [search,         setSearch]         = useState("");
+  const [statusFilter,   setStatusFilter]   = useState<"ALL" | Status>("ALL");
+  const [categoryFilter, setCategoryFilter] = useState("All");
+  const [modal,          setModal]          = useState<ModalState>(null);
+  const [filterOpen,     setFilterOpen]     = useState(false);
 
   const filtered = useMemo(() => items.filter(item => {
     const q = search.toLowerCase();
@@ -318,7 +255,6 @@ export default function InventoryPage() {
     toast.success(`${name} removed`);
     setModal(null);
   }
-  function handleAdd(item: Item) { setItems(prev => [...prev, item]); }
 
   return (
     <div style={{ background: "#f5f4f0" }}>
@@ -326,7 +262,6 @@ export default function InventoryPage() {
       {modal?.type === "view"   && <ViewModal   item={modal.item} onClose={() => setModal(null)} />}
       {modal?.type === "edit"   && <EditModal   item={modal.item} onClose={() => setModal(null)} onSave={handleSave} />}
       {modal?.type === "delete" && <DeleteModal item={modal.item} onClose={() => setModal(null)} onConfirm={() => handleDelete(modal.item.id)} />}
-      {modal?.type === "add"    && <AddModal    onClose={() => setModal(null)} onAdd={handleAdd} />}
 
       <Header title="Inventory" />
 
@@ -386,11 +321,6 @@ export default function InventoryPage() {
           <button onClick={() => exportCSV(filtered)}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.875rem", fontWeight: 500, cursor: "pointer" }}>
             <Download style={{ width: 14, height: 14 }} /> Export
-          </button>
-
-          <button onClick={() => setModal({ type: "add" })}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontSize: "0.875rem", fontWeight: 600, cursor: "pointer" }}>
-            <Plus style={{ width: 14, height: 14 }} /> Add Item
           </button>
         </div>
 

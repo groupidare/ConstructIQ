@@ -6,7 +6,7 @@ services:
     container_name: constructiq_db
     restart: always
     environment:
-      MYSQL_DATABASE: constructiq_db
+      MYSQL_DATABASE: constructiq
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
     ports:
       - "3306:3306"
@@ -65,8 +65,8 @@ services:
     depends_on:
       - backend
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:5000/api
-      - NEXT_PUBLIC_ML_URL=http://ml-service:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:5000/api
+      - NEXT_PUBLIC_ML_URL=http://localhost:8000
     ports:
       - "3000:3000"
 

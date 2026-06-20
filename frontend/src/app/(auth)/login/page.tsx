@@ -180,8 +180,8 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const res = await api.post<LoginResponse>("/auth/login", {
-        username: data.username,
-        password: data.password,
+        username: data.username.trim(),
+        password: data.password.trim(),
       });
 
       if (res.data.user.role !== data.role) {
@@ -192,8 +192,20 @@ export default function LoginPage() {
       setAuth(res.data.user, res.data.token);
       toast.success(`Welcome back, ${res.data.user.firstName}!`);
       router.push("/dashboard");
-    } catch {
-      toast.error("Invalid username or password.");
+    } catch (error: unknown) {
+      if (typeof error === "object" && error !== null && "response" in error) {
+        const axiosError = error as { response?: { data?: { message?: string }; status?: number } };
+        const message = axiosError.response?.data?.message;
+        if (message) {
+          toast.error(message);
+        } else if (axiosError.response?.status === 401) {
+          toast.error("Invalid username or password.");
+        } else {
+          toast.error("Unable to login. Please check your connection and try again.");
+        }
+      } else {
+        toast.error("Unable to login. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
