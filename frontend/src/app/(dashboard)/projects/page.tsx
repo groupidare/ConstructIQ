@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import toast from "react-hot-toast";
+import api from "@/lib/api";
 import Header from "@/components/layout/Header";
 import {
   Plus, MapPin, Calendar, Users, FileText,
@@ -35,7 +37,40 @@ interface Project {
   forecastReady: boolean;
 }
 
-// ── Initial data ──────────────────────────────────────────────────────────────
+// ── API response shape & mapper ───────────────────────────────────────────────
+
+interface ProjectResponseDto {
+  id: number; name: string; type: string; location: string;
+  description?: string; budget: number; startDate: string;
+  targetEndDate: string; status: string;
+  assignedContractor?: string;
+  projectManagerName: string; siteEngineerName?: string;
+  phases: unknown[];
+}
+
+const STATUS_MAP: Record<string, ProjectStatus> = {
+  Planning: "PLANNING", Active: "ACTIVE", OnHold: "ON HOLD",
+  Completed: "COMPLETED", Cancelled: "COMPLETED",
+};
+const PROGRESS_COLOR: Record<string, string> = {
+  PLANNING: "#374151", ACTIVE: "#f97316", COMPLETED: "#22c55e", "ON HOLD": "#d97706",
+};
+
+function toProject(dto: ProjectResponseDto): Project {
+  const status = (STATUS_MAP[dto.status] ?? "PLANNING") as ProjectStatus;
+  return {
+    id: dto.id, name: dto.name, location: dto.location, type: dto.type,
+    startDate: dto.startDate.split("T")[0],
+    endDate: dto.targetEndDate.split("T")[0],
+    status, progress: 0, progressColor: PROGRESS_COLOR[status] ?? "#374151",
+    budget: `₱${Number(dto.budget).toLocaleString()}`, spent: "₱0", materials: 0,
+    manager: dto.projectManagerName,
+    engineers: dto.siteEngineerName ? [dto.siteEngineerName] : [],
+    bom: [], forecastReady: false,
+  };
+}
+
+// ── Initial data (shown while API loads) ─────────────────────────────────────
 
 const INIT_PROJECTS: Project[] = [
   { id:1, name:"Metro Station Phase 3",    location:"EDSA, QC",       startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",    progress:62,  progressColor:"#f97316", budget:"₱45.0M",  spent:"₱27.9M", materials:8,  manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],        type:"Infrastructure",    bom:[{ material:"Portland Cement (40kg)", unit:"bags", qty:250, unitCost:290, supplier:"ABI Corp."     }, { material:"Deformed Steel Bars (12mm)", unit:"pcs",  qty:180, unitCost:540, supplier:"CMC Trading"   }, { material:"CHB 4 inch",                 unit:"pcs",  qty:1200,unitCost:18,  supplier:"DCI Materials"  }], forecastReady:false },
@@ -149,28 +184,45 @@ function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate:
   const [name,        setName]        = useState("");
   const [type,        setType]        = useState("Renovation");
   const [location,    setLocation]    = useState("");
-  const [budget,      setBudget]      = useState("1,500,000.00");
+  const [budget,      setBudget]      = useState("1500000");
   const [startDate,   setStartDate]   = useState("2026-05-05");
   const [endDate,     setEndDate]     = useState("2026-08-08");
-  const [manager,     setManager]     = useState("Remy Santos");
-  const [engineer,    setEngineer]    = useState("Carlo Reyes");
   const [contractor,  setContractor]  = useState("");
   const [description, setDescription] = useState("");
+  const [saving,      setSaving]      = useState(false);
 
-  function handleCreate() {
-    if (!name.trim()) return;
-    const now = new Date().toISOString().split("T")[0];
-    onCreate({
-      id: Date.now(), name, location, startDate, endDate,
-      status: "PLANNING", progress: 0, progressColor: "#374151",
-      budget: `₱${budget}`, spent: "₱0", materials: 0,
-      manager, engineers: [engineer].filter(Boolean),
-      type, bom: [], forecastReady: false,
-    });
-    onClose();
+  async function handleCreate() {
+    if (!name.trim() || !location.trim()) {
+      toast.error("Project name and location are required.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const budgetNum = parseFloat(budget.replace(/[^0-9.]/g, "")) || 0;
+      const { data } = await api.post<ProjectResponseDto>("/projects", {
+        name: name.trim(),
+        type,
+        location: location.trim(),
+        description: description || null,
+        budget: budgetNum,
+        startDate: new Date(startDate).toISOString(),
+        targetEndDate: new Date(endDate).toISOString(),
+        assignedContractor: contractor || null,
+        siteEngineerId: null,
+        phases: [],
+      });
+      toast.success(`Project "${data.name}" created!`);
+      onCreate(toProject(data));
+      onClose();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(msg ?? "Failed to create project.");
+    } finally {
+      setSaving(false);
+    }
   }
 
-  const selectStyle: React.CSSProperties = { ...inputStyle, cursor:"pointer", appearance:"none" as any };
+  const selectStyle: React.CSSProperties = { ...inputStyle, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
 
   return (
     <Overlay onClose={onClose}>
@@ -181,55 +233,45 @@ function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate:
         </div>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
           <div>
-            <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Name</p>
+            <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Name *</p>
             <input value={name} onChange={e=>setName(e.target.value)} placeholder="ICTC Hall" style={inputStyle} suppressHydrationWarning />
           </div>
           <div>
-            <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Type</p>
+            <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Type *</p>
             <select value={type} onChange={e=>setType(e.target.value)} style={selectStyle}>
-              {["Renovation","New Construction","Infrastructure","Commercial","Education","Residential"].map(t => <option key={t}>{t}</option>)}
+              {["Renovation","Commercial","Industrial","Infrastructure","Residential"].map(t => <option key={t}>{t}</option>)}
             </select>
           </div>
           <div>
-            <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Location</p>
+            <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Location *</p>
             <input value={location} onChange={e=>setLocation(e.target.value)} placeholder="BGC Taguig" style={inputStyle} suppressHydrationWarning />
           </div>
           <div>
             <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Budget (₱)</p>
-            <input value={budget} onChange={e=>setBudget(e.target.value)} placeholder="1,500,000.00" style={inputStyle} suppressHydrationWarning />
+            <input value={budget} onChange={e=>setBudget(e.target.value)} placeholder="1500000" type="number" style={inputStyle} suppressHydrationWarning />
           </div>
           <div>
-            <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Start Date</p>
+            <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Start Date *</p>
             <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={inputStyle} suppressHydrationWarning />
           </div>
           <div>
-            <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>End Date</p>
+            <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>End Date *</p>
             <input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} style={inputStyle} suppressHydrationWarning />
-          </div>
-          <div>
-            <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Manager</p>
-            <select value={manager} onChange={e=>setManager(e.target.value)} style={selectStyle}>
-              {["Remy Santos","Ana Bonifacio","Jose Reyes","Maria Tan"].map(m => <option key={m}>{m}</option>)}
-            </select>
-          </div>
-          <div>
-            <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>PIC/Site Engineer</p>
-            <select value={engineer} onChange={e=>setEngineer(e.target.value)} style={selectStyle}>
-              {["Carlo Reyes","Carlos Reyes","Jose Lim","Ana Cruz","Ben Torres","Maria Tan"].map(e => <option key={e}>{e}</option>)}
-            </select>
           </div>
           <div style={{ gridColumn:"1/-1" }}>
             <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Contractor</p>
-            <input value={contractor} onChange={e=>setContractor(e.target.value)} placeholder="Discaya" style={inputStyle} suppressHydrationWarning />
+            <input value={contractor} onChange={e=>setContractor(e.target.value)} placeholder="e.g. Discaya Construction" style={inputStyle} suppressHydrationWarning />
           </div>
           <div style={{ gridColumn:"1/-1" }}>
             <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Description</p>
-            <textarea value={description} onChange={e=>setDescription(e.target.value)} placeholder="Renovation" rows={3} style={{ ...inputStyle, resize:"vertical" }} suppressHydrationWarning />
+            <textarea value={description} onChange={e=>setDescription(e.target.value)} placeholder="Brief description of the project..." rows={3} style={{ ...inputStyle, resize:"vertical" as React.CSSProperties["resize"] }} suppressHydrationWarning />
           </div>
         </div>
         <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.5rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:500, cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleCreate} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Create Project</button>
+          <button onClick={onClose} disabled={saving} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:500, cursor:"pointer" }}>Cancel</button>
+          <button onClick={handleCreate} disabled={saving} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", opacity: saving ? 0.7 : 1 }}>
+            {saving ? "Creating..." : "Create Project"}
+          </button>
         </div>
       </div>
     </Overlay>
@@ -641,7 +683,15 @@ type ModalState = { type: "new" | "materialPlan" | "measurements" | "reports" | 
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>(INIT_PROJECTS);
+  const [loading,  setLoading]  = useState(true);
   const [modal,    setModal]    = useState<ModalState>(null);
+
+  useEffect(() => {
+    api.get<ProjectResponseDto[]>("/projects")
+      .then(r => setProjects(r.data.map(toProject)))
+      .catch(() => toast.error("Failed to load projects."))
+      .finally(() => setLoading(false));
+  }, []);
 
   const active = projects.filter(p => p.status === "ACTIVE").length;
 
@@ -678,7 +728,9 @@ export default function ProjectsPage() {
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.5rem" }}>
           <div>
             <p style={{ fontWeight:800, fontSize:"1.4rem", color:"#111827" }}>All Projects</p>
-            <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{projects.length} projects · {active} active</p>
+            <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>
+              {loading ? "Loading..." : `${projects.length} projects · ${active} active`}
+            </p>
           </div>
           <button onClick={()=>setModal({ type:"new" })} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>
             <Plus style={{ width:16, height:16 }} /> New Project
@@ -686,17 +738,23 @@ export default function ProjectsPage() {
         </div>
 
         {/* Cards grid */}
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
-          {projects.map(p => (
-            <ProjectCard
-              key={p.id}
-              project={p}
-              onMaterialPlan={()=>setModal({ type:"materialPlan", project:p })}
-              onMeasurements={()=>setModal({ type:"measurements", project:p })}
-              onReports={     ()=>setModal({ type:"reports",      project:p })}
-            />
-          ))}
-        </div>
+        {loading ? (
+          <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>Loading projects…</div>
+        ) : projects.length === 0 ? (
+          <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>No projects yet. Click &ldquo;New Project&rdquo; to get started.</div>
+        ) : (
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
+            {projects.map(p => (
+              <ProjectCard
+                key={p.id}
+                project={p}
+                onMaterialPlan={()=>setModal({ type:"materialPlan", project:p })}
+                onMeasurements={()=>setModal({ type:"measurements", project:p })}
+                onReports={     ()=>setModal({ type:"reports",      project:p })}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
