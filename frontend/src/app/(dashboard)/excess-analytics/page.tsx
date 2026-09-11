@@ -272,7 +272,7 @@ export default function ExcessAnalyticsPage() {
       {showModal && <RecordModal onClose={()=>setShowModal(false)} onSave={entry=>setLogEntries(prev=>[entry,...prev])} />}
       {reviewItem && <ReviewModal item={reviewItem} onClose={()=>setReviewItem(null)} onApprove={()=>approveItem(reviewItem.id)} />}
 
-      <Header title="Waste Analytics" />
+      <Header title="Excess Analytics" />
 
       <div style={{ padding:"1.25rem 1.5rem" }}>
 
