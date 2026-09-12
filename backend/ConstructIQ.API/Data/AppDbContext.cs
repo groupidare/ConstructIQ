@@ -57,7 +57,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         mb.Entity<ActivityLog>()
             .HasOne(a => a.User)
-            .WithMany()
+            .WithMany(u => u.ActivityLogs)
             .HasForeignKey(a => a.UserId)
             .OnDelete(DeleteBehavior.SetNull);
     }

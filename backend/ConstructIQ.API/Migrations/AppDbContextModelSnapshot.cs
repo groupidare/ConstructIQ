@@ -55,14 +55,9 @@ namespace ConstructIQ.API.Migrations
                     b.Property<int?>("UserId")
                         .HasColumnType("int");
 
-                    b.Property<int?>("UserId1")
-                        .HasColumnType("int");
-
                     b.HasKey("Id");
 
                     b.HasIndex("UserId");
-
-                    b.HasIndex("UserId1");
 
                     b.ToTable("ActivityLogs");
                 });
@@ -696,13 +691,9 @@ namespace ConstructIQ.API.Migrations
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.ActivityLog", b =>
                 {
                     b.HasOne("ConstructIQ.API.Models.Entities.User", "User")
-                        .WithMany()
+                        .WithMany("ActivityLogs")
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("ConstructIQ.API.Models.Entities.User", null)
-                        .WithMany("ActivityLogs")
-                        .HasForeignKey("UserId1");
 
                     b.Navigation("User");
                 });
