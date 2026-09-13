@@ -4,10 +4,11 @@ import { useState, useEffect } from "react";
 import toast from "react-hot-toast";
 import api from "@/lib/api";
 import Header from "@/components/layout/Header";
+import { useAuthStore } from "@/store/authStore";
 import {
   Plus, MapPin, Calendar, Users, FileText, X, Pencil,
   ShoppingCart, Package, Upload, FolderOpen, ChevronDown,
-  ChevronUp, Trash2, Search, Tag, BarChart3,
+  ChevronUp, Trash2, Search, Tag, BarChart3, Camera, Activity,
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
@@ -1000,13 +1001,171 @@ function ForecastModal({ project, onClose }: { project:Project; onClose:()=>void
   );
 }
 
+// ── Progress Tracker Modal ────────────────────────────────────────────────────
+
+interface ProgressUpdate {
+  id: number; date: string; progress: number;
+  notes: string; updatedBy: string;
+}
+
+function ProgressTrackerModal({ project, onClose, onSave }: {
+  project: Project;
+  onClose: ()=>void;
+  onSave: (progress: number) => void;
+}) {
+  const { user } = useAuthStore();
+  const [progress, setProgress] = useState(project.progress);
+  const [notes, setNotes]       = useState("");
+  const [photos, setPhotos]     = useState<File[]>([]);
+  const [updates, setUpdates]   = useState<ProgressUpdate[]>(() => {
+    const base = project.progress;
+    return [
+      { id:1, date:"2026-09-10", progress:Math.max(base-8,0),  notes:"Completed column pour for Grid A1-A5. Forms removed and inspected by QC.",            updatedBy:"Carlo Reyes" },
+      { id:2, date:"2026-09-05", progress:Math.max(base-15,0), notes:"Rebar installation completed. Steel bar placement inspected and cleared.",              updatedBy:"Carlo Reyes" },
+      { id:3, date:"2026-08-28", progress:Math.max(base-22,0), notes:"Foundation excavation and sub-base compaction done. Ready for footing formwork.",       updatedBy:"Maria Tan"   },
+    ].filter(u => u.progress > 0);
+  });
+
+  const PHASES = ["Foundation","Structural Framing","Finishing","MEP"];
+
+  function handleSave() {
+    if (!notes.trim()) { toast.error("Please add progress notes before saving."); return; }
+    const newUpdate: ProgressUpdate = {
+      id: Date.now(), date: new Date().toISOString().split("T")[0],
+      progress, notes,
+      updatedBy: user ? `${user.firstName} ${user.lastName}` : "Current User",
+    };
+    setUpdates(prev => [newUpdate, ...prev]);
+    onSave(progress);
+    toast.success("Progress updated successfully!");
+    setNotes(""); setPhotos([]);
+  }
+
+  const phaseThresholds = [25, 50, 75, 100];
+
+  return (
+    <Overlay onClose={onClose}>
+      <div style={{ background:"#fff", borderRadius:16, padding:"2rem", width:580, boxShadow:"0 20px 60px rgba(0,0,0,0.18)" }}>
+        {/* Header */}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.5rem" }}>
+          <div>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <Activity style={{ width:18, height:18, color:"#f97316" }} />
+              <p style={{ fontWeight:800, fontSize:"1.1rem", color:"#111827" }}>Progress Tracker</p>
+            </div>
+            <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:3 }}>{project.name} · {project.location}</p>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
+        </div>
+
+        {/* Progress bar + slider */}
+        <div style={{ background:"#f9fafb", borderRadius:12, padding:"1.25rem", marginBottom:"1.25rem" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
+            <span style={{ fontSize:"0.8rem", fontWeight:600, color:"#374151" }}>Overall Progress</span>
+            <span style={{ fontSize:"1.25rem", fontWeight:800, color:project.progressColor }}>{progress}%</span>
+          </div>
+          <div style={{ height:14, background:"#e5e7eb", borderRadius:99, marginBottom:"0.875rem", overflow:"hidden" }}>
+            <div style={{ height:"100%", width:`${progress}%`, background:project.progressColor, borderRadius:99, transition:"width 0.25s ease" }} />
+          </div>
+          <input type="range" min={0} max={100} step={1} value={progress}
+            onChange={e=>setProgress(Number(e.target.value))}
+            style={{ width:"100%", accentColor:project.progressColor, cursor:"pointer" }}
+          />
+          <div style={{ display:"flex", justifyContent:"space-between", marginTop:4 }}>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>0%</span>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>25%</span>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>50%</span>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>75%</span>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>100%</span>
+          </div>
+        </div>
+
+        {/* Phase status */}
+        <div style={{ marginBottom:"1.25rem" }}>
+          <p style={{ fontSize:"0.78rem", fontWeight:700, color:"#374151", marginBottom:8 }}>Phase Status</p>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            {PHASES.map((phase, i) => {
+              const threshold = phaseThresholds[i];
+              const prevThreshold = i === 0 ? 0 : phaseThresholds[i-1];
+              const done   = progress >= threshold;
+              const inProg = !done && progress >= prevThreshold;
+              return (
+                <div key={phase} style={{
+                  display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
+                  background: done ? "#dcfce7" : inProg ? "#fff7ed" : "#f9fafb",
+                  borderRadius:8,
+                  border: `1px solid ${done ? "#86efac" : inProg ? "#fed7aa" : "#e5e7eb"}`,
+                }}>
+                  <div style={{ width:8, height:8, borderRadius:"50%", flexShrink:0,
+                    background: done ? "#22c55e" : inProg ? "#f97316" : "#d1d5db" }} />
+                  <span style={{ fontSize:"0.75rem", fontWeight:600,
+                    color: done ? "#15803d" : inProg ? "#c2410c" : "#9ca3af" }}>{phase}</span>
+                  <span style={{ fontSize:"0.65rem", color:"#9ca3af", marginLeft:"auto" }}>
+                    {done ? "Done" : inProg ? "In Progress" : "Pending"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Update form */}
+        <div style={{ marginBottom:"1.25rem" }}>
+          <p style={{ fontSize:"0.78rem", fontWeight:700, color:"#374151", marginBottom:8 }}>Log Progress Update</p>
+          <textarea
+            placeholder="Describe work completed (e.g., Completed column pour for Grid A1-A5, forms removed and passed QC inspection...)"
+            value={notes} onChange={e=>setNotes(e.target.value)}
+            style={{ ...inp, minHeight:76, resize:"vertical" as const }}
+          />
+          <label style={{ display:"flex", alignItems:"center", gap:8, marginTop:8, padding:"9px 14px", border:"1.5px dashed #d1d5db", borderRadius:8, cursor:"pointer", background:"#fafafa" }}>
+            <Camera style={{ width:15, height:15, color:"#9ca3af" }} />
+            <span style={{ fontSize:"0.78rem", color:"#6b7280" }}>
+              {photos.length > 0 ? `${photos.length} photo(s) selected` : "Attach site photos (optional)"}
+            </span>
+            <input type="file" accept="image/*" multiple style={{ display:"none" }}
+              onChange={e => setPhotos(Array.from(e.target.files ?? []))} />
+          </label>
+        </div>
+
+        {/* Update history */}
+        {updates.length > 0 && (
+          <div style={{ marginBottom:"1.25rem" }}>
+            <p style={{ fontSize:"0.78rem", fontWeight:700, color:"#374151", marginBottom:8 }}>Recent Updates</p>
+            <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+              {updates.slice(0,3).map(u => (
+                <div key={u.id} style={{ padding:"10px 12px", background:"#f9fafb", borderRadius:8, borderLeft:"3px solid #f97316" }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                    <span style={{ fontSize:"0.7rem", fontWeight:700, color:"#f97316" }}>{u.progress}% progress</span>
+                    <span style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{u.date}</span>
+                  </div>
+                  <p style={{ fontSize:"0.75rem", color:"#374151", lineHeight:1.4 }}>{u.notes}</p>
+                  <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginTop:3 }}>Updated by {u.updatedBy}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
+          <button onClick={handleSave} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Save Update</button>
+        </div>
+      </div>
+    </Overlay>
+  );
+}
+
 // ── Project Card ──────────────────────────────────────────────────────────────
 
-function ProjectCard({ project, onEdit, onMaterialPlan, onReports }: {
+function ProjectCard({ project, onEdit, onMaterialPlan, onReports, onProgress, canEdit, showProgress, viewOnly }: {
   project: Project;
   onEdit: ()=>void;
   onMaterialPlan: ()=>void;
   onReports: ()=>void;
+  onProgress?: ()=>void;
+  canEdit: boolean;
+  showProgress: boolean;
+  viewOnly: boolean;
 }) {
   const st = STATUS_STYLE[project.status];
   const btn: React.CSSProperties = { flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"10px 0", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.8rem", fontWeight:600, cursor:"pointer" };
@@ -1014,13 +1173,18 @@ function ProjectCard({ project, onEdit, onMaterialPlan, onReports }: {
     <div style={{ background:"#fff", borderRadius:14, padding:"1.25rem", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
       {/* Title row */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.375rem" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-          <p style={{ fontWeight:700, fontSize:"1rem", color:"#1d4ed8" }}>{project.name}</p>
-          <button onClick={onEdit} style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#9ca3af", display:"flex", alignItems:"center" }}>
-            <Pencil style={{ width:13, height:13 }} />
-          </button>
+        <div style={{ display:"flex", alignItems:"center", gap:8, flex:1, minWidth:0 }}>
+          <p style={{ fontWeight:700, fontSize:"1rem", color:"#1d4ed8", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{project.name}</p>
+          {canEdit && (
+            <button onClick={onEdit} style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#9ca3af", display:"flex", alignItems:"center", flexShrink:0 }}>
+              <Pencil style={{ width:13, height:13 }} />
+            </button>
+          )}
+          {viewOnly && (
+            <span style={{ fontSize:"0.6rem", fontWeight:700, padding:"2px 7px", borderRadius:999, background:"#f3f4f6", color:"#6b7280", flexShrink:0 }}>VIEW ONLY</span>
+          )}
         </div>
-        <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 10px", borderRadius:999, background:st.bg, color:st.color, whiteSpace:"nowrap" }}>· {project.status}</span>
+        <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 10px", borderRadius:999, background:st.bg, color:st.color, whiteSpace:"nowrap", flexShrink:0 }}>· {project.status}</span>
       </div>
 
       {/* Meta */}
@@ -1059,6 +1223,11 @@ function ProjectCard({ project, onEdit, onMaterialPlan, onReports }: {
       {/* Action buttons */}
       <div style={{ display:"flex", gap:"0.5rem" }}>
         <button onClick={onMaterialPlan} style={btn}><FileText style={{ width:13, height:13 }} /> Material Plan &amp; Measurements</button>
+        {showProgress && project.status !== "COMPLETED" && (
+          <button onClick={onProgress} style={{ ...btn, flex:"0 0 auto", padding:"10px 14px", background:"#1e3154" }}>
+            <Activity style={{ width:13, height:13 }} /> Progress
+          </button>
+        )}
         <button onClick={onReports} style={{ ...btn, flex:"0 0 auto", padding:"10px 16px" }}><BarChart3 style={{ width:13, height:13 }} /> Reports</button>
       </div>
     </div>
@@ -1074,12 +1243,21 @@ type ModalState =
   | { type:"reports"; project:Project }
   | { type:"forecast"; project:Project }
   | { type:"repository" }
+  | { type:"progress"; project:Project }
   | null;
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>(INIT_PROJECTS);
   const [loading,  setLoading]  = useState(true);
   const [modal,    setModal]    = useState<ModalState>(null);
+  const { user } = useAuthStore();
+  const role = user?.role ?? "SiteEngineer";
+
+  // Role-based permissions
+  const canCreate    = role === "Admin" || role === "ProjectManager";
+  const canEdit      = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
+  const showProgress = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
+  const viewOnly     = role === "ProcurementOfficer";
 
   useEffect(() => {
     api.get<ProjectResponseDto[]>("/projects")
@@ -1098,6 +1276,16 @@ export default function ProjectsPage() {
       {modal?.type==="reports"      && proj && <ReportsModal project={proj} onClose={()=>setModal(null)} />}
       {modal?.type==="forecast"     && proj && <ForecastModal project={proj} onClose={()=>setModal(null)} />}
       {modal?.type==="repository"   && <FileRepositoryModal onClose={()=>setModal(null)} />}
+      {modal?.type==="progress"     && proj && (
+        <ProgressTrackerModal
+          project={proj}
+          onClose={()=>setModal(null)}
+          onSave={(progress) => {
+            setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, progress } : p));
+            setModal(null);
+          }}
+        />
+      )}
 
       <Header title="Projects" />
 
@@ -1111,12 +1299,16 @@ export default function ProjectsPage() {
             </p>
           </div>
           <div style={{ display:"flex", gap:"0.625rem" }}>
-            <button onClick={()=>setModal({type:"repository"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>
-              <Upload style={{ width:14, height:14 }} /> Import Files
-            </button>
-            <button onClick={()=>setModal({type:"new"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>
-              <Plus style={{ width:15, height:15 }} /> New Project
-            </button>
+            {canCreate && (
+              <button onClick={()=>setModal({type:"repository"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>
+                <Upload style={{ width:14, height:14 }} /> Import Files
+              </button>
+            )}
+            {canCreate && (
+              <button onClick={()=>setModal({type:"new"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>
+                <Plus style={{ width:15, height:15 }} /> New Project
+              </button>
+            )}
           </div>
         </div>
 
@@ -1134,6 +1326,10 @@ export default function ProjectsPage() {
                 onEdit={()=>setModal({type:"edit",project:p})}
                 onMaterialPlan={()=>setModal({type:"materialPlan",project:p})}
                 onReports={()=>setModal({type:"reports",project:p})}
+                onProgress={()=>setModal({type:"progress",project:p})}
+                canEdit={canEdit}
+                showProgress={showProgress}
+                viewOnly={viewOnly}
               />
             ))}
           </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/authStore";
@@ -8,6 +8,7 @@ import {
   FolderKanban, Package, TrendingUp, Trash2, Network,
   ShoppingCart, FileText, LayoutDashboard, Users, Settings, LogOut,
 } from "lucide-react";
+import type { UserRole } from "@/types/auth";
 
 const ROLE_LABELS: Record<string, string> = {
   Admin:              "System Administration",
@@ -17,20 +18,20 @@ const ROLE_LABELS: Record<string, string> = {
   ProcurementOfficer: "Procurement Officer",
 };
 
-const ALL_ROLES = ["Admin","ProjectManager","SiteEngineer","WarehousePersonnel","ProcurementOfficer"] as const;
+const ALL_ROLES: UserRole[] = ["Admin","ProjectManager","SiteEngineer","WarehousePersonnel","ProcurementOfficer"];
 
-const NAV_ITEMS = [
-  { label: "Projects",        href: "/projects",        icon: FolderKanban,    roles: ALL_ROLES },
+const NAV_ITEMS: { label: string; href: string; icon: React.ElementType; roles: UserRole[] }[] = [
+  { label: "Projects",        href: "/projects",        icon: FolderKanban,    roles: ["Admin","ProjectManager","SiteEngineer","ProcurementOfficer"] },
   { label: "Inventory",       href: "/inventory",       icon: Package,         roles: ALL_ROLES },
-  { label: "Forecasting",     href: "/forecasting",     icon: TrendingUp,      roles: ALL_ROLES },
-  { label: "Excess Analytics",href: "/excess-analytics",icon: Trash2,          roles: ALL_ROLES },
-  { label: "Redistribution",  href: "/redistribution",  icon: Network,         roles: ALL_ROLES },
-  { label: "Procurement",     href: "/procurement",     icon: ShoppingCart,    roles: ALL_ROLES },
+  { label: "Forecasting",     href: "/forecasting",     icon: TrendingUp,      roles: ["Admin","ProjectManager","ProcurementOfficer"] },
+  { label: "Excess Analytics",href: "/excess-analytics",icon: Trash2,          roles: ["Admin","ProjectManager","SiteEngineer","WarehousePersonnel"] },
+  { label: "Redistribution",  href: "/redistribution",  icon: Network,         roles: ["Admin","ProjectManager","WarehousePersonnel"] },
+  { label: "Procurement",     href: "/procurement",     icon: ShoppingCart,    roles: ["Admin","ProjectManager","ProcurementOfficer"] },
   { label: "Reports",         href: "/reports",         icon: FileText,        roles: ALL_ROLES },
   { label: "System Overview", href: "/dashboard",       icon: LayoutDashboard, roles: ALL_ROLES },
-  { label: "User Management", href: "/admin/users",     icon: Users,           roles: ALL_ROLES },
+  { label: "User Management", href: "/admin/users",     icon: Users,           roles: ["Admin"] },
   { label: "Settings",        href: "/admin/settings",  icon: Settings,        roles: ALL_ROLES },
-] as const;
+];
 
 // ── Sign-out confirmation modal ───────────────────────────────────────────────
 
@@ -118,7 +119,7 @@ export default function Sidebar() {
             MAIN
           </p>
 
-          {NAV_ITEMS.map((item) => {
+          {NAV_ITEMS.filter(item => user?.role && item.roles.includes(user.role)).map((item) => {
             const Icon = item.icon;
             const active = item.href === "/dashboard"
               ? pathname === "/dashboard"
