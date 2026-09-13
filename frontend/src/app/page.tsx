@@ -445,7 +445,7 @@ export default function LandingPage() {
             {/* Nav links — true center */}
             <div className="nav-links">
               <button onClick={() => scrollTo("home")}>Home</button>
-              <button onClick={() => scrollTo("about")}>About Us</button>
+              <button onClick={() => scrollTo("help")}>About Us</button>
               <button onClick={() => scrollTo("footer")}>Contact</button>
             </div>
 
