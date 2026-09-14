@@ -19,18 +19,22 @@ interface Item {
 }
 
 const INITIAL_ITEMS: Item[] = [
-  { id:  1, name: "Portland Cement",           category: "Binders",    stock: 1240, unit: "bags",   min: 500,  max: 2000, status: "NORMAL",    price: 285,  supplier: "Manila Cement Co.",       site: "BGC Tower"           },
-  { id:  2, name: "Fine Aggregate (Sand)",      category: "Aggregates", stock: 88,   unit: "m³",    min: 50,   max: 200,  status: "NORMAL",    price: 1200, supplier: "PhilCon Aggregates",      site: "Metro Station Ph.3"  },
-  { id:  3, name: "Coarse Gravel",              category: "Aggregates", stock: 42,   unit: "m³",    min: 60,   max: 180,  status: "LOW",       price: 1450, supplier: "PhilCon Aggregates",      site: "Metro Station Ph.3"  },
-  { id:  4, name: "Deformed Steel Bars (10mm)", category: "Steel",      stock: 3200, unit: "pcs",   min: 1000, max: 5000, status: "NORMAL",    price: 185,  supplier: "National Steel PH",       site: "BGC Tower"           },
-  { id:  5, name: "Deformed Steel Bars (12mm)", category: "Steel",      stock: 280,  unit: "pcs",   min: 500,  max: 3000, status: "CRITICAL",  price: 220,  supplier: "National Steel PH",       site: "Harbor Bridge"       },
-  { id:  6, name: "PVC Pipes (2-inch)",         category: "Plumbing",   stock: 2800, unit: "pcs",   min: 200,  max: 1000, status: "OVERSTOCK", price: 145,  supplier: "PolyCon Philippines",     site: "BGC Tower"           },
-  { id:  7, name: "Hollow Blocks (4\")",        category: "Masonry",    stock: 4500, unit: "pcs",   min: 1000, max: 6000, status: "NORMAL",    price: 14,   supplier: "CEMEX Philippines",       site: "Metro Station Ph.3"  },
-  { id:  8, name: "Plywood (1/2 inch)",         category: "Formwork",   stock: 320,  unit: "sheets",min: 100,  max: 600,  status: "NORMAL",    price: 425,  supplier: "Durawood Supplies",       site: "BGC Tower"           },
-  { id:  9, name: "G.I. Pipes (1-inch)",        category: "Plumbing",   stock: 45,   unit: "m",     min: 80,   max: 300,  status: "LOW",       price: 380,  supplier: "PolyCon Philippines",     site: "Harbor Bridge"       },
-  { id: 10, name: "Ready-mix Concrete",         category: "Binders",    stock: 0,    unit: "m³",    min: 50,   max: 200,  status: "CRITICAL",  price: 5500, supplier: "Holcim Philippines",      site: "BGC Tower"           },
-  { id: 11, name: "G.I. Wire (16 gauge)",       category: "Steel",      stock: 850,  unit: "rolls", min: 200,  max: 800,  status: "OVERSTOCK", price: 95,   supplier: "National Steel PH",       site: "Harbor Bridge"       },
-  { id: 12, name: "Portland Cement (Type II)",  category: "Binders",    stock: 600,  unit: "bags",  min: 300,  max: 1500, status: "NORMAL",    price: 310,  supplier: "Republic Cement Corp.",   site: "Metro Station Ph.3"  },
+  { id:  1, name: "Portland Cement",           category: "Binders",    stock: 1240, unit: "bags",   min: 500,  max: 2000, status: "NORMAL",    price: 310,  supplier: "Manila Cement Co.",       site: "BGC Tower Complex"        },
+  { id:  2, name: "Fine Aggregate (Sand)",      category: "Aggregates", stock: 88,   unit: "m³",    min: 50,   max: 200,  status: "NORMAL",    price: 800,  supplier: "PhilCon Aggregates",      site: "Metro Station Phase 3"    },
+  { id:  3, name: "Coarse Gravel",              category: "Aggregates", stock: 42,   unit: "m³",    min: 60,   max: 180,  status: "LOW",       price: 1200, supplier: "PhilCon Aggregates",      site: "Metro Station Phase 3"    },
+  { id:  4, name: "Deformed Steel Bars (10mm)", category: "Steel",      stock: 3200, unit: "pcs",   min: 1000, max: 5000, status: "NORMAL",    price: 215,  supplier: "National Steel PH",       site: "BGC Tower Complex"        },
+  { id:  5, name: "Deformed Steel Bars (12mm)", category: "Steel",      stock: 280,  unit: "pcs",   min: 500,  max: 3000, status: "CRITICAL",  price: 310,  supplier: "National Steel PH",       site: "Harbor Bridge Renovation" },
+  { id:  6, name: "PVC Pipes (2-inch)",         category: "Plumbing",   stock: 2800, unit: "pcs",   min: 200,  max: 1000, status: "OVERSTOCK", price: 145,  supplier: "PolyCon Philippines",     site: "BGC Tower Complex"        },
+  { id:  7, name: "Hollow Blocks (4\")",        category: "Masonry",    stock: 4500, unit: "pcs",   min: 1000, max: 6000, status: "NORMAL",    price: 12,   supplier: "CEMEX Philippines",       site: "Metro Station Phase 3"    },
+  { id:  8, name: "Plywood (1/2 inch)",         category: "Formwork",   stock: 320,  unit: "sheets",min: 100,  max: 600,  status: "NORMAL",    price: 820,  supplier: "Durawood Supplies",       site: "Southgate Mall Expansion" },
+  { id:  9, name: "G.I. Pipes (1-inch)",        category: "Plumbing",   stock: 45,   unit: "m",     min: 80,   max: 300,  status: "LOW",       price: 380,  supplier: "PolyCon Philippines",     site: "Harbor Bridge Renovation" },
+  { id: 10, name: "Ready-mix Concrete",         category: "Binders",    stock: 0,    unit: "m³",    min: 50,   max: 200,  status: "CRITICAL",  price: 5500, supplier: "Holcim Philippines",      site: "BGC Tower Complex"        },
+  { id: 11, name: "G.I. Wire (16 gauge)",       category: "Steel",      stock: 850,  unit: "rolls", min: 200,  max: 800,  status: "OVERSTOCK", price: 1800, supplier: "National Steel PH",       site: "Harbor Bridge Renovation" },
+  { id: 12, name: "Portland Cement (Type II)",  category: "Binders",    stock: 600,  unit: "bags",  min: 300,  max: 1500, status: "NORMAL",    price: 310,  supplier: "Republic Cement Corp.",   site: "Metro Station Phase 3"    },
+  { id: 13, name: "Ceramic Floor Tile 60x60",   category: "Finishing",  stock: 210,  unit: "sqm",   min: 100,  max: 500,  status: "NORMAL",    price: 420,  supplier: "Mariwasa Siam Ceramics",  site: "PUP ICTC Building"        },
+  { id: 14, name: "Pre-painted GI Sheet",       category: "Roofing",    stock: 340,  unit: "m",     min: 150,  max: 700,  status: "NORMAL",    price: 180,  supplier: "Union Galvasteel",        site: "ICTC HALL"                },
+  { id: 15, name: "THHN Wire #12",              category: "Electrical",stock: 18,   unit: "rolls", min: 15,   max: 60,   status: "LOW",       price: 2800, supplier: "Phelps Dodge Philippines",site: "PUP North Wing"           },
+  { id: 16, name: "Hollow Blocks 6\"",          category: "Masonry",    stock: 2100, unit: "pcs",   min: 800,  max: 4000, status: "NORMAL",    price: 15,   supplier: "CEMEX Philippines",       site: "Group 11 House"           },
 ];
 
 const STATUS_STYLE: Record<Status, { bg: string; color: string; barColor: string }> = {
@@ -47,6 +51,9 @@ const CATEGORY_COLORS: Record<string, { bg: string; color: string }> = {
   Plumbing:   { bg: "#ede9fe", color: "#6d28d9" },
   Masonry:    { bg: "#fce7f3", color: "#9d174d" },
   Formwork:   { bg: "#d1fae5", color: "#065f46" },
+  Finishing:  { bg: "#fef3c7", color: "#92400e" },
+  Roofing:    { bg: "#ffedd5", color: "#c2410c" },
+  Electrical: { bg: "#fee2e2", color: "#b91c1c" },
 };
 
 const ALL_CATEGORIES = ["All", ...Array.from(new Set(INITIAL_ITEMS.map(i => i.category)))];

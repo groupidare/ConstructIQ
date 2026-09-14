@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
 import {
@@ -17,6 +17,9 @@ const CHART_DATA = [
   { project: "Harbor Bridge Renovation",cost: 38000, rate: 7.1 },
   { project: "Southgate Mall Expansion",cost: 24000, rate: 4.8 },
   { project: "PUP ICTC Building",       cost: 12000, rate: 2.3 },
+  { project: "ICTC HALL",               cost: 8600,  rate: 3.6 },
+  { project: "PUP North Wing",          cost: 15400, rate: 5.4 },
+  { project: "Group 11 House",          cost: 6200,  rate: 2.9 },
 ];
 
 const MAX_COST = Math.max(...CHART_DATA.map(d => d.cost));
@@ -35,37 +38,135 @@ const INITIAL_LOG: LogEntry[] = [
   { id:5, date:"May 26", project:"Southgate Mall",   phase:"Foundation", material:"Gravel - coarse agg.",qty:1.8, unit:"cu.m",  cost:2216, type:"Waste"  },
 ];
 
+// ── Date Picker ───────────────────────────────────────────────────────────────
+
+function DatePickerField({ value, onChange, inputStyle }: { value: Date; onChange: (d: Date) => void; inputStyle: React.CSSProperties }) {
+  const [open, setOpen]           = useState(false);
+  const [viewYear, setViewYear]   = useState(value.getFullYear());
+  const [viewMonth, setViewMonth] = useState(value.getMonth());
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  function toggleOpen() {
+    setOpen(o => {
+      if (!o) { setViewYear(value.getFullYear()); setViewMonth(value.getMonth()); }
+      return !o;
+    });
+  }
+
+  function prevMonth() { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); } else setViewMonth(m => m - 1); }
+  function nextMonth() { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); } else setViewMonth(m => m + 1); }
+
+  const label = value.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
+  const firstWeekday = new Date(viewYear, viewMonth, 1).getDay();
+  const totalDays    = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const cells: (number | null)[] = [...Array(firstWeekday).fill(null), ...Array.from({ length: totalDays }, (_, i) => i + 1)];
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <input readOnly value={label} onClick={toggleOpen} style={{ ...inputStyle, paddingRight: 36, cursor: "pointer" }} suppressHydrationWarning />
+      <button
+        type="button"
+        onClick={toggleOpen}
+        style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", cursor: "pointer", borderRadius: 6 }}
+      >
+        <Calendar style={{ width: 16, height: 16, color: "#6b7280" }} />
+      </button>
+
+      {open && (
+        <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 50, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10, boxShadow: "0 10px 30px rgba(0,0,0,0.18)", padding: "0.75rem", width: 260 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+            <button type="button" onClick={prevMonth} style={{ background: "none", border: "none", cursor: "pointer", color: "#6b7280", fontSize: "1rem", padding: "2px 8px" }}>‹</button>
+            <span style={{ fontSize: "0.8rem", fontWeight: 700, color: "#111827" }}>
+              {new Date(viewYear, viewMonth).toLocaleDateString("en-PH", { month: "long", year: "numeric" })}
+            </span>
+            <button type="button" onClick={nextMonth} style={{ background: "none", border: "none", cursor: "pointer", color: "#6b7280", fontSize: "1rem", padding: "2px 8px" }}>›</button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2, marginBottom: 4 }}>
+            {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
+              <span key={i} style={{ fontSize: "0.62rem", color: "#9ca3af", textAlign: "center", fontWeight: 600 }}>{d}</span>
+            ))}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2 }}>
+            {cells.map((day, i) => {
+              if (day === null) return <span key={i} />;
+              const isSelected = value.getFullYear() === viewYear && value.getMonth() === viewMonth && value.getDate() === day;
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => { onChange(new Date(viewYear, viewMonth, day)); setOpen(false); }}
+                  style={{
+                    width: 30, height: 30, borderRadius: 8, border: "none", cursor: "pointer",
+                    fontSize: "0.75rem", fontWeight: isSelected ? 700 : 500,
+                    background: isSelected ? "#f97316" : "transparent",
+                    color: isSelected ? "#fff" : "#374151",
+                  }}
+                >{day}</button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Record Excess Modal ───────────────────────────────────────────────────────
 
-function RecordModal({ onClose, onSave }: { onClose: () => void; onSave: (e: LogEntry) => void }) {
-  const [project,        setProject]        = useState("Metro Station Phase 3");
-  const [phase,          setPhase]          = useState("Flooring");
-  const [date,           setDate]           = useState(new Date().toLocaleDateString("en-PH", { month:"short", day:"numeric" }));
-  const [itemDesc,       setItemDesc]       = useState("");
-  const [unit,           setUnit]           = useState("bags");
-  const [qty,            setQty]            = useState("");
-  const [wasteType,      setWasteType]      = useState<"Waste"|"Excess">("Waste");
-  const [unitCost,       setUnitCost]       = useState("");
+interface MaterialRow {
+  itemDesc: string; unit: string; qty: string; wasteType: "Waste"|"Excess"; unitCost: string;
+}
+const BLANK_ROW: MaterialRow = { itemDesc:"", unit:"bags", qty:"", wasteType:"Waste", unitCost:"" };
+
+function RecordModal({ onClose, onSave }: { onClose: () => void; onSave: (entries: LogEntry[]) => void }) {
+  const [project, setProject] = useState("Metro Station Phase 3");
+  const [phase,   setPhase]   = useState("Flooring");
+  const [date,    setDate]    = useState<Date>(new Date());
+  const [rows,    setRows]    = useState<MaterialRow[]>([{ ...BLANK_ROW }]);
 
   const inp: React.CSSProperties = {
-    background:"#111827", color:"#fff", border:"none", borderRadius:8,
+    background:"#f3f4f6", color:"#111827", border:"1px solid #e5e7eb", borderRadius:8,
     padding:"10px 12px", fontSize:"0.875rem", outline:"none", width:"100%", boxSizing:"border-box",
   };
 
+  function updateRow(i: number, patch: Partial<MaterialRow>) {
+    setRows(prev => prev.map((r, idx) => idx === i ? { ...r, ...patch } : r));
+  }
+
+  function addMaterialRow() {
+    setRows(prev => [...prev, { ...BLANK_ROW }]);
+  }
+
+  function removeRow(i: number) {
+    setRows(prev => prev.filter((_, idx) => idx !== i));
+  }
+
   function handleSave(addAnother = false) {
-    if (!itemDesc || !qty || !unitCost) { toast.error("Fill in all material fields."); return; }
-    const entry: LogEntry = {
-      id: Date.now(), date, project, phase,
-      material: itemDesc, qty: Number(qty), unit, cost: Number(qty) * Number(unitCost), type: wasteType,
-    };
-    onSave(entry);
-    toast.success("Entry saved!");
+    const validRows = rows.filter(r => r.itemDesc && r.qty && r.unitCost);
+    if (validRows.length === 0) { toast.error("Fill in all material fields."); return; }
+    const dateLabel = date.toLocaleDateString("en-PH", { month:"short", day:"numeric" });
+    const entries: LogEntry[] = validRows.map(r => ({
+      id: Date.now() + Math.random(), date: dateLabel, project, phase,
+      material: r.itemDesc, qty: Number(r.qty), unit: r.unit, cost: Number(r.qty) * Number(r.unitCost), type: r.wasteType,
+    }));
+    onSave(entries);
+    toast.success(entries.length > 1 ? "Entries saved!" : "Entry saved!");
     if (addAnother) {
-      setItemDesc(""); setQty(""); setUnitCost("");
+      setRows([{ ...BLANK_ROW }]);
     } else {
       onClose();
     }
   }
+
+  const rowCols = "2fr 0.8fr 0.6fr 1fr 1fr 24px";
 
   return (
     <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }}>
@@ -81,7 +182,7 @@ function RecordModal({ onClose, onSave }: { onClose: () => void; onSave: (e: Log
         <div style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:8, padding:"0.75rem 1rem", marginBottom:"1.5rem", display:"flex", gap:10 }}>
           <AlertTriangle style={{ width:16, height:16, color:"#dc2626", flexShrink:0, marginTop:2 }} />
           <p style={{ fontSize:"0.8rem", color:"#dc2626", lineHeight:1.5 }}>
-            Help improve our AI demand predictions. Documenting your weekly material excess directly informs the forecasting engine and optimizes future production cycles.
+            Help improve our AI demand predictions. Documenting your weekly material excess directly informs the forecasting engine and optimizes future production cycle.
           </p>
         </div>
 
@@ -90,7 +191,7 @@ function RecordModal({ onClose, onSave }: { onClose: () => void; onSave: (e: Log
           <div>
             <p style={{ fontSize:"0.68rem", color:"#6b7280", marginBottom:4 }}>PROJECT *</p>
             <select value={project} onChange={e=>setProject(e.target.value)} style={{ ...inp, appearance:"none" as React.CSSProperties["appearance"], cursor:"pointer" }}>
-              {["Metro Station Phase 3","BGC Tower Complex","Harbor Bridge Renovation","Southgate Mall Expansion","PUP ICTC Building"].map(p => <option key={p}>{p}</option>)}
+              {["Metro Station Phase 3","BGC Tower Complex","Harbor Bridge Renovation","Southgate Mall Expansion","PUP ICTC Building","ICTC HALL","PUP North Wing","Group 11 House"].map(p => <option key={p}>{p}</option>)}
             </select>
           </div>
           <div>
@@ -100,42 +201,53 @@ function RecordModal({ onClose, onSave }: { onClose: () => void; onSave: (e: Log
         </div>
         <div style={{ marginBottom:"1.5rem", width:"50%" }}>
           <p style={{ fontSize:"0.68rem", color:"#6b7280", marginBottom:4 }}>DATE *</p>
-          <div style={{ position:"relative" }}>
-            <input type="text" value={date} onChange={e=>setDate(e.target.value)} style={{ ...inp, paddingRight:36 }} suppressHydrationWarning />
-            <Calendar style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)", width:16, height:16, color:"#6b7280", pointerEvents:"none" }} />
-          </div>
+          <DatePickerField value={date} onChange={setDate} inputStyle={inp} />
         </div>
 
         <p style={{ fontSize:"0.7rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.08em", marginBottom:"0.625rem" }}>MATERIAL DETAILS</p>
-        <div style={{ display:"grid", gridTemplateColumns:"2fr 0.8fr 0.6fr 1fr 1fr", gap:"0.5rem", marginBottom:"0.5rem" }}>
-          {["ITEM DESCRIPTION","UNIT","QTY","WASTE / EXCESS","EST. UNIT COST"].map(h => (
+        <div style={{ display:"grid", gridTemplateColumns:rowCols, gap:"0.5rem", marginBottom:"0.5rem" }}>
+          {["ITEM DESCRIPTION","UNIT","QTY","WASTE / EXCESS","EST. UNIT COST",""].map(h => (
             <p key={h} style={{ fontSize:"0.65rem", color:"#9ca3af" }}>{h}</p>
           ))}
         </div>
-        <div style={{ display:"grid", gridTemplateColumns:"2fr 0.8fr 0.6fr 1fr 1fr", gap:"0.5rem", marginBottom:"0.75rem", alignItems:"center" }}>
-          <input value={itemDesc}  onChange={e=>setItemDesc(e.target.value)}  placeholder="e.g. Portland Cement" style={inp} suppressHydrationWarning />
-          <select value={unit} onChange={e=>setUnit(e.target.value)} style={{ ...inp, appearance:"none" as React.CSSProperties["appearance"] }}>
-            {["bags","pcs","m³","cu.m","rolls","sheets","sqm"].map(u => <option key={u}>{u}</option>)}
-          </select>
-          <input value={qty}       onChange={e=>setQty(e.target.value)}       type="number" style={inp} suppressHydrationWarning />
-          <div style={{ display:"flex", borderRadius:8, overflow:"hidden", border:"1px solid #374151" }}>
-            {(["Waste","Excess"] as const).map(t => (
-              <button key={t} onClick={()=>setWasteType(t)} style={{
-                flex:1, padding:"9px 0", fontSize:"0.75rem", fontWeight:600, border:"none",
-                cursor:"pointer", background: wasteType===t ? "#111827" : "#1f2937", color: wasteType===t ? "#fff" : "#6b7280",
-              }}>{t}</button>
-            ))}
+        {rows.map((row, i) => (
+          <div key={i} style={{ display:"grid", gridTemplateColumns:rowCols, gap:"0.5rem", marginBottom:"0.5rem", alignItems:"center" }}>
+            <input value={row.itemDesc} onChange={e=>updateRow(i,{ itemDesc:e.target.value })} placeholder="e.g. Portland Cement" style={inp} suppressHydrationWarning />
+            <select value={row.unit} onChange={e=>updateRow(i,{ unit:e.target.value })} style={{ ...inp, appearance:"none" as React.CSSProperties["appearance"] }}>
+              {["bags","pcs","m³","cu.m","rolls","sheets","sqm"].map(u => <option key={u}>{u}</option>)}
+            </select>
+            <input value={row.qty} onChange={e=>updateRow(i,{ qty:e.target.value })} type="number" style={inp} suppressHydrationWarning />
+            <div style={{ display:"flex", gap:2, background:"#f3f4f6", borderRadius:8, padding:2, border:"1px solid #e5e7eb" }}>
+              {(["Waste","Excess"] as const).map(t => (
+                <button key={t} type="button" onClick={()=>updateRow(i,{ wasteType:t })} style={{
+                  flex:1, padding:"7px 0", fontSize:"0.72rem", fontWeight:600, borderRadius:6, border:"none",
+                  cursor:"pointer",
+                  background: row.wasteType===t ? "#fff" : "transparent",
+                  color:      row.wasteType===t ? "#111827" : "#9ca3af",
+                  boxShadow:  row.wasteType===t ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+                }}>{t}</button>
+              ))}
+            </div>
+            <div style={{ position:"relative" }}>
+              <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:"#9ca3af", fontSize:"0.8rem", pointerEvents:"none" }}>₱</span>
+              <input value={row.unitCost} onChange={e=>updateRow(i,{ unitCost:e.target.value })} type="number" style={{ ...inp, paddingLeft:22 }} suppressHydrationWarning />
+            </div>
+            {rows.length > 1 ? (
+              <button type="button" onClick={()=>removeRow(i)} style={{ background:"none", border:"none", color:"#9ca3af", cursor:"pointer", padding:2 }}>
+                <X style={{ width:14, height:14 }} />
+              </button>
+            ) : <span />}
           </div>
-          <div style={{ position:"relative" }}>
-            <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:"#9ca3af", fontSize:"0.8rem", pointerEvents:"none" }}>₱</span>
-            <input value={unitCost} onChange={e=>setUnitCost(e.target.value)} type="number" style={{ ...inp, paddingLeft:22 }} suppressHydrationWarning />
-          </div>
-        </div>
+        ))}
 
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.75rem" }}>
+        <button type="button" onClick={addMaterialRow} style={{ display:"flex", alignItems:"center", gap:6, background:"none", border:"none", color:"#059669", fontSize:"0.82rem", fontWeight:600, cursor:"pointer", padding:"4px 0", marginBottom:"0.75rem" }}>
+          <Plus style={{ width:14, height:14 }} /> Add material
+        </button>
+
+        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1rem", paddingTop:"1rem", borderTop:"1px solid #f3f4f6" }}>
           <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:500, cursor:"pointer" }}>Cancel</button>
-          <button onClick={()=>handleSave(true)} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#0d9488", color:"#fff", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>Save &amp; Add Another</button>
-          <button onClick={()=>handleSave(false)} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#0d9488", color:"#fff", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>Save Entry</button>
+          <button onClick={()=>handleSave(true)} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>Save &amp; Add Another</button>
+          <button onClick={()=>handleSave(false)} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>Save Entry</button>
         </div>
       </div>
     </div>
@@ -164,7 +276,7 @@ export default function ExcessAnalyticsPage() {
 
   return (
     <div style={{ background:"#f5f4f0" }}>
-      {showModal && <RecordModal onClose={()=>setShowModal(false)} onSave={entry=>setLogEntries(prev=>[entry,...prev])} />}
+      {showModal && <RecordModal onClose={()=>setShowModal(false)} onSave={entries=>setLogEntries(prev=>[...entries,...prev])} />}
 
       <Header title="Excess Analytics" />
 

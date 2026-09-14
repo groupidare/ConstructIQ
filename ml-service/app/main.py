@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import forecast, document_parser
+from app.api.routes import forecast, document_parser, train
 
 app = FastAPI(
     title="ConstructIQ ML Service",
@@ -18,6 +18,7 @@ app.add_middleware(
 
 app.include_router(forecast.router,        prefix="/forecast",  tags=["Forecasting"])
 app.include_router(document_parser.router, prefix="/documents", tags=["Document Parsing"])
+app.include_router(train.router,           prefix="/forecast",  tags=["Forecasting"])
 
 
 @app.get("/health")
