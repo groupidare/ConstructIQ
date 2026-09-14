@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Bell, Search, Sun, Menu, X, AlertTriangle, Package, ShoppingCart, TrendingUp, CheckCircle } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Bell, Search, Sun, Moon, Menu, X, AlertTriangle, Package, ShoppingCart, TrendingUp, CheckCircle } from "lucide-react";
 import { useAuthStore } from "@/store/authStore";
+import { useTheme } from "@/store/themeStore";
 
 interface Notification {
   id: number;
@@ -29,8 +31,11 @@ interface HeaderProps {
 }
 
 export default function Header({ title }: HeaderProps) {
+  const router   = useRouter();
   const user     = useAuthStore((s) => s.user);
   const initials = `${user?.firstName?.[0] ?? ""}${user?.lastName?.[0] ?? ""}`.toUpperCase();
+  const theme       = useTheme((s) => s.theme);
+  const toggleTheme = useTheme((s) => s.toggleTheme);
 
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifs,    setNotifs]    = useState<Notification[]>(INIT_NOTIFS);
@@ -185,20 +190,28 @@ export default function Header({ title }: HeaderProps) {
         </div>
 
         {/* Theme toggle */}
-        <button style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:4, display:"flex", alignItems:"center" }}>
-          <Sun style={{ width:18, height:18 }} />
+        <button
+          onClick={toggleTheme}
+          aria-label="Toggle dark mode"
+          style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:4, display:"flex", alignItems:"center" }}
+        >
+          {theme === "dark" ? <Moon style={{ width:18, height:18 }} /> : <Sun style={{ width:18, height:18 }} />}
         </button>
 
         {/* Avatar */}
-        <div style={{
-          width:36, height:36, borderRadius:"50%",
-          background:"#f97316",
-          display:"flex", alignItems:"center", justifyContent:"center",
-          color:"#fff", fontWeight:700, fontSize:"0.8rem",
-          cursor:"pointer", flexShrink:0, userSelect:"none",
-        }}>
+        <button
+          onClick={() => router.push("/admin/settings")}
+          aria-label="Go to settings"
+          style={{
+            width:36, height:36, borderRadius:"50%",
+            background:"#f97316", border:"none",
+            display:"flex", alignItems:"center", justifyContent:"center",
+            color:"#fff", fontWeight:700, fontSize:"0.8rem",
+            cursor:"pointer", flexShrink:0, userSelect:"none",
+          }}
+        >
           {initials || "?"}
-        </div>
+        </button>
       </div>
     </header>
   );
