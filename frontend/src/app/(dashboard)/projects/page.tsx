@@ -4,10 +4,11 @@ import { useState, useEffect } from "react";
 import toast from "react-hot-toast";
 import api from "@/lib/api";
 import Header from "@/components/layout/Header";
+import { useAuthStore } from "@/store/authStore";
 import {
-  Plus, MapPin, Calendar, Users, FileText, Ruler, BarChart3, X,
-  Zap, Calculator, Archive, ChevronDown, ChevronUp, Brain, Target,
-  TrendingUp, CheckCircle2, BarChart2, Pencil, Package,
+  Plus, MapPin, Calendar, Users, FileText, X, Pencil,
+  ShoppingCart, Package, Upload, FolderOpen, ChevronDown,
+  ChevronUp, Trash2, Search, Tag, BarChart3, Camera, Activity,
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
@@ -17,217 +18,87 @@ import {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type ProjectStatus = "ACTIVE" | "PLANNING" | "COMPLETED" | "ON HOLD";
-interface BOMRow { material: string; unit: string; qty: number; unitCost: number; supplier: string; }
+
 interface Project {
   id: number; name: string; location: string;
   startDate: string; endDate: string; status: ProjectStatus;
   progress: number; progressColor: string;
   budget: string; spent: string; materials: number;
   manager: string; engineers: string[];
-  type: string; bom: BOMRow[]; forecastReady: boolean;
-}
-interface PhaseMat { material: string; unit: string; actualQty: number; forecastQty: number; unitCost: number; }
-interface FPhase { name: string; duration: string; materials: PhaseMat[]; }
-interface FinishedProject {
-  id: number; name: string; location: string; type: string;
-  startDate: string; endDate: string;
-  budget: number; spent: number;
-  manager: string; notes: string;
-  phases: FPhase[];
+  type: string;
 }
 
-// ── Active / planning projects ────────────────────────────────────────────────
+interface InventoryItem {
+  id: number; name: string; spec: string; unit: string;
+  category: string; stock: number; price: number;
+}
+
+interface BOMItem {
+  inventoryId: number; name: string; spec: string; unit: string;
+  estQty: number; stock: number; price: number; category: string;
+}
+
+interface ProjectPhase {
+  id: number; name: string;
+  dims: { length: number; width: number; height: number; thickness: number };
+  items: BOMItem[];
+}
+
+interface RepoFile {
+  id: number; name: string;
+  category: "Blueprint / Drawing" | "Contract / Agreement" | "Other Record";
+  status: "Final" | "Draft"; revision: string;
+  docType: string; project: string; author: string;
+  date: string; size: string; description: string; tags: string[];
+}
+
+// ── Static Data ────────────────────────────────────────────────────────────────
 
 const INIT_PROJECTS: Project[] = [
-  { id:1, name:"Metro Station Phase 3",   location:"EDSA, QC",      startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",   progress:62,  progressColor:"#f97316", budget:"₱45.0M",  spent:"₱27.9M", materials:8,  manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],  type:"Infrastructure", bom:[{ material:"Portland Cement (40kg)", unit:"bags", qty:250, unitCost:290, supplier:"ABI Corp." },{ material:"Deformed Steel Bars (12mm)", unit:"pcs", qty:180, unitCost:540, supplier:"CMC Trading" },{ material:"CHB 4 inch", unit:"pcs", qty:1200, unitCost:18, supplier:"DCI Materials" }], forecastReady:false },
-  { id:2, name:"BGC Tower Complex",        location:"BGC, Taguig",   startDate:"2025-01-15", endDate:"2027-06-30", status:"ACTIVE",   progress:38,  progressColor:"#1e3154", budget:"₱120.0M", spent:"₱45.6M", materials:12, manager:"Remy Santos",  engineers:["Jose Lim"],                  type:"Commercial",     bom:[], forecastReady:false },
-  { id:3, name:"Harbor Bridge Renovation", location:"Manila Harbor",  startDate:"2024-03-01", endDate:"2025-12-31", status:"ACTIVE",   progress:81,  progressColor:"#22c55e", budget:"₱28.0M",  spent:"₱22.7M", materials:6,  manager:"Remy Santos",  engineers:["Carlos Reyes"],              type:"Infrastructure", bom:[], forecastReady:false },
-  { id:4, name:"Southgate Mall Expansion", location:"BGC, Taguig",   startDate:"2025-06-01", endDate:"2027-09-30", status:"PLANNING", progress:12,  progressColor:"#374151", budget:"₱75.0M",  spent:"₱9.0M",  materials:4,  manager:"Remy Santos",  engineers:["Ana Cruz","Ben Torres"],     type:"Commercial",     bom:[], forecastReady:false },
-  { id:5, name:"PUP ICTC Building",        location:"Sta. Mesa",      startDate:"2023-01-10", endDate:"2025-01-15", status:"COMPLETED",progress:100, progressColor:"#22c55e", budget:"₱19.3M",  spent:"₱19.1M", materials:9,  manager:"Remy Santos",  engineers:["Ana Cruz"],                  type:"Infrastructure", bom:[], forecastReady:false },
+  { id:1, name:"Metro Station Phase 3",   location:"EDSA, QC",     startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",    progress:62,  progressColor:"#f97316", budget:"₱45.0M",  spent:"₱27.9M", materials:8,  manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],   type:"Infrastructure" },
+  { id:2, name:"BGC Tower Complex",        location:"BGC, Taguig",  startDate:"2025-01-15", endDate:"2027-06-30", status:"ACTIVE",    progress:38,  progressColor:"#1e3154", budget:"₱120.0M", spent:"₱45.6M", materials:12, manager:"Remy Santos",  engineers:["Jose Lim"],                  type:"Commercial" },
+  { id:3, name:"Harbor Bridge Renovation", location:"Manila Harbor", startDate:"2024-03-01", endDate:"2025-12-31", status:"ACTIVE",    progress:81,  progressColor:"#22c55e", budget:"₱28.0M",  spent:"₱22.7M", materials:6,  manager:"Remy Santos",  engineers:["Carlos Reyes"],              type:"Infrastructure" },
+  { id:4, name:"Southgate Mall Expansion", location:"BGC, Taguig",  startDate:"2025-06-01", endDate:"2027-09-30", status:"PLANNING",  progress:12,  progressColor:"#374151", budget:"₱75.0M",  spent:"₱9.0M",  materials:4,  manager:"Remy Santos",  engineers:["Ana Cruz","Ben Torres"],     type:"Commercial" },
+  { id:5, name:"PUP ICTC Building",        location:"Sta. Mesa",    startDate:"2023-01-10", endDate:"2025-01-15", status:"COMPLETED", progress:100, progressColor:"#22c55e", budget:"₱19.3M",  spent:"₱19.1M", materials:9,  manager:"Remy Santos",  engineers:["Ana Cruz"],                  type:"Infrastructure" },
 ];
 
-// ── Finished Projects Repository ──────────────────────────────────────────────
-
-const INIT_FINISHED: FinishedProject[] = [
-  {
-    id:101, name:"PUP ICTC Building", location:"Sta. Mesa, Manila", type:"Infrastructure",
-    startDate:"2023-01-10", endDate:"2025-01-15", budget:19300000, spent:19100000,
-    manager:"Remy Santos", notes:"4-storey RC ICT center. State university campus build-out.",
-    phases:[
-      { name:"Foundation", duration:"3 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:1820, forecastQty:1750, unitCost:290 },
-        { material:"Deformed Bars 16mm", unit:"pcs", actualQty:680, forecastQty:700, unitCost:580 },
-        { material:"Coarse Aggregates", unit:"m³", actualQty:95, forecastQty:90, unitCost:1200 },
-        { material:"Fine Aggregates", unit:"m³", actualQty:48, forecastQty:45, unitCost:900 },
-      ]},
-      { name:"Structural", duration:"8 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:3200, forecastQty:3000, unitCost:290 },
-        { material:"Deformed Bars 12mm", unit:"pcs", actualQty:1240, forecastQty:1200, unitCost:480 },
-        { material:"CHB 4-inch", unit:"pcs", actualQty:18500, forecastQty:18000, unitCost:14 },
-        { material:"Ready-mix Concrete", unit:"m³", actualQty:320, forecastQty:300, unitCost:5800 },
-      ]},
-      { name:"MEP", duration:"4 months", materials:[
-        { material:"PVC Pipes 4-inch", unit:"length", actualQty:240, forecastQty:220, unitCost:450 },
-        { material:"Electrical Conduit", unit:"length", actualQty:380, forecastQty:360, unitCost:180 },
-        { material:"Circuit Breaker 20A", unit:"pcs", actualQty:48, forecastQty:44, unitCost:850 },
-      ]},
-      { name:"Finishing", duration:"3 months", materials:[
-        { material:"Floor Tiles 60x60", unit:"sqm", actualQty:1850, forecastQty:1800, unitCost:420 },
-        { material:"Paint (Latex)", unit:"gal", actualQty:620, forecastQty:600, unitCost:520 },
-        { material:"Ceiling Board", unit:"sqm", actualQty:1400, forecastQty:1350, unitCost:180 },
-      ]},
-    ],
-  },
-  {
-    id:102, name:"Marikina Valley Mall", location:"Marikina City", type:"Commercial",
-    startDate:"2021-03-01", endDate:"2023-08-30", budget:85000000, spent:83200000,
-    manager:"Ana Bonifacio", notes:"4-level commercial mall with basement parking.",
-    phases:[
-      { name:"Site Preparation", duration:"2 months", materials:[
-        { material:"Gravel Fill", unit:"m³", actualQty:480, forecastQty:500, unitCost:950 },
-        { material:"Portland Cement", unit:"bags", actualQty:420, forecastQty:400, unitCost:290 },
-      ]},
-      { name:"Foundation", duration:"5 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:6800, forecastQty:6500, unitCost:290 },
-        { material:"Deformed Bars 20mm", unit:"pcs", actualQty:2400, forecastQty:2300, unitCost:940 },
-        { material:"Ready-mix Concrete", unit:"m³", actualQty:820, forecastQty:800, unitCost:5800 },
-      ]},
-      { name:"Structural Steel", duration:"7 months", materials:[
-        { material:"W-Flange Beams 200x100", unit:"pcs", actualQty:380, forecastQty:360, unitCost:4200 },
-        { material:"Steel Columns 150x150", unit:"pcs", actualQty:120, forecastQty:115, unitCost:6800 },
-        { material:"Metal Deck Sheet", unit:"sqm", actualQty:4800, forecastQty:4600, unitCost:280 },
-      ]},
-      { name:"Interior & Finishing", duration:"8 months", materials:[
-        { material:"Granite Floor Tiles", unit:"sqm", actualQty:8200, forecastQty:8000, unitCost:650 },
-        { material:"Gypsum Board", unit:"sqm", actualQty:5400, forecastQty:5200, unitCost:220 },
-        { material:"Paint (Interior)", unit:"gal", actualQty:1800, forecastQty:1750, unitCost:520 },
-      ]},
-    ],
-  },
-  {
-    id:103, name:"C6 Road Overpass", location:"Pasig-Taguig Boundary", type:"Infrastructure",
-    startDate:"2022-06-01", endDate:"2024-03-15", budget:32000000, spent:31500000,
-    manager:"Carlos Reyes", notes:"Single-span highway overpass. DPWH standard. 28m span.",
-    phases:[
-      { name:"Foundation & Piers", duration:"6 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:4200, forecastQty:4000, unitCost:290 },
-        { material:"Deformed Bars 25mm", unit:"pcs", actualQty:980, forecastQty:950, unitCost:1250 },
-        { material:"Ready-mix Concrete C40", unit:"m³", actualQty:560, forecastQty:540, unitCost:6200 },
-      ]},
-      { name:"Structural Deck", duration:"5 months", materials:[
-        { material:"Deformed Bars 16mm", unit:"pcs", actualQty:1800, forecastQty:1750, unitCost:580 },
-        { material:"Ready-mix Concrete C35", unit:"m³", actualQty:380, forecastQty:360, unitCost:5900 },
-        { material:"Prestressed Girders", unit:"pcs", actualQty:12, forecastQty:12, unitCost:280000 },
-      ]},
-      { name:"Asphalt & Safety", duration:"3 months", materials:[
-        { material:"Asphalt Concrete", unit:"tonnes", actualQty:280, forecastQty:260, unitCost:4200 },
-        { material:"Guardrail Beam", unit:"pcs", actualQty:120, forecastQty:115, unitCost:1800 },
-      ]},
-    ],
-  },
-  {
-    id:104, name:"BGC Residential Tower A", location:"BGC, Taguig", type:"Residential",
-    startDate:"2020-09-01", endDate:"2023-12-31", budget:95000000, spent:94100000,
-    manager:"Jose Lim", notes:"24-storey residential high-rise. RC shear wall system.",
-    phases:[
-      { name:"Foundation & Pit", duration:"6 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:8400, forecastQty:8000, unitCost:290 },
-        { material:"Deformed Bars 25mm", unit:"pcs", actualQty:3200, forecastQty:3000, unitCost:1250 },
-        { material:"Ready-mix Concrete C40", unit:"m³", actualQty:1200, forecastQty:1150, unitCost:6200 },
-      ]},
-      { name:"Structural", duration:"18 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:21800, forecastQty:21000, unitCost:290 },
-        { material:"Deformed Bars 16mm", unit:"pcs", actualQty:11000, forecastQty:10600, unitCost:580 },
-        { material:"CHB 4-inch", unit:"pcs", actualQty:80000, forecastQty:76000, unitCost:14 },
-      ]},
-      { name:"MEP & Finishing", duration:"12 months", materials:[
-        { material:"Floor Tiles 60x60", unit:"sqm", actualQty:12000, forecastQty:11500, unitCost:420 },
-        { material:"PVC Pipes 2-inch", unit:"length", actualQty:1800, forecastQty:1750, unitCost:180 },
-        { material:"Aluminum Windows", unit:"sqm", actualQty:3200, forecastQty:3100, unitCost:2800 },
-      ]},
-    ],
-  },
-  {
-    id:105, name:"Manila Water Treatment Facility", location:"Paco, Manila", type:"Industrial",
-    startDate:"2021-01-15", endDate:"2023-05-30", budget:58000000, spent:57300000,
-    manager:"Ben Torres", notes:"Municipal water treatment plant with tanks and pump house.",
-    phases:[
-      { name:"Foundation & Waterproofing", duration:"4 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:3800, forecastQty:3600, unitCost:290 },
-        { material:"Waterproofing Membrane", unit:"sqm", actualQty:1800, forecastQty:1750, unitCost:380 },
-        { material:"Ready-mix Concrete C35", unit:"m³", actualQty:420, forecastQty:400, unitCost:5900 },
-      ]},
-      { name:"Structural & Tanks", duration:"8 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:5200, forecastQty:5000, unitCost:290 },
-        { material:"GI Pipes 6-inch", unit:"length", actualQty:480, forecastQty:460, unitCost:2200 },
-        { material:"Waterproofing Admixture", unit:"pails", actualQty:280, forecastQty:260, unitCost:1800 },
-      ]},
-      { name:"Equipment & Commissioning", duration:"8 months", materials:[
-        { material:"Stainless Steel Pipes", unit:"length", actualQty:320, forecastQty:310, unitCost:1800 },
-        { material:"Valve Gate 4-inch", unit:"pcs", actualQty:48, forecastQty:45, unitCost:3500 },
-        { material:"Electrical Conduit", unit:"length", actualQty:680, forecastQty:660, unitCost:180 },
-      ]},
-    ],
-  },
+const INVENTORY_ITEMS: InventoryItem[] = [
+  { id:1,  name:"Portland Cement",           spec:"40kg/bag, Type I",        unit:"bags",   category:"Masonry",     stock:1240, price:285  },
+  { id:2,  name:"Gravel 3/4",                spec:"Washed fine aggregate",    unit:"m³",     category:"Aggregates",  stock:850,  price:1450 },
+  { id:3,  name:"Coarse Gravel",             spec:'3/4" crushed stone',       unit:"m³",     category:"Aggregates",  stock:420,  price:1450 },
+  { id:4,  name:"Deformed Steel Bar (16mm)", spec:"16mm Ø × 6m",             unit:"pcs",    category:"Metals",      stock:280,  price:580  },
+  { id:5,  name:"Ready-mix Concrete",        spec:"4000 PSI (28 MPa)",        unit:"m³",     category:"Masonry",     stock:0,    price:5800 },
+  { id:6,  name:"CHB 4-inch",               spec:"Standard hollow block",    unit:"pcs",    category:"Masonry",     stock:3200, price:14   },
+  { id:7,  name:"PVC Pipe 4-inch",          spec:'S-1000 pressure rated',    unit:"length", category:"Mechanical",  stock:180,  price:450  },
+  { id:8,  name:"Electrical Conduit",        spec:'EMT 3/4" × 3m',           unit:"length", category:"Electrical",  stock:640,  price:180  },
+  { id:9,  name:"Ceramic Floor Tiles (60×60)", spec:"Polished, glazed",       unit:"sqm",    category:"Paintings",   stock:420,  price:450  },
+  { id:10, name:"Insulated Copper Wire",     spec:"3.5mm², THHN",             unit:"m",      category:"Electrical",  stock:1860, price:42   },
+  { id:11, name:"Galvanized Iron Pipe (1\")", spec:"Sch. 40, 6m length",      unit:"length", category:"Mechanical",  stock:540,  price:864  },
+  { id:12, name:"Interior Paint (White)",   spec:"Latex, 4L/can",            unit:"can",    category:"Paintings",   stock:230,  price:520  },
+  { id:13, name:"Fine Sand",                spec:"Washed fine aggregate",    unit:"m³",     category:"Aggregates",  stock:850,  price:900  },
+  { id:14, name:"Plywood 3/4",             spec:"Marine ply, 4×8ft",        unit:"sheet",  category:"Carpentry",   stock:120,  price:1200 },
+  { id:15, name:"Steel Angle Bar",          spec:"2×2×3/16, 6m",            unit:"pcs",    category:"Metals",      stock:86,   price:890  },
 ];
 
-// ── Accuracy metrics ──────────────────────────────────────────────────────────
+const INV_CATEGORIES = ["All","Masonry","Metals","Carpentry","Mechanical","Electrical","Paintings","Aggregates"];
 
-const ACCURACY_METRICS = (() => {
-  let totalAPE = 0, totalAbs = 0, count = 0;
-  const perProject: { name: string; type: string; accuracy: number }[] = [];
-  INIT_FINISHED.forEach(fp => {
-    let pAPE = 0, pC = 0;
-    fp.phases.forEach(ph => ph.materials.forEach(m => {
-      const ape = Math.abs(m.actualQty - m.forecastQty) / m.actualQty * 100;
-      totalAPE += ape; totalAbs += Math.abs(m.actualQty - m.forecastQty); count++; pAPE += ape; pC++;
-    }));
-    perProject.push({ name: fp.name, type: fp.type, accuracy: parseFloat((100 - pAPE / pC).toFixed(1)) });
-  });
-  return { accuracy: parseFloat((100 - totalAPE / count).toFixed(1)), mape: parseFloat((totalAPE / count).toFixed(1)), mae: Math.round(totalAbs / count), perProject };
-})();
+const INIT_REPO: RepoFile[] = [
+  { id:1, name:"Architectural Floor Plan - Building A", category:"Blueprint / Drawing", status:"Final", revision:"Rev. 3", docType:"Floor Plan", project:"Skyline Tower Residential Complex", author:"Arch. Jose Reyes", date:"2025-11-10", size:"4.2 MB", description:"Main floor plan for Building A ground floor.", tags:["floor plan","building A"] },
+  { id:2, name:"General Construction Contract", category:"Contract / Agreement",  status:"Final", revision:"",     docType:"General Contract", project:"Metro Rail Transit Extension", author:"Legal Dept.", date:"2025-09-01", size:"1.1 MB", description:"Main contract between owner and contractor.", tags:["contract","MRT"] },
+  { id:3, name:"Soil Test Report - Phase 1", category:"Other Record", status:"Final", revision:"",  docType:"Soil Test Report", project:"Harbor Bridge Rehabilitation", author:"Geo Solutions Inc.", date:"2025-08-20", size:"850 KB", description:"Geotechnical investigation results.", tags:["soil","geotech"] },
+];
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+const PHASE_NAMES = ["Foundation","Structural Framing","Finishing","MEP"];
 
-function parseBudgetNum(s: string): number {
-  const cleaned = s.replace(/[₱,\s]/g, "");
-  const num = parseFloat(cleaned) || 0;
-  if (cleaned.toUpperCase().endsWith("M")) return num * 1_000_000;
-  if (cleaned.toUpperCase().endsWith("K")) return num * 1_000;
-  return num;
-}
-
-interface ForecastPhase { name: string; materials: { material: string; unit: string; qty: number; unitCost: number; total: number }[] }
-function generateAIForecast(project: Project, repo: FinishedProject[]): { phases: ForecastPhase[]; confidence: number; refs: string[]; scale: number } {
-  const similar = repo.filter(fp => fp.type === project.type);
-  const pool = similar.length > 0 ? similar : repo;
-  const confidence = similar.length >= 2 ? 91 : similar.length === 1 ? 78 : 62;
-  const targetBudget = parseBudgetNum(project.budget);
-  const avgSpent = pool.reduce((s, p) => s + p.spent, 0) / pool.length;
-  const scale = targetBudget / avgSpent;
-  const phaseMap = new Map<string, { mats: Map<string, PhaseMat & { count: number }>; count: number }>();
-  pool.forEach(fp => fp.phases.forEach(ph => {
-    if (!phaseMap.has(ph.name)) phaseMap.set(ph.name, { mats: new Map(), count: 0 });
-    const entry = phaseMap.get(ph.name)!; entry.count++;
-    ph.materials.forEach(m => {
-      if (!entry.mats.has(m.material)) entry.mats.set(m.material, { ...m, count: 0 });
-      const em = entry.mats.get(m.material)!; em.actualQty += m.actualQty; em.forecastQty += m.forecastQty; em.count++;
-    });
+function defaultPhases(): ProjectPhase[] {
+  return PHASE_NAMES.map((name, i) => ({
+    id: i + 1, name,
+    dims: { length: 0, width: 0, height: 0, thickness: 0.20 },
+    items: [],
   }));
-  const phases: ForecastPhase[] = [];
-  phaseMap.forEach((val, phaseName) => {
-    const materials: ForecastPhase["materials"] = [];
-    val.mats.forEach(m => {
-      const avg = m.actualQty / m.count;
-      const qty = Math.round(avg * scale);
-      materials.push({ material: m.material, unit: m.unit, qty, unitCost: m.unitCost, total: qty * m.unitCost });
-    });
-    phases.push({ name: phaseName, materials });
-  });
-  return { phases, confidence, refs: pool.map(p => p.name), scale: parseFloat(scale.toFixed(2)) };
 }
 
-// ── API ───────────────────────────────────────────────────────────────────────
+// ── API ────────────────────────────────────────────────────────────────────────
 
 interface ProjectResponseDto {
   id: number; name: string; type: string; location: string;
@@ -236,23 +107,27 @@ interface ProjectResponseDto {
   projectManagerName: string; siteEngineerName?: string;
   phases: unknown[];
 }
-const STATUS_MAP: Record<string, ProjectStatus> = { Planning:"PLANNING", Active:"ACTIVE", OnHold:"ON HOLD", Completed:"COMPLETED", Cancelled:"COMPLETED" };
-const PROGRESS_COLOR: Record<string, string> = { PLANNING:"#374151", ACTIVE:"#f97316", COMPLETED:"#22c55e", "ON HOLD":"#d97706" };
+
+const STATUS_MAP: Record<string, ProjectStatus> = {
+  Planning:"PLANNING", Active:"ACTIVE", OnHold:"ON HOLD",
+  Completed:"COMPLETED", Cancelled:"COMPLETED",
+};
+const PROGRESS_COLOR: Record<string, string> = {
+  PLANNING:"#374151", ACTIVE:"#f97316", COMPLETED:"#22c55e", "ON HOLD":"#d97706",
+};
 
 function toProject(dto: ProjectResponseDto): Project {
   const status = (STATUS_MAP[dto.status] ?? "PLANNING") as ProjectStatus;
   const demo = INIT_PROJECTS.find(p => p.name === dto.name);
   return {
     id: dto.id, name: dto.name, location: dto.location, type: dto.type,
-    startDate: dto.startDate.split("T")[0], endDate: dto.targetEndDate.split("T")[0], status,
-    progress:      demo?.progress      ?? (status==="COMPLETED"?100:status==="ACTIVE"?50:10),
+    startDate: dto.startDate.split("T")[0], endDate: dto.targetEndDate.split("T")[0],
+    status, progress: demo?.progress ?? (status==="COMPLETED"?100:status==="ACTIVE"?50:10),
     progressColor: demo?.progressColor ?? PROGRESS_COLOR[status] ?? "#374151",
-    budget: `₱${Number(dto.budget).toLocaleString()}`,
-    spent:     demo?.spent     ?? "₱0",
+    budget: `₱${Number(dto.budget).toLocaleString()}`, spent: demo?.spent ?? "₱0",
     materials: demo?.materials ?? 0,
-    manager:   demo?.manager   ?? dto.projectManagerName,
+    manager: demo?.manager ?? dto.projectManagerName,
     engineers: demo?.engineers ?? (dto.siteEngineerName ? [dto.siteEngineerName] : []),
-    bom: demo?.bom ?? [], forecastReady: demo?.forecastReady ?? false,
   };
 }
 
@@ -263,13 +138,15 @@ const STATUS_STYLE: Record<ProjectStatus, { bg: string; color: string }> = {
   "ON HOLD": { bg:"#fef3c7", color:"#b45309" },
 };
 
+// ── Shared input style ─────────────────────────────────────────────────────────
+
 const inp: React.CSSProperties = {
-  background:"#111827", color:"#fff", border:"none", borderRadius:8,
-  padding:"10px 12px", fontSize:"0.875rem", outline:"none",
-  width:"100%", boxSizing:"border-box" as const,
+  width:"100%", boxSizing:"border-box" as const, padding:"9px 12px",
+  border:"1px solid #e5e7eb", borderRadius:8, fontSize:"0.85rem",
+  outline:"none", background:"#fff", color:"#111827",
 };
 
-// ── Overlay ───────────────────────────────────────────────────────────────────
+// ── Overlay ────────────────────────────────────────────────────────────────────
 
 function Overlay({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   return (
@@ -281,569 +158,771 @@ function Overlay({ children, onClose }: { children: React.ReactNode; onClose: ()
   );
 }
 
-// ── Choice Modal ──────────────────────────────────────────────────────────────
-
-function ChoiceModal({ onNew, onFinished, onClose }: { onNew: ()=>void; onFinished: ()=>void; onClose: ()=>void }) {
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"2rem", width:420 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.5rem" }}>
-          <p style={{ fontWeight:800, fontSize:"1.05rem" }}>Add Project</p>
-          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.875rem" }}>
-          <button onClick={onNew} style={{ padding:"1.5rem 1rem", borderRadius:12, border:"2px solid #f97316", background:"#fff7ed", cursor:"pointer", textAlign:"left" }}>
-            <Plus style={{ width:22, height:22, color:"#f97316", marginBottom:8 }} />
-            <p style={{ fontWeight:700, fontSize:"0.875rem" }}>New Project</p>
-            <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:4, lineHeight:1.4 }}>Start tracking a new project from day one.</p>
-          </button>
-          <button onClick={onFinished} style={{ padding:"1.5rem 1rem", borderRadius:12, border:"2px solid #6366f1", background:"#eef2ff", cursor:"pointer", textAlign:"left" }}>
-            <Archive style={{ width:22, height:22, color:"#6366f1", marginBottom:8 }} />
-            <p style={{ fontWeight:700, fontSize:"0.875rem" }}>Add Finished Project</p>
-            <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:4, lineHeight:1.4 }}>Upload a completed project for the forecasting database.</p>
-          </button>
-        </div>
-      </div>
-    </Overlay>
-  );
-}
-
 // ── New Project Modal ─────────────────────────────────────────────────────────
 
-function NewProjectModal({ onClose, onCreate }: { onClose: ()=>void; onCreate: (p: Project)=>void }) {
-  const [name, setName] = useState(""); const [type, setType] = useState("Renovation");
-  const [location, setLocation] = useState(""); const [budget, setBudget] = useState("1500000");
-  const [startDate, setStartDate] = useState("2026-05-05"); const [endDate, setEndDate] = useState("2026-08-08");
-  const [contractor, setContractor] = useState(""); const [description, setDescription] = useState("");
-  const [saving, setSaving] = useState(false);
+const MANAGERS = ["Remy Santos","Ana Bonifacio","Carlos Reyes","Jose Lim","Ben Torres"];
+const ENGINEERS = ["Carlo Reyes","Maria Tan","Ana Cruz","Jose Lim","Ben Torres","Carlos Reyes"];
+
+function NewProjectModal({ onClose, onCreate }: { onClose:()=>void; onCreate:(p:Project)=>void }) {
+  const [name,    setName]    = useState("");
+  const [type,    setType]    = useState("Renovation");
+  const [loc,     setLoc]     = useState("");
+  const [budget,  setBudget]  = useState("1500000.00");
+  const [start,   setStart]   = useState("2026-05-05");
+  const [end,     setEnd]     = useState("2026-08-06");
+  const [mgr,     setMgr]     = useState(MANAGERS[0]);
+  const [eng,     setEng]     = useState(ENGINEERS[0]);
+  const [cont,    setCont]    = useState("");
+  const [desc,    setDesc]    = useState("");
+  const [saving,  setSaving]  = useState(false);
+
   const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
 
   async function handleCreate() {
-    if (!name.trim() || !location.trim()) { toast.error("Name and location are required."); return; }
+    if (!name.trim() || !loc.trim()) { toast.error("Name and location are required."); return; }
     setSaving(true);
     try {
-      const budgetNum = parseFloat(budget.replace(/[^0-9.]/g,"")) || 0;
-      const { data } = await api.post<ProjectResponseDto>("/projects", { name:name.trim(), type, location:location.trim(), description:description||null, budget:budgetNum, startDate:new Date(startDate).toISOString(), targetEndDate:new Date(endDate).toISOString(), assignedContractor:contractor||null, siteEngineerId:null, phases:[] });
-      toast.success(`Project "${data.name}" created!`); onCreate(toProject(data)); onClose();
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      toast.error(msg ?? "Failed to create project.");
-    } finally { setSaving(false); }
+      const { data } = await api.post<ProjectResponseDto>("/projects", {
+        name:name.trim(), type, location:loc.trim(), description:desc||null,
+        budget:parseFloat(budget)||0, startDate:new Date(start).toISOString(),
+        targetEndDate:new Date(end).toISOString(), assignedContractor:cont||null,
+        siteEngineerId:null, phases:[],
+      });
+      toast.success(`"${data.name}" created!`); onCreate(toProject(data)); onClose();
+    } catch { toast.error("Failed to create project."); }
+    finally  { setSaving(false); }
   }
 
   return (
     <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:520 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
-          <p style={{ fontWeight:800, fontSize:"1.05rem" }}>New Project</p>
+      <div style={{ background:"#fff", borderRadius:16, padding:"2rem", width:480, boxShadow:"0 20px 60px rgba(0,0,0,0.18)" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.5rem" }}>
+          <p style={{ fontWeight:800, fontSize:"1.15rem", color:"#111827" }}>New Project</p>
           <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
         </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Name *</p><input value={name} onChange={e=>setName(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Type *</p><select value={type} onChange={e=>setType(e.target.value)} style={sel}>{["Renovation","Commercial","Industrial","Infrastructure","Residential"].map(t=><option key={t}>{t}</option>)}</select></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Location *</p><input value={location} onChange={e=>setLocation(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Budget (₱)</p><input type="number" value={budget} onChange={e=>setBudget(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Start Date *</p><input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>End Date *</p><input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div style={{ gridColumn:"1/-1" }}><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Contractor</p><input value={contractor} onChange={e=>setContractor(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div style={{ gridColumn:"1/-1" }}><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Description</p><textarea value={description} onChange={e=>setDescription(e.target.value)} rows={2} style={{ ...inp, resize:"vertical" as React.CSSProperties["resize"] }} suppressHydrationWarning /></div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
+          <div><label style={lbl}>Project Name</label><input value={name} onChange={e=>setName(e.target.value)} style={inp} placeholder="ICTC Hall" suppressHydrationWarning /></div>
+          <div><label style={lbl}>Project Type</label><select value={type} onChange={e=>setType(e.target.value)} style={sel}>{["Renovation","Commercial","Industrial","Infrastructure","Residential"].map(t=><option key={t}>{t}</option>)}</select></div>
+          <div><label style={lbl}>Location</label><input value={loc} onChange={e=>setLoc(e.target.value)} style={inp} placeholder="BGC Taguig" suppressHydrationWarning /></div>
+          <div><label style={lbl}>Budget (₱)</label><input value={budget} onChange={e=>setBudget(e.target.value)} style={inp} placeholder="1,500,000.00" suppressHydrationWarning /></div>
+          <div><label style={lbl}>Start Date</label><input type="date" value={start} onChange={e=>setStart(e.target.value)} style={inp} suppressHydrationWarning /></div>
+          <div><label style={lbl}>End Date</label><input type="date" value={end} onChange={e=>setEnd(e.target.value)} style={inp} suppressHydrationWarning /></div>
+          <div><label style={lbl}>Project Manager</label><select value={mgr} onChange={e=>setMgr(e.target.value)} style={sel}>{MANAGERS.map(m=><option key={m}>{m}</option>)}</select></div>
+          <div><label style={lbl}>PIC/Site Engineer</label><select value={eng} onChange={e=>setEng(e.target.value)} style={sel}>{ENGINEERS.map(m=><option key={m}>{m}</option>)}</select></div>
+          <div style={{ gridColumn:"1/-1" }}><label style={lbl}>Contractor</label><input value={cont} onChange={e=>setCont(e.target.value)} style={inp} placeholder="Discaya" suppressHydrationWarning /></div>
+          <div style={{ gridColumn:"1/-1" }}><label style={lbl}>Project Description</label><textarea value={desc} onChange={e=>setDesc(e.target.value)} rows={3} style={{ ...inp, resize:"vertical" as React.CSSProperties["resize"] }} placeholder="Renovation" suppressHydrationWarning /></div>
         </div>
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.25rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleCreate} disabled={saving} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", opacity:saving?0.7:1 }}>{saving?"Creating…":"Create Project"}</button>
+        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.5rem" }}>
+          <button onClick={onClose} style={{ padding:"10px 24px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
+          <button onClick={handleCreate} disabled={saving} style={{ padding:"10px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", opacity:saving?0.7:1 }}>{saving?"Creating…":"Create Project"}</button>
         </div>
       </div>
     </Overlay>
   );
 }
 
-// ── Edit Project Modal ────────────────────────────────────────────────────────
+const lbl: React.CSSProperties = { display:"block", fontSize:"0.72rem", color:"#6b7280", fontWeight:500, marginBottom:4 };
 
-function EditProjectModal({ project, onClose, onSave }: { project: Project; onClose: ()=>void; onSave: (updated: Partial<Project>)=>void }) {
-  const [name,      setName]      = useState(project.name);
-  const [location,  setLocation]  = useState(project.location);
-  const [type,      setType]      = useState(project.type);
-  const [status,    setStatus]    = useState<ProjectStatus>(project.status);
-  const [progress,  setProgress]  = useState(String(project.progress));
-  const [budget,    setBudget]    = useState(project.budget.replace(/[₱,M]/g,"").trim());
-  const [endDate,   setEndDate]   = useState(project.endDate);
-  const [manager,   setManager]   = useState(project.manager);
+// ── Edit Project Details Modal (pencil button) ────────────────────────────────
 
-  const sel: React.CSSProperties = { ...inp, appearance:"none" as React.CSSProperties["appearance"], cursor:"pointer" };
-  const PROG_COLOR: Record<ProjectStatus, string> = { ACTIVE:"#f97316", PLANNING:"#374151", COMPLETED:"#22c55e", "ON HOLD":"#d97706" };
+type EditTab = "materialPlan" | "measurements";
+type StructType = "Floor Slab" | "Wall" | "Column" | "Beam" | "Footing";
 
-  function handleSave() {
-    if (!name.trim() || !location.trim()) { toast.error("Name and location required."); return; }
-    onSave({
-      name: name.trim(), location: location.trim(), type, status,
-      progress: Math.max(0, Math.min(100, Number(progress) || 0)),
-      progressColor: PROG_COLOR[status],
-      budget: `₱${parseFloat(budget.replace(/[^0-9.]/g,""))||0}`,
-      endDate, manager,
-    });
-    toast.success("Project updated!");
-    onClose();
+function EditProjectDetailsModal({ project, onClose }: { project:Project; onClose:()=>void }) {
+  const [tab,        setTab]      = useState<EditTab>("materialPlan");
+  const [phases,     setPhases]   = useState<ProjectPhase[]>(defaultPhases);
+  const [activePhase,setActivePhase] = useState(0);
+  const [invCat,     setInvCat]   = useState("All");
+  const [phase,      setPhase]    = useState("Foundation");
+  const [duration,   setDuration] = useState("30 days");
+
+  // Measurements
+  const [structType, setStructType] = useState<StructType>("Floor Slab");
+  const [subType,    setSubType]    = useState<"Wall"|"Column"|"Beam"|"Slab">("Wall");
+  const dims = phases[activePhase]?.dims ?? { length:0, width:0, height:0, thickness:0.20 };
+
+  function setDim(field: keyof ProjectPhase["dims"], val: string) {
+    setPhases(prev => prev.map((ph, i) => i === activePhase
+      ? { ...ph, dims: { ...ph.dims, [field]: parseFloat(val) || 0 } }
+      : ph
+    ));
   }
+
+  const vol = structType === "Wall"
+    ? dims.length * dims.height * dims.thickness
+    : dims.length * dims.width * dims.thickness;
+  const area = structType === "Wall"
+    ? dims.length * dims.height
+    : dims.length * dims.width;
+
+  function addItem(inv: InventoryItem) {
+    setPhases(prev => prev.map((ph, i) => {
+      if (i !== activePhase) return ph;
+      if (ph.items.find(it => it.inventoryId === inv.id)) return ph;
+      return { ...ph, items: [...ph.items, { inventoryId:inv.id, name:inv.name, spec:inv.spec, unit:inv.unit, estQty:0, stock:inv.stock, price:inv.price, category:inv.category }] };
+    }));
+  }
+
+  function removeItem(inventoryId: number) {
+    setPhases(prev => prev.map((ph, i) => i === activePhase
+      ? { ...ph, items: ph.items.filter(it => it.inventoryId !== inventoryId) }
+      : ph
+    ));
+  }
+
+  function setItemQty(inventoryId: number, val: string) {
+    setPhases(prev => prev.map((ph, i) => i === activePhase
+      ? { ...ph, items: ph.items.map(it => it.inventoryId === inventoryId ? { ...it, estQty: parseFloat(val) || 0 } : it) }
+      : ph
+    ));
+  }
+
+  const filtered = invCat === "All" ? INVENTORY_ITEMS : INVENTORY_ITEMS.filter(i => i.category === invCat);
+  const currentItems = phases[activePhase]?.items ?? [];
+  const totalCost = currentItems.reduce((s, it) => s + it.estQty * it.price, 0);
+  const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
+
+  const tabBtn = (t: EditTab, label: string) => (
+    <button onClick={()=>setTab(t)} style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 18px", borderRadius:8, border:"none", cursor:"pointer", background:tab===t?"#111827":"#f3f4f6", color:tab===t?"#fff":"#6b7280", fontWeight:tab===t?600:400, fontSize:"0.85rem" }}>
+      {t==="materialPlan" ? <FileText style={{ width:14, height:14 }} /> : <Pencil style={{ width:14, height:14 }} />}
+      {label}
+    </button>
+  );
 
   return (
     <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:520 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <Pencil style={{ width:17, height:17, color:"#f97316" }} />
-            <p style={{ fontWeight:800, fontSize:"1.05rem" }}>Edit Project</p>
+      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:520, boxShadow:"0 20px 60px rgba(0,0,0,0.18)" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1rem" }}>
+          <div>
+            <p style={{ fontWeight:800, fontSize:"1.1rem", color:"#111827" }}>Edit Project Details</p>
+            <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{project.name}</p>
           </div>
           <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
         </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-          <div style={{ gridColumn:"1/-1" }}><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Name *</p><input value={name} onChange={e=>setName(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Type</p><select value={type} onChange={e=>setType(e.target.value)} style={sel}>{["Renovation","Commercial","Industrial","Infrastructure","Residential"].map(t=><option key={t}>{t}</option>)}</select></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Status</p><select value={status} onChange={e=>setStatus(e.target.value as ProjectStatus)} style={sel}>{(["ACTIVE","PLANNING","ON HOLD","COMPLETED"] as ProjectStatus[]).map(s=><option key={s}>{s}</option>)}</select></div>
-          <div style={{ gridColumn:"1/-1" }}><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Location *</p><input value={location} onChange={e=>setLocation(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Progress (%)</p><input type="number" min={0} max={100} value={progress} onChange={e=>setProgress(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Budget (₱)</p><input value={budget} onChange={e=>setBudget(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>End Date</p><input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Manager</p><input value={manager} onChange={e=>setManager(e.target.value)} style={inp} suppressHydrationWarning /></div>
+
+        {/* Tabs */}
+        <div style={{ display:"flex", gap:6, marginBottom:"1.25rem" }}>
+          {tabBtn("materialPlan","Material Plan")}
+          {tabBtn("measurements","Measurements")}
         </div>
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.25rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleSave} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Save Changes</button>
-        </div>
+
+        {tab === "materialPlan" && (
+          <>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem", marginBottom:"1rem" }}>
+              <div><label style={lbl}>Phase</label><select value={phase} onChange={e=>setPhase(e.target.value)} style={sel}>{PHASE_NAMES.map(n=><option key={n}>{n}</option>)}</select></div>
+              <div><label style={lbl}>Phase Duration</label><select value={duration} onChange={e=>setDuration(e.target.value)} style={sel}>{["30 days","60 days","90 days","120 days"].map(d=><option key={d}>{d}</option>)}</select></div>
+            </div>
+
+            <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem", marginBottom:"1rem" }}>
+              <p style={{ fontWeight:700, fontSize:"0.875rem", marginBottom:"0.75rem" }}>Select from Inventory</p>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:"0.75rem" }}>
+                {INV_CATEGORIES.map(c=>(
+                  <button key={c} onClick={()=>setInvCat(c)} style={{ padding:"4px 12px", borderRadius:999, border:"none", cursor:"pointer", fontSize:"0.75rem", fontWeight:invCat===c?700:400, background:invCat===c?"#111827":"#f3f4f6", color:invCat===c?"#fff":"#374151" }}>{c}</button>
+                ))}
+              </div>
+              <div style={{ maxHeight:160, overflowY:"auto" }}>
+                {filtered.map(inv=>(
+                  <div key={inv.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 4px", borderBottom:"1px solid #f9fafb" }}>
+                    <div>
+                      <p style={{ fontSize:"0.82rem", fontWeight:500, color:"#111827" }}>{inv.name}</p>
+                      <p style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{inv.category} · Stock: {inv.stock.toLocaleString()} · ₱{inv.price.toLocaleString()}</p>
+                    </div>
+                    <button onClick={()=>addItem(inv)} style={{ width:26, height:26, borderRadius:"50%", border:"none", background:"transparent", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#f97316", fontSize:"1.1rem", fontWeight:700 }}>+</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {currentItems.length > 0 && (
+              <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem", marginBottom:"1rem" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.75rem" }}>
+                  <p style={{ fontWeight:700, fontSize:"0.875rem" }}>Selected Materials</p>
+                  <button onClick={()=>toast.success("Procurement team notified!")} style={{ display:"flex", alignItems:"center", gap:5, padding:"5px 12px", borderRadius:8, border:"1px solid #f97316", background:"#fff7ed", color:"#f97316", fontSize:"0.72rem", fontWeight:600, cursor:"pointer" }}>
+                    🔔 Notify Procurement
+                  </button>
+                </div>
+                {currentItems.map(it=>(
+                  <div key={it.inventoryId} style={{ display:"grid", gridTemplateColumns:"1fr auto auto auto", gap:8, alignItems:"center", marginBottom:6 }}>
+                    <div>
+                      <p style={{ fontSize:"0.8rem", fontWeight:500 }}>{it.name}</p>
+                      <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>{it.category}</p>
+                    </div>
+                    <input value={it.estQty||""} onChange={e=>setItemQty(it.inventoryId,e.target.value)} type="number" placeholder="Qty" style={{ ...inp, width:70, padding:"5px 8px" }} suppressHydrationWarning />
+                    <span style={{ fontSize:"0.72rem", color:"#22c55e", whiteSpace:"nowrap" }}>Available: {it.stock.toLocaleString()}</span>
+                    <button onClick={()=>removeItem(it.inventoryId)} style={{ background:"none", border:"none", cursor:"pointer", color:"#ef4444", padding:0 }}><X style={{ width:15, height:15 }} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <p style={{ fontSize:"0.78rem", color:"#9ca3af" }}>Total Materials: {currentItems.length} · Total Cost: <strong style={{ color:"#111827" }}>₱{totalCost.toLocaleString()}</strong></p>
+              <div style={{ display:"flex", gap:8 }}>
+                <button onClick={onClose} style={{ padding:"9px 18px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer" }}>Cancel</button>
+                <button onClick={()=>{ toast.success("Material plan saved!"); onClose(); }} style={{ padding:"9px 18px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.82rem", fontWeight:700, cursor:"pointer" }}>Save Material Plan</button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {tab === "measurements" && (
+          <>
+            {/* Primary structure type */}
+            <div style={{ display:"flex", gap:6, marginBottom:"0.875rem", flexWrap:"wrap" }}>
+              {(["Floor Slab","Wall","Column","Beam","Footing"] as StructType[]).map(t=>(
+                <button key={t} onClick={()=>setStructType(t)} style={{ padding:"7px 16px", borderRadius:999, border:"none", cursor:"pointer", fontSize:"0.82rem", fontWeight:structType===t?700:400, background:structType===t?"#f97316":"#f3f4f6", color:structType===t?"#fff":"#374151" }}>{t}</button>
+              ))}
+            </div>
+
+            {/* Sub-type */}
+            <div style={{ marginBottom:"1rem" }}>
+              <p style={{ fontSize:"0.75rem", color:"#9ca3af", marginBottom:"0.5rem" }}>Structure Type</p>
+              <div style={{ display:"flex", gap:6 }}>
+                {(["Wall","Column","Beam","Slab"] as const).map(t=>(
+                  <button key={t} onClick={()=>setSubType(t)} style={{ padding:"6px 14px", borderRadius:999, border:"none", cursor:"pointer", fontSize:"0.82rem", fontWeight:subType===t?700:400, background:subType===t?"#f97316":"#f3f4f6", color:subType===t?"#fff":"#374151" }}>{t}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Dimensions */}
+            <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem", marginBottom:"1rem" }}>
+              <p style={{ fontWeight:700, fontSize:"0.875rem", marginBottom:"0.75rem" }}>Enter Dimensions (meters)</p>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
+                <div><label style={lbl}>Length</label><input value={dims.length||""} onChange={e=>setDim("length",e.target.value)} type="number" style={inp} placeholder="1450" suppressHydrationWarning /></div>
+                <div><label style={lbl}>Width</label><input value={dims.width||""} onChange={e=>setDim("width",e.target.value)} type="number" style={inp} placeholder="1840" suppressHydrationWarning /></div>
+                <div><label style={lbl}>Height</label><input value={dims.height||""} onChange={e=>setDim("height",e.target.value)} type="number" style={inp} placeholder="150" suppressHydrationWarning /></div>
+                <div><label style={lbl}>Thickness</label><input value={dims.thickness||""} onChange={e=>setDim("thickness",e.target.value)} type="number" style={inp} placeholder="100" suppressHydrationWarning /></div>
+              </div>
+            </div>
+
+            {/* Calculated results */}
+            {(vol > 0 || area > 0) && (
+              <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem", marginBottom:"1rem", background:"#f9fafb" }}>
+                <p style={{ fontWeight:700, fontSize:"0.875rem", marginBottom:"0.75rem" }}>Calculated Results</p>
+                <div style={{ display:"flex", justifyContent:"space-between" }}>
+                  <span style={{ fontSize:"0.82rem", color:"#6b7280" }}>Volume:</span>
+                  <span style={{ fontSize:"0.82rem", fontWeight:600 }}>{vol.toFixed(5)} m³</span>
+                </div>
+                <div style={{ display:"flex", justifyContent:"space-between" }}>
+                  <span style={{ fontSize:"0.82rem", color:"#6b7280" }}>Surface Area:</span>
+                  <span style={{ fontSize:"0.82rem", fontWeight:600 }}>{area.toFixed(3)} m²</span>
+                </div>
+              </div>
+            )}
+
+            <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+              <button onClick={onClose} style={{ padding:"9px 18px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer" }}>Cancel</button>
+              <button onClick={()=>{ if(vol===0){toast.error("Enter dimensions first."); return;} toast.success("Material requirements calculated!"); }} style={{ padding:"9px 18px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.82rem", fontWeight:700, cursor:"pointer" }}>Calculate Material Requirements</button>
+            </div>
+          </>
+        )}
       </div>
     </Overlay>
   );
 }
 
-// ── Add Finished Modal ────────────────────────────────────────────────────────
+// ── Material Planning & Measurements Modal (main button) ──────────────────────
 
-function AddFinishedModal({ onClose, onAdd }: { onClose: ()=>void; onAdd: (fp: FinishedProject)=>void }) {
-  const [name, setName] = useState(""); const [type, setType] = useState("Infrastructure");
-  const [location, setLocation] = useState(""); const [manager, setManager] = useState("");
-  const [startDate, setStartDate] = useState("2022-01-01"); const [endDate, setEndDate] = useState("2024-01-01");
-  const [budget, setBudget] = useState(""); const [spent, setSpent] = useState(""); const [notes, setNotes] = useState("");
-  const sel: React.CSSProperties = { ...inp, appearance:"none" as React.CSSProperties["appearance"], cursor:"pointer" };
+type MPTab = "measurements" | "materialPlan";
+type AlertType = "procurement" | "warehouse";
 
-  function handleSave() {
-    if (!name.trim() || !location.trim()) { toast.error("Name and location are required."); return; }
-    const fp: FinishedProject = { id:Date.now(), name:name.trim(), location:location.trim(), type, startDate, endDate, budget:parseFloat(budget)||0, spent:parseFloat(spent)||0, manager:manager||"Unknown", notes:notes||"—", phases:[] };
-    onAdd(fp); toast.success(`"${fp.name}" added to Finished Repository!`); onClose();
+interface TooltipState { itemName: string; qty: number; type: AlertType; }
+
+function MaterialPlanMeasurementsModal({ project, onClose }: { project:Project; onClose:()=>void }) {
+  const [tab,          setTab]         = useState<MPTab>("measurements");
+  const [phases,       setPhases]      = useState<ProjectPhase[]>(defaultPhases);
+  const [activePhIdx,  setActivePhIdx] = useState(0);
+  const [structType,   setStructType]  = useState<StructType>("Floor Slab");
+  const [invCat,       setInvCat]      = useState("All");
+  const [planType,     setPlanType]    = useState("");
+  const [timeRange,    setTimeRange]   = useState("");
+  const [expandedPhs,  setExpandedPhs] = useState<number[]>([0]);
+  const [tooltip,      setTooltip]     = useState<TooltipState|null>(null);
+  const [tooltipTimer, setTooltipTimer]= useState<ReturnType<typeof setTimeout>|null>(null);
+
+  function togglePhase(idx: number) {
+    setExpandedPhs(prev => prev.includes(idx) ? prev.filter(i=>i!==idx) : [...prev, idx]);
   }
+
+  const dims = phases[activePhIdx]?.dims ?? { length:0, width:0, height:0, thickness:0.20 };
+
+  function setDim(field: keyof ProjectPhase["dims"], val: string) {
+    setPhases(prev => prev.map((ph,i) => i===activePhIdx
+      ? { ...ph, dims:{ ...ph.dims, [field]:parseFloat(val)||0 } } : ph));
+  }
+
+  const vol  = structType==="Wall" ? dims.length*dims.height*dims.thickness : dims.length*dims.width*dims.thickness;
+  const area = structType==="Wall" ? dims.length*dims.height : dims.length*dims.width;
+  const concreteMix = vol * 0.85;
+  const steelReinf  = vol * 80;
+  const formwork    = area * 1.15;
+
+  function addToPhase(inv: InventoryItem) {
+    setPhases(prev => prev.map((ph,i) => {
+      if (i !== activePhIdx) return ph;
+      if (ph.items.find(it=>it.inventoryId===inv.id)) return ph;
+      return { ...ph, items:[...ph.items, { inventoryId:inv.id, name:inv.name, spec:inv.spec, unit:inv.unit, estQty:0, stock:inv.stock, price:inv.price, category:inv.category }] };
+    }));
+    toast.success(`${inv.name} added to Material Plan.`);
+  }
+
+  function setItemQty(phIdx: number, inventoryId: number, val: string) {
+    setPhases(prev => prev.map((ph,i) => i===phIdx
+      ? { ...ph, items:ph.items.map(it=>it.inventoryId===inventoryId?{...it,estQty:parseFloat(val)||0}:it) }
+      : ph));
+  }
+
+  function removeFromPhase(phIdx: number, inventoryId: number) {
+    setPhases(prev => prev.map((ph,i) => i===phIdx
+      ? { ...ph, items:ph.items.filter(it=>it.inventoryId!==inventoryId) } : ph));
+  }
+
+  function showAlert(itemName: string, qty: number, type: AlertType) {
+    if (tooltipTimer) clearTimeout(tooltipTimer);
+    setTooltip({ itemName, qty, type });
+    const t = setTimeout(() => setTooltip(null), 3500);
+    setTooltipTimer(t);
+    if (type === "procurement") toast.success(`Purchase Requisition raised for ${itemName}.`, { icon:"🛒" });
+    else toast.success(`Warehouse flagged for ${itemName} check.`, { icon:"📦" });
+  }
+
+  const allItems = phases.flatMap(ph => ph.items);
+  const totalMat = allItems.length;
+  const totalCost = allItems.reduce((s,it)=>s+it.estQty*it.price,0);
+  const alertCount = allItems.filter(it=>it.estQty>it.stock).length;
+
+  const filtered = invCat==="All" ? INVENTORY_ITEMS : INVENTORY_ITEMS.filter(i=>i.category===invCat);
+  const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
+
+  const tabStyle = (t: MPTab): React.CSSProperties => ({
+    display:"flex", alignItems:"center", gap:6, padding:"10px 18px",
+    border:"none", cursor:"pointer", fontSize:"0.875rem", fontWeight:tab===t?700:400,
+    background:"transparent", color:tab===t?"#f97316":"#9ca3af",
+    borderBottom:tab===t?"2px solid #f97316":"2px solid transparent",
+    transition:"all 0.15s",
+  });
 
   return (
     <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:500 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1rem" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}><Archive style={{ width:17, height:17, color:"#6366f1" }} /><p style={{ fontWeight:800, fontSize:"1.05rem" }}>Add Finished Project</p></div>
-          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
+      <div style={{ background:"#fff", borderRadius:16, width:660, boxShadow:"0 20px 60px rgba(0,0,0,0.18)", overflow:"hidden", maxHeight:"90vh", display:"flex", flexDirection:"column" }}>
+        {/* Header */}
+        <div style={{ padding:"1.5rem 1.5rem 0", flexShrink:0 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.25rem" }}>
+            <div>
+              <p style={{ fontWeight:800, fontSize:"1.15rem", color:"#111827" }}>Material Planning & Measurements</p>
+              <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{project.name}</p>
+            </div>
+            <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
+          </div>
+          {/* Tabs */}
+          <div style={{ display:"flex", borderBottom:"1px solid #e5e7eb", marginTop:"0.75rem" }}>
+            <button style={tabStyle("measurements")} onClick={()=>setTab("measurements")}>
+              <Pencil style={{ width:14, height:14 }} /> Measurements
+            </button>
+            <button style={tabStyle("materialPlan")} onClick={()=>setTab("materialPlan")}>
+              <FileText style={{ width:14, height:14 }} /> Material Plan
+              {totalMat>0 && <span style={{ background:"#f97316", color:"#fff", borderRadius:999, fontSize:"0.62rem", fontWeight:800, padding:"1px 6px", marginLeft:2 }}>{totalMat}</span>}
+            </button>
+          </div>
         </div>
-        <div style={{ background:"#eef2ff", border:"1px solid #c7d2fe", borderRadius:8, padding:"0.625rem 1rem", marginBottom:"1rem" }}>
-          <p style={{ fontSize:"0.78rem", color:"#4338ca" }}>Saved projects feed the AI forecasting engine for future material estimates.</p>
+
+        {/* Body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"1.25rem 1.5rem" }}>
+
+          {/* ── MEASUREMENTS TAB ── */}
+          {tab==="measurements" && (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1.6fr", gap:"1rem" }}>
+              {/* Left col */}
+              <div>
+                <p style={{ fontSize:"0.65rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.08em", marginBottom:"0.5rem" }}>BLUEPRINT / PDF</p>
+                <div style={{ border:"2px dashed #e5e7eb", borderRadius:10, padding:"1.25rem", textAlign:"center", marginBottom:"1rem", cursor:"pointer", background:"#fafafa" }}>
+                  <div style={{ width:40, height:40, borderRadius:10, background:"#fff7ed", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 0.5rem" }}>
+                    <Upload style={{ width:18, height:18, color:"#f97316" }} />
+                  </div>
+                  <p style={{ fontSize:"0.8rem", fontWeight:600, color:"#374151" }}>Upload Blueprint PDF</p>
+                  <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginTop:2 }}>Drag &amp; drop or click to browse</p>
+                  <p style={{ fontSize:"0.68rem", color:"#f97316", marginTop:4, fontWeight:500 }}>Auto-fills all phase dimensions on upload</p>
+                </div>
+
+                <p style={{ fontSize:"0.65rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.08em", marginBottom:"0.5rem" }}>PHASE SUMMARY</p>
+                {phases.map((ph,i) => {
+                  const v = ph.dims.length*ph.dims.width*ph.dims.thickness;
+                  const a = ph.dims.length*ph.dims.width;
+                  const configured = v > 0 || a > 0;
+                  return (
+                    <div key={ph.id} onClick={()=>setActivePhIdx(i)} style={{ padding:"0.625rem 0.875rem", borderRadius:8, marginBottom:4, cursor:"pointer", border:activePhIdx===i?"1px solid #fed7aa":"1px solid #e5e7eb", background:activePhIdx===i?"#fff7ed":"#fff" }}>
+                      <p style={{ fontSize:"0.8rem", fontWeight:activePhIdx===i?700:500, color:activePhIdx===i?"#f97316":"#374151" }}>Phase {i+1}: {ph.name}</p>
+                      {configured
+                        ? <p style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{v.toFixed(1)} m³ · {a.toFixed(1)} m²</p>
+                        : <p style={{ fontSize:"0.68rem", color:"#d1d5db" }}>Not configured</p>
+                      }
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Right col */}
+              <div>
+                <p style={{ fontSize:"0.75rem", color:"#9ca3af", marginBottom:"0.5rem" }}>Structure Type</p>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:"1rem" }}>
+                  {(["Floor Slab","Wall","Column","Beam","Footing"] as StructType[]).map(t=>(
+                    <button key={t} onClick={()=>setStructType(t)} style={{ padding:"6px 13px", borderRadius:999, border:"none", cursor:"pointer", fontSize:"0.8rem", fontWeight:structType===t?700:400, background:structType===t?"#f97316":"#f3f4f6", color:structType===t?"#fff":"#374151" }}>{t}</button>
+                  ))}
+                </div>
+
+                <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem", marginBottom:"1rem" }}>
+                  <p style={{ fontWeight:700, fontSize:"0.875rem", marginBottom:"0.75rem" }}>Phase {activePhIdx+1}: {phases[activePhIdx]?.name} — Dim</p>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.625rem" }}>
+                    <div><label style={lbl}>Length (M)</label><input value={dims.length||""} onChange={e=>setDim("length",e.target.value)} type="number" style={inp} placeholder="15" suppressHydrationWarning /></div>
+                    <div><label style={lbl}>Width (M)</label><input value={dims.width||""} onChange={e=>setDim("width",e.target.value)} type="number" style={inp} placeholder="10" suppressHydrationWarning /></div>
+                    <div><label style={lbl}>Height (M)</label><input value={dims.height||""} onChange={e=>setDim("height",e.target.value)} type="number" style={{ ...inp, background:structType==="Floor Slab"||structType==="Footing"?"#f9fafb":"#fff" }} placeholder="0.00" suppressHydrationWarning /></div>
+                    <div><label style={lbl}>Thickness (M)</label><input value={dims.thickness||""} onChange={e=>setDim("thickness",e.target.value)} type="number" style={inp} placeholder="0.20" suppressHydrationWarning /></div>
+                  </div>
+                </div>
+
+                {vol > 0 && (
+                  <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem" }}>
+                    <p style={{ fontWeight:700, fontSize:"0.875rem", marginBottom:"0.75rem" }}>Calculated Results</p>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.625rem", marginBottom:"0.75rem" }}>
+                      <div style={{ background:"#f9fafb", borderRadius:8, padding:"0.75rem", textAlign:"center" }}>
+                        <p style={{ fontSize:"1.3rem", fontWeight:800, color:"#111827" }}>{vol.toFixed(2)}</p>
+                        <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>m³ Volume</p>
+                      </div>
+                      <div style={{ background:"#f9fafb", borderRadius:8, padding:"0.75rem", textAlign:"center" }}>
+                        <p style={{ fontSize:"1.3rem", fontWeight:800, color:"#111827" }}>{area.toFixed(2)}</p>
+                        <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>m² Surface Area</p>
+                      </div>
+                    </div>
+                    <div style={{ fontSize:"0.78rem", color:"#6b7280" }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Concrete mix vol (85%)</span><span style={{ fontWeight:600 }}>{concreteMix.toFixed(2)} m³</span></div>
+                      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Est. steel reinforcement</span><span style={{ fontWeight:600 }}>{Math.round(steelReinf)} kg</span></div>
+                      <div style={{ display:"flex", justifyContent:"space-between" }}><span>Formwork area</span><span style={{ fontWeight:600 }}>{formwork.toFixed(2)} m²</span></div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── MATERIAL PLAN TAB ── */}
+          {tab==="materialPlan" && (
+            <>
+              {/* Controls */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr auto", gap:"0.75rem", marginBottom:"1rem", alignItems:"end" }}>
+                <div><label style={lbl}>Plan Type</label><select value={planType} onChange={e=>setPlanType(e.target.value)} style={sel}><option value="">Select…</option><option>Phase-based</option><option>Monthly</option></select></div>
+                <div><label style={lbl}>Time Range</label><select value={timeRange} onChange={e=>setTimeRange(e.target.value)} style={sel}><option value="">Select…</option><option>30 days</option><option>60 days</option><option>90 days</option></select></div>
+                <div style={{ background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:8, padding:"7px 12px", display:"flex", alignItems:"center", gap:5, whiteSpace:"nowrap" }}>
+                  <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", display:"inline-block" }} />
+                  <span style={{ fontSize:"0.75rem", color:"#15803d", fontWeight:500 }}>Forecast Applied</span>
+                </div>
+              </div>
+
+              {/* Add from Inventory */}
+              <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem", marginBottom:"1rem" }}>
+                <p style={{ fontWeight:700, fontSize:"0.875rem", marginBottom:"0.75rem" }}>Add from Inventory</p>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:"0.75rem" }}>
+                  {INV_CATEGORIES.map(c=>(
+                    <button key={c} onClick={()=>setInvCat(c)} style={{ padding:"4px 11px", borderRadius:999, border:"none", cursor:"pointer", fontSize:"0.73rem", fontWeight:invCat===c?700:400, background:invCat===c?"#111827":"#f3f4f6", color:invCat===c?"#fff":"#374151" }}>{c}</button>
+                  ))}
+                </div>
+                <div style={{ maxHeight:140, overflowY:"auto" }}>
+                  {filtered.map(inv=>(
+                    <div key={inv.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"7px 4px", borderBottom:"1px solid #f9fafb" }}>
+                      <div>
+                        <p style={{ fontSize:"0.8rem", fontWeight:500, color:"#111827" }}>{inv.name}</p>
+                        <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>{inv.category} · Stock: {inv.stock.toLocaleString()} · ₱{inv.price.toLocaleString()}</p>
+                      </div>
+                      <button onClick={()=>addToPhase(inv)} style={{ width:24, height:24, borderRadius:"50%", border:"none", background:"transparent", cursor:"pointer", color:"#f97316", fontSize:"1.1rem", fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>+</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Bill of Materials */}
+              <div style={{ border:"1px solid #e5e7eb", borderRadius:10, overflow:"hidden", position:"relative" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0.875rem 1rem", borderBottom:"1px solid #e5e7eb" }}>
+                  <p style={{ fontWeight:700, fontSize:"0.875rem" }}>Bill of Materials</p>
+                  <div style={{ display:"flex", alignItems:"center", gap:6, background:"#fff7ed", border:"1px solid #fed7aa", borderRadius:999, padding:"4px 12px" }}>
+                    <span style={{ fontSize:"0.72rem", color:"#f97316" }}>▶ Forecast Applied</span>
+                  </div>
+                </div>
+                {/* Header row */}
+                <div style={{ display:"grid", gridTemplateColumns:"1.8fr 1.3fr 0.5fr 0.8fr 0.6fr 0.7fr", gap:4, padding:"0.5rem 1rem", background:"#f9fafb", borderBottom:"1px solid #e5e7eb" }}>
+                  {["MATERIAL","SPECIFICATION","UNIT","EST. QTY","STOCK","ALERTS"].map(h=>(
+                    <span key={h} style={{ fontSize:"0.6rem", color:"#9ca3af", fontWeight:700 }}>{h}</span>
+                  ))}
+                </div>
+
+                <div style={{ maxHeight:260, overflowY:"auto" }}>
+                  {phases.map((ph, phIdx) => (
+                    <div key={ph.id}>
+                      {/* Phase header */}
+                      <button onClick={()=>togglePhase(phIdx)} style={{ width:"100%", display:"grid", gridTemplateColumns:"1fr auto", padding:"8px 1rem", background:"#eff6ff", border:"none", cursor:"pointer", borderBottom:"1px solid #dbeafe", alignItems:"center" }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                          {expandedPhs.includes(phIdx) ? <ChevronDown style={{ width:13, height:13, color:"#2563eb" }} /> : <ChevronUp style={{ width:13, height:13, color:"#2563eb" }} />}
+                          <span style={{ fontWeight:700, fontSize:"0.82rem", color:"#2563eb" }}>Phase {phIdx+1}: {ph.name}</span>
+                        </div>
+                        <span style={{ fontSize:"0.72rem", color:"#6b7280" }}>{ph.items.length} items</span>
+                      </button>
+
+                      {/* Phase rows */}
+                      {expandedPhs.includes(phIdx) && ph.items.map(it => {
+                        const needsAlert = it.estQty > it.stock;
+                        return (
+                          <div key={it.inventoryId} style={{ display:"grid", gridTemplateColumns:"1.8fr 1.3fr 0.5fr 0.8fr 0.6fr 0.7fr", gap:4, padding:"8px 1rem", borderBottom:"1px solid #f9fafb", alignItems:"center" }}>
+                            <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                              {needsAlert && <span style={{ color:"#f97316", fontSize:"0.7rem" }}>⚠</span>}
+                              <span style={{ fontSize:"0.78rem", fontWeight:500, color:"#111827", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{it.name}</span>
+                            </div>
+                            <span style={{ fontSize:"0.72rem", color:"#9ca3af", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{it.spec}</span>
+                            <span style={{ fontSize:"0.72rem", color:"#9ca3af" }}>{it.unit}</span>
+                            <input value={it.estQty||""} onChange={e=>setItemQty(phIdx,it.inventoryId,e.target.value)} type="number" style={{ border:"1px solid #e5e7eb", borderRadius:6, padding:"4px 6px", fontSize:"0.78rem", width:"100%", outline:"none" }} suppressHydrationWarning />
+                            <span style={{ fontSize:"0.82rem", fontWeight:700, color:it.stock===0?"#ef4444":it.stock<it.estQty?"#f97316":"#22c55e" }}>{it.stock.toLocaleString()}</span>
+                            <div style={{ display:"flex", gap:4 }}>
+                              <button onClick={()=>showAlert(it.name,it.estQty,"procurement")} title="Raise Purchase Requisition" style={{ width:26, height:26, borderRadius:6, border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", background:needsAlert?"#fee2e2":"#f3f4f6" }}>
+                                <ShoppingCart style={{ width:13, height:13, color:needsAlert?"#ef4444":"#9ca3af" }} />
+                              </button>
+                              <button onClick={()=>showAlert(it.name,it.estQty,"warehouse")} title="Flag for Warehouse Check" style={{ width:26, height:26, borderRadius:6, border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", background:needsAlert?"#fee2e2":"#f3f4f6" }}>
+                                <Package style={{ width:13, height:13, color:needsAlert?"#ef4444":"#9ca3af" }} />
+                              </button>
+                              <button onClick={()=>removeFromPhase(phIdx,it.inventoryId)} style={{ width:26, height:26, borderRadius:6, border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", background:"transparent" }}>
+                                <X style={{ width:12, height:12, color:"#d1d5db" }} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {/* Add row */}
+                      {expandedPhs.includes(phIdx) && (
+                        <button onClick={()=>{ setTab("materialPlan"); setActivePhIdx(phIdx); }} style={{ width:"100%", padding:"6px", border:"none", background:"transparent", cursor:"pointer", fontSize:"0.75rem", color:"#9ca3af", borderBottom:"1px solid #f9fafb" }}>
+                          + + Add Row
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Tooltip overlay */}
+                {tooltip && (
+                  <div style={{ position:"absolute", bottom:80, left:"50%", transform:"translateX(-50%)", background:"#111827", color:"#fff", borderRadius:10, padding:"0.875rem 1rem", width:300, zIndex:10, boxShadow:"0 8px 24px rgba(0,0,0,0.25)" }}>
+                    <div style={{ display:"flex", gap:8 }}>
+                      <div style={{ width:28, height:28, borderRadius:"50%", background:"#374151", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                        {tooltip.type==="procurement" ? <ShoppingCart style={{ width:13, height:13, color:"#fff" }} /> : <Package style={{ width:13, height:13, color:"#fff" }} />}
+                      </div>
+                      <div>
+                        <p style={{ fontWeight:700, fontSize:"0.8rem" }}>
+                          {tooltip.type==="procurement" ? `Purchase Requisition Raised — ${tooltip.itemName} (${tooltip.qty})` : `Warehouse Flagged — ${tooltip.itemName} (${tooltip.qty})`}
+                        </p>
+                        <p style={{ fontSize:"0.7rem", color:"#9ca3af", marginTop:3, lineHeight:1.4 }}>
+                          {tooltip.type==="procurement"
+                            ? `Current stock: ${INVENTORY_ITEMS.find(i=>i.name===tooltip.itemName)?.stock??0} ${INVENTORY_ITEMS.find(i=>i.name===tooltip.itemName)?.unit??""}  | Required: ${tooltip.qty}. Procurement team notified.`
+                            : `Inventory system notified to verify physical stock. Allocation check initiated.`}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Legend */}
+                <div style={{ padding:"0.5rem 1rem", background:"#fafafa", borderTop:"1px solid #e5e7eb", display:"flex", gap:12 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:4 }}><ShoppingCart style={{ width:11, height:11, color:"#ef4444" }} /><span style={{ fontSize:"0.65rem", color:"#6b7280" }}>Procurement alert</span></div>
+                  <div style={{ display:"flex", alignItems:"center", gap:4 }}><Package style={{ width:11, height:11, color:"#f97316" }} /><span style={{ fontSize:"0.65rem", color:"#6b7280" }}>Warehouse alert</span></div>
+                </div>
+              </div>
+            </>
+          )}
         </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Name *</p><input value={name} onChange={e=>setName(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Type</p><select value={type} onChange={e=>setType(e.target.value)} style={sel}>{["Infrastructure","Commercial","Residential","Industrial","Renovation"].map(t=><option key={t}>{t}</option>)}</select></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Location *</p><input value={location} onChange={e=>setLocation(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Manager</p><input value={manager} onChange={e=>setManager(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Start Date</p><input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>End Date</p><input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Budget (₱)</p><input type="number" value={budget} onChange={e=>setBudget(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Actual Spent (₱)</p><input type="number" value={spent} onChange={e=>setSpent(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div style={{ gridColumn:"1/-1" }}><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Notes</p><textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={2} style={{ ...inp, resize:"vertical" as React.CSSProperties["resize"] }} suppressHydrationWarning /></div>
-        </div>
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.25rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleSave} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#6366f1", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Save to Repository</button>
+
+        {/* Footer */}
+        <div style={{ padding:"0.875rem 1.5rem", borderTop:"1px solid #e5e7eb", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+          {tab === "materialPlan"
+            ? <p style={{ fontSize:"0.78rem", color:"#6b7280" }}>{totalMat} materials · Est. <strong>₱{totalCost.toLocaleString()}</strong>{alertCount>0&&<span style={{ color:"#f97316", marginLeft:6 }}>⚠ {alertCount} alert(s)</span>}</p>
+            : <p style={{ fontSize:"0.72rem", color:"#9ca3af" }}>Enter dims per phase → Run Forecast</p>
+          }
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer" }}>Cancel</button>
+            {tab === "materialPlan"
+              ? <button onClick={()=>{ toast.success("Material plan saved!"); onClose(); }} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.82rem", fontWeight:700, cursor:"pointer" }}>Save Plan</button>
+              : <button onClick={()=>{ toast.success("Forecast generated!"); }} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.82rem", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>▶ Run Forecast</button>
+            }
+          </div>
         </div>
       </div>
     </Overlay>
   );
 }
 
-// ── Material Plan Modal ───────────────────────────────────────────────────────
+// ── File Repository Modal ─────────────────────────────────────────────────────
 
-const EMPTY_ROW = (): BOMRow => ({ material:"", unit:"pcs", qty:0, unitCost:0, supplier:"" });
+type RepoTab = "upload" | "repository";
+const CATEGORIES = ["Blueprint / Drawing","Contract / Agreement","Other Record"] as const;
 
-function MaterialPlanModal({ project, onClose, onSaveBOM, onRunForecast, extraRows }: {
-  project: Project; onClose: ()=>void;
-  onSaveBOM: (bom: BOMRow[])=>void;
-  onRunForecast: (bom: BOMRow[])=>void;
-  extraRows?: BOMRow[];
-}) {
-  const [phase,   setPhase]   = useState("Foundation");
-  const [period,  setPeriod]  = useState("30 days");
-  const [reorder, setReorder] = useState("20");
-  const [lead,    setLead]    = useState("7");
-  const [bomSaved, setBomSaved] = useState(false);
+function FileRepositoryModal({ onClose }: { onClose:()=>void }) {
+  const [tab,       setTab]      = useState<RepoTab>("upload");
+  const [files,     setFiles]    = useState<RepoFile[]>(INIT_REPO);
+  const [docName,   setDocName]  = useState("");
+  const [category,  setCategory] = useState<typeof CATEGORIES[number]>("Blueprint / Drawing");
+  const [version,   setVersion]  = useState("V1.0");
+  const [remarks,   setRemarks]  = useState("");
+  const [fileQ,     setFileQ]    = useState(0);
+  const [search,    setSearch]   = useState("");
 
-  const buildInitRows = (): BOMRow[] => {
-    const existing = project.bom.length > 0 ? [...project.bom] : [];
-    const extra    = extraRows && extraRows.length > 0 ? [...extraRows] : [];
-    const merged   = [...existing, ...extra];
-    if (merged.length === 0) return [EMPTY_ROW(), EMPTY_ROW(), EMPTY_ROW(), EMPTY_ROW(), EMPTY_ROW()];
-    while (merged.length < 3) merged.push(EMPTY_ROW());
-    return merged;
+  function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
+    if (e.target.files && e.target.files.length > 0) setFileQ(prev => prev + e.target.files!.length);
+  }
+
+  function saveToRepo() {
+    if (!docName.trim()) { toast.error("Document name is required."); return; }
+    const newFile: RepoFile = { id:Date.now(), name:docName.trim(), category, status:"Draft", revision:version, docType:category.split(" ")[0], project:"—", author:"Ana Bonifacio", date:new Date().toISOString().split("T")[0], size:"—", description:remarks, tags:[] };
+    setFiles(prev=>[newFile,...prev]);
+    toast.success(`"${docName}" saved to repository.`);
+    setTab("repository"); setDocName(""); setRemarks(""); setFileQ(0);
+  }
+
+  function deleteFile(id: number) {
+    setFiles(prev=>prev.filter(f=>f.id!==id));
+    toast.success("File removed from repository.");
+  }
+
+  const filtered = files.filter(f => !search || f.name.toLowerCase().includes(search.toLowerCase()) || f.project.toLowerCase().includes(search.toLowerCase()));
+
+  const catIcon = (cat: string) => {
+    if (cat.includes("Blueprint")) return { bg:"#dbeafe", color:"#1d4ed8" };
+    if (cat.includes("Contract")) return { bg:"#dcfce7", color:"#15803d" };
+    return { bg:"#ffedd5", color:"#c2410c" };
   };
 
-  const [rows, setRows] = useState<BOMRow[]>(buildInitRows);
-  const total = rows.reduce((s, r) => s + r.qty * r.unitCost, 0);
-  const validRows = rows.filter(r => r.material.trim());
+  const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
+  const tabStyle = (t: RepoTab): React.CSSProperties => ({
+    padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem",
+    fontWeight:tab===t?700:400, background:"transparent",
+    color:tab===t?"#f97316":"#9ca3af",
+    borderBottom:tab===t?"2px solid #f97316":"2px solid transparent",
+  });
 
-  function updateRow(i: number, field: keyof BOMRow, val: string | number) {
-    setRows(r => r.map((row, idx) => idx === i ? { ...row, [field]: val } : row));
-  }
-  function removeRow(i: number) { setRows(r => r.filter((_, idx) => idx !== i)); }
-
-  const cell: React.CSSProperties = { ...inp, padding:"7px 8px", fontSize:"0.78rem" };
-
-  if (bomSaved) {
-    return (
-      <Overlay onClose={onClose}>
-        <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:700 }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1rem" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <CheckCircle2 style={{ width:20, height:20, color:"#22c55e" }} />
+  return (
+    <Overlay onClose={onClose}>
+      <div style={{ background:"#fff", borderRadius:16, width:560, boxShadow:"0 20px 60px rgba(0,0,0,0.18)", display:"flex", flexDirection:"column", maxHeight:"90vh", overflow:"hidden" }}>
+        {/* Header */}
+        <div style={{ padding:"1.5rem 1.5rem 0", flexShrink:0 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1rem" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+              <div style={{ width:44, height:44, borderRadius:10, background:"#111827", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <Upload style={{ width:20, height:20, color:"#fff" }} />
+              </div>
               <div>
-                <p style={{ fontWeight:800, fontSize:"1.05rem" }}>BOM Saved — {project.name}</p>
-                <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:1 }}>{validRows.length} materials · Total: ₱{total.toLocaleString()}</p>
+                <p style={{ fontWeight:800, fontSize:"1.1rem", color:"#111827" }}>File Repository</p>
+                <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:1 }}>Blueprints, contracts, and project records</p>
               </div>
             </div>
             <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
           </div>
-
-          <div style={{ background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:8, padding:"0.625rem 1rem", marginBottom:"1rem" }}>
-            <p style={{ fontSize:"0.78rem", color:"#15803d" }}>Bill of Materials has been saved to this project. Use &quot;Run Forecast&quot; to generate a demand forecast based on this BOM.</p>
+          <div style={{ display:"flex", borderBottom:"1px solid #e5e7eb" }}>
+            <button style={tabStyle("upload")} onClick={()=>setTab("upload")}>Upload Files</button>
+            <button style={tabStyle("repository")} onClick={()=>setTab("repository")}>Repository ({files.length})</button>
           </div>
+        </div>
 
-          {/* BOM list */}
-          <p style={{ fontSize:"0.68rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.08em", marginBottom:"0.5rem" }}>GENERATED BILL OF MATERIALS</p>
-          <div style={{ border:"1px solid #e5e7eb", borderRadius:10, overflow:"hidden", marginBottom:"1rem" }}>
-            <div style={{ display:"grid", gridTemplateColumns:"2fr 0.7fr 0.8fr 0.8fr 1fr 1.2fr", gap:4, padding:"0.625rem 1rem", background:"#f9fafb", borderBottom:"1px solid #e5e7eb" }}>
-              {["Material","Unit","Qty","Unit Cost","Total","Supplier"].map(h=>(
-                <span key={h} style={{ fontSize:"0.6rem", color:"#9ca3af", fontWeight:700 }}>{h}</span>
-              ))}
-            </div>
-            {validRows.map((r, i) => (
-              <div key={i} style={{ display:"grid", gridTemplateColumns:"2fr 0.7fr 0.8fr 0.8fr 1fr 1.2fr", gap:4, padding:"0.625rem 1rem", borderBottom: i < validRows.length-1 ? "1px solid #f3f4f6" : "none" }}>
-                <span style={{ fontSize:"0.78rem", fontWeight:500, color:"#111827" }}>{r.material}</span>
-                <span style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{r.unit}</span>
-                <span style={{ fontSize:"0.78rem", fontWeight:600 }}>{r.qty.toLocaleString()}</span>
-                <span style={{ fontSize:"0.78rem", color:"#6b7280" }}>₱{r.unitCost.toLocaleString()}</span>
-                <span style={{ fontSize:"0.78rem", fontWeight:700, color:"#f97316" }}>₱{(r.qty*r.unitCost).toLocaleString()}</span>
-                <span style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{r.supplier || "—"}</span>
+        {/* Body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"1.25rem 1.5rem" }}>
+
+          {tab==="upload" && (
+            <>
+              <div style={{ border:"2px dashed #e5e7eb", borderRadius:12, padding:"2rem", textAlign:"center", marginBottom:"1.25rem", cursor:"pointer", background:"#fafafa" }} onClick={()=>document.getElementById("fileInput")?.click()}>
+                <input id="fileInput" type="file" multiple accept=".pdf,.dwg,.docx,.xlsx,.png,.jpg" onChange={handleFileInput} style={{ display:"none" }} />
+                <Upload style={{ width:28, height:28, color:"#9ca3af", margin:"0 auto 0.625rem" }} />
+                <p style={{ fontSize:"0.875rem", color:"#374151" }}>Drag &amp; drop or <span style={{ color:"#f97316", fontWeight:600, cursor:"pointer" }}>browse</span> to attach a file</p>
+                <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:4 }}>PDF, DWG, DOCX, XLSX, PNG, JPG — max 100 MB</p>
               </div>
-            ))}
-          </div>
 
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <div style={{ background:"#fff7ed", borderRadius:8, padding:"0.5rem 1rem" }}>
-              <span style={{ fontSize:"0.78rem", color:"#9ca3af" }}>Total BOM Cost: </span>
-              <span style={{ fontWeight:800, color:"#f97316", fontSize:"1rem" }}>₱{total.toLocaleString()}</span>
-            </div>
-            <div style={{ display:"flex", gap:"0.75rem" }}>
-              <button onClick={onClose} style={{ padding:"9px 18px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.8rem", cursor:"pointer" }}>Close</button>
-              <button onClick={()=>{ onRunForecast(rows); onClose(); }} style={{ padding:"9px 18px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.8rem", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}><Zap style={{ width:13, height:13 }} /> Run Forecast</button>
-            </div>
-          </div>
-        </div>
-      </Overlay>
-    );
-  }
-
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:740 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.25rem" }}>
-          <div>
-            <p style={{ fontWeight:800, fontSize:"1.05rem" }}>Material Plan — <span style={{ color:"#f97316" }}>{project.name}</span></p>
-            <p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>Bill of Materials (BOM) &amp; procurement planning</p>
-          </div>
-          <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.75rem", marginBottom:"1.25rem" }}>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>PROJECT PHASE</p><input value={phase} onChange={e=>setPhase(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>PLANNING PERIOD</p><input value={period} onChange={e=>setPeriod(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>LEAD TIME (DAYS)</p><input value={lead} onChange={e=>setLead(e.target.value)} style={inp} suppressHydrationWarning /></div>
-        </div>
-
-        <p style={{ fontSize:"0.68rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.08em", marginBottom:"0.5rem" }}>BILL OF MATERIALS</p>
-        <div style={{ display:"grid", gridTemplateColumns:"2fr 0.65fr 0.65fr 0.85fr 0.9fr 1fr 28px", gap:4, marginBottom:4 }}>
-          {["MATERIAL","UNIT","QTY","UNIT COST (₱)","TOTAL (₱)","SUPPLIER",""].map(h=>(
-            <p key={h} style={{ fontSize:"0.6rem", color:"#9ca3af", fontWeight:700 }}>{h}</p>
-          ))}
-        </div>
-        <div style={{ maxHeight:260, overflowY:"auto" }}>
-          {rows.map((row, i) => (
-            <div key={i} style={{ display:"grid", gridTemplateColumns:"2fr 0.65fr 0.65fr 0.85fr 0.9fr 1fr 28px", gap:4, marginBottom:4, alignItems:"center" }}>
-              <input value={row.material}  onChange={e=>updateRow(i,"material",e.target.value)}  placeholder="e.g. Portland Cement (40kg)" style={cell} suppressHydrationWarning />
-              <select value={row.unit} onChange={e=>updateRow(i,"unit",e.target.value)} style={{ ...cell, appearance:"none" as React.CSSProperties["appearance"] }}>
-                {["pcs","bags","m³","cu.m","rolls","sheets","sqm","length","kg","tonnes","gal","pails","box"].map(u=><option key={u}>{u}</option>)}
-              </select>
-              <input value={row.qty||""} onChange={e=>updateRow(i,"qty",Number(e.target.value))} type="number" placeholder="0" style={cell} suppressHydrationWarning />
-              <input value={row.unitCost||""} onChange={e=>updateRow(i,"unitCost",Number(e.target.value))} type="number" placeholder="0" style={cell} suppressHydrationWarning />
-              <div style={{ ...cell, background:"#1a2235", display:"flex", alignItems:"center", borderRadius:8 }}>
-                <span style={{ color:"#f97316", fontWeight:700, fontSize:"0.78rem" }}>₱{(row.qty*row.unitCost).toLocaleString()}</span>
-              </div>
-              <input value={row.supplier} onChange={e=>updateRow(i,"supplier",e.target.value)} placeholder="Supplier" style={cell} suppressHydrationWarning />
-              <button onClick={()=>removeRow(i)} style={{ background:"none", border:"none", cursor:"pointer", color:"#dc2626", padding:0, display:"flex", alignItems:"center", justifyContent:"center" }}><X style={{ width:14, height:14 }} /></button>
-            </div>
-          ))}
-        </div>
-
-        <button onClick={()=>setRows(r=>[...r, EMPTY_ROW()])} style={{ color:"#0d9488", background:"none", border:"none", cursor:"pointer", fontSize:"0.8rem", fontWeight:600, margin:"0.5rem 0 1.25rem", display:"flex", alignItems:"center", gap:4 }}>
-          <Plus style={{ width:13, height:13 }} /> Add Material Row
-        </button>
-
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem", marginBottom:"1rem" }}>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>REORDER POINT (%)</p><input value={reorder} onChange={e=>setReorder(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div style={{ background:"#f9fafb", borderRadius:8, padding:"0.625rem 1rem", display:"flex", flexDirection:"column", justifyContent:"center" }}>
-            <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>EST. BOM TOTAL</p>
-            <p style={{ fontWeight:800, fontSize:"1.1rem", color:"#f97316" }}>₱{total.toLocaleString()}</p>
-          </div>
-        </div>
-
-        <div style={{ background:"#eff6ff", border:"1px solid #bfdbfe", borderRadius:8, padding:"0.625rem 1rem", marginBottom:"1.25rem", display:"flex", gap:8 }}>
-          <Zap style={{ width:13, height:13, color:"#3b82f6", flexShrink:0, marginTop:3 }} />
-          <p style={{ fontSize:"0.75rem", color:"#1d4ed8", lineHeight:1.5 }}>ConstructIQ uses this BOM alongside project schedules and historical usage to generate demand forecasts.</p>
-        </div>
-
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end" }}>
-          <button onClick={onClose} style={{ padding:"9px 18px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.8rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={()=>{ if(validRows.length===0){toast.error("Add at least one material.");return;} onSaveBOM(rows); setBomSaved(true); }} style={{ padding:"9px 18px", borderRadius:8, border:"none", background:"#0d9488", color:"#fff", fontSize:"0.8rem", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
-            <Package style={{ width:13, height:13 }} /> Add to BOM
-          </button>
-          <button onClick={()=>{ if(validRows.length===0){toast.error("Add at least one material.");return;} onRunForecast(rows); onClose(); }} style={{ padding:"9px 18px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.8rem", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
-            <Zap style={{ width:13, height:13 }} /> Run Forecast
-          </button>
-        </div>
-      </div>
-    </Overlay>
-  );
-}
-
-// ── Measurements Modal ────────────────────────────────────────────────────────
-
-function MeasurementsModal({ project, onClose, onAddToPlan }: {
-  project: Project; onClose: ()=>void;
-  onAddToPlan: (rows: BOMRow[])=>void;
-}) {
-  const [structType, setStructType] = useState<"Floor Slab"|"Wall"|"Column">("Floor Slab");
-  const [label,     setLabel]     = useState("");
-  const [length,    setLength]    = useState("");
-  const [width,     setWidth]     = useState("");
-  const [thickness, setThickness] = useState("0.10");
-  const [mixRatio,  setMixRatio]  = useState("1:2:4 (Standard)");
-  const [results,   setResults]   = useState<null|{cement:number;sand:number;gravel:number}>(null);
-
-  function calculate() {
-    const L = parseFloat(length)||0, W = parseFloat(width)||0, T = parseFloat(thickness)||0;
-    const vol = L * W * T;
-    setResults({ cement: Math.ceil(vol * 8), sand: parseFloat((vol * 0.44).toFixed(2)), gravel: parseFloat((vol * 0.88).toFixed(2)) });
-  }
-
-  function handleAddToPlan() {
-    if (!results) { toast.error("Calculate first."); return; }
-    const rows: BOMRow[] = [
-      { material:"Portland Cement (40kg)", unit:"bags", qty:results.cement, unitCost:290, supplier:"" },
-      { material:"Fine Sand",              unit:"m³",   qty:results.sand,   unitCost:900, supplier:"" },
-      { material:"Coarse Gravel",          unit:"m³",   qty:results.gravel, unitCost:1200,supplier:"" },
-    ];
-    onAddToPlan(rows);
-    onClose();
-  }
-
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:580 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.25rem" }}>
-          <div>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}><Ruler style={{ width:17, height:17, color:"#f97316" }} /><p style={{ fontWeight:800, fontSize:"1.05rem" }}>Material Measurement Calculator</p></div>
-            <p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>{project.name} — site measurement &amp; quantity estimation</p>
-          </div>
-          <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-
-        <p style={{ fontSize:"0.68rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.08em", marginBottom:"0.5rem" }}>STRUCTURE TYPE</p>
-        <div style={{ display:"flex", background:"#111827", borderRadius:10, padding:4, width:"fit-content", marginBottom:"1.25rem" }}>
-          {(["Floor Slab","Wall","Column"] as const).map(t=>(
-            <button key={t} onClick={()=>setStructType(t)} style={{ padding:"7px 18px", borderRadius:8, border:"none", cursor:"pointer", fontSize:"0.875rem", fontWeight:500, background:structType===t?"#fff":"transparent", color:structType===t?"#111827":"#9ca3af", transition:"all 0.15s" }}>{t}</button>
-          ))}
-        </div>
-
-        <div style={{ marginBottom:"0.75rem" }}>
-          <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>STRUCTURE / AREA LABEL</p>
-          <input value={label} onChange={e=>setLabel(e.target.value)} placeholder="e.g. Ground Floor — Zone A" style={inp} suppressHydrationWarning />
-        </div>
-
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.75rem", marginBottom:"0.75rem" }}>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>LENGTH (M)</p><input value={length} onChange={e=>setLength(e.target.value)} type="number" placeholder="0.00" style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>WIDTH (M)</p><input value={width} onChange={e=>setWidth(e.target.value)} type="number" placeholder="0.00" style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>THICKNESS (M)</p><input value={thickness} onChange={e=>setThickness(e.target.value)} type="number" style={inp} suppressHydrationWarning /></div>
-        </div>
-
-        <div style={{ marginBottom:"1rem" }}>
-          <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>CONCRETE MIX RATIO</p>
-          <select value={mixRatio} onChange={e=>setMixRatio(e.target.value)} style={{ ...inp, appearance:"none" as React.CSSProperties["appearance"], cursor:"pointer" }}>
-            <option>1:2:4 (Standard)</option>
-            <option>1:1.5:3 (Rich Mix)</option>
-            <option>1:3:6 (Lean Mix)</option>
-          </select>
-        </div>
-
-        <button onClick={calculate} style={{ width:"100%", padding:"11px", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.875rem", fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, marginBottom:"0.875rem" }}>
-          <Calculator style={{ width:15, height:15 }} /> Calculate Material Requirements
-        </button>
-
-        {results && (
-          <div style={{ background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:10, padding:"1rem", marginBottom:"1rem" }}>
-            <p style={{ fontSize:"0.75rem", fontWeight:700, color:"#15803d", marginBottom:"0.75rem" }}>Calculated Requirements (no waste buffer)</p>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.5rem" }}>
-              {([["Portland Cement (40kg)","bags",results.cement,"#f97316"],["Fine Sand","m³",results.sand,"#22c55e"],["Coarse Gravel","m³",results.gravel,"#3b82f6"]] as [string,string,number,string][]).map(([n,u,v,c])=>(
-                <div key={n} style={{ background:"#fff", borderRadius:8, padding:"0.75rem", textAlign:"center" }}>
-                  <p style={{ fontSize:"1.1rem", fontWeight:800, color:c }}>{v}</p>
-                  <p style={{ fontSize:"0.65rem", color:"#6b7280" }}>{u}</p>
-                  <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>{n}</p>
+              <div style={{ display:"flex", flexDirection:"column", gap:"0.875rem" }}>
+                <div><label style={lbl}>Document Name <span style={{ color:"#ef4444" }}>*</span></label><input value={docName} onChange={e=>setDocName(e.target.value)} style={inp} placeholder="Architectural Floor Plan - Building A" suppressHydrationWarning /></div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
+                  <div><label style={lbl}>Category <span style={{ color:"#ef4444" }}>*</span></label><select value={category} onChange={e=>setCategory(e.target.value as typeof CATEGORIES[number])} style={sel}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
+                  <div><label style={lbl}>Version / Revision</label><input value={version} onChange={e=>setVersion(e.target.value)} style={inp} placeholder="V1.0" suppressHydrationWarning /></div>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <p style={{ fontSize:"0.72rem", color:"#9ca3af" }}>Follows DPWH standard mix ratios</p>
-          <div style={{ display:"flex", gap:"0.75rem" }}>
-            <button onClick={onClose} style={{ padding:"9px 18px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.8rem", cursor:"pointer" }}>Cancel</button>
-            <button onClick={handleAddToPlan} disabled={!results} style={{ padding:"9px 18px", borderRadius:8, border:"none", background:results?"#0d9488":"#e5e7eb", color:results?"#fff":"#9ca3af", fontSize:"0.8rem", fontWeight:700, cursor:results?"pointer":"default", display:"flex", alignItems:"center", gap:6 }}>
-              <Package style={{ width:13, height:13 }} /> Add to Material Plan
-            </button>
-          </div>
-        </div>
-      </div>
-    </Overlay>
-  );
-}
-
-// ── Forecast Modal ────────────────────────────────────────────────────────────
-
-function ForecastModal({ project, onClose }: { project: Project; onClose: ()=>void }) {
-  const weeks = ["Wk 1","Wk 2","Wk 3","Wk 4","Wk 5","Wk 6","Wk 7","Wk 8"];
-  const data = weeks.map((wk, i) => {
-    const row: Record<string, string|number> = { week: wk };
-    project.bom.slice(0,3).forEach(b => {
-      const curve = Math.sin((i/7)*Math.PI)*0.6+0.4;
-      row[b.material.split(" ")[0]] = Math.round((b.qty/8)*(i+1)*0.8*curve);
-    });
-    return row;
-  });
-  const colors = ["#f97316","#22c55e","#3b82f6"];
-  const keys = project.bom.slice(0,3).map(b=>b.material.split(" ")[0]);
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:660 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"1.25rem" }}>
-          <div>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}><Zap style={{ width:17, height:17, color:"#f97316" }} /><p style={{ fontWeight:800, fontSize:"1.05rem" }}>Simulated Material Forecast</p></div>
-            <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{project.name} — 8-week material consumption projection</p>
-          </div>
-          <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-        <ResponsiveContainer width="100%" height={220}>
-          <AreaChart data={data} margin={{ top:4, right:8, left:-20, bottom:0 }}>
-            <defs>{keys.map((k,i)=>(<linearGradient key={k} id={`g${i}`} x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={colors[i]} stopOpacity={0.3}/><stop offset="95%" stopColor={colors[i]} stopOpacity={0}/></linearGradient>))}</defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6"/>
-            <XAxis dataKey="week" tick={{ fontSize:11, fill:"#9ca3af" }} axisLine={false} tickLine={false}/>
-            <YAxis tick={{ fontSize:11, fill:"#9ca3af" }} axisLine={false} tickLine={false}/>
-            <Tooltip contentStyle={{ borderRadius:8, border:"1px solid #e5e7eb", fontSize:"0.72rem" }}/>
-            <Legend iconType="plainline" wrapperStyle={{ fontSize:"0.72rem", paddingTop:8 }}/>
-            {keys.map((k,i)=>(<Area key={k} type="monotone" dataKey={k} stroke={colors[i]} strokeWidth={2} fill={`url(#g${i})`}/>))}
-          </AreaChart>
-        </ResponsiveContainer>
-        <div style={{ display:"grid", gridTemplateColumns:`repeat(${keys.length},1fr)`, gap:"0.75rem", marginTop:"1rem" }}>
-          {project.bom.slice(0,3).map((b,i)=>(
-            <div key={b.material} style={{ background:"#f9fafb", borderRadius:10, padding:"0.875rem" }}>
-              <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>{b.material}</p>
-              <p style={{ fontWeight:700, fontSize:"1rem", color:colors[i] }}>{b.qty} {b.unit}</p>
-              <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>Peak: Week {i+4}</p>
-            </div>
-          ))}
-        </div>
-        <div style={{ display:"flex", justifyContent:"flex-end", marginTop:"1rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontWeight:700, fontSize:"0.875rem", cursor:"pointer" }}>Done</button>
-        </div>
-      </div>
-    </Overlay>
-  );
-}
-
-// ── AI Forecast Modal ─────────────────────────────────────────────────────────
-
-function AIForecastModal({ project, repo, onClose }: { project: Project; repo: FinishedProject[]; onClose: ()=>void }) {
-  const { phases, confidence, refs, scale } = generateAIForecast(project, repo);
-  const totalEst = phases.reduce((s, ph) => s + ph.materials.reduce((ms, m) => ms + m.total, 0), 0);
-  const [expanded, setExpanded] = useState<string[]>([phases[0]?.name ?? ""]);
-  const toggle = (n: string) => setExpanded(p => p.includes(n) ? p.filter(x=>x!==n) : [...p, n]);
-
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:680 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"1rem" }}>
-          <div>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}><Brain style={{ width:17, height:17, color:"#f97316" }} /><p style={{ fontWeight:800, fontSize:"1.05rem" }}>AI Material Forecast</p></div>
-            <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{project.name} — based on {refs.length} historical project{refs.length!==1?"s":""}</p>
-          </div>
-          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.75rem", marginBottom:"1rem" }}>
-          {[{l:"Confidence",v:`${confidence}%`,c:"#22c55e",bg:"#f0fdf4"},{l:"Budget Scale",v:`${scale}×`,c:"#f97316",bg:"#fff7ed"},{l:"Est. Materials Cost",v:`₱${(totalEst/1_000_000).toFixed(1)}M`,c:"#3b82f6",bg:"#eff6ff"}].map(s=>(
-            <div key={s.l} style={{ background:s.bg, borderRadius:10, padding:"0.875rem", textAlign:"center" }}>
-              <p style={{ fontSize:"1.2rem", fontWeight:800, color:s.c }}>{s.v}</p>
-              <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginTop:2 }}>{s.l}</p>
-            </div>
-          ))}
-        </div>
-        <div style={{ background:"#f9fafb", borderRadius:8, padding:"0.625rem 1rem", marginBottom:"1rem" }}>
-          <p style={{ fontSize:"0.78rem", color:"#374151" }}>References: {refs.map((r,i)=><span key={r}><strong>{r}</strong>{i<refs.length-1?", ":""}</span>)}</p>
-        </div>
-        <div style={{ border:"1px solid #e5e7eb", borderRadius:10, overflow:"hidden", marginBottom:"1rem" }}>
-          {phases.map((ph, pi) => {
-            const open = expanded.includes(ph.name);
-            const phTotal = ph.materials.reduce((s,m)=>s+m.total,0);
-            return (
-              <div key={ph.name} style={{ borderBottom: pi<phases.length-1?"1px solid #e5e7eb":"none" }}>
-                <button onClick={()=>toggle(ph.name)} style={{ width:"100%", display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0.75rem 1rem", background:"#f9fafb", border:"none", cursor:"pointer" }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                    <span style={{ width:20, height:20, borderRadius:6, background:"#f97316", color:"#fff", fontSize:"0.62rem", fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{pi+1}</span>
-                    <span style={{ fontWeight:600, fontSize:"0.875rem" }}>{ph.name}</span>
-                    <span style={{ fontSize:"0.7rem", color:"#9ca3af" }}>({ph.materials.length} materials)</span>
-                  </div>
-                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                    <span style={{ fontSize:"0.82rem", fontWeight:700, color:"#f97316" }}>₱{phTotal.toLocaleString()}</span>
-                    {open?<ChevronUp style={{ width:15,height:15,color:"#9ca3af" }}/>:<ChevronDown style={{ width:15,height:15,color:"#9ca3af" }}/>}
-                  </div>
-                </button>
-                {open && (
-                  <div style={{ padding:"0 1rem 0.75rem" }}>
-                    <div style={{ display:"grid", gridTemplateColumns:"2fr 0.6fr 0.8fr 0.8fr 1fr", gap:4, padding:"0.5rem 0", borderBottom:"1px solid #f3f4f6", marginBottom:4 }}>
-                      {["Material","Unit","AI Qty","Unit Cost","Est. Total"].map(h=><span key={h} style={{ fontSize:"0.6rem", color:"#9ca3af", fontWeight:700 }}>{h}</span>)}
-                    </div>
-                    {ph.materials.map(m=>(
-                      <div key={m.material} style={{ display:"grid", gridTemplateColumns:"2fr 0.6fr 0.8fr 0.8fr 1fr", gap:4, padding:"4px 0", borderBottom:"1px solid #f9fafb" }}>
-                        <span style={{ fontSize:"0.78rem", color:"#374151" }}>{m.material}</span>
-                        <span style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{m.unit}</span>
-                        <span style={{ fontSize:"0.78rem", fontWeight:600 }}>{m.qty.toLocaleString()}</span>
-                        <span style={{ fontSize:"0.78rem", color:"#9ca3af" }}>₱{m.unitCost.toLocaleString()}</span>
-                        <span style={{ fontSize:"0.78rem", fontWeight:700, color:"#f97316" }}>₱{m.total.toLocaleString()}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <div><label style={lbl}>Description / Remarks</label><textarea value={remarks} onChange={e=>setRemarks(e.target.value)} rows={3} style={{ ...inp, resize:"vertical" as React.CSSProperties["resize"] }} placeholder="Brief description of the document contents..." suppressHydrationWarning /></div>
               </div>
-            );
-          })}
+
+              <div style={{ border:"2px dashed #e5e7eb", borderRadius:8, padding:"0.875rem", textAlign:"center", marginTop:"1rem", cursor:"pointer" }} onClick={()=>document.getElementById("fileInput")?.click()}>
+                <span style={{ fontSize:"0.82rem", color:"#9ca3af" }}>+ Add Another File</span>
+              </div>
+            </>
+          )}
+
+          {tab==="repository" && (
+            <>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem", marginBottom:"1rem" }}>
+                <div style={{ position:"relative" }}>
+                  <Search style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", width:14, height:14, color:"#9ca3af" }} />
+                  <input value={search} onChange={e=>setSearch(e.target.value)} style={{ ...inp, paddingLeft:32 }} placeholder="Floor Plan" suppressHydrationWarning />
+                </div>
+                <select style={{ ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] }}><option>All Projects</option><option>Metro Station Phase 3</option><option>BGC Tower Complex</option></select>
+              </div>
+
+              <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
+                {filtered.map(f => {
+                  const ic = catIcon(f.category);
+                  return (
+                    <div key={f.id} style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem" }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.5rem" }}>
+                        <div style={{ display:"flex", gap:10, alignItems:"flex-start" }}>
+                          <div style={{ width:32, height:32, borderRadius:8, background:ic.bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                            <FolderOpen style={{ width:15, height:15, color:ic.color }} />
+                          </div>
+                          <div>
+                            <p style={{ fontWeight:700, fontSize:"0.875rem", color:"#111827" }}>{f.name}</p>
+                            <div style={{ display:"flex", gap:5, marginTop:4, flexWrap:"wrap" }}>
+                              <span style={{ fontSize:"0.65rem", fontWeight:600, padding:"2px 8px", borderRadius:999, background:ic.bg, color:ic.color }}>{f.category}</span>
+                              <span style={{ fontSize:"0.65rem", fontWeight:600, padding:"2px 8px", borderRadius:999, background:"#dcfce7", color:"#15803d" }}>{f.status}</span>
+                              {f.revision && <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>{f.revision}</span>}
+                            </div>
+                          </div>
+                        </div>
+                        <button onClick={()=>deleteFile(f.id)} style={{ background:"none", border:"none", cursor:"pointer", color:"#d1d5db", padding:4 }}>
+                          <Trash2 style={{ width:15, height:15 }} />
+                        </button>
+                      </div>
+                      <p style={{ fontSize:"0.72rem", color:"#6b7280", marginBottom:2 }}>{f.docType} · {f.project}</p>
+                      <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginBottom:4 }}>{f.author} · {f.date}{f.size!=="—"?` · ${f.size}`:""}</p>
+                      {f.description && <p style={{ fontSize:"0.72rem", color:"#6b7280", marginBottom:6 }}>{f.description}</p>}
+                      {f.tags.length>0 && (
+                        <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
+                          {f.tags.map(tag=>(
+                            <span key={tag} style={{ display:"flex", alignItems:"center", gap:3, fontSize:"0.65rem", padding:"2px 8px", borderRadius:999, background:"#f3f4f6", color:"#374151" }}>
+                              <Tag style={{ width:9, height:9 }} />{tag}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {filtered.length===0 && <p style={{ textAlign:"center", color:"#9ca3af", fontSize:"0.875rem", padding:"2rem" }}>No files found.</p>}
+              </div>
+            </>
+          )}
         </div>
-        <div style={{ display:"flex", justifyContent:"flex-end", gap:"0.75rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Close</button>
-          <button onClick={()=>{ toast.success("Forecast exported!"); onClose(); }} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Export Forecast</button>
+
+        {/* Footer */}
+        <div style={{ padding:"0.875rem 1.5rem", borderTop:"1px solid #e5e7eb", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+          {tab==="upload"
+            ? <p style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{fileQ>0?`${fileQ} file(s) queued`:"No file selected"}</p>
+            : <p style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{filtered.length} of {files.length} records</p>
+          }
+          <div style={{ display:"flex", gap:8 }}>
+            {tab==="upload"
+              ? <>
+                  <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer" }}>Cancel</button>
+                  <button onClick={saveToRepo} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.82rem", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}><Upload style={{ width:13, height:13 }} /> Save to Repository</button>
+                </>
+              : <>
+                  <button onClick={()=>setTab("upload")} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>+ Upload New</button>
+                  <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer" }}>Close</button>
+                </>
+            }
+          </div>
         </div>
       </div>
     </Overlay>
@@ -852,211 +931,269 @@ function AIForecastModal({ project, repo, onClose }: { project: Project; repo: F
 
 // ── Reports Modal ─────────────────────────────────────────────────────────────
 
-function ReportsModal({ project, onClose }: { project: Project; onClose: ()=>void }) {
-  const [reportType, setReportType] = useState("Inventory Stock"); const [fromDate, setFromDate] = useState("2026-05-01"); const [toDate, setToDate] = useState("2026-06-01");
-  const [selProject, setSelProject] = useState("Southgate Mall Expansion"); const [format, setFormat] = useState(".CSV");
-  const [requester, setRequester] = useState("Remy Santos"); const [approver, setApprover] = useState("Ana Bonifacio");
-  const [checks, setChecks] = useState({ cost:true, material:true, labor:false, audit:false });
-  const dark: React.CSSProperties = { ...inp, background:"#1e2d50", border:"1px solid rgba(255,255,255,0.1)" };
+function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void }) {
+  const [type, setType] = useState("Material Usage");
+  const [from, setFrom] = useState("2026-05-01");
+  const [to,   setTo]   = useState("2026-06-01");
+  const [fmt,  setFmt]  = useState(".PDF");
+  const dark: React.CSSProperties = { ...inp, background:"#1e2d50", border:"1px solid rgba(255,255,255,0.1)", color:"#fff" };
+  const dsel: React.CSSProperties = { ...dark, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
   return (
     <Overlay onClose={onClose}>
-      <div style={{ background:"#1a2235", borderRadius:16, padding:"1.75rem", width:500 }}>
-        <div style={{ marginBottom:"1rem" }}><p style={{ fontWeight:800, fontSize:"1.05rem", color:"#fff" }}>Generate Report</p><p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{project.name}</p></div>
-        <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Report Type</p><select value={reportType} onChange={e=>setReportType(e.target.value)} style={{ ...dark, appearance:"none" as React.CSSProperties["appearance"], width:"100%", color:"#fff" }}>{["Inventory Stock","Excess Analytics","Procurement Summary","Material Usage","Cost Report"].map(t=><option key={t}>{t}</option>)}</select></div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-            <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>From</p><input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)} style={{ ...dark, color:"#fff", width:"100%", boxSizing:"border-box" }} suppressHydrationWarning /></div>
-            <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>To</p><input type="date" value={toDate} onChange={e=>setToDate(e.target.value)} style={{ ...dark, color:"#fff", width:"100%", boxSizing:"border-box" }} suppressHydrationWarning /></div>
-          </div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project</p><select value={selProject} onChange={e=>setSelProject(e.target.value)} style={{ ...dark, appearance:"none" as React.CSSProperties["appearance"], width:"100%", color:"#fff" }}>{["Southgate Mall Expansion","Metro Station Phase 3","BGC Tower Complex","Harbor Bridge Renovation","PUP ICTC Building"].map(p=><option key={p}>{p}</option>)}</select></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:"0.5rem" }}>Include in Report</p>{([["cost","Cost Breakdown"],["material","Material Usage"],["labor","Labor Analysis"],["audit","Audit Log"]] as [keyof typeof checks,string][]).map(([k,label])=>(<label key={k} style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", marginBottom:6 }}><input type="checkbox" checked={checks[k]} onChange={e=>setChecks(c=>({...c,[k]:e.target.checked}))} style={{ width:14, height:14, accentColor:"#22c55e" }} /><span style={{ fontSize:"0.8rem", color:"#d1d5db" }}>{label}</span></label>))}</div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-            <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Format</p><select value={format} onChange={e=>setFormat(e.target.value)} style={{ ...dark, appearance:"none" as React.CSSProperties["appearance"], width:"100%", color:"#fff" }}>{[".CSV",".PDF",".XLSX"].map(f=><option key={f}>{f}</option>)}</select></div>
-            <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Requested by</p><select value={requester} onChange={e=>setRequester(e.target.value)} style={{ ...dark, appearance:"none" as React.CSSProperties["appearance"], width:"100%", color:"#fff" }}>{["Remy Santos","Ana Bonifacio","Jose Reyes"].map(m=><option key={m}>{m}</option>)}</select></div>
-          </div>
+      <div style={{ background:"#1a2235", borderRadius:16, padding:"1.75rem", width:460, boxShadow:"0 20px 60px rgba(0,0,0,0.3)" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"1rem" }}>
+          <div><p style={{ fontWeight:800, fontSize:"1.05rem", color:"#fff" }}>Generate Report</p><p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>{project.name}</p></div>
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
         </div>
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.25rem" }}>
+        <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
+          <div><label style={{ ...lbl, color:"#9ca3af" }}>Report Type</label><select value={type} onChange={e=>setType(e.target.value)} style={{ ...dsel, width:"100%" }}>{["Material Usage","Procurement Summary","Cost Report","Excess Analytics","Forecast Report"].map(t=><option key={t}>{t}</option>)}</select></div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
+            <div><label style={{ ...lbl, color:"#9ca3af" }}>From</label><input type="date" value={from} onChange={e=>setFrom(e.target.value)} style={{ ...dark, width:"100%", boxSizing:"border-box" as const }} suppressHydrationWarning /></div>
+            <div><label style={{ ...lbl, color:"#9ca3af" }}>To</label><input type="date" value={to} onChange={e=>setTo(e.target.value)} style={{ ...dark, width:"100%", boxSizing:"border-box" as const }} suppressHydrationWarning /></div>
+          </div>
+          <div><label style={{ ...lbl, color:"#9ca3af" }}>Format</label><select value={fmt} onChange={e=>setFmt(e.target.value)} style={{ ...dsel, width:"100%" }}>{[".PDF",".CSV",".XLSX"].map(f=><option key={f}>{f}</option>)}</select></div>
+        </div>
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:"1.25rem" }}>
           <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid rgba(255,255,255,0.2)", background:"transparent", color:"#d1d5db", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Generate</button>
+          <button onClick={()=>{ toast.success(`${type} report generating…`); onClose(); }} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Generate</button>
         </div>
       </div>
     </Overlay>
   );
 }
 
-// ── Finished Project Card ─────────────────────────────────────────────────────
+// ── Forecast Mini Chart Modal ─────────────────────────────────────────────────
 
-function FinishedProjectCard({ fp }: { fp: FinishedProject }) {
-  const [expanded, setExpanded] = useState(false);
-  const [activePhase, setActivePhase] = useState(0);
-  const accuracy = ACCURACY_METRICS.perProject.find(p=>p.name===fp.name)?.accuracy;
-  const months = Math.round((new Date(fp.endDate).getTime()-new Date(fp.startDate).getTime())/(1000*60*60*24*30));
-  const variance = fp.budget > 0 ? ((fp.spent-fp.budget)/fp.budget*100) : 0;
+function ForecastModal({ project, onClose }: { project:Project; onClose:()=>void }) {
+  const weeks = ["Wk 1","Wk 2","Wk 3","Wk 4","Wk 5","Wk 6","Wk 7","Wk 8"];
+  const data  = weeks.map((wk,i) => ({ week:wk, Cement:Math.round(30*(i+1)*0.8*Math.sin((i/7)*Math.PI)*0.6+0.4), Steel:Math.round(15*(i+1)*0.7), Gravel:Math.round(20*(i+1)*0.9) }));
   return (
-    <div style={{ background:"#fff", borderRadius:14, boxShadow:"0 1px 4px rgba(0,0,0,0.08)", overflow:"hidden" }}>
-      <div style={{ padding:"1.25rem 1.25rem 0.875rem" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.5rem" }}>
-          <p style={{ fontWeight:700, fontSize:"0.95rem", color:"#111827" }}>{fp.name}</p>
-          <div style={{ display:"flex", gap:5 }}>
-            <span style={{ fontSize:"0.62rem", fontWeight:700, padding:"2px 7px", borderRadius:999, background:"#f3f4f6", color:"#374151" }}>{fp.type}</span>
-            <span style={{ fontSize:"0.62rem", fontWeight:700, padding:"2px 7px", borderRadius:999, background:"#dcfce7", color:"#15803d", display:"flex", alignItems:"center", gap:2 }}><CheckCircle2 style={{ width:9,height:9 }} /> COMPLETED</span>
-          </div>
+    <Overlay onClose={onClose}>
+      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:580 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"1rem" }}>
+          <div><p style={{ fontWeight:800, fontSize:"1.05rem" }}>Material Forecast</p><p style={{ fontSize:"0.75rem", color:"#9ca3af" }}>{project.name} — 8-week projection</p></div>
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
         </div>
-        <div style={{ display:"flex", gap:12, marginBottom:"0.875rem" }}>
-          <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><MapPin style={{ width:10,height:10 }} />{fp.location}</span>
-          <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><Calendar style={{ width:10,height:10 }} />{months} months</span>
-          <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><Users style={{ width:10,height:10 }} />{fp.manager}</span>
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:"0.5rem" }}>
-          {[
-            { l:"Budget",   v:`₱${(fp.budget/1_000_000).toFixed(1)}M` },
-            { l:"Spent",    v:`₱${(fp.spent/1_000_000).toFixed(1)}M` },
-            { l:"Variance", v:`${variance>0?"+":""}${variance.toFixed(1)}%`, c:Math.abs(variance)<5?"#22c55e":"#f97316" },
-            { l:"Accuracy", v:accuracy?`${accuracy}%`:"N/A", c:"#3b82f6" },
-          ].map(s=>(
-            <div key={s.l} style={{ background:"#f9fafb", borderRadius:8, padding:"0.5rem 0.625rem" }}>
-              <p style={{ fontSize:"0.6rem", color:"#9ca3af" }}>{s.l}</p>
-              <p style={{ fontWeight:700, fontSize:"0.82rem", color:s.c??"#111827" }}>{s.v}</p>
-            </div>
-          ))}
+        <ResponsiveContainer width="100%" height={200}>
+          <AreaChart data={data} margin={{ top:4, right:8, left:-20, bottom:0 }}>
+            <defs>
+              {[["C","#f97316"],["S","#22c55e"],["G","#3b82f6"]].map(([k,c])=>(
+                <linearGradient key={k} id={`g${k}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={c} stopOpacity={0.3}/><stop offset="95%" stopColor={c} stopOpacity={0}/>
+                </linearGradient>
+              ))}
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6"/>
+            <XAxis dataKey="week" tick={{ fontSize:11, fill:"#9ca3af" }} axisLine={false} tickLine={false}/>
+            <YAxis tick={{ fontSize:11, fill:"#9ca3af" }} axisLine={false} tickLine={false}/>
+            <Tooltip contentStyle={{ borderRadius:8, border:"1px solid #e5e7eb", fontSize:"0.72rem" }}/>
+            <Legend iconType="plainline" wrapperStyle={{ fontSize:"0.72rem", paddingTop:8 }}/>
+            <Area type="monotone" dataKey="Cement" stroke="#f97316" strokeWidth={2} fill="url(#gC)"/>
+            <Area type="monotone" dataKey="Steel"  stroke="#22c55e" strokeWidth={2} fill="url(#gS)"/>
+            <Area type="monotone" dataKey="Gravel" stroke="#3b82f6" strokeWidth={2} fill="url(#gG)"/>
+          </AreaChart>
+        </ResponsiveContainer>
+        <div style={{ display:"flex", justifyContent:"flex-end", marginTop:"1rem" }}>
+          <button onClick={onClose} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontWeight:700, fontSize:"0.875rem", cursor:"pointer" }}>Done</button>
         </div>
       </div>
-      <button onClick={()=>setExpanded(e=>!e)} style={{ width:"100%", display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0.625rem 1.25rem", background:"#f9fafb", border:"none", borderTop:"1px solid #f3f4f6", cursor:"pointer" }}>
-        <span style={{ fontSize:"0.72rem", fontWeight:600, color:"#374151" }}>{expanded?"Hide":"View"} Phase Breakdown ({fp.phases.length} phases)</span>
-        {expanded?<ChevronUp style={{ width:14,height:14,color:"#9ca3af" }}/>:<ChevronDown style={{ width:14,height:14,color:"#9ca3af" }}/>}
-      </button>
-      {expanded && fp.phases.length > 0 && (
-        <div style={{ padding:"1rem 1.25rem" }}>
-          <div style={{ display:"flex", gap:4, marginBottom:"0.75rem", flexWrap:"wrap" }}>
-            {fp.phases.map((ph,i)=>(
-              <button key={ph.name} onClick={()=>setActivePhase(i)} style={{ padding:"3px 10px", borderRadius:999, fontSize:"0.72rem", border:"none", cursor:"pointer", background:activePhase===i?"#1e3154":"#f3f4f6", color:activePhase===i?"#fff":"#374151" }}>{ph.name}</button>
-            ))}
-          </div>
-          {fp.phases[activePhase] && (
-            <>
-              <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:6 }}>Duration: <strong style={{ color:"#374151" }}>{fp.phases[activePhase].duration}</strong></p>
-              <div style={{ display:"grid", gridTemplateColumns:"2fr 0.6fr 0.7fr 0.7fr 0.7fr 0.7fr", gap:4, paddingBottom:4, marginBottom:4, borderBottom:"1px solid #f3f4f6" }}>
-                {["Material","Unit","Actual","Forecast","Unit Cost","Variance"].map(h=><span key={h} style={{ fontSize:"0.58rem", color:"#9ca3af", fontWeight:700 }}>{h}</span>)}
-              </div>
-              {fp.phases[activePhase].materials.map(m=>{
-                const v = ((m.actualQty-m.forecastQty)/m.forecastQty*100);
-                return (
-                  <div key={m.material} style={{ display:"grid", gridTemplateColumns:"2fr 0.6fr 0.7fr 0.7fr 0.7fr 0.7fr", gap:4, padding:"4px 0", borderBottom:"1px solid #f9fafb" }}>
-                    <span style={{ fontSize:"0.72rem", color:"#374151" }}>{m.material}</span>
-                    <span style={{ fontSize:"0.72rem", color:"#9ca3af" }}>{m.unit}</span>
-                    <span style={{ fontSize:"0.72rem", fontWeight:600 }}>{m.actualQty.toLocaleString()}</span>
-                    <span style={{ fontSize:"0.72rem", color:"#6b7280" }}>{m.forecastQty.toLocaleString()}</span>
-                    <span style={{ fontSize:"0.72rem", color:"#6b7280" }}>₱{m.unitCost.toLocaleString()}</span>
-                    <span style={{ fontSize:"0.72rem", fontWeight:700, color:Math.abs(v)<5?"#22c55e":Math.abs(v)<10?"#f97316":"#dc2626" }}>{v>0?"+":""}{v.toFixed(1)}%</span>
-                  </div>
-                );
-              })}
-            </>
-          )}
-        </div>
-      )}
-      {expanded && <div style={{ padding:"0.625rem 1.25rem", background:"#f9fafb", borderTop:"1px solid #f3f4f6" }}><p style={{ fontSize:"0.72rem", color:"#6b7280", fontStyle:"italic" }}>{fp.notes}</p></div>}
-    </div>
+    </Overlay>
   );
 }
 
-// ── Forecasting Tab ───────────────────────────────────────────────────────────
+// ── Progress Tracker Modal ────────────────────────────────────────────────────
 
-function ForecastingTab({ repo }: { repo: FinishedProject[] }) {
-  const [genType, setGenType] = useState("Infrastructure");
-  const [genBudget, setGenBudget] = useState("30000000");
-  const [genResult, setGenResult] = useState<ReturnType<typeof generateAIForecast>|null>(null);
-  const mock: Project = { id:0, name:"Preview", location:"—", type:genType, status:"PLANNING", budget:`₱${Number(genBudget).toLocaleString()}`, spent:"₱0", progress:0, progressColor:"#374151", materials:0, manager:"—", engineers:[], startDate:"2026-01-01", endDate:"2027-01-01", bom:[], forecastReady:false };
-  const totalEst = genResult?.phases.reduce((s,ph)=>s+ph.materials.reduce((ms,m)=>ms+m.total,0),0)??0;
-  const sel: React.CSSProperties = { background:"#111827", color:"#fff", border:"none", borderRadius:8, padding:"9px 12px", fontSize:"0.875rem", outline:"none", cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"], width:"100%" };
+interface ProgressUpdate {
+  id: number; date: string; progress: number;
+  notes: string; updatedBy: string;
+}
+
+function ProgressTrackerModal({ project, onClose, onSave }: {
+  project: Project;
+  onClose: ()=>void;
+  onSave: (progress: number) => void;
+}) {
+  const { user } = useAuthStore();
+  const [progress, setProgress] = useState(project.progress);
+  const [notes, setNotes]       = useState("");
+  const [photos, setPhotos]     = useState<File[]>([]);
+  const [updates, setUpdates]   = useState<ProgressUpdate[]>(() => {
+    const base = project.progress;
+    return [
+      { id:1, date:"2026-09-10", progress:Math.max(base-8,0),  notes:"Completed column pour for Grid A1-A5. Forms removed and inspected by QC.",            updatedBy:"Carlo Reyes" },
+      { id:2, date:"2026-09-05", progress:Math.max(base-15,0), notes:"Rebar installation completed. Steel bar placement inspected and cleared.",              updatedBy:"Carlo Reyes" },
+      { id:3, date:"2026-08-28", progress:Math.max(base-22,0), notes:"Foundation excavation and sub-base compaction done. Ready for footing formwork.",       updatedBy:"Maria Tan"   },
+    ].filter(u => u.progress > 0);
+  });
+
+  const PHASES = ["Foundation","Structural Framing","Finishing","MEP"];
+
+  function handleSave() {
+    if (!notes.trim()) { toast.error("Please add progress notes before saving."); return; }
+    const newUpdate: ProgressUpdate = {
+      id: Date.now(), date: new Date().toISOString().split("T")[0],
+      progress, notes,
+      updatedBy: user ? `${user.firstName} ${user.lastName}` : "Current User",
+    };
+    setUpdates(prev => [newUpdate, ...prev]);
+    onSave(progress);
+    toast.success("Progress updated successfully!");
+    setNotes(""); setPhotos([]);
+  }
+
+  const phaseThresholds = [25, 50, 75, 100];
+
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:"1rem" }}>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:"0.875rem" }}>
-        {[{icon:Target,bg:"#dcfce7",ic:"#15803d",l:"Overall Accuracy",v:`${ACCURACY_METRICS.accuracy}%`},{icon:BarChart2,bg:"#eff6ff",ic:"#1d4ed8",l:"Mean Abs. Error",v:`${ACCURACY_METRICS.mae} units`},{icon:TrendingUp,bg:"#fff7ed",ic:"#c2410c",l:"MAPE",v:`${ACCURACY_METRICS.mape}%`},{icon:Archive,bg:"#f3f4f6",ic:"#374151",l:"Projects Analyzed",v:`${repo.length}`}].map(s=>{
-          const Icon = s.icon;
-          return (
-            <div key={s.l} style={{ background:"#fff", borderRadius:14, padding:"1.25rem", boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
-              <div style={{ width:36,height:36,borderRadius:9,background:s.bg,display:"flex",alignItems:"center",justifyContent:"center",marginBottom:"0.75rem" }}><Icon style={{ width:17,height:17,color:s.ic }} /></div>
-              <p style={{ fontSize:"1.5rem", fontWeight:800, color:"#111827", lineHeight:1 }}>{s.v}</p>
-              <p style={{ fontSize:"0.7rem", color:"#9ca3af", marginTop:4 }}>{s.l}</p>
+    <Overlay onClose={onClose}>
+      <div style={{ background:"#fff", borderRadius:16, padding:"2rem", width:580, boxShadow:"0 20px 60px rgba(0,0,0,0.18)" }}>
+        {/* Header */}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.5rem" }}>
+          <div>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <Activity style={{ width:18, height:18, color:"#f97316" }} />
+              <p style={{ fontWeight:800, fontSize:"1.1rem", color:"#111827" }}>Progress Tracker</p>
             </div>
-          );
-        })}
-      </div>
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
-        <div style={{ background:"#fff", borderRadius:12, padding:"1.25rem", boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
-          <p style={{ fontWeight:700, fontSize:"0.9rem", marginBottom:"0.25rem" }}>Forecast Accuracy per Project</p>
-          <p style={{ fontSize:"0.7rem", color:"#9ca3af", marginBottom:"1rem" }}>Actual vs. forecasted material quantities</p>
-          {ACCURACY_METRICS.perProject.map(p=>(
-            <div key={p.name} style={{ marginBottom:"0.75rem" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
-                <span style={{ fontSize:"0.75rem", color:"#374151", fontWeight:500 }}>{p.name}</span>
-                <span style={{ fontSize:"0.75rem", fontWeight:700, color:p.accuracy>=95?"#22c55e":"#f97316" }}>{p.accuracy}%</span>
-              </div>
-              <div style={{ height:7, background:"#f3f4f6", borderRadius:99 }}>
-                <div style={{ height:"100%", width:`${p.accuracy}%`, background:p.accuracy>=95?"#22c55e":"#f97316", borderRadius:99 }} />
-              </div>
-            </div>
-          ))}
-        </div>
-        <div style={{ background:"#fff", borderRadius:12, padding:"1.25rem", boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
-          <p style={{ fontWeight:700, fontSize:"0.9rem", marginBottom:"0.25rem" }}>Generate AI Forecast</p>
-          <p style={{ fontSize:"0.7rem", color:"#9ca3af", marginBottom:"1rem" }}>Estimate materials for a new project by type &amp; budget</p>
-          <div style={{ display:"flex", flexDirection:"column", gap:"0.625rem", marginBottom:"0.875rem" }}>
-            <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Type</p><select value={genType} onChange={e=>{setGenType(e.target.value);setGenResult(null);}} style={sel}>{["Infrastructure","Commercial","Residential","Industrial","Renovation"].map(t=><option key={t}>{t}</option>)}</select></div>
-            <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Total Budget (₱)</p><input value={genBudget} onChange={e=>{setGenBudget(e.target.value);setGenResult(null);}} type="number" style={{ background:"#111827",color:"#fff",border:"none",borderRadius:8,padding:"9px 12px",fontSize:"0.875rem",outline:"none",width:"100%",boxSizing:"border-box" as const }} suppressHydrationWarning /></div>
+            <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:3 }}>{project.name} · {project.location}</p>
           </div>
-          <button onClick={()=>{ if(!genBudget||isNaN(Number(genBudget))){toast.error("Enter a valid budget.");return;} setGenResult(generateAIForecast(mock,repo)); toast.success("Forecast generated!"); }} style={{ width:"100%",padding:"10px",borderRadius:8,border:"none",background:"#f97316",color:"#fff",fontWeight:700,fontSize:"0.875rem",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6 }}>
-            <Brain style={{ width:14,height:14 }} /> Run AI Forecast
-          </button>
-          {genResult && (
-            <div style={{ marginTop:"0.875rem", background:"#f9fafb", borderRadius:10, padding:"0.875rem" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"0.5rem" }}>
-                <span style={{ fontSize:"0.78rem", fontWeight:700 }}>Forecast Result</span>
-                <span style={{ fontSize:"0.72rem", fontWeight:700, color:"#22c55e" }}>{genResult.confidence}% confidence</span>
-              </div>
-              <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginBottom:"0.5rem" }}>Est. materials cost: <strong style={{ color:"#f97316" }}>₱{(totalEst/1_000_000).toFixed(2)}M</strong></p>
-              {genResult.phases.slice(0,3).map(ph=>(
-                <div key={ph.name} style={{ padding:"0.4rem 0", borderBottom:"1px solid #e5e7eb" }}>
-                  <p style={{ fontSize:"0.72rem", fontWeight:600, color:"#374151", marginBottom:2 }}>{ph.name}</p>
-                  {ph.materials.slice(0,2).map(m=>(
-                    <div key={m.material} style={{ display:"flex", justifyContent:"space-between" }}>
-                      <span style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{m.material}</span>
-                      <span style={{ fontSize:"0.68rem", fontWeight:600 }}>{m.qty.toLocaleString()} {m.unit}</span>
-                    </div>
-                  ))}
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
+        </div>
+
+        {/* Progress bar + slider */}
+        <div style={{ background:"#f9fafb", borderRadius:12, padding:"1.25rem", marginBottom:"1.25rem" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
+            <span style={{ fontSize:"0.8rem", fontWeight:600, color:"#374151" }}>Overall Progress</span>
+            <span style={{ fontSize:"1.25rem", fontWeight:800, color:project.progressColor }}>{progress}%</span>
+          </div>
+          <div style={{ height:14, background:"#e5e7eb", borderRadius:99, marginBottom:"0.875rem", overflow:"hidden" }}>
+            <div style={{ height:"100%", width:`${progress}%`, background:project.progressColor, borderRadius:99, transition:"width 0.25s ease" }} />
+          </div>
+          <input type="range" min={0} max={100} step={1} value={progress}
+            onChange={e=>setProgress(Number(e.target.value))}
+            style={{ width:"100%", accentColor:project.progressColor, cursor:"pointer" }}
+          />
+          <div style={{ display:"flex", justifyContent:"space-between", marginTop:4 }}>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>0%</span>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>25%</span>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>50%</span>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>75%</span>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>100%</span>
+          </div>
+        </div>
+
+        {/* Phase status */}
+        <div style={{ marginBottom:"1.25rem" }}>
+          <p style={{ fontSize:"0.78rem", fontWeight:700, color:"#374151", marginBottom:8 }}>Phase Status</p>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            {PHASES.map((phase, i) => {
+              const threshold = phaseThresholds[i];
+              const prevThreshold = i === 0 ? 0 : phaseThresholds[i-1];
+              const done   = progress >= threshold;
+              const inProg = !done && progress >= prevThreshold;
+              return (
+                <div key={phase} style={{
+                  display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
+                  background: done ? "#dcfce7" : inProg ? "#fff7ed" : "#f9fafb",
+                  borderRadius:8,
+                  border: `1px solid ${done ? "#86efac" : inProg ? "#fed7aa" : "#e5e7eb"}`,
+                }}>
+                  <div style={{ width:8, height:8, borderRadius:"50%", flexShrink:0,
+                    background: done ? "#22c55e" : inProg ? "#f97316" : "#d1d5db" }} />
+                  <span style={{ fontSize:"0.75rem", fontWeight:600,
+                    color: done ? "#15803d" : inProg ? "#c2410c" : "#9ca3af" }}>{phase}</span>
+                  <span style={{ fontSize:"0.65rem", color:"#9ca3af", marginLeft:"auto" }}>
+                    {done ? "Done" : inProg ? "In Progress" : "Pending"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Update form */}
+        <div style={{ marginBottom:"1.25rem" }}>
+          <p style={{ fontSize:"0.78rem", fontWeight:700, color:"#374151", marginBottom:8 }}>Log Progress Update</p>
+          <textarea
+            placeholder="Describe work completed (e.g., Completed column pour for Grid A1-A5, forms removed and passed QC inspection...)"
+            value={notes} onChange={e=>setNotes(e.target.value)}
+            style={{ ...inp, minHeight:76, resize:"vertical" as const }}
+          />
+          <label style={{ display:"flex", alignItems:"center", gap:8, marginTop:8, padding:"9px 14px", border:"1.5px dashed #d1d5db", borderRadius:8, cursor:"pointer", background:"#fafafa" }}>
+            <Camera style={{ width:15, height:15, color:"#9ca3af" }} />
+            <span style={{ fontSize:"0.78rem", color:"#6b7280" }}>
+              {photos.length > 0 ? `${photos.length} photo(s) selected` : "Attach site photos (optional)"}
+            </span>
+            <input type="file" accept="image/*" multiple style={{ display:"none" }}
+              onChange={e => setPhotos(Array.from(e.target.files ?? []))} />
+          </label>
+        </div>
+
+        {/* Update history */}
+        {updates.length > 0 && (
+          <div style={{ marginBottom:"1.25rem" }}>
+            <p style={{ fontSize:"0.78rem", fontWeight:700, color:"#374151", marginBottom:8 }}>Recent Updates</p>
+            <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+              {updates.slice(0,3).map(u => (
+                <div key={u.id} style={{ padding:"10px 12px", background:"#f9fafb", borderRadius:8, borderLeft:"3px solid #f97316" }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                    <span style={{ fontSize:"0.7rem", fontWeight:700, color:"#f97316" }}>{u.progress}% progress</span>
+                    <span style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{u.date}</span>
+                  </div>
+                  <p style={{ fontSize:"0.75rem", color:"#374151", lineHeight:1.4 }}>{u.notes}</p>
+                  <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginTop:3 }}>Updated by {u.updatedBy}</p>
                 </div>
               ))}
             </div>
-          )}
+          </div>
+        )}
+
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
+          <button onClick={handleSave} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Save Update</button>
         </div>
       </div>
-    </div>
+    </Overlay>
   );
 }
 
 // ── Project Card ──────────────────────────────────────────────────────────────
 
-function ProjectCard({ project, onMaterialPlan, onMeasurements, onReports, onAIForecast, onEdit }: {
-  project: Project; onMaterialPlan:()=>void; onMeasurements:()=>void; onReports:()=>void; onAIForecast:()=>void; onEdit:()=>void;
+function ProjectCard({ project, onEdit, onMaterialPlan, onReports, onProgress, canEdit, showProgress, viewOnly }: {
+  project: Project;
+  onEdit: ()=>void;
+  onMaterialPlan: ()=>void;
+  onReports: ()=>void;
+  onProgress?: ()=>void;
+  canEdit: boolean;
+  showProgress: boolean;
+  viewOnly: boolean;
 }) {
   const st = STATUS_STYLE[project.status];
-  const btn: React.CSSProperties = { flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:5, padding:"7px 0", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.7rem", fontWeight:600, cursor:"pointer" };
+  const btn: React.CSSProperties = { flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"10px 0", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.8rem", fontWeight:600, cursor:"pointer" };
   return (
     <div style={{ background:"#fff", borderRadius:14, padding:"1.25rem", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.5rem" }}>
-        <p style={{ fontWeight:700, fontSize:"1rem", color:"#2563eb" }}>{project.name}</p>
-        <div style={{ display:"flex", gap:5, alignItems:"center", flexShrink:0 }}>
-          <span style={{ fontSize:"0.62rem", fontWeight:700, padding:"3px 9px", borderRadius:999, background:st.bg, color:st.color }}>· {project.status}</span>
-          <button onClick={onEdit} style={{ display:"flex", alignItems:"center", gap:4, padding:"4px 10px", borderRadius:6, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.68rem", fontWeight:600, cursor:"pointer" }}>
-            <Pencil style={{ width:11, height:11 }} /> Edit
-          </button>
+      {/* Title row */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.375rem" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, flex:1, minWidth:0 }}>
+          <p style={{ fontWeight:700, fontSize:"1rem", color:"#1d4ed8", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{project.name}</p>
+          {canEdit && (
+            <button onClick={onEdit} style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#9ca3af", display:"flex", alignItems:"center", flexShrink:0 }}>
+              <Pencil style={{ width:13, height:13 }} />
+            </button>
+          )}
+          {viewOnly && (
+            <span style={{ fontSize:"0.6rem", fontWeight:700, padding:"2px 7px", borderRadius:999, background:"#f3f4f6", color:"#6b7280", flexShrink:0 }}>VIEW ONLY</span>
+          )}
         </div>
+        <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 10px", borderRadius:999, background:st.bg, color:st.color, whiteSpace:"nowrap", flexShrink:0 }}>· {project.status}</span>
       </div>
-      <div style={{ display:"flex", gap:14, marginBottom:"0.875rem" }}>
-        <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><MapPin style={{ width:11,height:11 }} />{project.location}</span>
-        <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><Calendar style={{ width:11,height:11 }} />{project.startDate} – {project.endDate}</span>
+
+      {/* Meta */}
+      <div style={{ display:"flex", gap:14, marginBottom:"0.875rem", flexWrap:"wrap" }}>
+        <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><MapPin style={{ width:11, height:11 }} />{project.location}</span>
+        <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><Calendar style={{ width:11, height:11 }} />{project.startDate} – {project.endDate}</span>
       </div>
+
+      {/* Progress */}
       <div style={{ marginBottom:"0.875rem" }}>
         <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
           <span style={{ fontSize:"0.7rem", color:"#9ca3af" }}>Progress</span>
@@ -1066,6 +1203,8 @@ function ProjectCard({ project, onMaterialPlan, onMeasurements, onReports, onAIF
           <div style={{ height:"100%", width:`${project.progress}%`, background:project.progressColor, borderRadius:99 }} />
         </div>
       </div>
+
+      {/* Stats */}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.5rem", marginBottom:"0.75rem" }}>
         {[["Budget",project.budget],["Spent",project.spent],["Materials",`${project.materials} items`]].map(([l,v])=>(
           <div key={l} style={{ background:"#f9fafb", borderRadius:8, padding:"0.5rem 0.75rem" }}>
@@ -1074,21 +1213,22 @@ function ProjectCard({ project, onMaterialPlan, onMeasurements, onReports, onAIF
           </div>
         ))}
       </div>
-      {project.bom.length > 0 && (
-        <div style={{ background:"#fff7ed", borderRadius:8, padding:"0.5rem 0.75rem", marginBottom:"0.75rem", display:"flex", alignItems:"center", gap:6 }}>
-          <Package style={{ width:12, height:12, color:"#f97316" }} />
-          <span style={{ fontSize:"0.7rem", color:"#c2410c", fontWeight:500 }}>BOM: {project.bom.length} materials · ₱{project.bom.reduce((s,b)=>s+b.qty*b.unitCost,0).toLocaleString()}</span>
-        </div>
-      )}
+
+      {/* Team */}
       <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:"0.875rem" }}>
         <Users style={{ width:11, height:11, color:"#9ca3af" }} />
-        <span style={{ fontSize:"0.7rem", color:"#6b7280" }}>{project.manager}{project.engineers.length>0&&` · ${project.engineers.join(", ")}`}</span>
+        <span style={{ fontSize:"0.7rem", color:"#6b7280" }}>{project.manager}{project.engineers.length>0&&` · Engineers: ${project.engineers.join(", ")}`}</span>
       </div>
-      <div style={{ display:"flex", gap:"0.375rem" }}>
-        <button onClick={onMaterialPlan} style={btn}><FileText style={{ width:11,height:11 }} /> Material Plan</button>
-        <button onClick={onMeasurements} style={btn}><Ruler style={{ width:11,height:11 }} /> Measure</button>
-        <button onClick={onReports} style={btn}><BarChart3 style={{ width:11,height:11 }} /> Reports</button>
-        <button onClick={onAIForecast} style={{ ...btn, background:"#f97316" }}><Brain style={{ width:11,height:11 }} /> AI Forecast</button>
+
+      {/* Action buttons */}
+      <div style={{ display:"flex", gap:"0.5rem" }}>
+        <button onClick={onMaterialPlan} style={btn}><FileText style={{ width:13, height:13 }} /> Material Plan &amp; Measurements</button>
+        {showProgress && project.status !== "COMPLETED" && (
+          <button onClick={onProgress} style={{ ...btn, flex:"0 0 auto", padding:"10px 14px", background:"#1e3154" }}>
+            <Activity style={{ width:13, height:13 }} /> Progress
+          </button>
+        )}
+        <button onClick={onReports} style={{ ...btn, flex:"0 0 auto", padding:"10px 16px" }}><BarChart3 style={{ width:13, height:13 }} /> Reports</button>
       </div>
     </div>
   );
@@ -1096,140 +1236,104 @@ function ProjectCard({ project, onMaterialPlan, onMeasurements, onReports, onAIF
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type PageTab = "active" | "finished" | "forecasting";
 type ModalState =
-  | { type:"choice" }
   | { type:"new" }
-  | { type:"addFinished" }
-  | { type:"materialPlan"; project: Project; extraRows?: BOMRow[] }
-  | { type:"measurements"; project: Project }
-  | { type:"reports"; project: Project }
-  | { type:"forecast"; project: Project }
-  | { type:"aiForecast"; project: Project }
-  | { type:"edit"; project: Project }
+  | { type:"edit"; project:Project }
+  | { type:"materialPlan"; project:Project }
+  | { type:"reports"; project:Project }
+  | { type:"forecast"; project:Project }
+  | { type:"repository" }
+  | { type:"progress"; project:Project }
   | null;
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>(INIT_PROJECTS);
-  const [finRepo,  setFinRepo]  = useState<FinishedProject[]>(INIT_FINISHED);
   const [loading,  setLoading]  = useState(true);
   const [modal,    setModal]    = useState<ModalState>(null);
-  const [pageTab,  setPageTab]  = useState<PageTab>("active");
+  const { user } = useAuthStore();
+  const role = user?.role ?? "SiteEngineer";
+
+  // Role-based permissions
+  const canCreate    = role === "Admin" || role === "ProjectManager";
+  const canEdit      = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
+  const showProgress = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
+  const viewOnly     = role === "ProcurementOfficer";
 
   useEffect(() => {
     api.get<ProjectResponseDto[]>("/projects")
       .then(r => setProjects(r.data.map(toProject)))
-      .catch(() => toast.error("Failed to load projects."))
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
-  const activeProjects = projects.filter(p => p.status !== "COMPLETED");
-
-  function handleCreate(p: Project) { setProjects(prev => [...prev, p]); }
-
-  function handleSaveBOM(project: Project, bom: BOMRow[]) {
-    setProjects(prev => prev.map(p => p.id===project.id ? { ...p, bom, forecastReady:bom.length>0, materials:bom.filter(b=>b.material.trim()).length } : p));
-    toast.success("BOM saved!");
-  }
-
-  function handleRunForecast(project: Project, bom: BOMRow[]) {
-    setProjects(prev => prev.map(p => p.id===project.id ? { ...p, bom, forecastReady:true } : p));
-    setModal({ type:"forecast", project: { ...project, bom } });
-  }
-
-  function handleAddToPlan(project: Project, extraRows: BOMRow[]) {
-    setModal({ type:"materialPlan", project, extraRows });
-  }
-
-  function handleEditSave(project: Project, updates: Partial<Project>) {
-    setProjects(prev => prev.map(p => p.id===project.id ? { ...p, ...updates } : p));
-  }
-
   const proj = modal && "project" in modal ? modal.project : undefined;
 
-  const TABS = [
-    { id:"active"      as PageTab, label:"Active Projects",     count: activeProjects.length },
-    { id:"finished"    as PageTab, label:"Finished Repository", count: finRepo.length },
-    { id:"forecasting" as PageTab, label:"Forecasting" },
-  ];
-
   return (
-    <div style={{ background:"#f5f4f0" }}>
-      {modal?.type==="choice"       && <ChoiceModal onNew={()=>setModal({type:"new"})} onFinished={()=>setModal({type:"addFinished"})} onClose={()=>setModal(null)} />}
-      {modal?.type==="new"          && <NewProjectModal onClose={()=>setModal(null)} onCreate={handleCreate} />}
-      {modal?.type==="addFinished"  && <AddFinishedModal onClose={()=>setModal(null)} onAdd={fp=>setFinRepo(r=>[...r,fp])} />}
-      {modal?.type==="edit"         && proj && <EditProjectModal project={proj} onClose={()=>setModal(null)} onSave={updates=>handleEditSave(proj,updates)} />}
-      {modal?.type==="materialPlan" && proj && (
-        <MaterialPlanModal
+    <div style={{ background:"#f5f4f0", minHeight:"100vh" }}>
+      {modal?.type==="new"          && <NewProjectModal onClose={()=>setModal(null)} onCreate={p=>setProjects(prev=>[...prev,p])} />}
+      {modal?.type==="edit"         && proj && <EditProjectDetailsModal project={proj} onClose={()=>setModal(null)} />}
+      {modal?.type==="materialPlan" && proj && <MaterialPlanMeasurementsModal project={proj} onClose={()=>setModal(null)} />}
+      {modal?.type==="reports"      && proj && <ReportsModal project={proj} onClose={()=>setModal(null)} />}
+      {modal?.type==="forecast"     && proj && <ForecastModal project={proj} onClose={()=>setModal(null)} />}
+      {modal?.type==="repository"   && <FileRepositoryModal onClose={()=>setModal(null)} />}
+      {modal?.type==="progress"     && proj && (
+        <ProgressTrackerModal
           project={proj}
-          extraRows={modal.type==="materialPlan" ? modal.extraRows : undefined}
           onClose={()=>setModal(null)}
-          onSaveBOM={bom=>handleSaveBOM(proj,bom)}
-          onRunForecast={bom=>handleRunForecast(proj,bom)}
+          onSave={(progress) => {
+            setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, progress } : p));
+            setModal(null);
+          }}
         />
       )}
-      {modal?.type==="measurements" && proj && <MeasurementsModal project={proj} onClose={()=>setModal(null)} onAddToPlan={rows=>handleAddToPlan(proj,rows)} />}
-      {modal?.type==="reports"      && proj && <ReportsModal      project={proj} onClose={()=>setModal(null)} />}
-      {modal?.type==="forecast"     && proj && <ForecastModal     project={proj} onClose={()=>setModal(null)} />}
-      {modal?.type==="aiForecast"   && proj && <AIForecastModal   project={proj} repo={finRepo} onClose={()=>setModal(null)} />}
 
       <Header title="Projects" />
 
       <div style={{ padding:"1.25rem 1.5rem" }}>
+        {/* Page header */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.25rem" }}>
           <div>
-            <p style={{ fontWeight:800, fontSize:"1.4rem", color:"#111827" }}>Projects</p>
+            <p style={{ fontWeight:800, fontSize:"1.35rem", color:"#111827" }}>All Projects</p>
             <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>
-              {loading?"Loading…":`${projects.length} total · ${activeProjects.filter(p=>p.status==="ACTIVE").length} active · ${finRepo.length} in repository`}
+              {loading ? "Loading…" : `${projects.length} projects · ${projects.filter(p=>p.status==="ACTIVE").length} active`}
             </p>
           </div>
-          <button onClick={()=>setModal({type:"choice"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>
-            <Plus style={{ width:15, height:15 }} /> New Project
-          </button>
+          <div style={{ display:"flex", gap:"0.625rem" }}>
+            {canCreate && (
+              <button onClick={()=>setModal({type:"repository"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>
+                <Upload style={{ width:14, height:14 }} /> Import Files
+              </button>
+            )}
+            {canCreate && (
+              <button onClick={()=>setModal({type:"new"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>
+                <Plus style={{ width:15, height:15 }} /> New Project
+              </button>
+            )}
+          </div>
         </div>
 
-        <div style={{ display:"flex", gap:4, background:"#e5e7eb", borderRadius:8, padding:4, width:"fit-content", marginBottom:"1.25rem" }}>
-          {TABS.map(t=>(
-            <button key={t.id} onClick={()=>setPageTab(t.id)} style={{ padding:"6px 18px", borderRadius:6, fontSize:"0.875rem", fontWeight:pageTab===t.id?600:400, border:"none", cursor:"pointer", background:pageTab===t.id?"#fff":"transparent", color:pageTab===t.id?"#111827":"#6b7280", boxShadow:pageTab===t.id?"0 1px 3px rgba(0,0,0,0.1)":"none", transition:"all 0.15s" }}>
-              {t.label}{"count" in t && t.count !== undefined && <span style={{ marginLeft:5, fontSize:"0.62rem", background:pageTab===t.id?"#f97316":"#9ca3af", color:"#fff", borderRadius:999, padding:"1px 6px" }}>{t.count}</span>}
-            </button>
-          ))}
-        </div>
-
-        {pageTab==="active" && (
-          loading ? (
-            <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>Loading projects…</div>
-          ) : activeProjects.length===0 ? (
-            <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>No active projects. Click &ldquo;New Project&rdquo; to get started.</div>
-          ) : (
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
-              {activeProjects.map(p=>(
-                <ProjectCard key={p.id} project={p}
-                  onMaterialPlan={()=>setModal({type:"materialPlan",project:p})}
-                  onMeasurements={()=>setModal({type:"measurements",project:p})}
-                  onReports={    ()=>setModal({type:"reports",      project:p})}
-                  onAIForecast={ ()=>setModal({type:"aiForecast",   project:p})}
-                  onEdit={       ()=>setModal({type:"edit",         project:p})}
-                />
-              ))}
-            </div>
-          )
-        )}
-
-        {pageTab==="finished" && (
-          <div style={{ display:"flex", flexDirection:"column", gap:"0.875rem" }}>
-            <div style={{ background:"#eef2ff", border:"1px solid #c7d2fe", borderRadius:10, padding:"0.75rem 1.25rem", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                <Archive style={{ width:15, height:15, color:"#6366f1" }} />
-                <p style={{ fontSize:"0.82rem", color:"#3730a3", fontWeight:600 }}>{finRepo.length} completed projects — AI forecasting reference</p>
-              </div>
-              <button onClick={()=>setModal({type:"addFinished"})} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid #6366f1", background:"#fff", color:"#6366f1", fontSize:"0.78rem", fontWeight:600, cursor:"pointer" }}>+ Add Project</button>
-            </div>
-            {finRepo.map(fp=><FinishedProjectCard key={fp.id} fp={fp} />)}
+        {/* Project grid */}
+        {loading ? (
+          <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>Loading projects…</div>
+        ) : projects.length === 0 ? (
+          <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>No projects yet. Click "+ New Project" to get started.</div>
+        ) : (
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
+            {projects.map(p => (
+              <ProjectCard
+                key={p.id}
+                project={p}
+                onEdit={()=>setModal({type:"edit",project:p})}
+                onMaterialPlan={()=>setModal({type:"materialPlan",project:p})}
+                onReports={()=>setModal({type:"reports",project:p})}
+                onProgress={()=>setModal({type:"progress",project:p})}
+                canEdit={canEdit}
+                showProgress={showProgress}
+                viewOnly={viewOnly}
+              />
+            ))}
           </div>
         )}
-
-        {pageTab==="forecasting" && <ForecastingTab repo={finRepo} />}
       </div>
     </div>
   );
