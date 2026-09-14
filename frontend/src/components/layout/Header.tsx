@@ -1,28 +1,11 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { Bell, Search, Sun, Menu, X, AlertTriangle, Package, ShoppingCart, TrendingUp, CheckCircle } from "lucide-react";
+import { useRef, useState, useEffect } from "react";
+import { Bell, Search, Sun, Menu, X } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
 import { useAuthStore } from "@/store/authStore";
-
-interface Notification {
-  id: number;
-  icon: React.ElementType;
-  iconColor: string;
-  iconBg: string;
-  title: string;
-  body: string;
-  time: string;
-  read: boolean;
-}
-
-const INIT_NOTIFS: Notification[] = [
-  { id:1, icon:AlertTriangle, iconColor:"#ef4444", iconBg:"#fee2e2", title:"Critical Stock Alert",    body:"Portland Cement has dropped below minimum threshold (48 bags remaining).",         time:"2 min ago",  read:false },
-  { id:2, icon:ShoppingCart,  iconColor:"#f97316", iconBg:"#ffedd5", title:"PO Delayed",              body:"PO-2025-0839 from PhilCon Aggregates is now 6 days overdue.",                      time:"18 min ago", read:false },
-  { id:3, icon:TrendingUp,    iconColor:"#3b82f6", iconBg:"#dbeafe", title:"AI Forecast Updated",     body:"Demand forecast for Cement (+18.4%) and Steel (+12.1%) updated for next 30 days.", time:"1 hr ago",   read:false },
-  { id:4, icon:Package,       iconColor:"#f59e0b", iconBg:"#fef3c7", title:"Overstock Warning",       body:"PVC Pipes (2,800 units) exceed maximum threshold at BGC Tower Complex.",            time:"3 hrs ago",  read:true  },
-  { id:5, icon:CheckCircle,   iconColor:"#22c55e", iconBg:"#dcfce7", title:"Procurement Approved",    body:"PO-2025-0844 for Deformed Steel Bars has been approved by Ana Bonifacio.",         time:"Yesterday",  read:true  },
-  { id:6, icon:AlertTriangle, iconColor:"#f59e0b", iconBg:"#fef3c7", title:"Low Stock — CHB 4 inch", body:"CHB 4 inch at Metro Station Phase 3 is at 12% of minimum stock level.",             time:"Yesterday",  read:true  },
-];
+import { useAlertStore, ALERT_ICON_STYLES } from "@/store/alertStore";
+import WeatherChip from "./WeatherChip";
 
 interface HeaderProps {
   title: string;
@@ -32,10 +15,13 @@ export default function Header({ title }: HeaderProps) {
   const user     = useAuthStore((s) => s.user);
   const initials = `${user?.firstName?.[0] ?? ""}${user?.lastName?.[0] ?? ""}`.toUpperCase();
 
+  const alerts      = useAlertStore((s) => s.alerts);
+  const markRead    = useAlertStore((s) => s.markRead);
+  const markAllRead = useAlertStore((s) => s.markAllRead);
+
   const [notifOpen, setNotifOpen] = useState(false);
-  const [notifs,    setNotifs]    = useState<Notification[]>(INIT_NOTIFS);
   const bellRef = useRef<HTMLDivElement>(null);
-  const unread  = notifs.filter(n => !n.read).length;
+  const unread  = alerts.filter(n => !n.read).length;
 
   useEffect(() => {
     if (!notifOpen) return;
@@ -47,9 +33,6 @@ export default function Header({ title }: HeaderProps) {
     document.addEventListener("mousedown", handleOutside);
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [notifOpen]);
-
-  function markAllRead() { setNotifs(n => n.map(x => ({ ...x, read: true }))); }
-  function markRead(id: number) { setNotifs(n => n.map(x => x.id === id ? { ...x, read: true } : x)); }
 
   return (
     <header style={{
@@ -98,14 +81,8 @@ export default function Header({ title }: HeaderProps) {
       {/* ── Right: weather · bell · sun · avatar ── */}
       <div style={{ display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
 
-        {/* Weather */}
-        <div style={{ display:"flex", alignItems:"center", gap:6, background:"#fffbeb", border:"1px solid #fde68a", borderRadius:8, padding:"5px 10px" }}>
-          <span style={{ fontSize:"1rem", lineHeight:1 }}>☀️</span>
-          <div style={{ lineHeight:1.2 }}>
-            <span style={{ fontWeight:700, fontSize:"0.8rem", color:"#111827" }}>32°C</span>
-            <span style={{ color:"#9ca3af", fontSize:"0.68rem", marginLeft:5 }}>Sunny · Manila</span>
-          </div>
-        </div>
+        {/* Weather — live, based on the user's current location. Shared across every page. */}
+        <WeatherChip />
 
         {/* Bell + dropdown */}
         <div ref={bellRef} style={{ position:"relative" }}>
@@ -152,16 +129,16 @@ export default function Header({ title }: HeaderProps) {
                 </div>
               </div>
               <div style={{ maxHeight:360, overflowY:"auto" }}>
-                {notifs.map(n => {
-                  const Icon = n.icon;
+                {alerts.map(n => {
+                  const { icon: Icon, color: iconColor, bg: iconBg } = ALERT_ICON_STYLES[n.kind];
                   return (
                     <div
                       key={n.id}
                       onClick={() => markRead(n.id)}
                       style={{ display:"flex", gap:12, padding:"12px 16px", borderBottom:"1px solid #f9fafb", cursor:"pointer", background:n.read?"#fff":"#fffbf5" }}
                     >
-                      <div style={{ width:36, height:36, borderRadius:"50%", background:n.iconBg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginTop:2 }}>
-                        <Icon style={{ width:16, height:16, color:n.iconColor }} />
+                      <div style={{ width:36, height:36, borderRadius:"50%", background:iconBg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginTop:2 }}>
+                        <Icon style={{ width:16, height:16, color:iconColor }} />
                       </div>
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
@@ -169,7 +146,7 @@ export default function Header({ title }: HeaderProps) {
                           {!n.read && <span style={{ width:7, height:7, borderRadius:"50%", background:"#f97316", flexShrink:0, marginTop:4 }} />}
                         </div>
                         <p style={{ fontSize:"0.72rem", color:"#6b7280", marginTop:2, lineHeight:1.4 }}>{n.body}</p>
-                        <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginTop:4 }}>{n.time}</p>
+                        <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginTop:4 }}>{formatDistanceToNow(n.createdAt, { addSuffix: true })}</p>
                       </div>
                     </div>
                   );
