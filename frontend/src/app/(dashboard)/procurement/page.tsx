@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
 import {
@@ -8,6 +8,10 @@ import {
   ShoppingCart, Download, Plus, BookOpen, CheckSquare,
   Send, History, X,
 } from "lucide-react";
+import { useWeatherStore } from "@/store/weatherStore";
+import { useAlertStore } from "@/store/alertStore";
+import { RISK_VISUALS } from "@/lib/weather";
+import { computeWeatherAtRiskOrders } from "@/lib/deliveryRisk";
 
 // ── Types & data ──────────────────────────────────────────────────────────────
 
@@ -219,6 +223,27 @@ export default function ProcurementPage() {
     delayed:   countByStatus("DELAYED"),
   };
 
+  // ── R4: weather-adjusted delivery risk ──────────────────────────────────
+  const snapshot = useWeatherStore(s => s.snapshot);
+  const risk     = useWeatherStore(s => s.risk);
+  const addAlert = useAlertStore(s => s.addAlert);
+
+  const atRiskOrders = useMemo(() => {
+    if (!risk || !snapshot) return [];
+    return computeWeatherAtRiskOrders(orders, risk.level, snapshot.conditionLabel);
+  }, [orders, risk, snapshot]);
+
+  useEffect(() => {
+    if (!risk || !snapshot || atRiskOrders.length === 0) return;
+    const today = new Date().toISOString().slice(0, 10);
+    addAlert({
+      kind: "weather",
+      title: "Weather-Adjusted Delivery Risk",
+      body: `${atRiskOrders.length} active purchase order${atRiskOrders.length > 1 ? "s" : ""} may be delayed due to ${snapshot.conditionLabel.toLowerCase()} in ${snapshot.locationName}. Recommended buffer: +${atRiskOrders[0].bufferDays} day(s).`,
+      dedupeKey: `po-weather-${today}-${risk.level}-${atRiskOrders.length}`,
+    });
+  }, [atRiskOrders, risk, snapshot, addAlert]);
+
   return (
     <div style={{ background: "#f5f4f0" }}>
       {showNewPO && <NewPOModal onClose={() => setShowNewPO(false)} onAdd={po => setOrders(prev => [po, ...prev])} />}
@@ -246,6 +271,48 @@ export default function ProcurementPage() {
             );
           })}
         </div>
+
+        {/* ── Weather & Delivery Risk (R4) — visible above both tabs ─────────── */}
+        {snapshot && risk && (
+          <div style={{
+            background: RISK_VISUALS[risk.level].bg,
+            border: `1px solid ${RISK_VISUALS[risk.level].border}`,
+            borderRadius: 14, padding: "1rem 1.25rem", marginBottom: "1.5rem",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: "1.6rem" }}>{snapshot.emoji}</span>
+                <div>
+                  <p style={{ fontWeight: 700, fontSize: "0.9rem", color: "#111827" }}>
+                    {snapshot.tempC}°C · {snapshot.conditionLabel} — {snapshot.locationName}
+                  </p>
+                  <p style={{ fontSize: "0.75rem", color: "#6b7280", marginTop: 2 }}>{risk.advisory}</p>
+                </div>
+              </div>
+              <span style={{
+                fontSize: "0.68rem", fontWeight: 700, padding: "4px 12px", borderRadius: 999,
+                background: RISK_VISUALS[risk.level].badgeBg, color: RISK_VISUALS[risk.level].badgeColor,
+                textTransform: "uppercase", letterSpacing: "0.04em", whiteSpace: "nowrap",
+              }}>
+                {risk.level} risk
+              </span>
+            </div>
+
+            {atRiskOrders.length > 0 && (
+              <div style={{ marginTop: "0.9rem", display: "flex", flexDirection: "column", gap: 6 }}>
+                <p style={{ fontSize: "0.72rem", fontWeight: 700, color: "#374151" }}>
+                  {atRiskOrders.length} active purchase order{atRiskOrders.length > 1 ? "s" : ""} may be delayed — recommended reorder buffer applied:
+                </p>
+                {atRiskOrders.map(po => (
+                  <div key={po.number} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(255,255,255,0.6)", borderRadius: 8, padding: "6px 10px" }}>
+                    <span style={{ fontSize: "0.76rem", fontWeight: 600, color: "#111827" }}>{po.number} · {po.material} <span style={{ color: "#9ca3af", fontWeight: 400 }}>({po.supplier})</span></span>
+                    <span style={{ fontSize: "0.72rem", color: "#b45309", fontWeight: 600, whiteSpace: "nowrap" }}>+{po.bufferDays}d buffer</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ── Tabs ─────────────────────────────────────────────────────────── */}
         <div style={{ display: "flex", gap: 4, background: "#e5e7eb", borderRadius: 8, padding: 4, width: "fit-content", marginBottom: "1.25rem" }}>

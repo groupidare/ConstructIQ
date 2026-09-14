@@ -6,11 +6,14 @@ import {
   Package, AlertTriangle, AlertCircle, ShoppingCart,
   Trash2, TrendingUp, PiggyBank, Truck,
   RefreshCw, Eye, Zap, Check, Activity,
+  Wind, Droplets, CloudRain,
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
+import { useWeatherStore } from "@/store/weatherStore";
+import { RISK_VISUALS_DARK } from "@/lib/weather";
 
 // ── Static data ──────────────────────────────────────────────────────────────
 
@@ -63,19 +66,15 @@ const ACTIVITY = [
   { dot: "#f59e0b", text: "PVC Pipes overstock detected — 2,800 excess units",     source: "BGC Tower Warehouse",  time: "5 hrs ago"  },
 ];
 
-const WEATHER_DAYS = [
-  { day: "Wed", icon: "🌤️", temp: "30°" },
-  { day: "Thu", icon: "🌥️", temp: "26°" },
-  { day: "Fri", icon: "🌤️", temp: "28°" },
-  { day: "Sat", icon: "☀️", temp: "33°" },
-  { day: "Sun", icon: "☀️", temp: "34°" },
-];
-
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
   const [tab,    setTab]    = useState("overview");
   const [period, setPeriod] = useState("6M");
+
+  const snapshot = useWeatherStore(s => s.snapshot);
+  const daily     = useWeatherStore(s => s.daily);
+  const risk      = useWeatherStore(s => s.risk);
 
   return (
     <div style={{ background: "#f5f4f0" }}>
@@ -245,47 +244,59 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Weather Impact */}
+          {/* Weather Impact — live, same source as the header's weather chip (R4) */}
           <div style={{ background: "#1a2235", borderRadius: 12, padding: "1.25rem", color: "#fff" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.875rem" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span>☀️</span>
+                <span>{snapshot?.emoji ?? "🌡️"}</span>
                 <span style={{ fontWeight: 700, fontSize: "0.875rem" }}>Weather Impact</span>
               </div>
-              <span style={{ color: "#6b7280", fontSize: "0.65rem" }}>Manila, Today</span>
+              <span style={{ color: "#6b7280", fontSize: "0.65rem" }}>{snapshot?.locationName ?? "Locating…"}, Today</span>
             </div>
 
-            <div style={{ fontSize: "2.4rem", fontWeight: 800, lineHeight: 1 }}>32°C</div>
-            <p style={{ color: "#9ca3af", fontSize: "0.78rem", marginTop: 4, marginBottom: "0.875rem" }}>Sunny, Light Breeze</p>
+            {!snapshot ? (
+              <p style={{ color: "#6b7280", fontSize: "0.8rem", padding: "0.5rem 0" }}>Loading live weather…</p>
+            ) : (
+              <>
+                <div style={{ fontSize: "2.4rem", fontWeight: 800, lineHeight: 1 }}>{snapshot.tempC}°C</div>
+                <p style={{ color: "#9ca3af", fontSize: "0.78rem", marginTop: 4, marginBottom: "0.875rem" }}>{snapshot.conditionLabel}</p>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem", marginBottom: "0.875rem" }}>
-              {[
-                { label: "WIND",       val: "18 km/h", emoji: "💨" },
-                { label: "HUMIDITY",   val: "65%",     emoji: "💧" },
-                { label: "UV INDEX",   val: "High",    emoji: "☀️" },
-                { label: "VISIBILITY", val: "10 km",   emoji: "👁️" },
-              ].map(w => (
-                <div key={w.label} style={{ background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: "0.5rem 0.6rem" }}>
-                  <p style={{ color: "#6b7280", fontSize: "0.58rem", fontWeight: 700, letterSpacing: "0.06em" }}>{w.label}</p>
-                  <p style={{ color: "#fff", fontSize: "0.76rem", fontWeight: 600, marginTop: 2 }}>{w.emoji} {w.val}</p>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem", marginBottom: "0.875rem" }}>
+                  {[
+                    { label: "WIND",          val: `${snapshot.windKph} km/h`,        Icon: Wind },
+                    { label: "HUMIDITY",      val: `${snapshot.humidityPct}%`,        Icon: Droplets },
+                    { label: "PRECIPITATION", val: `${snapshot.precipitationMm} mm`,  Icon: CloudRain },
+                    { label: "RISK LEVEL",    val: risk ? risk.level.toUpperCase() : "—", Icon: AlertTriangle },
+                  ].map(w => (
+                    <div key={w.label} style={{ background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: "0.5rem 0.6rem" }}>
+                      <p style={{ color: "#6b7280", fontSize: "0.58rem", fontWeight: 700, letterSpacing: "0.06em" }}>{w.label}</p>
+                      <p style={{ color: "#fff", fontSize: "0.76rem", fontWeight: 600, marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
+                        <w.Icon style={{ width: 11, height: 11 }} /> {w.val}
+                      </p>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
 
-            <div style={{ background: "rgba(34,197,94,0.14)", border: "1px solid rgba(34,197,94,0.28)", borderRadius: 8, padding: "0.5rem 0.7rem", marginBottom: "0.875rem" }}>
-              <p style={{ color: "#4ade80", fontSize: "0.7rem", lineHeight: 1.4 }}>✓ No weather delays expected. Concrete pouring safe.</p>
-            </div>
+                {risk && (
+                  <div style={{ background: RISK_VISUALS_DARK[risk.level].bg, border: `1px solid ${RISK_VISUALS_DARK[risk.level].border}`, borderRadius: 8, padding: "0.5rem 0.7rem", marginBottom: "0.875rem" }}>
+                    <p style={{ color: RISK_VISUALS_DARK[risk.level].text, fontSize: "0.7rem", lineHeight: 1.4 }}>
+                      {risk.level === "low" ? "✓ " : "⚠ "}{risk.advisory}
+                    </p>
+                  </div>
+                )}
 
-            <p style={{ color: "#6b7280", fontSize: "0.65rem", fontWeight: 700, letterSpacing: "0.05em", marginBottom: "0.5rem" }}>5-Day Forecast</p>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              {WEATHER_DAYS.map(d => (
-                <div key={d.day} style={{ textAlign: "center" }}>
-                  <p style={{ color: "#6b7280", fontSize: "0.62rem" }}>{d.day}</p>
-                  <p style={{ fontSize: "1rem", margin: "2px 0" }}>{d.icon}</p>
-                  <p style={{ color: "#fff", fontSize: "0.72rem", fontWeight: 600 }}>{d.temp}</p>
+                <p style={{ color: "#6b7280", fontSize: "0.65rem", fontWeight: 700, letterSpacing: "0.05em", marginBottom: "0.5rem" }}>5-Day Forecast</p>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  {daily.map(d => (
+                    <div key={d.date} style={{ textAlign: "center" }}>
+                      <p style={{ color: "#6b7280", fontSize: "0.62rem" }}>{d.label}</p>
+                      <p style={{ fontSize: "1rem", margin: "2px 0" }}>{d.emoji}</p>
+                      <p style={{ color: "#fff", fontSize: "0.72rem", fontWeight: 600 }}>{d.maxTempC}°</p>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </>
+            )}
           </div>
         </div>
 
