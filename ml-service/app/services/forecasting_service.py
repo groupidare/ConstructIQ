@@ -8,12 +8,7 @@ from app.ml import random_forest, xgboost_model
 from app.ml.model_evaluator import ensemble_predict, classify_risk
 
 
-PROJECT_TYPE_MAP = {
-    "Residential": 0, "Commercial": 1, "Industrial": 2, "Infrastructure": 3, "Mixed": 4,
-}
-
-
-def _get_engine() -> Engine:
+def get_engine() -> Engine:
     url = os.getenv(
         "DATABASE_URL",
         "mysql+pymysql://root:password@db:3306/constructiq"
@@ -22,34 +17,34 @@ def _get_engine() -> Engine:
 
 
 def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> list[dict]:
-    phase_filter = "AND bi.phase_id = :phase_id" if phase_id else ""
+    phase_filter = "AND bi.PhaseId = :phase_id" if phase_id else ""
     sql = text(f"""
         SELECT
-            m.id         AS material_id,
-            m.name       AS material_name,
-            m.unit       AS unit,
-            m.unit_cost  AS unit_cost,
-            bi.estimated_quantity AS boq_quantity,
-            COALESCE(bi.actual_quantity, 0) AS actual_used,
-            COALESCE(ir.available_quantity, 0) AS current_stock,
-            COALESCE(ir.excess_quantity, 0) AS excess_quantity,
-            COALESCE(ir.wasted_quantity, 0) AS wasted_quantity,
-            COALESCE(ph.name, '') AS phase_name,
-            p.type AS project_type,
-            DATEDIFF(NOW(), COALESCE(ph.start_date, p.start_date)) AS days_into_phase,
-            DATEDIFF(COALESCE(ph.end_date, p.target_end_date),
-                     COALESCE(ph.start_date, p.start_date)) AS phase_duration_days,
-            COALESCE(ph.progress_percent, 0) AS progress_percent
-        FROM boq_items bi
-        JOIN materials m ON m.id = bi.material_id
-        JOIN projects p  ON p.id = bi.project_id
-        LEFT JOIN phases ph ON ph.id = bi.phase_id
-        LEFT JOIN inventory_records ir ON ir.project_id = bi.project_id AND ir.material_id = bi.material_id
-        WHERE bi.project_id = :project_id
+            m.Id         AS material_id,
+            m.Name       AS material_name,
+            m.Unit       AS unit,
+            m.UnitCost   AS unit_cost,
+            bi.EstimatedQuantity AS boq_quantity,
+            COALESCE(bi.ActualQuantity, 0) AS actual_used,
+            COALESCE(ir.AvailableQuantity, 0) AS current_stock,
+            COALESCE(ir.ExcessQuantity, 0) AS excess_quantity,
+            COALESCE(ir.WastedQuantity, 0) AS wasted_quantity,
+            COALESCE(ph.Name, '') AS phase_name,
+            p.Type AS project_type_encoded,
+            DATEDIFF(NOW(), COALESCE(ph.StartDate, p.StartDate)) AS days_into_phase,
+            DATEDIFF(COALESCE(ph.EndDate, p.TargetEndDate),
+                     COALESCE(ph.StartDate, p.StartDate)) AS phase_duration_days,
+            COALESCE(ph.ProgressPercent, 0) AS progress_percent
+        FROM boqitems bi
+        JOIN materials m ON m.Id = bi.MaterialId
+        JOIN projects p  ON p.Id = bi.ProjectId
+        LEFT JOIN phases ph ON ph.Id = bi.PhaseId
+        LEFT JOIN inventoryrecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
+        WHERE bi.ProjectId = :project_id
         {phase_filter}
-        GROUP BY m.id, bi.estimated_quantity, bi.actual_quantity, ir.available_quantity,
-                 ir.excess_quantity, ir.wasted_quantity, ph.name, p.type,
-                 ph.start_date, ph.end_date, p.start_date, p.target_end_date, ph.progress_percent
+        GROUP BY m.Id, bi.EstimatedQuantity, bi.ActualQuantity, ir.AvailableQuantity,
+                 ir.ExcessQuantity, ir.WastedQuantity, ph.Name, p.Type,
+                 ph.StartDate, ph.EndDate, p.StartDate, p.TargetEndDate, ph.ProgressPercent
     """)
 
     params: dict = {"project_id": project_id}
@@ -62,7 +57,7 @@ def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> lis
 
 
 def run_forecast(request: ForecastRequest) -> ForecastResponse:
-    engine  = _get_engine()
+    engine  = get_engine()
     records = _fetch_records(engine, request.project_id, request.phase_id)
 
     if not records:

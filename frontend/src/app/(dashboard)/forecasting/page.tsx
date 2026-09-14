@@ -51,12 +51,12 @@ const PROCUREMENT = [
 ];
 
 const MODEL_ROWS = [
-  { label: "Algorithm",      value: "Random Forest + LSTM" },
-  { label: "Training Data",  value: "24 months"            },
-  { label: "Features",       value: "18 variables"         },
-  { label: "Accuracy (R²)",  value: "0.934"                },
-  { label: "Latest Updated", value: "Today 8:00 AM"        },
-  { label: "Next Updated",   value: "Tomorrow 8:00 AM"     },
+  { label: "Algorithm",      value: "Random Forest + XGBoost"   },
+  { label: "Training Data",  value: "155 BOQ records · 8 projects" },
+  { label: "Features",       value: "11 variables"              },
+  { label: "Accuracy (R²)",  value: "0.978"                     },
+  { label: "Latest Updated", value: "Today 8:00 AM"             },
+  { label: "Next Updated",   value: "Tomorrow 8:00 AM"          },
 ];
 
 const FORECAST_TABLE = [
@@ -128,7 +128,7 @@ export default function ForecastingPage() {
               {/* 3 stat boxes */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1rem", marginTop: "1.5rem" }}>
                 {[
-                  { value: "93.4%",   label: "Model Accuracy",    color: "#22c55e" },
+                  { value: "97.8%",   label: "Model Accuracy",    color: "#22c55e" },
                   { value: "90 days", label: "Forecast Horizon",  color: "#111827" },
                   { value: "High",    label: "Confidence",        color: "#f97316" },
                 ].map(s => (

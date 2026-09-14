@@ -11,7 +11,7 @@ export function middleware(request: NextRequest) {
   if (PUBLIC_ROUTES.includes(pathname)) {
     // Authenticated users visiting login → go to dashboard
     if (token && pathname === "/login") {
-      return NextResponse.redirect(new URL("/dashboard", request.url));
+      return NextResponse.redirect(new URL("/projects", request.url));
     }
     return NextResponse.next();
   }
