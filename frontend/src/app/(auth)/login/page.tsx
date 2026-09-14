@@ -63,8 +63,9 @@ export default function LoginPage() {
       }
 
       setAuth(res.data.user, res.data.token);
-      toast.success(`Welcome back, ${res.data.user.firstName}!`);
-      router.push("/dashboard");
+      const displayName = res.data.user.role === "Admin" ? "Admin" : res.data.user.firstName;
+      toast.success(`Welcome back, ${displayName}!`);
+      router.push("/projects");
     } catch (error: unknown) {
       if (typeof error === "object" && error !== null && "response" in error) {
         const axiosError = error as { response?: { data?: { message?: string }; status?: number } };
