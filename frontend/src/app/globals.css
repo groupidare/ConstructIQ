@@ -17,22 +17,55 @@
  * Site-wide dark mode: this app is built almost entirely with inline
  * hardcoded colors rather than a theme system, so instead of re-theming
  * every page, dark mode is achieved with a single universal color-invert
- * filter. Media elements are inverted back so images/photos still look
- * correct.
+ * filter on #app-shell. Media elements are inverted back so images/photos
+ * still look correct. A separate navy tint overlay (a sibling of
+ * #app-shell, so it is NOT itself inverted) sits on top with a blend mode
+ * so the resulting dark surfaces read as navy blue instead of neutral
+ * black/gray, while still letting saturated brand/status colors show
+ * through.
  */
 html[data-theme="dark"] {
-  background: #0b0f1a;
+  background: #0b1220;
 }
 
-html[data-theme="dark"] body {
+html[data-theme="dark"] #app-shell {
   filter: invert(1) hue-rotate(180deg);
   background: #fff;
+  min-height: 100vh;
 }
 
-html[data-theme="dark"] img,
-html[data-theme="dark"] video,
-html[data-theme="dark"] picture {
+html[data-theme="dark"] #app-shell img,
+html[data-theme="dark"] #app-shell video,
+html[data-theme="dark"] #app-shell picture {
   filter: invert(1) hue-rotate(180deg);
+}
+
+/* The sidebar is already dark navy in light mode, so inverting it would
+   flip it to light. Apply the same filter again to cancel it out. */
+html[data-theme="dark"] #app-shell #app-sidebar {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+#dark-navy-tint {
+  display: none;
+}
+
+/*
+ * mix-blend-mode: multiply cannot lighten pure black (black x anything =
+ * black), so it had no effect on the darkest areas. "screen" can lift
+ * black all the way up to the overlay color, which is what makes the
+ * result read as navy (matching the login page's #0b1120 / #0f2040
+ * palette) instead of plain black.
+ */
+html[data-theme="dark"] #dark-navy-tint {
+  display: block;
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(135deg, #0f2040 0%, #16233f 100%);
+  mix-blend-mode: screen;
+  opacity: 0.85;
+  pointer-events: none;
+  z-index: 999999;
 }
 
 @layer components {

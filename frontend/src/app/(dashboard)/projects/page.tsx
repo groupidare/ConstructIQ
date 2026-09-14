@@ -151,7 +151,7 @@ const inp: React.CSSProperties = {
 function Overlay({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   return (
     <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:"1rem" }}>
-      <div onClick={e => e.stopPropagation()} style={{ maxHeight:"90vh", overflowY:"auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ maxHeight:"90vh", overflowY:"auto", borderRadius:16 }}>
         {children}
       </div>
     </div>
@@ -1045,9 +1045,9 @@ function ProgressTrackerModal({ project, onClose, onSave }: {
 
   return (
     <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"2rem", width:580, boxShadow:"0 20px 60px rgba(0,0,0,0.18)" }}>
+      <div style={{ background:"#fff", borderRadius:16, width:580, boxShadow:"0 20px 60px rgba(0,0,0,0.18)", overflow:"hidden", maxHeight:"90vh", display:"flex", flexDirection:"column" }}>
         {/* Header */}
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.5rem" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", padding:"2rem 2rem 0", flexShrink:0 }}>
           <div>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <Activity style={{ width:18, height:18, color:"#f97316" }} />
@@ -1057,6 +1057,9 @@ function ProgressTrackerModal({ project, onClose, onSave }: {
           </div>
           <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
         </div>
+
+        {/* Body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"1.5rem 2rem" }}>
 
         {/* Progress bar + slider */}
         <div style={{ background:"#f9fafb", borderRadius:12, padding:"1.25rem", marginBottom:"1.25rem" }}>
@@ -1146,7 +1149,10 @@ function ProgressTrackerModal({ project, onClose, onSave }: {
           </div>
         )}
 
-        <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+        </div>
+
+        {/* Footer */}
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", padding:"1.25rem 2rem", flexShrink:0, borderTop:"1px solid #f3f4f6" }}>
           <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
           <button onClick={handleSave} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Save Update</button>
         </div>

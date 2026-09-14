@@ -93,7 +93,7 @@ export default function Sidebar() {
         />
       )}
 
-      <aside style={{
+      <aside id="app-sidebar" style={{
         width: 260, flexShrink: 0,
         background: "#1a2235",
         display: "flex", flexDirection: "column",
