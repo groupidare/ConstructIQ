@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
+import { DatePickerField } from "@/components/ui/DatePickerField";
 import {
   Trash2, DollarSign, Monitor, Package,
   TrendingUp, FileText, Plus, Search, X, AlertTriangle,
-  Calendar,
 } from "lucide-react";
 
 // ── Static data ───────────────────────────────────────────────────────────────
@@ -37,87 +37,6 @@ const INITIAL_LOG: LogEntry[] = [
   { id:4, date:"May 26", project:"Metro Station",    phase:"Flooring",   material:"Sand - fine agg.",    qty:2.4, unit:"cu.m",  cost:2145, type:"Excess" },
   { id:5, date:"May 26", project:"Southgate Mall",   phase:"Foundation", material:"Gravel - coarse agg.",qty:1.8, unit:"cu.m",  cost:2216, type:"Waste"  },
 ];
-
-// ── Date Picker ───────────────────────────────────────────────────────────────
-
-function DatePickerField({ value, onChange, inputStyle }: { value: Date; onChange: (d: Date) => void; inputStyle: React.CSSProperties }) {
-  const [open, setOpen]           = useState(false);
-  const [viewYear, setViewYear]   = useState(value.getFullYear());
-  const [viewMonth, setViewMonth] = useState(value.getMonth());
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  function toggleOpen() {
-    setOpen(o => {
-      if (!o) { setViewYear(value.getFullYear()); setViewMonth(value.getMonth()); }
-      return !o;
-    });
-  }
-
-  function prevMonth() { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); } else setViewMonth(m => m - 1); }
-  function nextMonth() { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); } else setViewMonth(m => m + 1); }
-
-  const label = value.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
-  const firstWeekday = new Date(viewYear, viewMonth, 1).getDay();
-  const totalDays    = new Date(viewYear, viewMonth + 1, 0).getDate();
-  const cells: (number | null)[] = [...Array(firstWeekday).fill(null), ...Array.from({ length: totalDays }, (_, i) => i + 1)];
-
-  return (
-    <div ref={wrapRef} style={{ position: "relative" }}>
-      <input readOnly value={label} onClick={toggleOpen} style={{ ...inputStyle, paddingRight: 36, cursor: "pointer" }} suppressHydrationWarning />
-      <button
-        type="button"
-        onClick={toggleOpen}
-        style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", cursor: "pointer", borderRadius: 6 }}
-      >
-        <Calendar style={{ width: 16, height: 16, color: "#6b7280" }} />
-      </button>
-
-      {open && (
-        <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 50, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10, boxShadow: "0 10px 30px rgba(0,0,0,0.18)", padding: "0.75rem", width: 260 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-            <button type="button" onClick={prevMonth} style={{ background: "none", border: "none", cursor: "pointer", color: "#6b7280", fontSize: "1rem", padding: "2px 8px" }}>‹</button>
-            <span style={{ fontSize: "0.8rem", fontWeight: 700, color: "#111827" }}>
-              {new Date(viewYear, viewMonth).toLocaleDateString("en-PH", { month: "long", year: "numeric" })}
-            </span>
-            <button type="button" onClick={nextMonth} style={{ background: "none", border: "none", cursor: "pointer", color: "#6b7280", fontSize: "1rem", padding: "2px 8px" }}>›</button>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2, marginBottom: 4 }}>
-            {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
-              <span key={i} style={{ fontSize: "0.62rem", color: "#9ca3af", textAlign: "center", fontWeight: 600 }}>{d}</span>
-            ))}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2 }}>
-            {cells.map((day, i) => {
-              if (day === null) return <span key={i} />;
-              const isSelected = value.getFullYear() === viewYear && value.getMonth() === viewMonth && value.getDate() === day;
-              return (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => { onChange(new Date(viewYear, viewMonth, day)); setOpen(false); }}
-                  style={{
-                    width: 30, height: 30, borderRadius: 8, border: "none", cursor: "pointer",
-                    fontSize: "0.75rem", fontWeight: isSelected ? 700 : 500,
-                    background: isSelected ? "#f97316" : "transparent",
-                    color: isSelected ? "#fff" : "#374151",
-                  }}
-                >{day}</button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ── Record Excess Modal ───────────────────────────────────────────────────────
 
@@ -170,14 +89,16 @@ function RecordModal({ onClose, onSave }: { onClose: () => void; onSave: (entrie
 
   return (
     <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }}>
-      <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:580, maxWidth:"calc(100vw - 2rem)", boxShadow:"0 20px 60px rgba(0,0,0,0.25)", maxHeight:"90vh", overflowY:"auto" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.25rem" }}>
+      <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, width:580, maxWidth:"calc(100vw - 2rem)", boxShadow:"0 20px 60px rgba(0,0,0,0.25)", overflow:"hidden", maxHeight:"90vh", display:"flex", flexDirection:"column" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", padding:"1.75rem 1.75rem 0", flexShrink:0 }}>
           <div>
             <p style={{ fontWeight:800, fontSize:"1.1rem", color:"#111827" }}>Record Material Excess</p>
             <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>Document excess material quantity</p>
           </div>
           <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer", padding:4 }}><X style={{ width:20, height:20 }} /></button>
         </div>
+
+        <div style={{ flex:1, overflowY:"auto", padding:"1.25rem 1.75rem" }}>
 
         <div style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:8, padding:"0.75rem 1rem", marginBottom:"1.5rem", display:"flex", gap:10 }}>
           <AlertTriangle style={{ width:16, height:16, color:"#dc2626", flexShrink:0, marginTop:2 }} />
@@ -244,7 +165,9 @@ function RecordModal({ onClose, onSave }: { onClose: () => void; onSave: (entrie
           <Plus style={{ width:14, height:14 }} /> Add material
         </button>
 
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1rem", paddingTop:"1rem", borderTop:"1px solid #f3f4f6" }}>
+        </div>
+
+        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", padding:"1rem 1.75rem", flexShrink:0, borderTop:"1px solid #f3f4f6" }}>
           <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:500, cursor:"pointer" }}>Cancel</button>
           <button onClick={()=>handleSave(true)} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>Save &amp; Add Another</button>
           <button onClick={()=>handleSave(false)} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>Save Entry</button>

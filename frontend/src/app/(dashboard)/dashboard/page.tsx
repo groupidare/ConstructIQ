@@ -69,7 +69,6 @@ const ACTIVITY = [
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const [tab,    setTab]    = useState("overview");
   const [period, setPeriod] = useState("6M");
 
   const snapshot = useWeatherStore(s => s.snapshot);
@@ -81,21 +80,6 @@ export default function DashboardPage() {
       <Header title="System Overview" />
 
       <div style={{ padding: "1.25rem 1.5rem" }}>
-
-        {/* Tabs */}
-        <div style={{ display: "flex", gap: 4, background: "#e5e7eb", borderRadius: 8, padding: 4, width: "fit-content", marginBottom: "1.25rem" }}>
-          {[{ id: "overview", label: "System Overview" }, { id: "usage", label: "Usage Log" }].map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)} style={{
-              padding: "6px 18px", borderRadius: 6, fontSize: "0.875rem",
-              fontWeight: tab === t.id ? 600 : 400,
-              border: "none", cursor: "pointer",
-              background: tab === t.id ? "#fff" : "transparent",
-              color: tab === t.id ? "#111827" : "#6b7280",
-              boxShadow: tab === t.id ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
-              transition: "all 0.15s",
-            }}>{t.label}</button>
-          ))}
-        </div>
 
         {/* Stats grid — 4 columns × 2 rows */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "0.875rem", marginBottom: "1.25rem" }}>

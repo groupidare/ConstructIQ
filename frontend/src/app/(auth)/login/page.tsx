@@ -263,14 +263,6 @@ export default function LoginPage() {
                 {errors.password && <p style={{ color: "#f87171", fontSize: "0.75rem", marginTop: 4 }}>{errors.password.message}</p>}
               </div>
 
-              {/* Remember me */}
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input suppressHydrationWarning type="checkbox" id="remember" style={{ width: 14, height: 14, accentColor: "#f97316", cursor: "pointer" }} />
-                <label htmlFor="remember" style={{ color: "#9ca3af", fontSize: "0.75rem", cursor: "pointer", userSelect: "none" }}>
-                  Remember me
-                </label>
-              </div>
-
               {/* Role Selection */}
               <div>
                 <p style={{ color: "#4b5563", fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: "0.5rem" }}>

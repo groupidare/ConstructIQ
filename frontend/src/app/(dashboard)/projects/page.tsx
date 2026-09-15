@@ -5,6 +5,8 @@ import toast from "react-hot-toast";
 import api from "@/lib/api";
 import Header from "@/components/layout/Header";
 import { useAuthStore } from "@/store/authStore";
+import { DatePickerField } from "@/components/ui/DatePickerField";
+import { exportReport } from "@/lib/reportExport";
 import {
   Plus, MapPin, Calendar, Users, FileText, X, Pencil,
   ShoppingCart, Package, Upload, FolderOpen, ChevronDown,
@@ -195,11 +197,13 @@ function NewProjectModal({ onClose, onCreate }: { onClose:()=>void; onCreate:(p:
 
   return (
     <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"2rem", width:480, boxShadow:"0 20px 60px rgba(0,0,0,0.18)" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.5rem" }}>
+      <div style={{ background:"#fff", borderRadius:16, width:480, boxShadow:"0 20px 60px rgba(0,0,0,0.18)", overflow:"hidden", maxHeight:"90vh", display:"flex", flexDirection:"column" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"2rem 2rem 0", flexShrink:0 }}>
           <p style={{ fontWeight:800, fontSize:"1.15rem", color:"#111827" }}>New Project</p>
           <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
         </div>
+
+        <div style={{ flex:1, overflowY:"auto", padding:"1.5rem 2rem" }}>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
           <div><label style={lbl}>Project Name</label><input value={name} onChange={e=>setName(e.target.value)} style={inp} placeholder="ICTC Hall" suppressHydrationWarning /></div>
           <div><label style={lbl}>Project Type</label><select value={type} onChange={e=>setType(e.target.value)} style={sel}>{["Renovation","Commercial","Industrial","Infrastructure","Residential"].map(t=><option key={t}>{t}</option>)}</select></div>
@@ -212,7 +216,9 @@ function NewProjectModal({ onClose, onCreate }: { onClose:()=>void; onCreate:(p:
           <div style={{ gridColumn:"1/-1" }}><label style={lbl}>Contractor</label><input value={cont} onChange={e=>setCont(e.target.value)} style={inp} placeholder="Discaya" suppressHydrationWarning /></div>
           <div style={{ gridColumn:"1/-1" }}><label style={lbl}>Project Description</label><textarea value={desc} onChange={e=>setDesc(e.target.value)} rows={3} style={{ ...inp, resize:"vertical" as React.CSSProperties["resize"] }} placeholder="Renovation" suppressHydrationWarning /></div>
         </div>
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.5rem" }}>
+        </div>
+
+        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", padding:"1.25rem 2rem", flexShrink:0, borderTop:"1px solid #f3f4f6" }}>
           <button onClick={onClose} style={{ padding:"10px 24px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
           <button onClick={handleCreate} disabled={saving} style={{ padding:"10px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", opacity:saving?0.7:1 }}>{saving?"Creating…":"Create Project"}</button>
         </div>
@@ -933,8 +939,8 @@ function FileRepositoryModal({ onClose }: { onClose:()=>void }) {
 
 function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void }) {
   const [type, setType] = useState("Material Usage");
-  const [from, setFrom] = useState("2026-05-01");
-  const [to,   setTo]   = useState("2026-06-01");
+  const [from, setFrom] = useState(new Date("2026-05-01"));
+  const [to,   setTo]   = useState(new Date("2026-06-01"));
   const [fmt,  setFmt]  = useState(".PDF");
   const dark: React.CSSProperties = { ...inp, background:"#1e2d50", border:"1px solid rgba(255,255,255,0.1)", color:"#fff" };
   const dsel: React.CSSProperties = { ...dark, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
@@ -948,14 +954,18 @@ function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void 
         <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
           <div><label style={{ ...lbl, color:"#9ca3af" }}>Report Type</label><select value={type} onChange={e=>setType(e.target.value)} style={{ ...dsel, width:"100%" }}>{["Material Usage","Procurement Summary","Cost Report","Excess Analytics","Forecast Report"].map(t=><option key={t}>{t}</option>)}</select></div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-            <div><label style={{ ...lbl, color:"#9ca3af" }}>From</label><input type="date" value={from} onChange={e=>setFrom(e.target.value)} style={{ ...dark, width:"100%", boxSizing:"border-box" as const }} suppressHydrationWarning /></div>
-            <div><label style={{ ...lbl, color:"#9ca3af" }}>To</label><input type="date" value={to} onChange={e=>setTo(e.target.value)} style={{ ...dark, width:"100%", boxSizing:"border-box" as const }} suppressHydrationWarning /></div>
+            <div><label style={{ ...lbl, color:"#9ca3af" }}>From</label><DatePickerField value={from} onChange={setFrom} inputStyle={{ ...dark, width:"100%", boxSizing:"border-box" as const }} /></div>
+            <div><label style={{ ...lbl, color:"#9ca3af" }}>To</label><DatePickerField value={to} onChange={setTo} inputStyle={{ ...dark, width:"100%", boxSizing:"border-box" as const }} /></div>
           </div>
-          <div><label style={{ ...lbl, color:"#9ca3af" }}>Format</label><select value={fmt} onChange={e=>setFmt(e.target.value)} style={{ ...dsel, width:"100%" }}>{[".PDF",".CSV",".XLSX"].map(f=><option key={f}>{f}</option>)}</select></div>
+          <div><label style={{ ...lbl, color:"#9ca3af" }}>Format</label><select value={fmt} onChange={e=>setFmt(e.target.value)} style={{ ...dsel, width:"100%" }}>{[".PDF",".CSV",".XLS"].map(f=><option key={f}>{f}</option>)}</select></div>
         </div>
         <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:"1.25rem" }}>
           <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid rgba(255,255,255,0.2)", background:"transparent", color:"#d1d5db", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={()=>{ toast.success(`${type} report generating…`); onClose(); }} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Generate</button>
+          <button onClick={()=>{
+            exportReport(fmt, { project, reportType: type, from, to });
+            toast.success(`${type}${fmt} downloaded!`);
+            onClose();
+          }} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Generate</button>
         </div>
       </div>
     </Overlay>
