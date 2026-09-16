@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { Plus } from 'lucide-react';
+import { Plus, Recycle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useExcess } from '@/hooks/useExcess';
 import { useProjects } from '@/hooks/useProjects';
@@ -14,7 +14,8 @@ import Modal from '@/components/ui/Modal';
 import { Table, Th, Td, Tr } from '@/components/ui/Table';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import type { Project } from '@/types/project';
-import type { ExcessWasteCreateRequest } from '@/types/excess';
+import type { ExcessWasteRecord, ExcessWasteCreateRequest } from '@/types/excess';
+import RedistributeModal from '@/components/excess/RedistributeModal';
 
 export default function ExcessAnalyticsProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -28,6 +29,8 @@ export default function ExcessAnalyticsProjectPage() {
     projectId: pid, phaseId: undefined, materialId: 0,
     excessType: 'Unused', quantity: 0, unitCost: 0, isReusable: false, notes: '',
   });
+
+  const [redistributeTarget, setRedistributeTarget] = useState<ExcessWasteRecord | null>(null);
 
   useEffect(() => {
     fetchRecords();
@@ -94,6 +97,7 @@ export default function ExcessAnalyticsProjectPage() {
                 <Th>Reusable</Th>
                 <Th>Phase</Th>
                 <Th>Recorded</Th>
+                <Th>Action</Th>
               </tr>
             </thead>
             <tbody>
@@ -108,6 +112,15 @@ export default function ExcessAnalyticsProjectPage() {
                   <Td><Badge variant={r.isReusable ? 'success' : 'default'}>{r.isReusable ? 'Yes' : 'No'}</Badge></Td>
                   <Td>{r.phaseName || '—'}</Td>
                   <Td className="text-xs text-gray-400">{formatDate(r.recordedAt)}</Td>
+                  <Td>
+                    {r.isReusable ? (
+                      <Button size="sm" variant="secondary" onClick={() => setRedistributeTarget(r)}>
+                        <Recycle size={12} /> Redistribute
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-gray-300">—</span>
+                    )}
+                  </Td>
                 </Tr>
               ))}
             </tbody>
@@ -154,6 +167,21 @@ export default function ExcessAnalyticsProjectPage() {
           </div>
         </div>
       </Modal>
+
+      {redistributeTarget && (
+        <RedistributeModal
+          record={{
+            id: redistributeTarget.id,
+            materialName: redistributeTarget.materialName,
+            quantity: redistributeTarget.quantity,
+            unit: redistributeTarget.unit,
+            projectId: pid,
+            projectName: project?.name ?? `Project #${pid}`,
+          }}
+          onClose={() => setRedistributeTarget(null)}
+          onSuccess={fetchRecords}
+        />
+      )}
     </div>
   );
 }

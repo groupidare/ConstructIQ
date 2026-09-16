@@ -52,6 +52,28 @@ public class PurchaseRequestDto
     public string?  Notes               { get; set; }
 }
 
+public class RedistributionTargetSuggestionDto
+{
+    public int      ProjectId                 { get; set; }
+    public string   ProjectName               { get; set; } = string.Empty;
+    public bool     HasForecastedShortage     { get; set; }
+    public decimal? ForecastedNeededQuantity  { get; set; }
+    public bool     UsesThisMaterialCategory  { get; set; }
+    public bool     SameProjectType           { get; set; }
+    public int      MatchScore                { get; set; }
+    public string   MatchReason               { get; set; } = string.Empty;
+}
+
+public class RedistributeFromExcessDto
+{
+    [Required] public int ExcessWasteRecordId { get; set; }
+    [Required] public int TargetProjectId     { get; set; }
+
+    // Defaults to the excess record's full logged quantity when omitted.
+    [Range(0.0001, double.MaxValue)] public decimal? Quantity { get; set; }
+    public string? Notes { get; set; }
+}
+
 public class RedistributionRecommendationDto
 {
     public int      Id                  { get; set; }
@@ -65,7 +87,11 @@ public class RedistributionRecommendationDto
     public decimal  AvailableQuantity   { get; set; }
     public decimal  NeededQuantity      { get; set; }
     public decimal  TransferQuantity    { get; set; }
+    public decimal  UnitCost            { get; set; }
     public decimal  EstimatedSavings    { get; set; }
+    public string   Priority            { get; set; } = string.Empty;
     public string   Status              { get; set; } = string.Empty;
+    public bool     IsAiRecommended     { get; set; }
+    public string?  Notes               { get; set; }
     public DateTime GeneratedAt         { get; set; }
 }

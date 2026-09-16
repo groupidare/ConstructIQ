@@ -18,6 +18,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ForecastedMaterial>       ForecastedMaterials       => Set<ForecastedMaterial>();
     public DbSet<ProcurementRecommendation> ProcurementRecommendations => Set<ProcurementRecommendation>();
     public DbSet<PurchaseRequest>          PurchaseRequests          => Set<PurchaseRequest>();
+    public DbSet<RedistributionRequest>    RedistributionRequests    => Set<RedistributionRequest>();
     public DbSet<ActivityLog>              ActivityLogs              => Set<ActivityLog>();
 
     protected override void OnModelCreating(ModelBuilder mb)
@@ -59,6 +60,30 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasOne(a => a.User)
             .WithMany(u => u.ActivityLogs)
             .HasForeignKey(a => a.UserId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<RedistributionRequest>()
+            .HasOne(r => r.SourceProject)
+            .WithMany()
+            .HasForeignKey(r => r.SourceProjectId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<RedistributionRequest>()
+            .HasOne(r => r.TargetProject)
+            .WithMany()
+            .HasForeignKey(r => r.TargetProjectId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<RedistributionRequest>()
+            .HasOne(r => r.RequestedBy)
+            .WithMany()
+            .HasForeignKey(r => r.RequestedByUserId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<RedistributionRequest>()
+            .HasOne(r => r.ApprovedBy)
+            .WithMany()
+            .HasForeignKey(r => r.ApprovedByUserId)
             .OnDelete(DeleteBehavior.SetNull);
     }
 }

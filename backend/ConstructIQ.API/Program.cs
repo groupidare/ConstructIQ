@@ -42,6 +42,7 @@ builder.Services.AddAuthorization();
 
 // ── Services ─────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<IProjectService, ProjectService>();
 builder.Services.AddScoped<IInventoryService, InventoryService>();
 builder.Services.AddScoped<IExcessWasteService, ExcessWasteService>();
