@@ -267,8 +267,8 @@ function GenerateModal({ report, onClose }: { report: Report; onClose: () => voi
   const [checks,    setChecks]    = useState({ cost:true, material:true, labor:false, audit:false });
   const [generated, setGenerated] = useState(false);
 
-  const darkIn: React.CSSProperties = {
-    background:"#1e2d50", color:"#fff", border:"1px solid rgba(255,255,255,0.1)",
+  const lightIn: React.CSSProperties = {
+    background:"#fff", color:"#111827", border:"1px solid #e5e7eb",
     borderRadius:8, padding:"9px 12px", fontSize:"0.875rem", outline:"none",
     width:"100%", boxSizing:"border-box" as const,
   };
@@ -280,49 +280,49 @@ function GenerateModal({ report, onClose }: { report: Report; onClose: () => voi
 
   return (
     <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }}>
-      <div onClick={e=>e.stopPropagation()} style={{ background:"#1a2235", borderRadius:16, padding:"1.75rem", width:500, maxHeight:"90vh", overflowY:"auto" }}>
+      <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:500, maxHeight:"90vh", overflowY:"auto", boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
         <div style={{ marginBottom:"1.25rem" }}>
-          <p style={{ fontWeight:800, fontSize:"1.05rem", color:"#fff" }}>Generate Report</p>
+          <p style={{ fontWeight:800, fontSize:"1.05rem", color:"#111827" }}>Generate Report</p>
           <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{report.title}</p>
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:"0.875rem" }}>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-            <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>From</p><input type="date" value={from} onChange={e=>setFrom(e.target.value)} style={darkIn} suppressHydrationWarning /></div>
-            <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>To</p><input type="date" value={to} onChange={e=>setTo(e.target.value)} style={darkIn} suppressHydrationWarning /></div>
+            <div><p style={{ fontSize:"0.65rem", color:"#6b7280", marginBottom:4 }}>From</p><input type="date" value={from} onChange={e=>setFrom(e.target.value)} style={lightIn} suppressHydrationWarning /></div>
+            <div><p style={{ fontSize:"0.65rem", color:"#6b7280", marginBottom:4 }}>To</p><input type="date" value={to} onChange={e=>setTo(e.target.value)} style={lightIn} suppressHydrationWarning /></div>
           </div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>Projects</p>
-            <select value={project} onChange={e=>setProject(e.target.value)} style={{ ...darkIn, appearance:"none" as any }}>
+          <div><p style={{ fontSize:"0.65rem", color:"#6b7280", marginBottom:4 }}>Projects</p>
+            <select value={project} onChange={e=>setProject(e.target.value)} style={{ ...lightIn, appearance:"none" as any, cursor:"pointer" }}>
               {["All Projects","Metro Station Phase 3","BGC Tower Complex","Harbor Bridge Renovation","Southgate Mall Expansion","PUP ICTC Building"].map(p=><option key={p}>{p}</option>)}
             </select>
           </div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:"0.5rem" }}>Include in Report</p>
+          <div><p style={{ fontSize:"0.65rem", color:"#6b7280", marginBottom:"0.5rem" }}>Include in Report</p>
             {([["cost","Cost Breakdown"],["material","Material Usage"],["labor","Labor Analysis"],["audit","Audit Log"]] as [keyof typeof checks,string][]).map(([k,label])=>(
               <label key={k} style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", marginBottom:8 }}>
                 <input type="checkbox" checked={checks[k]} onChange={e=>setChecks(c=>({...c,[k]:e.target.checked}))} style={{ width:16, height:16, accentColor:"#22c55e" }} />
-                <span style={{ fontSize:"0.8rem", color:"#d1d5db" }}>{label}</span>
+                <span style={{ fontSize:"0.8rem", color:"#374151" }}>{label}</span>
               </label>
             ))}
           </div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>Format</p>
-            <select value={format} onChange={e=>setFormat(e.target.value)} style={{ ...darkIn, appearance:"none" as any }}>
+          <div><p style={{ fontSize:"0.65rem", color:"#6b7280", marginBottom:4 }}>Format</p>
+            <select value={format} onChange={e=>setFormat(e.target.value)} style={{ ...lightIn, appearance:"none" as any, cursor:"pointer" }}>
               {[".CSV",".PDF",".XLSX"].map(f=><option key={f}>{f}</option>)}
             </select>
           </div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-            <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>Requested by:</p>
-              <select value={requester} onChange={e=>setRequester(e.target.value)} style={{ ...darkIn, appearance:"none" as any }}>
+            <div><p style={{ fontSize:"0.65rem", color:"#6b7280", marginBottom:4 }}>Requested by:</p>
+              <select value={requester} onChange={e=>setRequester(e.target.value)} style={{ ...lightIn, appearance:"none" as any, cursor:"pointer" }}>
                 {["Remy Santos","Ana Bonifacio","Jose Reyes"].map(m=><option key={m}>{m}</option>)}
               </select>
             </div>
-            <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>Approved by:</p>
-              <select value={approver} onChange={e=>setApprover(e.target.value)} style={{ ...darkIn, appearance:"none" as any }}>
+            <div><p style={{ fontSize:"0.65rem", color:"#6b7280", marginBottom:4 }}>Approved by:</p>
+              <select value={approver} onChange={e=>setApprover(e.target.value)} style={{ ...lightIn, appearance:"none" as any, cursor:"pointer" }}>
                 {["Ana Bonifacio","Remy Santos","Jose Reyes"].map(m=><option key={m}>{m}</option>)}
               </select>
             </div>
           </div>
         </div>
         <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.5rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid rgba(255,255,255,0.2)", background:"transparent", color:"#d1d5db", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
+          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
           <button onClick={handleGenerate} style={{ padding:"9px 24px", borderRadius:8, border:"none", background: generated ? "#22c55e" : "#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", transition:"background 0.2s" }}>
             {generated ? "✓ Generating..." : "Generate"}
           </button>

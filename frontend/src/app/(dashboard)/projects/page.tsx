@@ -942,25 +942,24 @@ function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void 
   const [from, setFrom] = useState(new Date("2026-05-01"));
   const [to,   setTo]   = useState(new Date("2026-06-01"));
   const [fmt,  setFmt]  = useState(".PDF");
-  const dark: React.CSSProperties = { ...inp, background:"#1e2d50", border:"1px solid rgba(255,255,255,0.1)", color:"#fff" };
-  const dsel: React.CSSProperties = { ...dark, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
+  const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
   return (
     <Overlay onClose={onClose}>
-      <div style={{ background:"#1a2235", borderRadius:16, padding:"1.75rem", width:460, boxShadow:"0 20px 60px rgba(0,0,0,0.3)" }}>
+      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:460, boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
         <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"1rem" }}>
-          <div><p style={{ fontWeight:800, fontSize:"1.05rem", color:"#fff" }}>Generate Report</p><p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>{project.name}</p></div>
+          <div><p style={{ fontWeight:800, fontSize:"1.05rem", color:"#111827" }}>Generate Report</p><p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>{project.name}</p></div>
           <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
-          <div><label style={{ ...lbl, color:"#9ca3af" }}>Report Type</label><select value={type} onChange={e=>setType(e.target.value)} style={{ ...dsel, width:"100%" }}>{["Material Usage","Procurement Summary","Cost Report","Excess Analytics","Forecast Report"].map(t=><option key={t}>{t}</option>)}</select></div>
+          <div><label style={lbl}>Report Type</label><select value={type} onChange={e=>setType(e.target.value)} style={{ ...sel, width:"100%" }}>{["Material Usage","Procurement Summary","Cost Report","Excess Analytics","Forecast Report"].map(t=><option key={t}>{t}</option>)}</select></div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-            <div><label style={{ ...lbl, color:"#9ca3af" }}>From</label><DatePickerField value={from} onChange={setFrom} inputStyle={{ ...dark, width:"100%", boxSizing:"border-box" as const }} /></div>
-            <div><label style={{ ...lbl, color:"#9ca3af" }}>To</label><DatePickerField value={to} onChange={setTo} inputStyle={{ ...dark, width:"100%", boxSizing:"border-box" as const }} /></div>
+            <div><label style={lbl}>From</label><DatePickerField value={from} onChange={setFrom} inputStyle={{ ...inp, width:"100%", boxSizing:"border-box" as const }} /></div>
+            <div><label style={lbl}>To</label><DatePickerField value={to} onChange={setTo} inputStyle={{ ...inp, width:"100%", boxSizing:"border-box" as const }} /></div>
           </div>
-          <div><label style={{ ...lbl, color:"#9ca3af" }}>Format</label><select value={fmt} onChange={e=>setFmt(e.target.value)} style={{ ...dsel, width:"100%" }}>{[".PDF",".CSV",".XLS"].map(f=><option key={f}>{f}</option>)}</select></div>
+          <div><label style={lbl}>Format</label><select value={fmt} onChange={e=>setFmt(e.target.value)} style={{ ...sel, width:"100%" }}>{[".PDF",".CSV",".XLS"].map(f=><option key={f}>{f}</option>)}</select></div>
         </div>
         <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:"1.25rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid rgba(255,255,255,0.2)", background:"transparent", color:"#d1d5db", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
+          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
           <button onClick={()=>{
             exportReport(fmt, { project, reportType: type, from, to });
             toast.success(`${type}${fmt} downloaded!`);

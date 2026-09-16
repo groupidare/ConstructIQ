@@ -1,14 +1,15 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
 import { useAuthStore } from "@/store/authStore";
+import { Avatar } from "@/components/ui/Avatar";
 import api from "@/lib/api";
 import {
   Lock, Shield, CloudUpload, Database, ChevronRight,
-  LogOut, Pencil, X, Eye, EyeOff, Search, RefreshCw,
+  LogOut, Pencil, X, Eye, EyeOff, Search, RefreshCw, Camera, Trash2, Loader2,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -33,14 +34,6 @@ const ROLE_LABELS: Record<string, string> = {
   SiteEngineer:       "Site Engineer / PIC",
   WarehousePersonnel: "Warehouse Personnel",
   ProcurementOfficer: "Procurement Officer",
-};
-
-const DEPT_MAP: Record<string, string> = {
-  Admin:              "Construction Management",
-  ProjectManager:     "Project Operations",
-  SiteEngineer:       "Site Engineering",
-  WarehousePersonnel: "Warehouse & Logistics",
-  ProcurementOfficer: "Procurement & Supply",
 };
 
 function relTime(iso: string) {
@@ -451,12 +444,28 @@ function ActivityLogModal({ onClose }: { onClose: () => void }) {
 
 // ── Edit Profile modal ────────────────────────────────────────────────────────
 
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
+const ALLOWED_AVATAR_TYPES = ["image/jpeg", "image/png", "image/webp"];
+
 function EditProfileModal({ onClose }: { onClose: () => void }) {
-  const user = useAuthStore(s => s.user);
+  const user       = useAuthStore(s => s.user);
+  const updateUser = useAuthStore(s => s.updateUser);
   const [firstName, setFirstName] = useState(user?.firstName ?? "");
   const [lastName,  setLastName]  = useState(user?.lastName  ?? "");
   const [email,     setEmail]     = useState(user?.email     ?? "");
-  const [dept,      setDept]      = useState(DEPT_MAP[user?.role ?? ""] ?? "Construction Management");
+  const [saving,    setSaving]    = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const initials = `${user?.firstName?.[0] ?? ""}${user?.lastName?.[0] ?? ""}`.toUpperCase();
+
+  // Avatar changes are staged locally and only sent to the server when
+  // "Save Changes" is clicked, so "Cancel" genuinely discards them — same
+  // as the name/email fields already do.
+  const [pendingAvatarFile, setPendingAvatarFile] = useState<File | null>(null);
+  const [previewUrl,        setPreviewUrl]        = useState<string | null>(null);
+  const [avatarRemoved,     setAvatarRemoved]     = useState(false);
+
+  const displayedAvatarUrl = avatarRemoved ? null : (previewUrl ?? user?.avatarUrl);
+  const hasPhotoToClear = !avatarRemoved && (!!previewUrl || !!user?.avatarUrl);
 
   const inp: React.CSSProperties = {
     width:"100%", boxSizing:"border-box" as const, padding:"9px 12px",
@@ -464,27 +473,142 @@ function EditProfileModal({ onClose }: { onClose: () => void }) {
     fontSize:"0.875rem", outline:"none", color:"#111827",
   };
 
-  function handleSave() {
-    toast.success("Profile updated.");
+  function handleAvatarSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+
+    if (!ALLOWED_AVATAR_TYPES.includes(file.type)) {
+      toast.error("Only JPEG, PNG, or WebP images are allowed.");
+      return;
+    }
+    if (file.size > MAX_AVATAR_BYTES) {
+      toast.error("Image must be 5MB or smaller.");
+      return;
+    }
+
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPendingAvatarFile(file);
+    setPreviewUrl(URL.createObjectURL(file));
+    setAvatarRemoved(false);
+  }
+
+  function handleClearAvatar() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPendingAvatarFile(null);
+    setPreviewUrl(null);
+    setAvatarRemoved(true);
+  }
+
+  async function handleSave() {
+    if (!firstName.trim() || !lastName.trim() || !email.trim()) {
+      toast.error("First name, last name, and email are required.");
+      return;
+    }
+    setSaving(true);
+    try {
+      let newAvatarUrl: string | null | undefined;
+
+      if (pendingAvatarFile) {
+        const formData = new FormData();
+        formData.append("file", pendingAvatarFile);
+        // The shared `api` instance defaults Content-Type to application/json;
+        // that must not be sent here, or the browser never gets to attach the
+        // multipart boundary and the server can't parse the upload.
+        const { data } = await api.post("/users/me/avatar", formData, {
+          headers: { "Content-Type": undefined },
+        });
+        newAvatarUrl = data.avatarUrl;
+      } else if (avatarRemoved) {
+        await api.delete("/users/me/avatar");
+        newAvatarUrl = null;
+      }
+
+      const { data } = await api.put("/users/me", {
+        firstName: firstName.trim(), lastName: lastName.trim(), email: email.trim(),
+      });
+      updateUser({
+        firstName: data.firstName, lastName: data.lastName, email: data.email,
+        ...(newAvatarUrl !== undefined ? { avatarUrl: newAvatarUrl } : {}),
+      });
+      toast.success("Profile updated.");
+      onClose();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? "Failed to update profile.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleCancel() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
     onClose();
   }
 
   return (
-    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }}>
+    <div onClick={handleCancel} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }}>
       <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:480, boxShadow:"0 20px 60px rgba(0,0,0,0.2)" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
           <p style={{ fontWeight:800, fontSize:"1rem" }}>Edit Profile</p>
-          <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:18, height:18 }} /></button>
+          <button onClick={handleCancel} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:18, height:18 }} /></button>
         </div>
+
+        {/* Avatar upload */}
+        <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:"1.5rem" }}>
+          <div style={{ position:"relative", width:64, height:64 }}>
+            <Avatar avatarUrl={displayedAvatarUrl} initials={initials} size={64} fontSize="1.1rem" />
+            {saving && (
+              <div style={{ position:"absolute", inset:0, borderRadius:"50%", background:"rgba(0,0,0,0.45)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <Loader2 style={{ width:20, height:20, color:"#fff" }} className="animate-spin" />
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={saving}
+              aria-label="Change profile photo"
+              style={{
+                position:"absolute", bottom:-2, right:-2, width:26, height:26, borderRadius:"50%",
+                background:"#111827", border:"2px solid #fff", color:"#fff",
+                display:"flex", alignItems:"center", justifyContent:"center", cursor:saving?"default":"pointer",
+              }}
+            >
+              <Camera style={{ width:13, height:13 }} />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={handleAvatarSelected}
+              style={{ display:"none" }}
+            />
+          </div>
+          <div>
+            <p style={{ fontSize:"0.82rem", fontWeight:600, color:"#374151" }}>Profile photo</p>
+            <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:2 }}>JPEG, PNG, or WebP. Max 5MB.</p>
+            {hasPhotoToClear && (
+              <button
+                type="button"
+                onClick={handleClearAvatar}
+                disabled={saving}
+                style={{ display:"flex", alignItems:"center", gap:4, marginTop:6, background:"none", border:"none", color:"#dc2626", fontSize:"0.75rem", fontWeight:600, cursor:saving?"default":"pointer", padding:0 }}
+              >
+                <Trash2 style={{ width:12, height:12 }} /> Remove photo
+              </button>
+            )}
+          </div>
+        </div>
+
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem", marginBottom:"0.75rem" }}>
           <div><p style={{ fontSize:"0.72rem", color:"#6b7280", fontWeight:600, marginBottom:5 }}>First Name</p><input value={firstName} onChange={e=>setFirstName(e.target.value)} style={inp} suppressHydrationWarning /></div>
           <div><p style={{ fontSize:"0.72rem", color:"#6b7280", fontWeight:600, marginBottom:5 }}>Last Name</p><input value={lastName} onChange={e=>setLastName(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.72rem", color:"#6b7280", fontWeight:600, marginBottom:5 }}>Email</p><input value={email} onChange={e=>setEmail(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.72rem", color:"#6b7280", fontWeight:600, marginBottom:5 }}>Department</p><input value={dept} onChange={e=>setDept(e.target.value)} style={inp} suppressHydrationWarning /></div>
+          <div style={{ gridColumn:"1/-1" }}><p style={{ fontSize:"0.72rem", color:"#6b7280", fontWeight:600, marginBottom:5 }}>Email</p><input value={email} onChange={e=>setEmail(e.target.value)} style={inp} suppressHydrationWarning /></div>
         </div>
         <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleSave} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Save Changes</button>
+          <button onClick={handleCancel} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", opacity:saving?0.7:1 }}>
+            {saving ? "Saving..." : "Save Changes"}
+          </button>
         </div>
       </div>
     </div>
@@ -577,7 +701,6 @@ export default function SettingsPage() {
 
   const fullName = user ? `${user.firstName} ${user.lastName}` : "";
   const roleLabel = ROLE_LABELS[user?.role ?? ""] ?? "User";
-  const dept = DEPT_MAP[user?.role ?? ""] ?? "—";
   const ini  = `${user?.firstName?.[0] ?? ""}${user?.lastName?.[0] ?? ""}`.toUpperCase();
 
   const readonlyField: React.CSSProperties = {
@@ -605,9 +728,7 @@ export default function SettingsPage() {
           {/* User summary row */}
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
             <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-              <div style={{ width:48, height:48, borderRadius:"50%", background:"#f97316", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:800, fontSize:"1rem", flexShrink:0 }}>
-                {ini}
-              </div>
+              <Avatar avatarUrl={user?.avatarUrl} initials={ini} size={48} fontSize="1rem" />
               <div>
                 <p style={{ fontWeight:800, fontSize:"1rem", color:"#111827" }}>{fullName}</p>
                 <p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>
@@ -633,10 +754,6 @@ export default function SettingsPage() {
             <div>
               <p style={{ fontSize:"0.78rem", color:"#374151", fontWeight:600, marginBottom:6 }}>Role</p>
               <input readOnly value={roleLabel} style={readonlyField} suppressHydrationWarning />
-            </div>
-            <div>
-              <p style={{ fontSize:"0.78rem", color:"#374151", fontWeight:600, marginBottom:6 }}>Department</p>
-              <input readOnly value={dept} style={readonlyField} suppressHydrationWarning />
             </div>
           </div>
         </Card>

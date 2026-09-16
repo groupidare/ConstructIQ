@@ -13,6 +13,7 @@ export interface User {
   lastName: string;
   role: UserRole;
   isActive: boolean;
+  avatarUrl?: string | null;
   createdAt: string;
 }
 
