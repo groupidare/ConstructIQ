@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using ConstructIQ.API.Models.DTOs.Procurement;
 using ConstructIQ.API.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -32,5 +33,37 @@ public class RedistributionController(IRedistributionService redistributionServi
     {
         var success = await redistributionService.ApproveTransferAsync(id, CurrentUserId);
         return success ? Ok(new { message = "Transfer approved." }) : NotFound();
+    }
+
+    [HttpGet("suggest-targets/{excessWasteRecordId:int}")]
+    public async Task<IActionResult> SuggestTargets(int excessWasteRecordId)
+    {
+        try
+        {
+            return Ok(await redistributionService.SuggestTargetsAsync(excessWasteRecordId));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("from-excess")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer,WarehousePersonnel")]
+    public async Task<IActionResult> CreateFromExcess([FromBody] RedistributeFromExcessDto dto)
+    {
+        try
+        {
+            var created = await redistributionService.CreateFromExcessRecordAsync(dto, CurrentUserId);
+            return Ok(created);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 }

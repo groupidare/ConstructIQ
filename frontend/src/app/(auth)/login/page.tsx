@@ -5,6 +5,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useAuthStore } from "@/store/authStore";
 import api from "@/lib/api";
 import type { LoginResponse } from "@/types/auth";
@@ -14,6 +15,7 @@ import {
   ShieldCheck, BarChart2, MapPin, Shield, Package, ShoppingCart, Info,
 } from "lucide-react";
 import { PrivacyModal, type PrivacyTab } from "@/components/modals/PrivacyModal";
+import GoogleSignInButton from "@/components/auth/GoogleSignInButton";
 
 const ROLES = [
   { label: "Project Manager", value: "ProjectManager", icon: BarChart2 },
@@ -67,19 +69,48 @@ export default function LoginPage() {
       toast.success(`Welcome back, ${displayName}!`);
       router.push("/projects");
     } catch (error: unknown) {
-      if (typeof error === "object" && error !== null && "response" in error) {
-        const axiosError = error as { response?: { data?: { message?: string }; status?: number } };
-        const message = axiosError.response?.data?.message;
-        if (message) {
-          toast.error(message);
-        } else if (axiosError.response?.status === 401) {
-          toast.error("Invalid username or password.");
-        } else {
-          toast.error("Unable to login. Please check your connection and try again.");
-        }
+      reportLoginError(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  function reportLoginError(error: unknown) {
+    if (typeof error === "object" && error !== null && "response" in error) {
+      const axiosError = error as { response?: { data?: { message?: string }; status?: number } };
+      const message = axiosError.response?.data?.message;
+      if (message) {
+        toast.error(message);
+      } else if (axiosError.response?.status === 401) {
+        toast.error("Invalid username or password.");
       } else {
-        toast.error("Unable to login. Please try again.");
+        toast.error("Unable to login. Please check your connection and try again.");
       }
+    } else {
+      toast.error("Unable to login. Please try again.");
+    }
+  }
+
+  const handleGoogleCredential = async (idToken: string) => {
+    if (!selectedRole) {
+      toast.error("Select your role before continuing with Google.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await api.post<LoginResponse>("/auth/google", { idToken });
+
+      if (res.data.user.role !== selectedRole) {
+        toast.error(`Wrong role. Your account role is "${res.data.user.role}".`);
+        return;
+      }
+
+      setAuth(res.data.user, res.data.token);
+      const displayName = res.data.user.role === "Admin" ? "Admin" : res.data.user.firstName;
+      toast.success(`Welcome back, ${displayName}!`);
+      router.push("/projects");
+    } catch (error: unknown) {
+      reportLoginError(error);
     } finally {
       setLoading(false);
     }
@@ -263,14 +294,6 @@ export default function LoginPage() {
                 {errors.password && <p style={{ color: "#f87171", fontSize: "0.75rem", marginTop: 4 }}>{errors.password.message}</p>}
               </div>
 
-              {/* Remember me */}
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input suppressHydrationWarning type="checkbox" id="remember" style={{ width: 14, height: 14, accentColor: "#f97316", cursor: "pointer" }} />
-                <label htmlFor="remember" style={{ color: "#9ca3af", fontSize: "0.75rem", cursor: "pointer", userSelect: "none" }}>
-                  Remember me
-                </label>
-              </div>
-
               {/* Role Selection */}
               <div>
                 <p style={{ color: "#4b5563", fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: "0.5rem" }}>
@@ -354,9 +377,21 @@ export default function LoginPage() {
                 {loading ? <Loader2 style={{ width: 18, height: 18, animation: "spin 1s linear infinite" }} /> : "Sign in to ConstructIQ"}
               </button>
 
+              {/* Google sign-in — same role check as above, for an existing admin-provisioned account */}
+              {process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID && (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0.25rem 0" }}>
+                    <div style={{ flex: 1, height: 1, background: "#1e3a5f" }} />
+                    <span style={{ color: "#4b5563", fontSize: "0.7rem", fontWeight: 600 }}>OR</span>
+                    <div style={{ flex: 1, height: 1, background: "#1e3a5f" }} />
+                  </div>
+                  <GoogleSignInButton onCredential={handleGoogleCredential} disabled={loading} />
+                </>
+              )}
+
               {/* Links */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.75rem" }}>
-                <a href="#" style={{ color: "#fb923c", textDecoration: "none" }}>Forgot password?</a>
+                <Link href="/forgot-password" style={{ color: "#fb923c", textDecoration: "none" }}>Forgot password?</Link>
                 <span style={{ color: "#6b7280" }}>
                   Need Access?{" "}
                   <a href="#" style={{ color: "#fb923c", textDecoration: "none" }}>Contact Admin</a>

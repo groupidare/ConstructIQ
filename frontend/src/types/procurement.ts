@@ -47,6 +47,28 @@ export interface PurchaseRequestCreateRequest {
   notes?: string;
 }
 
+export interface RedistributionTargetSuggestion {
+  projectId: number;
+  projectName: string;
+  hasForecastedShortage: boolean;
+  forecastedNeededQuantity?: number;
+  usesThisMaterialCategory: boolean;
+  sameProjectType: boolean;
+  matchScore: number;
+  matchReason: string;
+}
+
+export interface RedistributeFromExcessRequest {
+  excessWasteRecordId: number;
+  targetProjectId: number;
+  quantity?: number;
+  notes?: string;
+}
+
+export type RedistributionPriority = "Low" | "Medium" | "High";
+export type RedistributionStatus =
+  | "AiSuggested" | "PendingApproval" | "Approved" | "InTransit" | "Completed" | "Rejected";
+
 export interface RedistributionRecommendation {
   id: number;
   sourceMaterialId: number;
@@ -59,7 +81,11 @@ export interface RedistributionRecommendation {
   availableQuantity: number;
   neededQuantity: number;
   transferQuantity: number;
+  unitCost: number;
   estimatedSavings: number;
-  status: "Pending" | "Approved" | "Transferred" | "Rejected";
+  priority: RedistributionPriority;
+  status: RedistributionStatus;
+  isAiRecommended: boolean;
+  notes?: string;
   generatedAt: string;
 }

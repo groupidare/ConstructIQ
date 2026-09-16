@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import api from '@/lib/api';
-import type { ProcurementRecommendation, PurchaseRequest, PurchaseRequestCreateRequest, RedistributionRecommendation } from '@/types/procurement';
+import type {
+  ProcurementRecommendation, PurchaseRequest, PurchaseRequestCreateRequest,
+  RedistributionRecommendation, RedistributeFromExcessRequest, RedistributionTargetSuggestion,
+} from '@/types/procurement';
 
 export function useProcurement(projectId: number) {
   const [recommendations, setRecommendations] = useState<ProcurementRecommendation[]>([]);
@@ -41,10 +44,21 @@ export function useProcurement(projectId: number) {
     await fetchRedistribution();
   }
 
+  async function redistributeFromExcess(payload: RedistributeFromExcessRequest): Promise<RedistributionRecommendation> {
+    const { data } = await api.post<RedistributionRecommendation>('/redistribution/from-excess', payload);
+    await fetchRedistribution();
+    return data;
+  }
+
+  async function suggestTargets(excessWasteRecordId: number): Promise<RedistributionTargetSuggestion[]> {
+    const { data } = await api.get<RedistributionTargetSuggestion[]>(`/redistribution/suggest-targets/${excessWasteRecordId}`);
+    return data;
+  }
+
   return {
     recommendations, purchaseRequests, redistribution, loading,
     fetchRecommendations, generateRecommendations,
     createPurchaseRequest,
-    fetchRedistribution, generateRedistribution, approveTransfer,
+    fetchRedistribution, generateRedistribution, approveTransfer, redistributeFromExcess, suggestTargets,
   };
 }

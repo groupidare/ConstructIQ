@@ -15,4 +15,29 @@ public class AuthController(IAuthService authService) : ControllerBase
         if (result is null) return Unauthorized(new { message = "Invalid username or password." });
         return Ok(result);
     }
+
+    [HttpPost("google")]
+    public async Task<IActionResult> GoogleLogin([FromBody] GoogleLoginRequestDto request)
+    {
+        var result = await authService.GoogleLoginAsync(request);
+        if (result is null)
+            return Unauthorized(new { message = "No ConstructIQ account is registered for this Google email. Contact your administrator." });
+        return Ok(result);
+    }
+
+    [HttpPost("forgot-password")]
+    public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequestDto request)
+    {
+        await authService.ForgotPasswordAsync(request);
+        // Same response whether or not the email exists on an account.
+        return Ok(new { message = "If that email is registered, a reset link has been sent." });
+    }
+
+    [HttpPost("reset-password")]
+    public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequestDto request)
+    {
+        var success = await authService.ResetPasswordAsync(request);
+        if (!success) return BadRequest(new { message = "This reset link is invalid or has expired." });
+        return Ok(new { message = "Password reset successfully." });
+    }
 }

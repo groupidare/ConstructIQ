@@ -41,6 +41,10 @@ public class User
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastLogin  { get; set; }
 
+    [MaxLength(128)]
+    public string? PasswordResetToken { get; set; }
+    public DateTime? PasswordResetTokenExpiresAt { get; set; }
+
     public ICollection<Project> ManagedProjects { get; set; } = [];
     public ICollection<ActivityLog> ActivityLogs { get; set; } = [];
 }
