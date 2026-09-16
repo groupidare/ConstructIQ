@@ -13,6 +13,7 @@ import toast from "react-hot-toast";
 import {
   Loader2, User, Lock, TrendingUp, Package as BoxIcon,
   ShieldCheck, BarChart2, MapPin, Shield, Package, ShoppingCart, Info,
+  Eye, EyeOff,
 } from "lucide-react";
 import { PrivacyModal, type PrivacyTab } from "@/components/modals/PrivacyModal";
 import GoogleSignInButton from "@/components/auth/GoogleSignInButton";
@@ -38,6 +39,7 @@ export default function LoginPage() {
   const setAuth = useAuthStore((s) => s.setAuth);
   const [loading, setLoading]           = useState(false);
   const [selectedRole, setSelectedRole] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [privacyOpen, setPrivacyOpen]   = useState(false);
   const [privacyTab,  setPrivacyTab]    = useState<PrivacyTab>("policy");
 
@@ -277,12 +279,12 @@ export default function LoginPage() {
                   <input
                     {...register("password")}
                     suppressHydrationWarning
-                    type="password"
+                    type={showPassword ? "text" : "password"}
                     placeholder="••••••••••••••"
                     autoComplete="current-password"
                     style={{
                       width: "100%", boxSizing: "border-box",
-                      paddingLeft: 40, paddingRight: 16, paddingTop: 10, paddingBottom: 10,
+                      paddingLeft: 40, paddingRight: 40, paddingTop: 10, paddingBottom: 10,
                       borderRadius: 8, background: "#060e1e",
                       border: "1px solid #1e3a5f", color: "#fff",
                       fontSize: "0.875rem", outline: "none",
@@ -290,6 +292,16 @@ export default function LoginPage() {
                     onFocus={e => (e.currentTarget.style.borderColor = "#3b82f6")}
                     onBlur={e  => (e.currentTarget.style.borderColor = "#1e3a5f")}
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(s => !s)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center" }}
+                  >
+                    {showPassword
+                      ? <EyeOff style={{ width: 16, height: 16, color: "#4b5563" }} />
+                      : <Eye style={{ width: 16, height: 16, color: "#4b5563" }} />}
+                  </button>
                 </div>
                 {errors.password && <p style={{ color: "#f87171", fontSize: "0.75rem", marginTop: 4 }}>{errors.password.message}</p>}
               </div>

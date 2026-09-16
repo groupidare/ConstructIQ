@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/authStore";
 import { useSidebarStore } from "@/store/sidebarStore";
+import { Avatar } from "@/components/ui/Avatar";
 import {
   FolderKanban, Package, TrendingUp, Trash2, Network,
   ShoppingCart, FileText, LayoutDashboard, Users, Settings, LogOut,
@@ -175,15 +176,11 @@ export default function Sidebar() {
           gap:10, flexShrink:0,
           transition: "padding 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
         }}>
-          <div style={{
-            width:36, height:36, borderRadius:"50%",
-            background:"#f97316",
-            display:"flex", alignItems:"center", justifyContent:"center",
-            color:"#fff", fontWeight:700, fontSize:"0.8rem",
-            flexShrink:0,
-          }}>
-            {`${user?.firstName?.[0] ?? ""}${user?.lastName?.[0] ?? ""}`.toUpperCase()}
-          </div>
+          <Avatar
+            avatarUrl={user?.avatarUrl}
+            initials={`${user?.firstName?.[0] ?? ""}${user?.lastName?.[0] ?? ""}`.toUpperCase()}
+            size={36}
+          />
           <div style={{
             flex: collapsed ? "0 0 0px" : 1, minWidth:0, overflow:"hidden",
             maxWidth: collapsed ? 0 : 200, opacity: collapsed ? 0 : 1,

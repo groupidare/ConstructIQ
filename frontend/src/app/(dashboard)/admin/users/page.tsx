@@ -73,13 +73,11 @@ const ROLES = [
   { value:"Admin",              label:"System Administrator",  icon:Shield,          desc:"Full system access, user management, backups"          },
 ];
 
-const PROJECTS = [
-  "Metro Station Phase 3",
-  "BGC Tower Complex",
-  "Harbor Bridge Renovation",
-  "Southgate Mall Expansion",
-  "PUP ICTC Building",
-];
+interface ProjectListDto {
+  id: number; name: string; status: string;
+}
+
+const PROJECT_ROLES = ["ProjectManager", "SiteEngineer"];
 
 // ── New User modal ────────────────────────────────────────────────────────────
 
@@ -95,10 +93,23 @@ function NewUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
   const [role,       setRole]       = useState("ProjectManager");
   const [projects,   setProjects]   = useState<string[]>([]);
   const [saving,     setSaving]     = useState(false);
+  const [activeProjects, setActiveProjects] = useState<string[]>([]);
+
+  const needsProjects = PROJECT_ROLES.includes(role);
+
+  useEffect(() => {
+    api.get<ProjectListDto[]>("/projects")
+      .then(({ data }) => setActiveProjects(data.filter(p => p.status === "Active").map(p => p.name)))
+      .catch(() => setActiveProjects([]));
+  }, []);
 
   function toggleProject(p: string) {
     setProjects(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
   }
+
+  useEffect(() => {
+    if (!needsProjects) setProjects([]);
+  }, [needsProjects]);
 
   async function handleAdd() {
     if (!firstName || !lastName || !email || !username || !password) {
@@ -205,24 +216,32 @@ function NewUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
           })}
         </div>
 
-        <hr style={{ border:"none", borderTop:"1px solid #f3f4f6", marginBottom:"1.25rem" }} />
+        {needsProjects && (
+          <>
+            <hr style={{ border:"none", borderTop:"1px solid #f3f4f6", marginBottom:"1.25rem" }} />
 
-        {/* Project Assignment */}
-        <p style={{ fontSize:"0.65rem", fontWeight:800, color:"#9ca3af", letterSpacing:"0.1em", marginBottom:"0.625rem" }}>PROJECT ASSIGNMENT</p>
-        <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:"0.5rem" }}>ASSIGN TO PROJECTS *</p>
-        <div style={{ background:"#111827", borderRadius:8, overflow:"hidden", marginBottom:4 }}>
-          {PROJECTS.map(p => (
-            <button key={p} onClick={()=>toggleProject(p)} style={{
-              display:"block", width:"100%", textAlign:"left",
-              padding:"9px 14px", fontSize:"0.875rem", cursor:"pointer", border:"none",
-              background: projects.includes(p) ? "#1e3154" : "transparent",
-              color: "#d1d5db", borderBottom:"1px solid rgba(255,255,255,0.05)",
-            }}>
-              {p}
-            </button>
-          ))}
-        </div>
-        <p style={{ fontSize:"0.7rem", color:"#9ca3af", marginBottom:"1.5rem" }}>Click to select / deselect multiple</p>
+            {/* Project Assignment */}
+            <p style={{ fontSize:"0.65rem", fontWeight:800, color:"#9ca3af", letterSpacing:"0.1em", marginBottom:"0.625rem" }}>PROJECT ASSIGNMENT</p>
+            <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:"0.5rem" }}>ASSIGN TO PROJECTS *</p>
+            {activeProjects.length > 0 ? (
+              <div style={{ background:"#111827", borderRadius:8, overflow:"hidden", marginBottom:4 }}>
+                {activeProjects.map(p => (
+                  <button key={p} onClick={()=>toggleProject(p)} style={{
+                    display:"block", width:"100%", textAlign:"left",
+                    padding:"9px 14px", fontSize:"0.875rem", cursor:"pointer", border:"none",
+                    background: projects.includes(p) ? "#1e3154" : "transparent",
+                    color: "#d1d5db", borderBottom:"1px solid rgba(255,255,255,0.05)",
+                  }}>
+                    {p}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p style={{ fontSize:"0.8rem", color:"#9ca3af", padding:"9px 0" }}>No active projects available.</p>
+            )}
+            <p style={{ fontSize:"0.7rem", color:"#9ca3af", marginBottom:"1.5rem" }}>Click to select / deselect multiple</p>
+          </>
+        )}
 
         {/* Footer */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>

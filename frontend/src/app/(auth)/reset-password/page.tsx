@@ -75,14 +75,14 @@ function ResetPasswordForm() {
 
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
           <div>
-            <label style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>New password</label>
+            <label suppressHydrationWarning style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>New password</label>
             <div style={{ position: "relative" }}>
               <Lock style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", width: 16, height: 16, color: "#4b5563", pointerEvents: "none" }} />
               <input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" suppressHydrationWarning style={inputStyle} />
             </div>
           </div>
           <div>
-            <label style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>Confirm password</label>
+            <label suppressHydrationWarning style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>Confirm password</label>
             <div style={{ position: "relative" }}>
               <Lock style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", width: 16, height: 16, color: "#4b5563", pointerEvents: "none" }} />
               <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" suppressHydrationWarning style={inputStyle} />

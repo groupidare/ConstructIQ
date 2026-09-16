@@ -8,6 +8,7 @@ import { useAuthStore } from "@/store/authStore";
 import { useTheme } from "@/store/themeStore";
 import { useSidebarStore } from "@/store/sidebarStore";
 import { useAlertStore, ALERT_ICON_STYLES } from "@/store/alertStore";
+import { Avatar } from "@/components/ui/Avatar";
 import WeatherChip from "./WeatherChip";
 
 interface HeaderProps {
@@ -181,15 +182,9 @@ export default function Header({ title }: HeaderProps) {
         <button
           onClick={() => router.push("/admin/settings")}
           aria-label="Go to settings"
-          style={{
-            width:36, height:36, borderRadius:"50%",
-            background:"#f97316", border:"none",
-            display:"flex", alignItems:"center", justifyContent:"center",
-            color:"#fff", fontWeight:700, fontSize:"0.8rem",
-            cursor:"pointer", flexShrink:0, userSelect:"none",
-          }}
+          style={{ background:"none", border:"none", padding:0, cursor:"pointer", display:"flex", flexShrink:0 }}
         >
-          {initials || "?"}
+          <Avatar avatarUrl={user?.avatarUrl} initials={initials} size={36} />
         </button>
       </div>
     </header>
