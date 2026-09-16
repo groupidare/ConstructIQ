@@ -57,4 +57,51 @@ public class EmailService(IConfiguration config, ILogger<EmailService> logger) :
 
         await client.SendMailAsync(message);
     }
+
+    public async Task SendMfaCodeEmailAsync(string toEmail, string toName, string code)
+    {
+        var host        = config["SMTP_HOST"] ?? "smtp.gmail.com";
+        var port        = int.TryParse(config["SMTP_PORT"], out var p) ? p : 587;
+        var user        = config["SMTP_USER"];
+        var appPassword = config["SMTP_APP_PASSWORD"];
+        var fromName    = config["SMTP_FROM_NAME"] ?? "ConstructIQ";
+
+        if (string.IsNullOrWhiteSpace(user) || string.IsNullOrWhiteSpace(appPassword))
+        {
+            logger.LogWarning("SMTP_USER / SMTP_APP_PASSWORD not configured — MFA code email to {Email} was not sent.", toEmail);
+            return;
+        }
+
+        using var client = new SmtpClient(host, port)
+        {
+            EnableSsl = true,
+            Credentials = new NetworkCredential(user, appPassword),
+        };
+
+        using var message = new MailMessage
+        {
+            From = new MailAddress(user, fromName),
+            Subject = "Your ConstructIQ verification code",
+            IsBodyHtml = true,
+            Body = $"""
+                <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;">
+                  <h2 style="color:#111827;">Verify your sign-in</h2>
+                  <p style="color:#374151;">Hi {WebUtility.HtmlEncode(toName)},</p>
+                  <p style="color:#374151;">
+                    Use the code below to finish signing in to your ConstructIQ account.
+                    This code expires in 10 minutes.
+                  </p>
+                  <p style="margin:24px 0;font-size:2rem;font-weight:700;letter-spacing:0.3em;color:#111827;">
+                    {WebUtility.HtmlEncode(code)}
+                  </p>
+                  <p style="color:#9ca3af;font-size:0.85rem;">
+                    If you didn't try to sign in, you can safely ignore this email.
+                  </p>
+                </div>
+                """,
+        };
+        message.To.Add(new MailAddress(toEmail, toName));
+
+        await client.SendMailAsync(message);
+    }
 }

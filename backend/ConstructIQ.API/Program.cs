@@ -96,6 +96,7 @@ app.MapGet("/dev/debug", (AppDbContext db) =>
 });
 
 app.UseCors("FrontendPolicy");
+app.UseStaticFiles(); // serves wwwroot/uploads/avatars/* publicly, e.g. GET /uploads/avatars/8.jpg
 app.UseMiddleware<ActivityLoggingMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();

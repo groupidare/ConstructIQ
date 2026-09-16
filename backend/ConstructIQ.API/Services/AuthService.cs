@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Helpers;
 using ConstructIQ.API.Models.DTOs.Auth;
+using ConstructIQ.API.Models.Entities;
 using ConstructIQ.API.Services.Interfaces;
 using Google.Apis.Auth;
 using Microsoft.EntityFrameworkCore;
@@ -19,25 +20,10 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
         if (user is null || !PasswordHasher.Verify(request.Password, user.PasswordHash))
             return null;
 
-        var token     = JwtHelper.GenerateToken(user, config);
-        var expiresAt = DateTime.UtcNow.AddHours(
-            int.TryParse(config["JWT_EXPIRES_HOURS"], out var h) ? h : 24);
+        if (user.MfaEnabled)
+            return await IssueMfaChallengeAsync(user);
 
-        return new LoginResponseDto
-        {
-            Token     = token,
-            ExpiresAt = expiresAt,
-            User = new UserDto
-            {
-                Id        = user.Id,
-                Username  = user.Username,
-                Email     = user.Email,
-                FirstName = user.FirstName,
-                LastName  = user.LastName,
-                Role      = user.Role.ToString(),
-                IsActive  = user.IsActive,
-            }
-        };
+        return BuildLoginResponse(user);
     }
 
     public async Task<LoginResponseDto?> GoogleLoginAsync(GoogleLoginRequestDto request)
@@ -75,6 +61,72 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
 
         if (user is null) return null;
 
+        if (user.MfaEnabled)
+            return await IssueMfaChallengeAsync(user);
+
+        return BuildLoginResponse(user);
+    }
+
+    public async Task<LoginResponseDto?> VerifyMfaAsync(VerifyMfaRequestDto request)
+    {
+        var user = await db.Users.FirstOrDefaultAsync(u =>
+            u.MfaChallengeToken == request.ChallengeToken
+            && u.MfaCodeExpiresAt != null
+            && u.MfaCodeExpiresAt > DateTime.UtcNow);
+
+        if (user is null || user.MfaCode != request.Code.Trim())
+            return null;
+
+        user.MfaCode           = null;
+        user.MfaCodeExpiresAt  = null;
+        user.MfaChallengeToken = null;
+        user.LastLogin         = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+
+        return BuildLoginResponse(user);
+    }
+
+    public async Task<bool> ResendMfaCodeAsync(ResendMfaRequestDto request)
+    {
+        var user = await db.Users.FirstOrDefaultAsync(u => u.MfaChallengeToken == request.ChallengeToken);
+        if (user is null) return false;
+
+        await SendMfaCodeAsync(user);
+        return true;
+    }
+
+    private async Task<LoginResponseDto> IssueMfaChallengeAsync(User user)
+    {
+        user.MfaChallengeToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+        await SendMfaCodeAsync(user);
+
+        return new LoginResponseDto
+        {
+            MfaRequired    = true,
+            ChallengeToken = user.MfaChallengeToken,
+        };
+    }
+
+    private async Task SendMfaCodeAsync(User user)
+    {
+        var code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
+
+        user.MfaCode          = code;
+        user.MfaCodeExpiresAt = DateTime.UtcNow.AddMinutes(10);
+        await db.SaveChangesAsync();
+
+        try
+        {
+            await emailService.SendMfaCodeEmailAsync(user.Email, user.FirstName, code);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to send MFA code email to {Email}.", user.Email);
+        }
+    }
+
+    private LoginResponseDto BuildLoginResponse(User user)
+    {
         var token     = JwtHelper.GenerateToken(user, config);
         var expiresAt = DateTime.UtcNow.AddHours(
             int.TryParse(config["JWT_EXPIRES_HOURS"], out var h) ? h : 24);
@@ -85,13 +137,15 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
             ExpiresAt = expiresAt,
             User = new UserDto
             {
-                Id        = user.Id,
-                Username  = user.Username,
-                Email     = user.Email,
-                FirstName = user.FirstName,
-                LastName  = user.LastName,
-                Role      = user.Role.ToString(),
-                IsActive  = user.IsActive,
+                Id         = user.Id,
+                Username   = user.Username,
+                Email      = user.Email,
+                FirstName  = user.FirstName,
+                LastName   = user.LastName,
+                Role       = user.Role.ToString(),
+                IsActive   = user.IsActive,
+                AvatarUrl  = user.AvatarUrl,
+                MfaEnabled = user.MfaEnabled,
             }
         };
     }

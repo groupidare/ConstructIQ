@@ -37,6 +37,9 @@ public class User
 
     public bool IsActive { get; set; } = true;
 
+    [MaxLength(255)]
+    public string? AvatarUrl { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastLogin  { get; set; }
@@ -44,6 +47,15 @@ public class User
     [MaxLength(128)]
     public string? PasswordResetToken { get; set; }
     public DateTime? PasswordResetTokenExpiresAt { get; set; }
+
+    public bool MfaEnabled { get; set; } = false;
+
+    [MaxLength(10)]
+    public string? MfaCode { get; set; }
+    public DateTime? MfaCodeExpiresAt { get; set; }
+
+    [MaxLength(64)]
+    public string? MfaChallengeToken { get; set; }
 
     public ICollection<Project> ManagedProjects { get; set; } = [];
     public ICollection<ActivityLog> ActivityLogs { get; set; } = [];

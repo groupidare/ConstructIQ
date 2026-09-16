@@ -15,6 +15,10 @@ backend/ConstructIQ.API/obj/
 *.suo
 .vs/
 
+# User-uploaded files (avatars etc.) - not source, shouldn't be committed
+backend/ConstructIQ.API/wwwroot/uploads/**/*
+!backend/ConstructIQ.API/wwwroot/uploads/**/.gitkeep
+
 # Python
 __pycache__/
 *.py[cod]

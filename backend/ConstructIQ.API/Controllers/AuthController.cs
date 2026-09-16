@@ -25,6 +25,22 @@ public class AuthController(IAuthService authService) : ControllerBase
         return Ok(result);
     }
 
+    [HttpPost("mfa/verify")]
+    public async Task<IActionResult> VerifyMfa([FromBody] VerifyMfaRequestDto request)
+    {
+        var result = await authService.VerifyMfaAsync(request);
+        if (result is null) return BadRequest(new { message = "Invalid or expired code." });
+        return Ok(result);
+    }
+
+    [HttpPost("mfa/resend")]
+    public async Task<IActionResult> ResendMfaCode([FromBody] ResendMfaRequestDto request)
+    {
+        var success = await authService.ResendMfaCodeAsync(request);
+        if (!success) return BadRequest(new { message = "This verification session has expired. Please sign in again." });
+        return Ok(new { message = "Code resent." });
+    }
+
     [HttpPost("forgot-password")]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequestDto request)
     {
