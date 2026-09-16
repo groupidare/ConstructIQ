@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/authStore";
+import { useSidebarStore } from "@/store/sidebarStore";
 import { Avatar } from "@/components/ui/Avatar";
 import {
   FolderKanban, Package, TrendingUp, Trash2, Network,
@@ -78,6 +79,7 @@ export default function Sidebar() {
   const router   = useRouter();
   const { user } = useAuthStore();
   const logout   = useAuthStore(s => s.logout);
+  const collapsed = useSidebarStore(s => s.collapsed);
   const [showConfirm, setShowConfirm] = useState(false);
 
   function doLogout() {
@@ -95,13 +97,14 @@ export default function Sidebar() {
       )}
 
       <aside id="app-sidebar" style={{
-        width: 260, flexShrink: 0,
+        width: collapsed ? 76 : 260, flexShrink: 0,
         background: "#1a2235",
         display: "flex", flexDirection: "column",
         height: "100%", overflowY: "auto",
+        transition: "width 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
       }}>
         {/* Logo */}
-        <div style={{ padding:"1.5rem 1.25rem 1rem", display:"flex", alignItems:"center", gap:10 }}>
+        <div style={{ padding: collapsed ? "1.5rem 0.5rem 1rem" : "1.5rem 1.25rem 1rem", display:"flex", alignItems:"center", gap:10, transition:"padding 0.28s cubic-bezier(0.4, 0, 0.2, 1)" }}>
           <div style={{
             width:40, height:40, borderRadius:10,
             background:"#f97316",
@@ -109,14 +112,24 @@ export default function Sidebar() {
             flexShrink:0, boxShadow:"0 4px 12px rgba(249,115,22,0.35)",
           }}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo.svg" alt="" style={{ width:22, height:22 }} />
+            <img src="/logo.svg" alt="" style={{ width:50, height:50 }} />
           </div>
-          <span style={{ color:"#fff", fontWeight:800, fontSize:"1.1rem", letterSpacing:"-0.01em" }}>ConstructIQ</span>
+          <span style={{
+            color:"#fff", fontWeight:800, fontSize:"1.1rem", letterSpacing:"-0.01em",
+            display:"inline-block", overflow:"hidden", whiteSpace:"nowrap",
+            maxWidth: collapsed ? 0 : 160, opacity: collapsed ? 0 : 1,
+            transition: "max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease",
+          }}>ConstructIQ</span>
         </div>
 
         {/* Nav */}
-        <nav style={{ flex:1, overflowY:"auto", padding:"0.5rem 0.75rem" }}>
-          <p style={{ color:"#4b5563", fontSize:"0.65rem", fontWeight:700, letterSpacing:"0.1em", textTransform:"uppercase", padding:"0.5rem 0.5rem 0.75rem" }}>
+        <nav style={{ flex:1, overflowY:"auto", padding: collapsed ? "0.5rem 0.5rem" : "0.5rem 0.75rem", transition:"padding 0.28s cubic-bezier(0.4, 0, 0.2, 1)" }}>
+          <p style={{
+            color:"#4b5563", fontSize:"0.65rem", fontWeight:700, letterSpacing:"0.1em", textTransform:"uppercase",
+            padding: collapsed ? "0 0.5rem" : "0.5rem 0.5rem 0.75rem",
+            maxHeight: collapsed ? 0 : 24, opacity: collapsed ? 0 : 1, overflow:"hidden",
+            transition: "max-height 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease, padding 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
+          }}>
             MAIN
           </p>
 
@@ -129,19 +142,27 @@ export default function Sidebar() {
               <Link
                 key={item.href}
                 href={item.href}
+                title={collapsed ? item.label : undefined}
                 style={{
                   display:"flex", alignItems:"center", gap:10,
-                  padding:"0.55rem 0.75rem", borderRadius:8, marginBottom:2,
-                  textDecoration:"none", transition:"background 0.15s",
+                  padding: collapsed ? "0.6rem 0" : "0.55rem 0.75rem",
+                  borderRadius:8, marginBottom:2,
+                  textDecoration:"none",
+                  transition:"background 0.15s, padding 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
                   background: active ? "rgba(249,115,22,0.12)" : "transparent",
                   color:      active ? "#fb923c" : "#9ca3af",
                   fontWeight: active ? 600 : 400,
                   fontSize:"0.875rem",
+                  justifyContent: collapsed ? "center" : "flex-start",
                   borderLeft: active ? "3px solid #f97316" : "3px solid transparent",
                 }}
               >
                 <Icon style={{ width:17, height:17, flexShrink:0 }} />
-                {item.label}
+                <span style={{
+                  display:"inline-block", overflow:"hidden", whiteSpace:"nowrap",
+                  maxWidth: collapsed ? 0 : 160, opacity: collapsed ? 0 : 1,
+                  transition: "max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease",
+                }}>{item.label}</span>
               </Link>
             );
           })}
@@ -149,17 +170,22 @@ export default function Sidebar() {
 
         {/* User info + logout */}
         <div style={{
-          padding:"0.875rem 1rem",
+          padding: collapsed ? "0.875rem 0.5rem" : "0.875rem 1rem",
           borderTop:"1px solid rgba(255,255,255,0.07)",
-          display:"flex", alignItems:"center", gap:10,
-          flexShrink:0,
+          display:"flex", alignItems:"center",
+          gap:10, flexShrink:0,
+          transition: "padding 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
         }}>
           <Avatar
             avatarUrl={user?.avatarUrl}
             initials={`${user?.firstName?.[0] ?? ""}${user?.lastName?.[0] ?? ""}`.toUpperCase()}
             size={36}
           />
-          <div style={{ flex:1, minWidth:0 }}>
+          <div style={{
+            flex: collapsed ? "0 0 0px" : 1, minWidth:0, overflow:"hidden",
+            maxWidth: collapsed ? 0 : 200, opacity: collapsed ? 0 : 1,
+            transition: "max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease, flex-basis 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
+          }}>
             <p style={{ color:"#fff", fontWeight:600, fontSize:"0.82rem", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
               {user ? `${user.firstName} ${user.lastName}` : "Guest"}
             </p>

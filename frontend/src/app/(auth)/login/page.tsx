@@ -234,7 +234,7 @@ export default function LoginPage() {
                 display: "flex", alignItems: "center", justifyContent: "center",
                 flexShrink: 0, boxShadow: "0 4px 12px rgba(249,115,22,0.4)",
               }}>
-                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block" }}>
                   <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
                 </svg>
               </div>

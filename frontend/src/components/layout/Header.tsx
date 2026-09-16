@@ -6,6 +6,7 @@ import { Bell, Search, Sun, Moon, Menu, X } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useAuthStore } from "@/store/authStore";
 import { useTheme } from "@/store/themeStore";
+import { useSidebarStore } from "@/store/sidebarStore";
 import { useAlertStore, ALERT_ICON_STYLES } from "@/store/alertStore";
 import { Avatar } from "@/components/ui/Avatar";
 import WeatherChip from "./WeatherChip";
@@ -20,6 +21,7 @@ export default function Header({ title }: HeaderProps) {
   const initials = `${user?.firstName?.[0] ?? ""}${user?.lastName?.[0] ?? ""}`.toUpperCase();
   const theme       = useTheme((s) => s.theme);
   const toggleTheme = useTheme((s) => s.toggleTheme);
+  const toggleSidebar = useSidebarStore((s) => s.toggleCollapsed);
 
   const alerts      = useAlertStore((s) => s.alerts);
   const markRead    = useAlertStore((s) => s.markRead);
@@ -57,7 +59,7 @@ export default function Header({ title }: HeaderProps) {
 
       {/* ── Left: hamburger + title + breadcrumb ── */}
       <div style={{ display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
-        <button style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:0, display:"flex", alignItems:"center" }}>
+        <button onClick={toggleSidebar} title="Toggle sidebar" style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:0, display:"flex", alignItems:"center" }}>
           <Menu style={{ width:20, height:20 }} />
         </button>
         <div>

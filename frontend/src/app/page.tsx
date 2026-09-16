@@ -435,7 +435,7 @@ export default function LandingPage() {
                 display: "flex", alignItems: "center", justifyContent: "center",
                 boxShadow: "0 4px 14px rgba(249,115,22,0.38)", flexShrink: 0,
               }}>
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" strokeWidth="1.0" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block" }}>
                   <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
                 </svg>
               </div>
