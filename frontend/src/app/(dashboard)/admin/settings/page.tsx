@@ -708,7 +708,6 @@ export default function SettingsPage() {
     shortageAlerts:    true,
     overstockWarnings: true,
     deliveryUpdates:   true,
-    wasteReports:      false,
     aiForecastUpdates: true,
   });
 
@@ -784,7 +783,6 @@ export default function SettingsPage() {
             ["shortageAlerts",    "Shortage Alerts",       "Get notified when materials reach critical levels"],
             ["overstockWarnings", "Overstock Warnings",    "Alerts for materials exceeding maximum thresholds"],
             ["deliveryUpdates",   "Delivery Updates",      "Track procurement order status changes"],
-            ["wasteReports",      "Waste Reports",         "Weekly waste analytics summary"],
             ["aiForecastUpdates", "AI Forecast Updates",   "Notifications when demand predictions change significantly"],
           ] as [keyof typeof notifs, string, string][]).map(([key, title, desc], i, arr) => (
             <div key={key} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 0", borderBottom: i < arr.length-1 ? "1px solid #f3f4f6" : "none" }}>

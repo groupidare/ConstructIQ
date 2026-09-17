@@ -20,6 +20,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<PurchaseRequest>          PurchaseRequests          => Set<PurchaseRequest>();
     public DbSet<RedistributionRequest>    RedistributionRequests    => Set<RedistributionRequest>();
     public DbSet<ActivityLog>              ActivityLogs              => Set<ActivityLog>();
+    public DbSet<Supplier>                 Suppliers                 => Set<Supplier>();
+    public DbSet<PurchaseOrder>            PurchaseOrders            => Set<PurchaseOrder>();
+    public DbSet<PurchaseOrderMaterial>    PurchaseOrderMaterials    => Set<PurchaseOrderMaterial>();
+    public DbSet<DeliveryEvaluation>       DeliveryEvaluations       => Set<DeliveryEvaluation>();
+    public DbSet<DeliveryPhoto>            DeliveryPhotos            => Set<DeliveryPhoto>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -85,5 +90,43 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .WithMany()
             .HasForeignKey(r => r.ApprovedByUserId)
             .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<PurchaseOrder>()
+            .HasIndex(po => po.Number)
+            .IsUnique();
+
+        mb.Entity<PurchaseOrder>()
+            .HasOne(po => po.Project)
+            .WithMany()
+            .HasForeignKey(po => po.ProjectId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<PurchaseOrder>()
+            .HasOne(po => po.Supplier)
+            .WithMany(s => s.PurchaseOrders)
+            .HasForeignKey(po => po.SupplierId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<PurchaseOrder>()
+            .HasOne(po => po.CreatedBy)
+            .WithMany()
+            .HasForeignKey(po => po.CreatedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<PurchaseOrder>()
+            .HasOne(po => po.Evaluation)
+            .WithOne(e => e.PurchaseOrder)
+            .HasForeignKey<DeliveryEvaluation>(e => e.PurchaseOrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<DeliveryEvaluation>()
+            .HasOne(e => e.RatedBy)
+            .WithMany()
+            .HasForeignKey(e => e.RatedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<Supplier>()
+            .HasIndex(s => s.Name)
+            .IsUnique();
     }
 }

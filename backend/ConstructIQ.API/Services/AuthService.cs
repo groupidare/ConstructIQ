@@ -23,7 +23,7 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
         if (user.MfaEnabled)
             return await IssueMfaChallengeAsync(user);
 
-        return BuildLoginResponse(user);
+        return await BuildLoginResponse(user);
     }
 
     public async Task<LoginResponseDto?> GoogleLoginAsync(GoogleLoginRequestDto request)
@@ -64,7 +64,7 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
         if (user.MfaEnabled)
             return await IssueMfaChallengeAsync(user);
 
-        return BuildLoginResponse(user);
+        return await BuildLoginResponse(user);
     }
 
     public async Task<LoginResponseDto?> VerifyMfaAsync(VerifyMfaRequestDto request)
@@ -80,10 +80,8 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
         user.MfaCode           = null;
         user.MfaCodeExpiresAt  = null;
         user.MfaChallengeToken = null;
-        user.LastLogin         = DateTime.UtcNow;
-        await db.SaveChangesAsync();
 
-        return BuildLoginResponse(user);
+        return await BuildLoginResponse(user);
     }
 
     public async Task<bool> ResendMfaCodeAsync(ResendMfaRequestDto request)
@@ -125,8 +123,11 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
         }
     }
 
-    private LoginResponseDto BuildLoginResponse(User user)
+    private async Task<LoginResponseDto> BuildLoginResponse(User user)
     {
+        user.LastLogin = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+
         var token     = JwtHelper.GenerateToken(user, config);
         var expiresAt = DateTime.UtcNow.AddHours(
             int.TryParse(config["JWT_EXPIRES_HOURS"], out var h) ? h : 24);
