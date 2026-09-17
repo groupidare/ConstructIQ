@@ -9,13 +9,16 @@ namespace ConstructIQ.API.Services;
 
 public class InventoryService(AppDbContext db) : IInventoryService
 {
-    public async Task<IEnumerable<InventoryResponseDto>> GetByProjectAsync(int projectId)
+    public async Task<IEnumerable<InventoryResponseDto>> GetByProjectAsync(int projectId, bool inStockOnly = false)
     {
-        return await db.InventoryRecords
+        var query = db.InventoryRecords
             .Include(r => r.Material)
-            .Where(r => r.ProjectId == projectId)
-            .Select(r => ToDto(r))
-            .ToListAsync();
+            .Where(r => r.ProjectId == projectId);
+
+        if (inStockOnly)
+            query = query.Where(r => r.AvailableQuantity > 0);
+
+        return await query.Select(r => ToDto(r)).ToListAsync();
     }
 
     public async Task<InventoryResponseDto?> GetByIdAsync(int id)

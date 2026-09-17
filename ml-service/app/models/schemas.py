@@ -60,3 +60,22 @@ class DocumentParseResponse(BaseModel):
     items:       list[ParsedBOQItem]
     page_count:  int
     parse_errors:list[str] = []
+
+
+class ParsedMeasurementItem(BaseModel):
+    element_type: str
+    length_m:     float = 0
+    width_m:      float = 0
+    height_m:     float = 0
+    thickness_m:  float = 0
+    area_label:   Optional[str] = None
+    source_page:  int
+    ocr_used:     bool = False
+
+
+class DocumentParseMeasurementsResponse(BaseModel):
+    project_id:     int
+    items:          list[ParsedMeasurementItem]
+    page_count:     int
+    ocr_pages_used: int = 0
+    parse_errors:   list[str] = []

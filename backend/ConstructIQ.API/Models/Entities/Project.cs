@@ -4,7 +4,7 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace ConstructIQ.API.Models.Entities;
 
 public enum ProjectStatus { Planning, Active, OnHold, Completed, Cancelled }
-public enum ProjectType  { Residential, Commercial, Industrial, Infrastructure, Renovation }
+public enum ProjectType  { Residential, Commercial, Industrial, Infrastructure, Renovation, Others }
 
 public class Project
 {
@@ -14,6 +14,10 @@ public class Project
     public string Name { get; set; } = string.Empty;
 
     public ProjectType Type { get; set; }
+
+    // Only meaningful when Type == Others.
+    [MaxLength(200)]
+    public string? OtherTypeSpecify { get; set; }
 
     [Required, MaxLength(300)]
     public string Location { get; set; } = string.Empty;

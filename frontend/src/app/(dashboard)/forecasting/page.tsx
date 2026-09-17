@@ -1,12 +1,16 @@
 "use client";
 
 import { useState } from "react";
+import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
-import { BarChart3, TrendingUp, ShoppingCart, AlertTriangle } from "lucide-react";
+import { BarChart3, TrendingUp, ShoppingCart, AlertTriangle, Cpu } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
+import { useAuthStore } from "@/store/authStore";
+import { useModelTraining } from "@/hooks/useModelTraining";
+import type { TrainModelsResult } from "@/types/forecast";
 
 // ── Static data ───────────────────────────────────────────────────────────────
 
@@ -72,6 +76,22 @@ const FORECAST_TABLE = [
 
 export default function ForecastingPage() {
   const [tab, setTab] = useState<"demand" | "heatmap" | "procurement">("demand");
+  const { user } = useAuthStore();
+  const { training, trainModels } = useModelTraining();
+  const [lastTrainResult, setLastTrainResult] = useState<TrainModelsResult | null>(null);
+
+  async function handleTrain() {
+    try {
+      const result = await trainModels();
+      setLastTrainResult(result);
+      toast.success(`Trained on ${result.sampleCount} historical BOQ record(s).`);
+    } catch (err) {
+      const raw = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? "";
+      toast.error(raw.includes("Not enough")
+        ? "Not enough completed-project data yet — mark more projects Completed with actual quantities filled in."
+        : "Training failed.");
+    }
+  }
 
   return (
     <div style={{ background: "#f5f4f0" }}>
@@ -273,6 +293,33 @@ export default function ForecastingPage() {
               ))}
             </div>
           </div>
+
+          {/* Real model training — the rest of this page is still mock data */}
+          {user?.role === "Admin" && (
+            <div style={{ background: "#fff", borderRadius: 12, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "0.75rem" }}>
+                <Cpu style={{ width: 15, height: 15, color: "#f97316" }} />
+                <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#111827" }}>Train Forecasting Model</span>
+              </div>
+              <p style={{ fontSize: "0.7rem", color: "#9ca3af", marginBottom: "0.75rem" }}>
+                Trains on Actual Qty from projects marked Completed.
+              </p>
+              <button
+                onClick={handleTrain}
+                disabled={training}
+                style={{ width: "100%", padding: "8px 0", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer", opacity: training ? 0.7 : 1 }}
+              >
+                {training ? "Training…" : "Train Now"}
+              </button>
+              {lastTrainResult && (
+                <div style={{ marginTop: "0.875rem", fontSize: "0.72rem", color: "#374151", display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span>Samples: <strong>{lastTrainResult.sampleCount}</strong></span>
+                  <span>Random Forest R²: <strong>{lastTrainResult.randomForest.r2.toFixed(3)}</strong> (MAE {lastTrainResult.randomForest.mae.toFixed(2)})</span>
+                  <span>XGBoost R²: <strong>{lastTrainResult.xgboost.r2.toFixed(3)}</strong> (MAE {lastTrainResult.xgboost.mae.toFixed(2)})</span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Material Forecast Table */}
           <div style={{ background: "#fff", borderRadius: 12, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>

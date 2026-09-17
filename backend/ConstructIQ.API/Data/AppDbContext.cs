@@ -20,6 +20,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<PurchaseRequest>          PurchaseRequests          => Set<PurchaseRequest>();
     public DbSet<RedistributionRequest>    RedistributionRequests    => Set<RedistributionRequest>();
     public DbSet<ActivityLog>              ActivityLogs              => Set<ActivityLog>();
+    public DbSet<Measurement>              Measurements              => Set<Measurement>();
+    public DbSet<ProjectDocument>          ProjectDocuments          => Set<ProjectDocument>();
+    public DbSet<Notification>             Notifications             => Set<Notification>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -85,5 +88,23 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .WithMany()
             .HasForeignKey(r => r.ApprovedByUserId)
             .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<Measurement>()
+            .HasOne(m => m.RecordedBy)
+            .WithMany()
+            .HasForeignKey(m => m.RecordedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<ProjectDocument>()
+            .HasOne(d => d.UploadedBy)
+            .WithMany()
+            .HasForeignKey(d => d.UploadedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<Notification>()
+            .HasOne(n => n.CreatedBy)
+            .WithMany()
+            .HasForeignKey(n => n.CreatedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

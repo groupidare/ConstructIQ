@@ -1,10 +1,14 @@
-from app.models.schemas import DocumentParseRequest, DocumentParseResponse, ParsedBOQItem
+from app.models.schemas import (
+    DocumentParseRequest, DocumentParseResponse, ParsedBOQItem,
+    DocumentParseMeasurementsResponse, ParsedMeasurementItem,
+)
 from app.utils.pdf_extractor import (
     extract_tables_from_pdf,
     detect_phase_from_text,
     parse_quantity_from_cell,
     extract_text_from_pdf,
 )
+from app.utils.dimension_extractor import extract_measurement_candidates
 
 
 UNIT_KEYWORDS = {"pcs", "pc", "bags", "bag", "m", "m2", "m3", "kg", "ltr", "gal", "roll", "set", "length", "sheets", "units"}
@@ -92,4 +96,30 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
         items       = items,
         page_count  = page_count,
         parse_errors= errors,
+    )
+
+
+def parse_measurements_document(request: DocumentParseRequest) -> DocumentParseMeasurementsResponse:
+    result = extract_measurement_candidates(request.file_path)
+
+    items = [
+        ParsedMeasurementItem(
+            element_type = c.element_type,
+            length_m     = c.length_m,
+            width_m      = c.width_m,
+            height_m     = c.height_m,
+            thickness_m  = c.thickness_m,
+            area_label   = c.area_label,
+            source_page  = c.source_page,
+            ocr_used     = c.ocr_used,
+        )
+        for c in result.candidates
+    ]
+
+    return DocumentParseMeasurementsResponse(
+        project_id     = request.project_id,
+        items          = items,
+        page_count     = result.page_count,
+        ocr_pages_used = result.ocr_pages_used,
+        parse_errors   = result.warnings,
     )

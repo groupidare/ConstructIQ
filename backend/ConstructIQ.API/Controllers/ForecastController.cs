@@ -25,4 +25,18 @@ public class ForecastController(IForecastService forecastService) : ControllerBa
     [HttpGet("accuracy/{projectId:int}")]
     public async Task<IActionResult> GetAccuracy(int projectId) =>
         Ok(await forecastService.GetAccuracyReportAsync(projectId));
+
+    [HttpPost("train")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> Train()
+    {
+        try
+        {
+            return Ok(await forecastService.TrainModelsAsync());
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
 }

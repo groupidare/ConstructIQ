@@ -29,7 +29,7 @@ def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> lis
             COALESCE(ir.AvailableQuantity, 0) AS current_stock,
             COALESCE(ir.ExcessQuantity, 0) AS excess_quantity,
             COALESCE(ir.WastedQuantity, 0) AS wasted_quantity,
-            COALESCE(ph.Name, '') AS phase_name,
+            COALESCE(bi.PrimarySection, '') AS primary_section,
             p.Type AS project_type_encoded,
             DATEDIFF(NOW(), COALESCE(ph.StartDate, p.StartDate)) AS days_into_phase,
             DATEDIFF(COALESCE(ph.EndDate, p.TargetEndDate),
@@ -43,7 +43,7 @@ def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> lis
         WHERE bi.ProjectId = :project_id
         {phase_filter}
         GROUP BY m.Id, bi.EstimatedQuantity, bi.ActualQuantity, ir.AvailableQuantity,
-                 ir.ExcessQuantity, ir.WastedQuantity, ph.Name, p.Type,
+                 ir.ExcessQuantity, ir.WastedQuantity, bi.PrimarySection, p.Type,
                  ph.StartDate, ph.EndDate, p.StartDate, p.TargetEndDate, ph.ProgressPercent
     """)
 

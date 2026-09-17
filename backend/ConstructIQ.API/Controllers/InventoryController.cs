@@ -16,8 +16,8 @@ public class InventoryController(IInventoryService inventoryService) : Controlle
             ?? User.FindFirst("sub")?.Value ?? "0");
 
     [HttpGet("project/{projectId:int}")]
-    public async Task<IActionResult> GetByProject(int projectId) =>
-        Ok(await inventoryService.GetByProjectAsync(projectId));
+    public async Task<IActionResult> GetByProject(int projectId, [FromQuery] bool inStockOnly = false) =>
+        Ok(await inventoryService.GetByProjectAsync(projectId, inStockOnly));
 
     [HttpGet("{id:int}")]
     public async Task<IActionResult> GetById(int id)
