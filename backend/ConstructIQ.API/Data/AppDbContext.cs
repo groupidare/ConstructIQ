@@ -23,6 +23,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Measurement>              Measurements              => Set<Measurement>();
     public DbSet<ProjectDocument>          ProjectDocuments          => Set<ProjectDocument>();
     public DbSet<Notification>             Notifications             => Set<Notification>();
+    public DbSet<Supplier>                 Suppliers                 => Set<Supplier>();
+    public DbSet<PurchaseOrder>            PurchaseOrders            => Set<PurchaseOrder>();
+    public DbSet<PurchaseOrderMaterial>    PurchaseOrderMaterials    => Set<PurchaseOrderMaterial>();
+    public DbSet<DeliveryEvaluation>       DeliveryEvaluations       => Set<DeliveryEvaluation>();
+    public DbSet<DeliveryPhoto>            DeliveryPhotos            => Set<DeliveryPhoto>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -106,5 +111,43 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .WithMany()
             .HasForeignKey(n => n.CreatedByUserId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<PurchaseOrder>()
+            .HasIndex(po => po.Number)
+            .IsUnique();
+
+        mb.Entity<PurchaseOrder>()
+            .HasOne(po => po.Project)
+            .WithMany()
+            .HasForeignKey(po => po.ProjectId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<PurchaseOrder>()
+            .HasOne(po => po.Supplier)
+            .WithMany(s => s.PurchaseOrders)
+            .HasForeignKey(po => po.SupplierId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<PurchaseOrder>()
+            .HasOne(po => po.CreatedBy)
+            .WithMany()
+            .HasForeignKey(po => po.CreatedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<PurchaseOrder>()
+            .HasOne(po => po.Evaluation)
+            .WithOne(e => e.PurchaseOrder)
+            .HasForeignKey<DeliveryEvaluation>(e => e.PurchaseOrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<DeliveryEvaluation>()
+            .HasOne(e => e.RatedBy)
+            .WithMany()
+            .HasForeignKey(e => e.RatedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<Supplier>()
+            .HasIndex(s => s.Name)
+            .IsUnique();
     }
 }

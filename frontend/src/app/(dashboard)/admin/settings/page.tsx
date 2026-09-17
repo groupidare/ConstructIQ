@@ -48,14 +48,15 @@ function relTime(iso: string) {
 
 // ── Toggle ────────────────────────────────────────────────────────────────────
 
-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ on, onChange, disabled }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
     <button
-      onClick={() => onChange(!on)}
+      onClick={() => !disabled && onChange(!on)}
+      disabled={disabled}
       style={{
-        width: 44, height: 24, borderRadius: 12, padding: 0, border: "none", cursor: "pointer",
+        width: 44, height: 24, borderRadius: 12, padding: 0, border: "none", cursor: disabled ? "not-allowed" : "pointer",
         background: on ? "#f97316" : "#d1d5db", position: "relative", flexShrink: 0,
-        transition: "background 0.2s",
+        transition: "background 0.2s", opacity: disabled ? 0.6 : 1,
       }}
     >
       <span style={{
@@ -171,7 +172,26 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
 // ── MFA modal ─────────────────────────────────────────────────────────────────
 
 function MFAModal({ onClose }: { onClose: () => void }) {
-  const [enabled, setEnabled] = useState(false);
+  const user       = useAuthStore(s => s.user);
+  const updateUser = useAuthStore(s => s.updateUser);
+  const [enabled, setEnabled] = useState(user?.mfaEnabled ?? false);
+  const [saving,  setSaving]  = useState(false);
+
+  async function handleToggle(v: boolean) {
+    setEnabled(v);
+    setSaving(true);
+    try {
+      const { data } = await api.put("/users/me/mfa", { enabled: v });
+      updateUser({ mfaEnabled: data.mfaEnabled });
+      toast.success(v ? "MFA enabled." : "MFA disabled.");
+    } catch {
+      setEnabled(!v);
+      toast.error("Failed to update MFA setting.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }}>
       <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:440, boxShadow:"0 20px 60px rgba(0,0,0,0.2)" }}>
@@ -185,14 +205,14 @@ function MFAModal({ onClose }: { onClose: () => void }) {
         <div style={{ background:"#f9fafb", borderRadius:10, padding:"1rem", marginBottom:"1.25rem" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <div>
-              <p style={{ fontWeight:700, fontSize:"0.9rem" }}>Authenticator App</p>
-              <p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>Use Google Authenticator or similar app</p>
+              <p style={{ fontWeight:700, fontSize:"0.9rem" }}>Email Verification Code</p>
+              <p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>A code is emailed to {user?.email} at every sign-in</p>
             </div>
-            <Toggle on={enabled} onChange={v => { setEnabled(v); toast.success(v ? "MFA enabled." : "MFA disabled."); }} />
+            <Toggle on={enabled} onChange={handleToggle} disabled={saving} />
           </div>
         </div>
         <p style={{ fontSize:"0.75rem", color:"#6b7280", lineHeight:1.6 }}>
-          Multi-Factor Authentication adds an extra layer of security to your account. When enabled, you'll need to enter a code from your authenticator app in addition to your password.
+          Multi-Factor Authentication adds an extra layer of security to your account. When enabled, you&apos;ll receive a 6-digit code by email that you must enter, in addition to your password, every time you sign in.
         </p>
         <div style={{ display:"flex", justifyContent:"flex-end", marginTop:"1.25rem" }}>
           <button onClick={onClose} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>Close</button>
@@ -688,7 +708,6 @@ export default function SettingsPage() {
     shortageAlerts:    true,
     overstockWarnings: true,
     deliveryUpdates:   true,
-    wasteReports:      false,
     aiForecastUpdates: true,
   });
 
@@ -764,7 +783,6 @@ export default function SettingsPage() {
             ["shortageAlerts",    "Shortage Alerts",       "Get notified when materials reach critical levels"],
             ["overstockWarnings", "Overstock Warnings",    "Alerts for materials exceeding maximum thresholds"],
             ["deliveryUpdates",   "Delivery Updates",      "Track procurement order status changes"],
-            ["wasteReports",      "Waste Reports",         "Weekly waste analytics summary"],
             ["aiForecastUpdates", "AI Forecast Updates",   "Notifications when demand predictions change significantly"],
           ] as [keyof typeof notifs, string, string][]).map(([key, title, desc], i, arr) => (
             <div key={key} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 0", borderBottom: i < arr.length-1 ? "1px solid #f3f4f6" : "none" }}>

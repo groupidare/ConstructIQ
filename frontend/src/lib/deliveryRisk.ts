@@ -2,7 +2,7 @@ import type { ConstructionRiskLevel } from "@/types/weather";
 
 export interface DeliveryRiskInput {
   number: string;
-  material: string;
+  projectName: string;
   supplier: string;
   status: string;
   expectedDate: string;
@@ -11,7 +11,7 @@ export interface DeliveryRiskInput {
 export type AtRiskPurchaseOrder<T> = T & { bufferDays: number; reason: string };
 
 // Only orders still in motion can be delayed by weather — delivered/cancelled ones can't.
-const ACTIVE_STATUSES = new Set(["PENDING", "APPROVED", "TRANSIT"]);
+const ACTIVE_STATUSES = new Set(["PENDING", "APPROVED"]);
 
 const BUFFER_DAYS_BY_LEVEL: Record<ConstructionRiskLevel, number> = {
   low: 0,

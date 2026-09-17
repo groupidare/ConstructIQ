@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -8,12 +8,12 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/authStore";
 import api from "@/lib/api";
-import type { LoginResponse } from "@/types/auth";
+import type { LoginResponse, LoginSuccessResponse } from "@/types/auth";
 import toast from "react-hot-toast";
 import {
   Loader2, User, Lock, TrendingUp, Package as BoxIcon,
   ShieldCheck, BarChart2, MapPin, Shield, Package, ShoppingCart, Info,
-  Eye, EyeOff,
+  Eye, EyeOff, KeyRound, ArrowLeft,
 } from "lucide-react";
 import { PrivacyModal, type PrivacyTab } from "@/components/modals/PrivacyModal";
 import GoogleSignInButton from "@/components/auth/GoogleSignInButton";
@@ -43,6 +43,10 @@ export default function LoginPage() {
   const [privacyOpen, setPrivacyOpen]   = useState(false);
   const [privacyTab,  setPrivacyTab]    = useState<PrivacyTab>("policy");
 
+  const [mfaStep, setMfaStep] = useState<{ challengeToken: string; role: string } | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
+  const [resending, setResending] = useState(false);
+
   const { register, handleSubmit, setValue, formState: { errors } } = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: { agreeToTerms: false, role: "" },
@@ -61,6 +65,12 @@ export default function LoginPage() {
         password: data.password.trim(),
       });
 
+      if (res.data.mfaRequired) {
+        setMfaStep({ challengeToken: res.data.challengeToken, role: data.role });
+        toast.success("Verification code sent to your email.");
+        return;
+      }
+
       if (res.data.user.role !== data.role) {
         toast.error(`Wrong role. Your account role is "${res.data.user.role}".`);
         return;
@@ -74,6 +84,47 @@ export default function LoginPage() {
       reportLoginError(error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleVerifyMfa = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!mfaStep) return;
+    setLoading(true);
+    try {
+      const res = await api.post<LoginSuccessResponse>("/auth/mfa/verify", {
+        challengeToken: mfaStep.challengeToken,
+        code: mfaCode.trim(),
+      });
+
+      if (res.data.user.role !== mfaStep.role) {
+        toast.error(`Wrong role. Your account role is "${res.data.user.role}".`);
+        setMfaStep(null);
+        setMfaCode("");
+        return;
+      }
+
+      setAuth(res.data.user, res.data.token);
+      const displayName = res.data.user.role === "Admin" ? "Admin" : res.data.user.firstName;
+      toast.success(`Welcome back, ${displayName}!`);
+      router.push("/projects");
+    } catch (error: unknown) {
+      reportLoginError(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendMfa = async () => {
+    if (!mfaStep) return;
+    setResending(true);
+    try {
+      await api.post("/auth/mfa/resend", { challengeToken: mfaStep.challengeToken });
+      toast.success("Code resent.");
+    } catch (error: unknown) {
+      reportLoginError(error);
+    } finally {
+      setResending(false);
     }
   };
 
@@ -101,6 +152,12 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const res = await api.post<LoginResponse>("/auth/google", { idToken });
+
+      if (res.data.mfaRequired) {
+        setMfaStep({ challengeToken: res.data.challengeToken, role: selectedRole });
+        toast.success("Verification code sent to your email.");
+        return;
+      }
 
       if (res.data.user.role !== selectedRole) {
         toast.error(`Wrong role. Your account role is "${res.data.user.role}".`);
@@ -232,7 +289,81 @@ export default function LoginPage() {
           overflowY: "auto",
         }}>
           <div style={{ maxWidth: 360, margin: "0 auto", width: "100%" }}>
+          {mfaStep ? (
+            <Fragment key="mfa-verify">
+              {/* Header */}
+              <div style={{ marginBottom: "1.5rem" }}>
+                <h2 style={{ color: "#fb923c", fontWeight: 700, fontSize: "1.6rem", marginBottom: "0.25rem" }}>
+                  Verify it&apos;s you
+                </h2>
+                <p style={{ color: "#6b7280", fontSize: "0.875rem" }}>
+                  Enter the 6-digit code we emailed to your registered address.
+                </p>
+              </div>
 
+              <form onSubmit={handleVerifyMfa} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                <div>
+                  <label style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>
+                    Verification code
+                  </label>
+                  <div style={{ position: "relative" }}>
+                    <KeyRound style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", width: 16, height: 16, color: "#4b5563", pointerEvents: "none" }} />
+                    <input
+                      value={mfaCode}
+                      onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      autoFocus
+                      inputMode="numeric"
+                      placeholder="000000"
+                      style={{
+                        width: "100%", boxSizing: "border-box",
+                        paddingLeft: 40, paddingRight: 16, paddingTop: 10, paddingBottom: 10,
+                        borderRadius: 8, background: "#060e1e",
+                        border: "1px solid #1e3a5f", color: "#fff",
+                        fontSize: "1.1rem", letterSpacing: "0.3em", outline: "none",
+                      }}
+                      onFocus={e => (e.currentTarget.style.borderColor = "#3b82f6")}
+                      onBlur={e  => (e.currentTarget.style.borderColor = "#1e3a5f")}
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading || mfaCode.length !== 6}
+                  style={{
+                    width: "100%", padding: "12px",
+                    borderRadius: 8, border: "none",
+                    background: "#1a3a6b", color: "#fff",
+                    fontWeight: 700, fontSize: "0.95rem",
+                    cursor: (loading || mfaCode.length !== 6) ? "not-allowed" : "pointer",
+                    opacity: (loading || mfaCode.length !== 6) ? 0.6 : 1,
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                  }}
+                >
+                  {loading ? <Loader2 style={{ width: 18, height: 18, animation: "spin 1s linear infinite" }} /> : "Verify and sign in"}
+                </button>
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.75rem" }}>
+                  <button
+                    type="button"
+                    onClick={() => { setMfaStep(null); setMfaCode(""); }}
+                    style={{ display: "flex", alignItems: "center", gap: 4, color: "#9ca3af", background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", padding: 0 }}
+                  >
+                    <ArrowLeft style={{ width: 12, height: 12 }} /> Back to login
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleResendMfa}
+                    disabled={resending}
+                    style={{ color: "#fb923c", background: "none", border: "none", cursor: resending ? "not-allowed" : "pointer", fontSize: "0.75rem", padding: 0, opacity: resending ? 0.6 : 1 }}
+                  >
+                    {resending ? "Resending…" : "Resend code"}
+                  </button>
+                </div>
+              </form>
+            </Fragment>
+          ) : (
+            <Fragment key="login-form">
             {/* Header */}
             <div style={{ marginBottom: "1.5rem" }}>
               <h2 style={{ color: "#fb923c", fontWeight: 700, fontSize: "1.6rem", marginBottom: "0.25rem" }}>
@@ -426,6 +557,8 @@ export default function LoginPage() {
               </div>
 
             </form>
+            </Fragment>
+          )}
           </div>
         </div>
       </div>

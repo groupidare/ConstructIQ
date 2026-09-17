@@ -49,9 +49,17 @@ function initials(first: string, last: string) {
   return `${first[0] ?? ""}${last[0] ?? ""}`.toUpperCase();
 }
 
+// The backend serializes DateTimes as UTC but without a "Z"/offset suffix
+// (a MySQL + EF Core quirk), so the browser's Date parser would otherwise
+// read them as local time and throw relative times off by the UTC offset.
+function parseUtc(iso: string): Date {
+  const hasTimezone = /Z$|[+-]\d{2}:\d{2}$/.test(iso);
+  return new Date(hasTimezone ? iso : `${iso}Z`);
+}
+
 function relativeTime(iso?: string): string {
   if (!iso) return "Never";
-  const diff = Date.now() - new Date(iso).getTime();
+  const diff = Date.now() - parseUtc(iso).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1)  return "Just now";
   if (mins < 60) return `${mins} min ago`;
@@ -60,7 +68,7 @@ function relativeTime(iso?: string): string {
   const days = Math.floor(hrs / 24);
   if (days === 1) return "Yesterday";
   if (days < 7)  return `${days} days ago`;
-  return new Date(iso).toLocaleDateString("en-PH", { month:"short", day:"numeric" });
+  return parseUtc(iso).toLocaleDateString("en-PH", { month:"short", day:"numeric" });
 }
 
 // ── Role cards used in modal ──────────────────────────────────────────────────
@@ -139,7 +147,7 @@ function NewUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
 
   const inp: React.CSSProperties = {
     width: "100%", boxSizing: "border-box" as const,
-    background: "#111827", color: "#fff", border: "none",
+    background: "#fff", color: "#111827", border: "1px solid #e5e7eb",
     borderRadius: 8, padding: "9px 12px", fontSize: "0.875rem", outline: "none",
   };
   const label: React.CSSProperties = { fontSize: "0.65rem", color: "#9ca3af", marginBottom: 4, display: "block", fontWeight: 700, letterSpacing: "0.05em" };
@@ -224,13 +232,15 @@ function NewUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
             <p style={{ fontSize:"0.65rem", fontWeight:800, color:"#9ca3af", letterSpacing:"0.1em", marginBottom:"0.625rem" }}>PROJECT ASSIGNMENT</p>
             <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:"0.5rem" }}>ASSIGN TO PROJECTS *</p>
             {activeProjects.length > 0 ? (
-              <div style={{ background:"#111827", borderRadius:8, overflow:"hidden", marginBottom:4 }}>
-                {activeProjects.map(p => (
+              <div style={{ background:"#fff", border:"1px solid #e5e7eb", borderRadius:8, overflow:"hidden", marginBottom:4 }}>
+                {activeProjects.map((p, i) => (
                   <button key={p} onClick={()=>toggleProject(p)} style={{
                     display:"block", width:"100%", textAlign:"left",
                     padding:"9px 14px", fontSize:"0.875rem", cursor:"pointer", border:"none",
-                    background: projects.includes(p) ? "#1e3154" : "transparent",
-                    color: "#d1d5db", borderBottom:"1px solid rgba(255,255,255,0.05)",
+                    background: projects.includes(p) ? "#fff7ed" : "#fff",
+                    color: projects.includes(p) ? "#ea580c" : "#374151",
+                    fontWeight: projects.includes(p) ? 600 : 400,
+                    borderBottom: i < activeProjects.length - 1 ? "1px solid #f3f4f6" : "none",
                   }}>
                     {p}
                   </button>
@@ -288,7 +298,7 @@ function ViewUserModal({ user, onClose }: { user: UserRecord; onClose: () => voi
           ["Phone",       user.phoneNumber ?? "—"],
           ["Projects",    `${user.projectCount} assigned`],
           ["Last Login",  relativeTime(user.lastLogin)],
-          ["Member Since",new Date(user.createdAt).toLocaleDateString("en-PH", { year:"numeric", month:"long", day:"numeric" })],
+          ["Member Since",parseUtc(user.createdAt).toLocaleDateString("en-PH", { year:"numeric", month:"long", day:"numeric" })],
         ].map(([k,v]) => (
           <div key={k} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #f9fafb" }}>
             <span style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{k}</span>
