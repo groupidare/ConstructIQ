@@ -38,6 +38,9 @@ def detect_phase_from_text(text: str) -> str | None:
     return None
 
 
+_OCR_DIGIT_FIX = str.maketrans({"O": "0", "o": "0", "S": "5", "I": "1", "l": "1", "B": "8", "Z": "2"})
+
+
 def parse_quantity_from_cell(cell: str | None) -> float | None:
     if not cell:
         return None
@@ -45,5 +48,13 @@ def parse_quantity_from_cell(cell: str | None) -> float | None:
     digits = re.sub(r"[,\s]", "", cell)
     try:
         return float(digits)
+    except ValueError:
+        pass
+    # Scanned/OCR-sourced documents commonly confuse letters and digits
+    # (O/0, S/5, I or l/1, B/8) — retry once with the common substitutions
+    # before giving up on an otherwise plausible-looking numeric cell.
+    fixed = digits.translate(_OCR_DIGIT_FIX)
+    try:
+        return float(fixed)
     except ValueError:
         return None

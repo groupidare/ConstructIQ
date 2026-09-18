@@ -24,6 +24,11 @@ public class BOQItem
     [Column(TypeName = "decimal(18,4)")]
     public decimal EstimatedQuantity { get; set; }
 
+    // Mirrors EstimatedQuantity only when Unit is an area unit (sq.m./sqm/m2/m²),
+    // else null — derived server-side in BOQService, never client-supplied.
+    [Column(TypeName = "decimal(18,4)")]
+    public decimal? CoverageArea { get; set; }
+
     [Column(TypeName = "decimal(18,4)")]
     public decimal ActualQuantity { get; set; } = 0;
 

@@ -5,14 +5,9 @@ from xgboost import XGBRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-from app.ml.feature_engineering import records_to_dataframe
+from app.ml.feature_engineering import records_to_dataframe, FEATURE_COLS
 
 MODEL_PATH = Path("trained_models/xgb_model.ubj")
-FEATURE_COLS = [
-    "boq_quantity", "actual_used", "current_stock", "excess_quantity",
-    "wasted_quantity", "primary_section_encoded", "project_type_encoded",
-    "days_into_phase", "phase_duration_days", "progress_percent", "usage_rate",
-]
 
 
 def train(records: list[dict], targets: list[float]) -> dict:

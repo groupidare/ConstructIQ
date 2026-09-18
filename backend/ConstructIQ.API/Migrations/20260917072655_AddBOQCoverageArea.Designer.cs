@@ -4,6 +4,7 @@ using ConstructIQ.API.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ConstructIQ.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260917072655_AddBOQCoverageArea")]
+    partial class AddBOQCoverageArea
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -772,14 +775,6 @@ namespace ConstructIQ.API.Migrations
                     b.Property<int>("Category")
                         .HasColumnType("int");
 
-                    b.Property<string>("CategoryOther")
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(1000)
-                        .HasColumnType("varchar(1000)");
-
                     b.Property<string>("FileName")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -833,9 +828,6 @@ namespace ConstructIQ.API.Migrations
                         .HasMaxLength(30)
                         .HasColumnType("varchar(30)");
 
-                    b.Property<DateTime>("OrderDate")
-                        .HasColumnType("datetime(6)");
-
                     b.Property<int>("ProjectId")
                         .HasColumnType("int");
 
@@ -870,23 +862,10 @@ namespace ConstructIQ.API.Migrations
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<int?>("BOQItemId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("MaterialId")
-                        .HasColumnType("int");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("varchar(200)");
-
-                    b.Property<int?>("PhaseId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("PrimarySection")
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
 
                     b.Property<int>("PurchaseOrderId")
                         .HasColumnType("int");
@@ -894,22 +873,12 @@ namespace ConstructIQ.API.Migrations
                     b.Property<decimal>("Quantity")
                         .HasColumnType("decimal(18,4)");
 
-                    b.Property<string>("SubCategory")
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
-
                     b.Property<string>("Unit")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("varchar(20)");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("BOQItemId");
-
-                    b.HasIndex("MaterialId");
-
-                    b.HasIndex("PhaseId");
 
                     b.HasIndex("PurchaseOrderId");
 
@@ -1511,7 +1480,7 @@ namespace ConstructIQ.API.Migrations
                     b.HasOne("ConstructIQ.API.Models.Entities.Project", "Project")
                         .WithMany()
                         .HasForeignKey("ProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.HasOne("ConstructIQ.API.Models.Entities.Supplier", "Supplier")
@@ -1529,32 +1498,11 @@ namespace ConstructIQ.API.Migrations
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.PurchaseOrderMaterial", b =>
                 {
-                    b.HasOne("ConstructIQ.API.Models.Entities.BOQItem", "BOQItem")
-                        .WithMany()
-                        .HasForeignKey("BOQItemId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("ConstructIQ.API.Models.Entities.Material", "Material")
-                        .WithMany()
-                        .HasForeignKey("MaterialId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("ConstructIQ.API.Models.Entities.Phase", "Phase")
-                        .WithMany()
-                        .HasForeignKey("PhaseId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
                     b.HasOne("ConstructIQ.API.Models.Entities.PurchaseOrder", "PurchaseOrder")
                         .WithMany("Materials")
                         .HasForeignKey("PurchaseOrderId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.Navigation("BOQItem");
-
-                    b.Navigation("Material");
-
-                    b.Navigation("Phase");
 
                     b.Navigation("PurchaseOrder");
                 });
@@ -1619,13 +1567,13 @@ namespace ConstructIQ.API.Migrations
                     b.HasOne("ConstructIQ.API.Models.Entities.Project", "SourceProject")
                         .WithMany()
                         .HasForeignKey("SourceProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.HasOne("ConstructIQ.API.Models.Entities.Project", "TargetProject")
                         .WithMany()
                         .HasForeignKey("TargetProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("ApprovedBy");

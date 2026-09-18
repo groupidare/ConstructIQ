@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import api from '@/lib/api';
-import type { DocumentCategory, DocumentParseResult, MeasurementParseResult, ProjectDocument } from '@/types/document';
+import type { DocumentCategory, DocumentParseResult, PoParseResult, ProjectDocument } from '@/types/document';
 
 export function useDocuments(projectId: number) {
   const [documents, setDocuments] = useState<ProjectDocument[]>([]);
@@ -36,8 +36,8 @@ export function useDocuments(projectId: number) {
     return data;
   }
 
-  async function parseMeasurements(documentId: number): Promise<MeasurementParseResult> {
-    const { data } = await api.post<MeasurementParseResult>(`/documents/${documentId}/parse-measurements`);
+  async function parsePO(documentId: number): Promise<PoParseResult> {
+    const { data } = await api.post<PoParseResult>(`/documents/${documentId}/parse-po`);
     return data;
   }
 
@@ -46,5 +46,5 @@ export function useDocuments(projectId: number) {
     setDocuments(prev => prev.filter(d => d.id !== documentId));
   }
 
-  return { documents, loading, error, fetchDocuments, uploadDocument, parseDocument, parseMeasurements, deleteDocument };
+  return { documents, loading, error, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument };
 }

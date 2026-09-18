@@ -16,16 +16,22 @@ public class DocumentsController(IDocumentService documentService) : ControllerB
 
     [HttpPost("upload")]
     [RequestSizeLimit(26_214_400)] // 25 MB
-    public async Task<IActionResult> Upload([FromForm] IFormFile file, [FromForm] int projectId, [FromForm] string category)
+    public async Task<IActionResult> Upload(
+        [FromForm] IFormFile file, [FromForm] int projectId, [FromForm] string category,
+        [FromForm] string? categoryOther, [FromForm] string? description)
     {
         try
         {
-            var result = await documentService.UploadAsync(file, projectId, category, CurrentUserId);
+            var result = await documentService.UploadAsync(file, projectId, category, CurrentUserId, categoryOther, description);
             return Ok(result);
         }
         catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+
+    [HttpGet]
+    public async Task<IActionResult> GetAll([FromQuery] int? projectId) =>
+        Ok(await documentService.GetAllAsync(projectId));
 
     [HttpGet("project/{projectId:int}")]
     public async Task<IActionResult> GetByProject(int projectId) =>
@@ -42,12 +48,12 @@ public class DocumentsController(IDocumentService documentService) : ControllerB
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
-    [HttpPost("{id:int}/parse-measurements")]
-    public async Task<IActionResult> ParseMeasurements(int id)
+    [HttpPost("{id:int}/parse-po")]
+    public async Task<IActionResult> ParsePO(int id)
     {
         try
         {
-            return Ok(await documentService.ParseMeasurementsAsync(id));
+            return Ok(await documentService.ParsePOAsync(id));
         }
         catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }

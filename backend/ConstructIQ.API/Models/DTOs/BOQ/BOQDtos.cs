@@ -38,6 +38,9 @@ public class BOQItemResponseDto
     public string   MaterialName      { get; set; } = string.Empty;
     public string   Unit              { get; set; } = string.Empty;
     public decimal  EstimatedQuantity { get; set; }
+    // Server-derived only (mirrors EstimatedQuantity when Unit is an area unit) —
+    // never accepted from the client on save, see BOQItemUpsertDto.
+    public decimal? CoverageArea     { get; set; }
     public decimal  ActualQuantity    { get; set; }
     public string?  Notes             { get; set; }
     public DateTime CreatedAt         { get; set; }

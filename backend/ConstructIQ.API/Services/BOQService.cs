@@ -43,11 +43,18 @@ public class BOQService(AppDbContext db) : IBOQService
                 db.BOQItems.Add(entity);
             }
 
+            // Prefer the incoming row's own Unit (correct for scanned/unmatched rows)
+            // over the catalog Material's Unit, which may differ or not yet be loaded.
+            var unitForRow = !string.IsNullOrWhiteSpace(item.Unit)
+                ? item.Unit
+                : await db.Materials.Where(m => m.Id == materialId).Select(m => m.Unit).FirstOrDefaultAsync();
+
             entity.PhaseId           = item.PhaseId;
             entity.MaterialId        = materialId;
             entity.PrimarySection    = item.PrimarySection;
             entity.SubCategory       = item.SubCategory;
             entity.EstimatedQuantity = item.EstimatedQuantity;
+            entity.CoverageArea      = BOQUnitRules.IsAreaUnit(unitForRow) ? item.EstimatedQuantity : null;
             entity.ActualQuantity    = item.ActualQuantity ?? 0;
             entity.Notes             = item.Notes;
             entity.UpdatedAt         = DateTime.UtcNow;
@@ -121,6 +128,7 @@ public class BOQService(AppDbContext db) : IBOQService
         MaterialName      = b.Material.Name,
         Unit              = b.Material.Unit,
         EstimatedQuantity = b.EstimatedQuantity,
+        CoverageArea      = b.CoverageArea,
         ActualQuantity    = b.ActualQuantity,
         Notes             = b.Notes,
         CreatedAt         = b.CreatedAt,

@@ -2,7 +2,7 @@ using System.ComponentModel.DataAnnotations;
 
 namespace ConstructIQ.API.Models.Entities;
 
-public enum DocumentCategory { Blueprint, BOQ }
+public enum DocumentCategory { Blueprint, BOQ, PurchaseOrder, Contract, Other }
 
 public class ProjectDocument
 {
@@ -12,6 +12,14 @@ public class ProjectDocument
     public Project Project { get; set; } = null!;
 
     public DocumentCategory Category { get; set; }
+
+    // Only meaningful when Category is Other — the user's own label for it
+    // (mirrors the Project.OtherTypeSpecify "specify" pattern used elsewhere).
+    [MaxLength(200)]
+    public string? CategoryOther { get; set; }
+
+    [MaxLength(1000)]
+    public string? Description { get; set; }
 
     [Required, MaxLength(255)]
     public string FileName { get; set; } = string.Empty;

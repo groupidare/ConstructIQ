@@ -3,9 +3,14 @@ from sqlalchemy.engine import Engine
 import os
 from datetime import datetime, date
 
+from dotenv import load_dotenv
 from app.models.schemas import ForecastRequest, ForecastResponse, ForecastedMaterial, RiskLevel
 from app.ml import random_forest, xgboost_model
 from app.ml.model_evaluator import ensemble_predict, classify_risk
+
+# Loaded here (not just in main.py) so DB access works from any entrypoint —
+# a standalone script/test, not just the running FastAPI app. Idempotent.
+load_dotenv()
 
 
 def get_engine() -> Engine:
@@ -30,11 +35,21 @@ def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> lis
             COALESCE(ir.ExcessQuantity, 0) AS excess_quantity,
             COALESCE(ir.WastedQuantity, 0) AS wasted_quantity,
             COALESCE(bi.PrimarySection, '') AS primary_section,
+            COALESCE(bi.CoverageArea, 0) AS coverage_area,
             p.Type AS project_type_encoded,
             DATEDIFF(NOW(), COALESCE(ph.StartDate, p.StartDate)) AS days_into_phase,
             DATEDIFF(COALESCE(ph.EndDate, p.TargetEndDate),
                      COALESCE(ph.StartDate, p.StartDate)) AS phase_duration_days,
-            COALESCE(ph.ProgressPercent, 0) AS progress_percent
+            COALESCE(ph.ProgressPercent, 0) AS progress_percent,
+            COALESCE((
+                SELECT AVG(de.ActualLeadDays)
+                FROM purchaseordermaterials pom
+                JOIN purchaseorders po ON po.Id = pom.PurchaseOrderId AND po.Status = 2
+                JOIN deliveryevaluations de ON de.PurchaseOrderId = po.Id
+                WHERE pom.BOQItemId = bi.Id
+                   OR (pom.BOQItemId IS NULL AND pom.MaterialId = bi.MaterialId
+                       AND (pom.PhaseId = bi.PhaseId OR (pom.PhaseId IS NULL AND bi.PhaseId IS NULL)))
+            ), 7) AS supplier_lead_time_days
         FROM boqitems bi
         JOIN materials m ON m.Id = bi.MaterialId
         JOIN projects p  ON p.Id = bi.ProjectId
@@ -42,8 +57,8 @@ def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> lis
         LEFT JOIN inventoryrecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
         WHERE bi.ProjectId = :project_id
         {phase_filter}
-        GROUP BY m.Id, bi.EstimatedQuantity, bi.ActualQuantity, ir.AvailableQuantity,
-                 ir.ExcessQuantity, ir.WastedQuantity, bi.PrimarySection, p.Type,
+        GROUP BY m.Id, bi.Id, bi.EstimatedQuantity, bi.ActualQuantity, ir.AvailableQuantity,
+                 ir.ExcessQuantity, ir.WastedQuantity, bi.PrimarySection, bi.CoverageArea, p.Type,
                  ph.StartDate, ph.EndDate, p.StartDate, p.TargetEndDate, ph.ProgressPercent
     """)
 

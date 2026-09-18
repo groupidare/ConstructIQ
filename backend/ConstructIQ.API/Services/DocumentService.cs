@@ -15,22 +15,18 @@ public class DocumentService(
     IHttpClientFactory httpFactory,
     ILogger<DocumentService> logger) : IDocumentService
 {
-    private static readonly string[] AllowedExtensions =
-        [".pdf", ".xlsx", ".xls", ".csv", ".docx", ".png", ".jpg", ".jpeg"];
-
     private const long MaxFileSizeBytes = 25 * 1024 * 1024; // 25 MB
 
-    public async Task<ProjectDocumentDto> UploadAsync(IFormFile file, int projectId, string category, int userId)
+    public async Task<ProjectDocumentDto> UploadAsync(IFormFile file, int projectId, string category, int userId, string? categoryOther = null, string? description = null)
     {
         if (file.Length == 0) throw new InvalidOperationException("The uploaded file is empty.");
         if (file.Length > MaxFileSizeBytes) throw new InvalidOperationException("File exceeds the 25 MB limit.");
 
-        var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
-        if (!AllowedExtensions.Contains(ext))
-            throw new InvalidOperationException($"File type '{ext}' isn't supported.");
-
         if (!Enum.TryParse<DocumentCategory>(category, true, out var parsedCategory))
             throw new InvalidOperationException($"Unknown document category '{category}'.");
+
+        if (parsedCategory == DocumentCategory.Other && string.IsNullOrWhiteSpace(categoryOther))
+            throw new InvalidOperationException("Please specify the category.");
 
         _ = await db.Projects.FindAsync(projectId)
             ?? throw new KeyNotFoundException("Project not found.");
@@ -49,6 +45,8 @@ public class DocumentService(
         {
             ProjectId        = projectId,
             Category         = parsedCategory,
+            CategoryOther    = parsedCategory == DocumentCategory.Other ? categoryOther!.Trim() : null,
+            Description      = string.IsNullOrWhiteSpace(description) ? null : description.Trim(),
             FileName         = file.FileName,
             StoragePath      = $"/uploads/{projectId}/{storedFileName}",
             SizeBytes        = file.Length,
@@ -58,7 +56,7 @@ public class DocumentService(
         db.ProjectDocuments.Add(doc);
         await db.SaveChangesAsync();
 
-        var saved = await db.ProjectDocuments.Include(d => d.UploadedBy).FirstAsync(d => d.Id == doc.Id);
+        var saved = await db.ProjectDocuments.Include(d => d.UploadedBy).Include(d => d.Project).FirstAsync(d => d.Id == doc.Id);
         return ToDto(saved);
     }
 
@@ -66,10 +64,24 @@ public class DocumentService(
     {
         var docs = await db.ProjectDocuments
             .Include(d => d.UploadedBy)
+            .Include(d => d.Project)
             .Where(d => d.ProjectId == projectId)
             .OrderByDescending(d => d.UploadedAt)
             .ToListAsync();
 
+        return docs.Select(ToDto);
+    }
+
+    public async Task<IEnumerable<ProjectDocumentDto>> GetAllAsync(int? projectId)
+    {
+        var query = db.ProjectDocuments
+            .Include(d => d.UploadedBy)
+            .Include(d => d.Project)
+            .AsQueryable();
+
+        if (projectId.HasValue) query = query.Where(d => d.ProjectId == projectId.Value);
+
+        var docs = await query.OrderByDescending(d => d.UploadedAt).ToListAsync();
         return docs.Select(ToDto);
     }
 
@@ -126,7 +138,7 @@ public class DocumentService(
         };
     }
 
-    public async Task<MeasurementParseResultDto> ParseMeasurementsAsync(int documentId)
+    public async Task<PoParseResultDto> ParsePOAsync(int documentId)
     {
         var doc = await db.ProjectDocuments.FindAsync(documentId)
             ?? throw new KeyNotFoundException("Document not found.");
@@ -135,41 +147,55 @@ public class DocumentService(
         var absolutePath = Path.Combine(webRoot, doc.StoragePath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
 
         var client = httpFactory.CreateClient("MLService");
-        MlDocumentParseMeasurementsResponse? mlResponse;
+        MlDocumentParsePoResponse? mlResponse;
         try
         {
-            var response = await client.PostAsJsonAsync("/documents/parse-measurements", new MlDocumentParseRequest
+            var response = await client.PostAsJsonAsync("/documents/parse-po", new MlDocumentParseRequest
             {
                 FilePath  = absolutePath,
                 ProjectId = doc.ProjectId,
             });
             response.EnsureSuccessStatusCode();
-            mlResponse = await response.Content.ReadFromJsonAsync<MlDocumentParseMeasurementsResponse>();
+            mlResponse = await response.Content.ReadFromJsonAsync<MlDocumentParsePoResponse>();
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Measurement scan failed for document {DocumentId}.", documentId);
-            throw new InvalidOperationException("Couldn't scan this document right now. You can still fill in measurements manually.");
+            logger.LogError(ex, "PO parse failed for document {DocumentId}.", documentId);
+            throw new InvalidOperationException("Couldn't parse this document right now. You can still fill in the fields manually.");
         }
 
         if (mlResponse is null)
-            throw new InvalidOperationException("The scanner returned an empty response.");
+            throw new InvalidOperationException("The parser returned an empty response.");
 
-        return new MeasurementParseResultDto
+        var materialNames = mlResponse.Items.Select(i => i.MaterialName.Trim().ToLower()).Distinct().ToList();
+        var materialMatches = await db.Materials
+            .Where(m => materialNames.Contains(m.Name.Trim().ToLower()))
+            .ToDictionaryAsync(m => m.Name.Trim().ToLower(), m => m.Id);
+
+        var supplierNames = mlResponse.Items
+            .Where(i => !string.IsNullOrWhiteSpace(i.SupplierName))
+            .Select(i => i.SupplierName!.Trim().ToLower())
+            .Distinct()
+            .ToList();
+        var supplierMatches = await db.Suppliers
+            .Where(s => supplierNames.Contains(s.Name.Trim().ToLower()))
+            .ToDictionaryAsync(s => s.Name.Trim().ToLower(), s => s.Id);
+
+        return new PoParseResultDto
         {
-            PageCount    = mlResponse.PageCount,
-            OcrPagesUsed = mlResponse.OcrPagesUsed,
-            ParseErrors  = mlResponse.ParseErrors,
-            Items = mlResponse.Items.Select(i => new ParsedMeasurementRowDto
+            PageCount   = mlResponse.PageCount,
+            ParseErrors = mlResponse.ParseErrors,
+            Items = mlResponse.Items.Select(i => new ParsedPoRowDto
             {
-                ElementType = i.ElementType,
-                LengthM     = (decimal)i.LengthM,
-                WidthM      = (decimal)i.WidthM,
-                HeightM     = (decimal)i.HeightM,
-                ThicknessM  = (decimal)i.ThicknessM,
-                AreaLabel   = i.AreaLabel,
-                SourcePage  = i.SourcePage,
-                OcrUsed     = i.OcrUsed,
+                MaterialName          = i.MaterialName,
+                Unit                  = i.Unit,
+                ActualQuantityOrdered = (decimal)i.ActualQuantityOrdered,
+                SupplierName          = i.SupplierName,
+                OrderDate             = DateTime.TryParse(i.OrderDate, out var od) ? od : null,
+                PromisedDeliveryDate  = DateTime.TryParse(i.PromisedDeliveryDate, out var pd) ? pd : null,
+                PhaseHint             = i.PhaseHint,
+                MatchedMaterialId     = materialMatches.TryGetValue(i.MaterialName.Trim().ToLower(), out var mid) ? mid : null,
+                MatchedSupplierId     = !string.IsNullOrWhiteSpace(i.SupplierName) && supplierMatches.TryGetValue(i.SupplierName.Trim().ToLower(), out var sid) ? sid : null,
             }).ToList(),
         };
     }
@@ -191,9 +217,12 @@ public class DocumentService(
 
     private static ProjectDocumentDto ToDto(ProjectDocument d) => new()
     {
-        Id         = d.Id,
-        ProjectId  = d.ProjectId,
-        Category   = d.Category.ToString(),
+        Id            = d.Id,
+        ProjectId     = d.ProjectId,
+        ProjectName   = d.Project?.Name ?? string.Empty,
+        Category      = d.Category.ToString(),
+        CategoryOther = d.CategoryOther,
+        Description   = d.Description,
         FileName   = d.FileName,
         Url        = d.StoragePath,
         SizeBytes  = d.SizeBytes,

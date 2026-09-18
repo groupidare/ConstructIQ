@@ -2,19 +2,18 @@
 
 import { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Pencil, Eye, FileText, Ruler } from 'lucide-react';
+import { Pencil, Eye, FileText, Folder } from 'lucide-react';
 import { useDocuments } from '@/hooks/useDocuments';
-import { useMeasurements } from '@/hooks/useMeasurements';
 import { useBOQ } from '@/hooks/useBOQ';
 import { useInventory } from '@/hooks/useInventory';
 import { useForecasting } from '@/hooks/useForecasting';
 import { useNotifications } from '@/hooks/useNotifications';
 import { useProjects } from '@/hooks/useProjects';
-import { usePhases } from '@/hooks/usePhases';
+import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
 import { useAlertStore } from '@/store/alertStore';
 import type { Project, ProjectType } from '@/types/project';
-import type { MeasurementRow } from '@/types/measurement';
 import type { BOQItemRow } from '@/types/boq';
+import type { PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import MeasurementsTab from './MeasurementsTab';
 import MaterialPlanTab from './MaterialPlanTab';
 
@@ -35,45 +34,38 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
 
   const [projectType, setProjectType] = useState<ProjectType>(project.type);
   const [otherTypeSpecify, setOtherTypeSpecify] = useState(project.otherTypeSpecify ?? '');
-  const [measurementRows, setMeasurementRows] = useState<MeasurementRow[]>([]);
+  const [savingProjectType, setSavingProjectType] = useState(false);
   const [boqRows, setBoqRows] = useState<BOQItemRow[]>([]);
-  const [savingMeasurements, setSavingMeasurements] = useState(false);
   const [savingBoq, setSavingBoq] = useState(false);
   const [forecasting, setForecasting] = useState(false);
   const [uploadingBlueprint, setUploadingBlueprint] = useState(false);
   const [uploadingBoq, setUploadingBoq] = useState(false);
+  const [uploadingPo, setUploadingPo] = useState(false);
+  const [savingPo, setSavingPo] = useState(false);
+  const [poDraftRows, setPoDraftRows] = useState<PurchaseOrderMaterial[]>([]);
+  const [poSupplierName, setPoSupplierName] = useState('');
+  const [poOrderDate, setPoOrderDate] = useState('');
+  const [poExpectedDate, setPoExpectedDate] = useState('');
 
-  const { documents, fetchDocuments, uploadDocument, parseDocument, parseMeasurements, deleteDocument } = useDocuments(project.id);
-  const { measurements, fetchMeasurements, saveMeasurements } = useMeasurements(project.id);
+  const { documents, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument } = useDocuments(project.id);
   const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems } = useBOQ(project.id);
   const { inventory, fetchInventory } = useInventory(project.id);
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
   const { sendNotification } = useNotifications();
   const { editProject } = useProjects();
-  const { addPhase } = usePhases();
+  const { items: purchaseOrders, fetchItems: fetchPurchaseOrders, createOrder, linkMaterial } = usePurchaseOrders(project.id);
   const addAlert = useAlertStore(s => s.addAlert);
 
-  const seededMeasurements = useRef(false);
   const seededBoq = useRef(false);
 
   useEffect(() => {
     fetchDocuments();
-    fetchMeasurements();
     fetchBoqItems();
     fetchInventory(true);
     fetchForecasts();
+    fetchPurchaseOrders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
-
-  useEffect(() => {
-    if (seededMeasurements.current || measurements.length === 0) return;
-    seededMeasurements.current = true;
-    setMeasurementRows(measurements.map(m => ({
-      id: m.id, phaseId: m.phaseId, elementType: m.elementType, areaLabel: m.areaLabel,
-      lengthM: m.lengthM, widthM: m.widthM, heightM: m.heightM, thicknessM: m.thicknessM,
-      concreteMixRatio: m.concreteMixRatio, wasteAllowancePct: m.wasteAllowancePct,
-    })));
-  }, [measurements]);
 
   useEffect(() => {
     if (seededBoq.current || boqItems.length === 0) return;
@@ -86,43 +78,18 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
 
   const blueprints = documents.filter(d => d.category === 'Blueprint');
   const boqDocs = documents.filter(d => d.category === 'BOQ');
+  const poDocs = documents.filter(d => d.category === 'PurchaseOrder');
   const forecastedMaterials = forecasts[0]?.forecastedMaterials ?? [];
 
   async function handleUploadBlueprint(file: File) {
     setUploadingBlueprint(true);
     try {
-      const doc = await uploadDocument(file, 'Blueprint');
-      toast.success('Blueprint uploaded — scanning for dimensions…');
-      await scanBlueprintForMeasurements(doc.id);
+      await uploadDocument(file, 'Blueprint');
+      toast.success('Blueprint uploaded.');
     } catch {
       toast.error('Failed to upload blueprint.');
     } finally {
       setUploadingBlueprint(false);
-    }
-  }
-
-  async function scanBlueprintForMeasurements(documentId: number) {
-    try {
-      const result = await parseMeasurements(documentId);
-      if (result.items.length === 0) {
-        toast.error('No dimension callouts recognized — enter measurements manually.');
-        return;
-      }
-      setMeasurementRows(prev => [
-        ...prev,
-        ...result.items.map(item => ({
-          phaseId: undefined,
-          elementType: (['Wall', 'Column', 'Beam', 'Slab', 'Footing'].includes(item.elementType) ? item.elementType : 'Wall') as MeasurementRow['elementType'],
-          areaLabel: item.areaLabel,
-          lengthM: item.lengthM, widthM: item.widthM, heightM: item.heightM, thicknessM: item.thicknessM || 0.10,
-          concreteMixRatio: '1:2:4', wasteAllowancePct: 12,
-          autoScanned: true, sourcePage: item.sourcePage, ocrUsed: item.ocrUsed,
-        })),
-      ]);
-      toast.success(`${result.items.length} measurement(s) auto-scanned — please review and assign a phase to each.`);
-      if (result.ocrPagesUsed > 0) toast.error(`${result.ocrPagesUsed} page(s) needed OCR — those rows are lower-confidence.`);
-    } catch {
-      toast.error('Failed to scan blueprint — enter measurements manually.');
     }
   }
 
@@ -151,7 +118,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     try {
       const result = await parseDocument(documentId);
       if (result.items.length === 0) {
-        toast.error('No line items detected in that document.');
+        toast.error(result.parseErrors[0] || 'No line items detected in that document.');
         return;
       }
       setBoqRows(prev => [
@@ -175,28 +142,108 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     }
   }
 
-  async function handleSaveMeasurements() {
-    if (measurementRows.some(r => !r.phaseId)) {
-      toast.error('Assign a phase to every measurement row before saving.');
-      return;
+  async function handleUploadPO(file: File) {
+    setUploadingPo(true);
+    try {
+      await uploadDocument(file, 'PurchaseOrder');
+      toast.success(`${file.name} uploaded.`);
+    } catch {
+      toast.error(`Failed to upload ${file.name}.`);
+    } finally {
+      setUploadingPo(false);
     }
-    setSavingMeasurements(true);
+  }
+
+  async function handleParsePO(documentId: number) {
+    try {
+      const result = await parsePO(documentId);
+      if (result.items.length === 0) {
+        toast.error(result.parseErrors[0] || 'No line items detected in that document.');
+        return;
+      }
+      const first = result.items[0];
+      setPoSupplierName(prev => prev || first.supplierName || '');
+      setPoOrderDate(prev => prev || first.orderDate || '');
+      setPoExpectedDate(prev => prev || first.promisedDeliveryDate || '');
+      setPoDraftRows(prev => [
+        ...prev,
+        ...result.items.map(item => ({
+          name: item.materialName,
+          quantity: item.actualQuantityOrdered,
+          unit: item.unit,
+          materialId: item.matchedMaterialId,
+        })),
+      ]);
+      toast.success(`${result.items.length} line item(s) scanned — review and edit as needed.`);
+      if (result.parseErrors.length > 0) toast.error(result.parseErrors[0]);
+    } catch {
+      toast.error('Failed to scan document.');
+    }
+  }
+
+  async function handleSavePO() {
+    if (!poSupplierName.trim()) { toast.error('Supplier name is required.'); return; }
+    if (!poExpectedDate) { toast.error('Expected delivery date is required.'); return; }
+    if (poDraftRows.length === 0) { toast.error('Add at least one material.'); return; }
+
+    setSavingPo(true);
+    try {
+      await createOrder({
+        projectId: project.id,
+        supplierName: poSupplierName.trim(),
+        orderDate: poOrderDate || undefined,
+        expectedDate: poExpectedDate,
+        materials: poDraftRows,
+      });
+      setPoDraftRows([]);
+      setPoSupplierName('');
+      setPoOrderDate('');
+      setPoExpectedDate('');
+      toast.success('Purchase order created.');
+    } catch {
+      toast.error('Failed to create purchase order.');
+    } finally {
+      setSavingPo(false);
+    }
+  }
+
+  async function handleLinkPoMaterial(materialId: number, boqItemId: number | null) {
+    try {
+      await linkMaterial(materialId, boqItemId);
+      await fetchPurchaseOrders();
+      toast.success(boqItemId ? 'Linked to BOQ line.' : 'Link removed.');
+    } catch {
+      toast.error('Failed to update link.');
+    }
+  }
+
+  async function persistProjectType(type: ProjectType, otherSpecify: string) {
+    setSavingProjectType(true);
     try {
       await editProject(project.id, {
-        name: project.name, type: projectType, otherTypeSpecify: projectType === 'Others' ? otherTypeSpecify : undefined,
+        name: project.name, type, otherTypeSpecify: type === 'Others' ? otherSpecify : undefined,
         location: project.location, description: project.description, budget: project.budget,
         startDate: project.startDate, targetEndDate: project.targetEndDate,
         assignedContractor: project.assignedContractor, siteEngineerId: project.siteEngineerId,
         phases: [],
       });
-      await saveMeasurements(measurementRows);
-      onProjectSaved?.({ ...project, type: projectType, otherTypeSpecify });
-      toast.success('Measurements saved.');
+      onProjectSaved?.({ ...project, type, otherTypeSpecify: otherSpecify });
+      toast.success('Project type saved.');
     } catch {
-      toast.error('Failed to save measurements.');
+      toast.error('Failed to save project type.');
     } finally {
-      setSavingMeasurements(false);
+      setSavingProjectType(false);
     }
+  }
+
+  function handleProjectTypeChange(type: ProjectType, otherSpecify: string) {
+    setProjectType(type);
+    setOtherTypeSpecify(otherSpecify);
+    if (type !== 'Others') persistProjectType(type, otherSpecify);
+  }
+
+  function handleOtherTypeSpecifyBlur() {
+    if (projectType === 'Others') persistProjectType(projectType, otherTypeSpecify);
   }
 
   async function handleSaveBoq() {
@@ -246,33 +293,23 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     }
   }
 
-  async function handleAddPhase(name: string) {
-    if (!name.trim()) { toast.error('Phase name is required.'); return; }
-    try {
-      const newPhase = await addPhase({
-        projectId: project.id, name: name.trim(),
-        startDate: project.startDate, endDate: project.targetEndDate,
-      });
-      onProjectSaved?.({ ...project, phases: [...project.phases, newPhase] });
-      toast.success(`Phase "${newPhase.name}" added.`);
-    } catch {
-      toast.error('Failed to add phase.');
-    }
-  }
-
   return {
     tab, setTab, editable, setEditable,
-    projectType, otherTypeSpecify, setProjectType: (t: ProjectType, o: string) => { setProjectType(t); setOtherTypeSpecify(o); },
-    measurementRows, setMeasurementRows, boqRows, setBoqRows,
-    blueprints, boqDocs, inventory, forecastedMaterials,
-    savingMeasurements, savingBoq, forecasting, uploadingBlueprint, uploadingBoq,
-    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleAddPhase, handleRemoveDocument,
-    handleSaveMeasurements, handleSaveBoq, handleRunForecast, handleNotify,
+    projectType, otherTypeSpecify,
+    onProjectTypeChange: handleProjectTypeChange, onOtherTypeSpecifyBlur: handleOtherTypeSpecifyBlur, savingProjectType,
+    boqRows, setBoqRows,
+    blueprints, boqDocs, poDocs, inventory, forecastedMaterials,
+    savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
+    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
+    handleSaveBoq, handleRunForecast, handleNotify,
+    purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
+    poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
+    poOrderDate, setPoOrderDate, poExpectedDate, setPoExpectedDate,
   };
 }
 
 export function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
-  const tabBtn = (t: Tab, label: string, Icon: typeof Ruler) => (
+  const tabBtn = (t: Tab, label: string, Icon: typeof Folder) => (
     <button
       onClick={() => setTab(t)}
       style={{
@@ -286,7 +323,7 @@ export function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) 
   );
   return (
     <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', marginTop: '0.75rem' }}>
-      {tabBtn('measurements', 'Measurements', Ruler)}
+      {tabBtn('measurements', 'Files', Folder)}
       {tabBtn('materialPlan', 'Material Plan', FileText)}
     </div>
   );
@@ -307,21 +344,15 @@ export function EditToggle({ editable, onToggle }: { editable: boolean; onToggle
 export function TabBody({ project, state }: { project: Project; state: ReturnType<typeof useMeasurementsAndMaterialPlan> }) {
   return state.tab === 'measurements' ? (
     <MeasurementsTab
-      project={project}
       editable={state.editable}
       projectType={state.projectType}
       otherTypeSpecify={state.otherTypeSpecify}
-      onProjectTypeChange={state.setProjectType}
+      onProjectTypeChange={state.onProjectTypeChange}
+      onOtherTypeSpecifyBlur={state.onOtherTypeSpecifyBlur}
+      savingProjectType={state.savingProjectType}
       blueprints={state.blueprints}
       uploading={state.uploadingBlueprint}
       onUploadBlueprint={state.handleUploadBlueprint}
-      rows={state.measurementRows}
-      onRowsChange={state.setMeasurementRows}
-      onSave={state.handleSaveMeasurements}
-      saving={state.savingMeasurements}
-      onRunForecast={state.handleRunForecast}
-      forecasting={state.forecasting}
-      onAddPhase={state.handleAddPhase}
       onRemoveDocument={state.handleRemoveDocument}
     />
   ) : (
@@ -342,6 +373,24 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onSave={state.handleSaveBoq}
       saving={state.savingBoq}
       onNotify={state.handleNotify}
+      onRunForecast={state.handleRunForecast}
+      forecasting={state.forecasting}
+      purchaseOrders={state.purchaseOrders}
+      poDocs={state.poDocs}
+      uploadingPo={state.uploadingPo}
+      savingPo={state.savingPo}
+      onUploadPO={state.handleUploadPO}
+      onParsePO={state.handleParsePO}
+      onSavePO={state.handleSavePO}
+      onLinkPoMaterial={state.handleLinkPoMaterial}
+      poDraftRows={state.poDraftRows}
+      onPoDraftRowsChange={state.setPoDraftRows}
+      poSupplierName={state.poSupplierName}
+      onPoSupplierNameChange={state.setPoSupplierName}
+      poOrderDate={state.poOrderDate}
+      onPoOrderDateChange={state.setPoOrderDate}
+      poExpectedDate={state.poExpectedDate}
+      onPoExpectedDateChange={state.setPoExpectedDate}
     />
   );
 }

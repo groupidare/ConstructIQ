@@ -21,9 +21,8 @@ const schema = z.object({
   location:           z.string().min(2),
   description:        z.string().optional(),
   startDate:          z.string().min(1),
-  targetEndDate:      z.string().min(1),
+  endDate:            z.string().min(1),
   assignedContractor: z.string().optional(),
-  siteEngineerId:     z.number().optional(),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -34,7 +33,12 @@ interface Props {
   onFinish: (project: Project) => void;
 }
 
-export default function NewProjectWizard({ onCancel, onSkip, onFinish }: Props) {
+// A completed/historical project is entered directly with its actual dates
+// and phases already known — unlike a live project, there's no "target" end
+// date or phased rollout to plan for. This is what makes it usable as ML
+// training data: BOQ (planned) + Purchase Orders (actual) paired against a
+// project whose real timeline and outcome are already settled.
+export default function AddCompletedProjectWizard({ onCancel, onSkip, onFinish }: Props) {
   const { createProject } = useProjects();
   const [step, setStep] = useState<1 | 2>(1);
   const [project, setProject] = useState<Project | null>(null);
@@ -52,9 +56,11 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish }: Props) 
         ...data,
         otherTypeSpecify: data.type === 'Others' ? data.otherTypeSpecify : undefined,
         budget: 0,
+        targetEndDate: data.endDate,
+        status: 'Completed',
         phases: [],
       });
-      toast.success('Project created — now add measurements & material plan.');
+      toast.success('Historical project created — now enter its Bill of Quantities and Purchase Orders.');
       setProject(created);
       setStep(2);
     } catch {
@@ -67,9 +73,9 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish }: Props) 
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{project.name}</h1>
-          <p className="text-sm text-gray-500">Step 2 of 2 — Material Plan</p>
+          <p className="text-sm text-gray-500">Step 2 of 2 — Files, Bill of Quantities &amp; Purchase Orders (historical data)</p>
         </div>
-        <MeasurementsAndMaterialPlanInline project={project} onProjectSaved={setProject} />
+        <MeasurementsAndMaterialPlanInline project={project} onProjectSaved={setProject} initialTab="measurements" />
         <div className="flex justify-end gap-3">
           <Button variant="secondary" onClick={() => onSkip(project)}>Skip for now</Button>
           <Button onClick={() => onFinish(project)}>
@@ -83,8 +89,8 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish }: Props) 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Create New Project</h1>
-        <p className="text-sm text-gray-500">Step 1 of 2 — Project details</p>
+        <h1 className="text-2xl font-bold text-gray-900">Add Completed Project</h1>
+        <p className="text-sm text-gray-500">Step 1 of 2 — Historical project details</p>
       </div>
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
         <Card>
@@ -105,9 +111,9 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish }: Props) 
               <Input label="Specify Type *" {...register('otherTypeSpecify')} />
             )}
             <Input label="Location *" {...register('location')} error={errors.location?.message} />
-            <Input label="Start Date *" type="date" {...register('startDate')} />
-            <Input label="Target End Date *" type="date" {...register('targetEndDate')} />
-            <Input label="Assigned Contractor" {...register('assignedContractor')} />
+            <Input label="Actual Start Date *" type="date" {...register('startDate')} error={errors.startDate?.message} />
+            <Input label="Actual Completion Date *" type="date" {...register('endDate')} error={errors.endDate?.message} />
+            <Input label="Contractor" {...register('assignedContractor')} />
             <div className="md:col-span-2">
               <label className="label">Description</label>
               <textarea className="input min-h-20" {...register('description')} />
@@ -116,12 +122,12 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish }: Props) 
         </Card>
 
         <p className="text-sm text-gray-500">
-          Phases are added in the next step, alongside measurements and the material plan.
+          Bill of Quantities and Purchase Orders are entered in the next step — this is what trains the forecasting model on real usage.
         </p>
 
         <div className="flex gap-3 justify-end">
           <Button type="button" variant="secondary" onClick={onCancel}>Cancel</Button>
-          <Button type="submit" loading={isSubmitting}>Next: Material Plan</Button>
+          <Button type="submit" loading={isSubmitting}>Next: Bill of Quantities &amp; Purchase Orders</Button>
         </div>
       </form>
     </div>

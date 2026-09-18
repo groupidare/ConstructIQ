@@ -11,6 +11,7 @@ import type { InventoryRecord } from '@/types/inventory';
 import type { ForecastedMaterial } from '@/types/forecast';
 import type { BOQItemRow } from '@/types/boq';
 import { PRIMARY_SECTIONS } from '@/types/boq';
+import type { PurchaseOrder, PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import { inp, sel, lbl } from './styles';
 
 interface Props {
@@ -30,19 +31,43 @@ interface Props {
   saving: boolean;
   onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number) => void;
   onRemoveDocument: (documentId: number) => void;
+  onRunForecast: () => void;
+  forecasting: boolean;
+  // Purchase Orders — actuals, paired against the BOQ estimates above.
+  purchaseOrders: PurchaseOrder[];
+  poDocs: ProjectDocument[];
+  uploadingPo: boolean;
+  savingPo: boolean;
+  onUploadPO: (file: File) => void;
+  onParsePO: (documentId: number) => Promise<void>;
+  onSavePO: () => void;
+  onLinkPoMaterial: (materialId: number, boqItemId: number | null) => void;
+  poDraftRows: PurchaseOrderMaterial[];
+  onPoDraftRowsChange: (rows: PurchaseOrderMaterial[]) => void;
+  poSupplierName: string;
+  onPoSupplierNameChange: (v: string) => void;
+  poOrderDate: string;
+  onPoOrderDateChange: (v: string) => void;
+  poExpectedDate: string;
+  onPoExpectedDateChange: (v: string) => void;
 }
 
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
-  rows, onRowsChange, onSave, saving, onNotify, onRemoveDocument,
+  rows, onRowsChange, onSave, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
+  purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial,
+  poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
+  poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const poFileInputRef = useRef<HTMLInputElement>(null);
+  const [parsingPoId, setParsingPoId] = useState<number | null>(null);
   const [phaseChoice, setPhaseChoice] = useState<Record<number, number | ''>>({});
   const isCompleted = project.status === 'Completed';
   const columnsTemplate = isCompleted
-    ? 'minmax(0,1.3fr) minmax(0,0.8fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.7fr)'
-    : 'minmax(0,1.6fr) minmax(0,1fr) minmax(0,0.5fr) minmax(0,0.8fr) minmax(0,0.7fr)';
+    ? 'minmax(0,2fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.7fr)'
+    : 'minmax(0,2.2fr) minmax(0,0.8fr) minmax(0,0.5fr) minmax(0,0.8fr) minmax(0,0.7fr)';
   const [parsingId, setParsingId] = useState<number | null>(null);
 
   const timeRange = `${formatDate(project.startDate)} – ${formatDate(project.targetEndDate)}`;
@@ -102,6 +127,54 @@ export default function MaterialPlanTab({
       setParsingId(null);
     }
   }
+
+  function handlePoFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (files) Array.from(files).forEach(f => onUploadPO(f));
+    e.target.value = '';
+  }
+
+  async function handleParsePoClick(doc: ProjectDocument) {
+    setParsingPoId(doc.id);
+    try {
+      await onParsePO(doc.id);
+    } finally {
+      setParsingPoId(null);
+    }
+  }
+
+  function updatePoDraftRow(idx: number, patch: Partial<PurchaseOrderMaterial>) {
+    onPoDraftRowsChange(poDraftRows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  }
+
+  function removePoDraftRow(idx: number) {
+    onPoDraftRowsChange(poDraftRows.filter((_, i) => i !== idx));
+  }
+
+  function addBlankPoDraftRow() {
+    onPoDraftRowsChange([...poDraftRows, { name: '', quantity: 0, unit: '' }]);
+  }
+
+  // Only real, already-saved BOQ rows (with a DB id) are linkable.
+  const linkableBoqRows = rows.filter(r => r.id != null);
+
+  // BOQ (planned) vs. linked PO (actual) reconciliation — only meaningful once
+  // a project is Completed and both sides have real, saved data with explicit
+  // links between them (see onLinkPoMaterial).
+  const reconciliation = useMemo(() => {
+    const actualByBoqItemId = new Map<number, number>();
+    const unlinked: { po: PurchaseOrder; material: PurchaseOrderMaterial }[] = [];
+    purchaseOrders.forEach(po => {
+      po.materials.forEach(m => {
+        if (m.boqItemId) {
+          actualByBoqItemId.set(m.boqItemId, (actualByBoqItemId.get(m.boqItemId) ?? 0) + m.quantity);
+        } else {
+          unlinked.push({ po, material: m });
+        }
+      });
+    });
+    return { actualByBoqItemId, unlinked };
+  }, [purchaseOrders]);
 
   // Group rows by Primary Section → Sub-category for display.
   const grouped = useMemo(() => {
@@ -252,20 +325,22 @@ export default function MaterialPlanTab({
                       const toOrder = Math.max(0, r.estimatedQuantity - stock);
                       const needsAlert = toOrder > 0;
                       return (
-                        <div key={i} style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center' }}>
-                          <div>
+                        <div key={i} style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
                             {r.materialId ? (
-                              <span style={{ fontSize: '0.78rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{materialLabel(r)}</span>
+                              <span style={{ fontSize: '0.78rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{materialLabel(r)}</span>
                             ) : (
-                              <input disabled={!editable} value={r.newMaterialName ?? ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material name" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                              <input disabled={!editable} value={r.newMaterialName ?? ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material name" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', flex: 1, minWidth: 0 }} />
                             )}
                             {editable && (
-                              <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                                <select value={r.primarySection} onChange={e => updateRow(i, { primarySection: e.target.value })} style={{ ...sel, padding: '2px 4px', fontSize: '0.62rem', width: 'auto' }}>
-                                  {PRIMARY_SECTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-                                </select>
-                                <input value={r.subCategory ?? ''} onChange={e => updateRow(i, { subCategory: e.target.value })} placeholder="Sub-category" style={{ ...inp, padding: '2px 4px', fontSize: '0.62rem', width: 90 }} />
-                              </div>
+                              <select
+                                title="Primary section"
+                                value={r.primarySection}
+                                onChange={e => updateRow(i, { primarySection: e.target.value })}
+                                style={{ ...sel, padding: '3px 5px', fontSize: '0.64rem', width: 'auto', flexShrink: 0 }}
+                              >
+                                {PRIMARY_SECTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                              </select>
                             )}
                           </div>
                           <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
@@ -323,10 +398,191 @@ export default function MaterialPlanTab({
       </div>
 
       {editable && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1rem' }}>
-          <button onClick={onSave} disabled={saving} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: '#f97316', color: '#fff', fontSize: '0.82rem', fontWeight: 700, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: '1rem' }}>
+          <button onClick={onSave} disabled={saving} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
             {saving ? 'Saving…' : 'Save Material Plan'}
           </button>
+          <button
+            onClick={() => {
+              if (rows.length === 0) { toast.error('Add at least one material first.'); return; }
+              onRunForecast();
+            }}
+            disabled={forecasting}
+            style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: '#f97316', color: '#fff', fontSize: '0.82rem', fontWeight: 700, cursor: 'pointer', opacity: forecasting ? 0.7 : 1 }}
+          >
+            {forecasting ? 'Forecasting…' : '▶ Run Forecast'}
+          </button>
+        </div>
+      )}
+
+      {/* Purchase Orders — actual ordered quantities, paired against the BOQ estimates above */}
+      <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', marginTop: '1.5rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
+          <div>
+            <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>Purchase Orders</p>
+            <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>What was actually ordered — trains the forecasting model once delivered.</p>
+          </div>
+          {editable && (
+            <button onClick={() => poFileInputRef.current?.click()} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              <Upload style={{ width: 12, height: 12 }} /> {uploadingPo ? 'Uploading…' : 'Upload PO'}
+            </button>
+          )}
+          <input ref={poFileInputRef} type="file" multiple accept=".pdf,.xlsx,.xls,.csv" onChange={handlePoFilePicked} style={{ display: 'none' }} />
+        </div>
+
+        {poDocs.length > 0 && (
+          <div style={{ padding: '0.625rem 1rem', borderBottom: '1px solid #f3f4f6', display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {poDocs.map(doc => (
+              <div key={doc.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <FileText style={{ width: 12, height: 12, color: '#9ca3af', flexShrink: 0 }} />
+                <a href={`${getApiOrigin()}${doc.url}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', color: '#374151', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {doc.fileName}
+                </a>
+                <ExternalLink style={{ width: 10, height: 10, color: '#9ca3af', flexShrink: 0 }} />
+                {editable && (
+                  <button onClick={() => handleParsePoClick(doc)} disabled={parsingPoId === doc.id} style={{ fontSize: '0.68rem', fontWeight: 600, color: '#f97316', background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                    {parsingPoId === doc.id ? 'Scanning…' : 'Scan & Fill Rows'}
+                  </button>
+                )}
+                {editable && (
+                  <button onClick={() => onRemoveDocument(doc.id)} title="Remove file" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 2, flexShrink: 0 }}>
+                    <X style={{ width: 12, height: 12 }} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Draft — reviewed rows from a scan (or manually started), not yet saved as a real PO */}
+        {editable && (poDraftRows.length > 0 || poSupplierName) && (
+          <div style={{ padding: '0.875rem 1rem', borderBottom: '1px solid #f3f4f6', background: '#fffbf5' }}>
+            <p style={{ fontWeight: 700, fontSize: '0.8rem', color: '#c2410c', marginBottom: '0.625rem' }}>New Purchase Order — review before saving</p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,1fr) minmax(0,1fr)', gap: 6, marginBottom: '0.75rem' }}>
+              <div>
+                <label style={{ ...lbl, fontSize: '0.62rem' }}>Supplier</label>
+                <input value={poSupplierName} onChange={e => onPoSupplierNameChange(e.target.value)} placeholder="Supplier name" style={{ ...inp, padding: '5px 8px', fontSize: '0.78rem' }} />
+              </div>
+              <div>
+                <label style={{ ...lbl, fontSize: '0.62rem' }}>Order Date</label>
+                <input type="date" value={poOrderDate} onChange={e => onPoOrderDateChange(e.target.value)} style={{ ...inp, padding: '5px 8px', fontSize: '0.78rem' }} />
+              </div>
+              <div>
+                <label style={{ ...lbl, fontSize: '0.62rem' }}>Expected Delivery *</label>
+                <input type="date" value={poExpectedDate} onChange={e => onPoExpectedDateChange(e.target.value)} style={{ ...inp, padding: '5px 8px', fontSize: '0.78rem' }} />
+              </div>
+            </div>
+
+            {poDraftRows.map((r, i) => (
+              <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.6fr) minmax(0,0.6fr) minmax(0,0.7fr) auto', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+                <input value={r.name} onChange={e => updatePoDraftRow(i, { name: e.target.value })} placeholder="Material name" style={{ ...inp, padding: '5px 8px', fontSize: '0.76rem' }} />
+                <input value={r.unit} onChange={e => updatePoDraftRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '5px 8px', fontSize: '0.76rem' }} />
+                <input type="number" value={r.quantity || ''} onChange={e => updatePoDraftRow(i, { quantity: parseFloat(e.target.value) || 0 })} placeholder="Qty ordered" style={{ ...inp, padding: '5px 8px', fontSize: '0.76rem' }} />
+                <button onClick={() => removePoDraftRow(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 2 }}>
+                  <Trash2 style={{ width: 13, height: 13 }} />
+                </button>
+              </div>
+            ))}
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.5rem' }}>
+              <button onClick={addBlankPoDraftRow} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 8, border: 'none', background: 'transparent', color: '#f97316', fontSize: '0.74rem', fontWeight: 600, cursor: 'pointer' }}>
+                <Plus style={{ width: 12, height: 12 }} /> Add Row
+              </button>
+              <button onClick={onSavePO} disabled={savingPo} style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: '#f97316', color: '#fff', fontSize: '0.76rem', fontWeight: 700, cursor: 'pointer', opacity: savingPo ? 0.7 : 1 }}>
+                {savingPo ? 'Saving…' : 'Save Purchase Order'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Real, saved purchase orders */}
+        <div style={{ maxHeight: 320, overflowY: 'auto', overflowX: 'hidden' }}>
+          {purchaseOrders.length === 0 ? (
+            <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No purchase orders yet.</p>
+          ) : (
+            purchaseOrders.map(po => (
+              <div key={po.id} style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f9fafb' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+                  <span style={{ fontWeight: 700, fontSize: '0.8rem', color: '#111827' }}>{po.number} · {po.supplierName}</span>
+                  <span style={{ fontSize: '0.65rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: po.status === 'Delivered' ? '#dcfce7' : '#ffedd5', color: po.status === 'Delivered' ? '#15803d' : '#c2410c' }}>
+                    {po.status}
+                  </span>
+                </div>
+                <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginBottom: 6 }}>
+                  Ordered {formatDate(po.orderDate)} · Expected {formatDate(po.expectedDate)}
+                </p>
+                {po.materials.map(m => (
+                  <div key={m.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,1fr)', gap: 6, alignItems: 'center', padding: '4px 0' }}>
+                    <span style={{ fontSize: '0.76rem', color: '#374151' }}>{m.name}</span>
+                    <span style={{ fontSize: '0.72rem', color: '#6b7280' }}>{m.quantity} {m.unit}</span>
+                    {editable ? (
+                      <select
+                        value={m.boqItemId ?? ''}
+                        onChange={e => onLinkPoMaterial(m.id!, e.target.value ? Number(e.target.value) : null)}
+                        style={{ ...sel, padding: '3px 5px', fontSize: '0.68rem' }}
+                      >
+                        <option value="">Link to BOQ line…</option>
+                        {linkableBoqRows.map(r => <option key={r.id} value={r.id}>{materialLabel(r)}</option>)}
+                      </select>
+                    ) : (
+                      <span style={{ fontSize: '0.68rem', color: '#9ca3af' }}>{m.boqItemId ? 'Linked' : 'Not linked'}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Historical reconciliation — only meaningful once both BOQ (planned) and
+          linked PO (actual) data exist for a Completed project. This is what
+          "Data Review & Verification" means: confirm the two sides actually
+          line up per material before the row counts as real training data. */}
+      {isCompleted && (
+        <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', marginTop: '1.5rem' }}>
+          <div style={{ padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
+            <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>BOQ vs. Purchase Order Reconciliation</p>
+            <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>Planned (BOQ) vs. actual (linked, delivered POs) per material — this pairing is what feeds ML training.</p>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.6fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.8fr)', gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+            {['MATERIAL', 'BOQ EST. QTY', 'PO ACTUAL QTY', 'VARIANCE'].map(h => (
+              <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
+            ))}
+          </div>
+
+          {linkableBoqRows.length === 0 ? (
+            <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>Save the Bill of Quantities above first, then link Purchase Order materials to each line.</p>
+          ) : (
+            linkableBoqRows.map(r => {
+              const actual = reconciliation.actualByBoqItemId.get(r.id!) ?? 0;
+              const variance = actual - r.estimatedQuantity;
+              return (
+                <div key={r.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.6fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.8fr)', gap: 4, padding: '7px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.76rem', color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{materialLabel(r)}</span>
+                  <span style={{ fontSize: '0.76rem', color: '#6b7280' }}>{r.estimatedQuantity}</span>
+                  <span style={{ fontSize: '0.76rem', color: actual > 0 ? '#111827' : '#d1d5db' }}>{actual > 0 ? actual : '— not linked'}</span>
+                  <span style={{ fontSize: '0.76rem', fontWeight: 600, color: variance === 0 ? '#6b7280' : variance > 0 ? '#ef4444' : '#15803d' }}>
+                    {actual > 0 ? (variance > 0 ? `+${variance}` : variance) : '—'}
+                  </span>
+                </div>
+              );
+            })
+          )}
+
+          {reconciliation.unlinked.length > 0 && (
+            <div style={{ padding: '0.75rem 1rem', background: '#fffbf5', borderTop: '1px solid #fed7aa' }}>
+              <p style={{ fontSize: '0.72rem', fontWeight: 700, color: '#c2410c', marginBottom: 4 }}>
+                {reconciliation.unlinked.length} PO material(s) not yet linked to a BOQ line — link them above under Purchase Orders so they count toward training.
+              </p>
+              {reconciliation.unlinked.map(({ po, material }) => (
+                <p key={material.id} style={{ fontSize: '0.7rem', color: '#9a3412' }}>
+                  {po.number}: {material.name} ({material.quantity} {material.unit})
+                </p>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -4,7 +4,7 @@ export const ELEMENT_TYPES: ElementType[] = ["Wall", "Column", "Beam", "Slab", "
 
 export interface MeasurementRow {
   id?: number; // undefined = not yet saved
-  phaseId?: number; // undefined = not yet assigned (e.g. fresh auto-scan result)
+  phaseId: number;
   elementType: ElementType;
   areaLabel?: string;
   lengthM: number;
@@ -13,11 +13,6 @@ export interface MeasurementRow {
   thicknessM: number;
   concreteMixRatio: string;
   wasteAllowancePct: number;
-  // Frontend-only, dropped by the backend — flags a row that came from the
-  // best-effort blueprint scanner rather than manual entry.
-  autoScanned?: boolean;
-  sourcePage?: number;
-  ocrUsed?: boolean;
 }
 
 export interface Measurement {

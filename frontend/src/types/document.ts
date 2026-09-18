@@ -1,9 +1,12 @@
-export type DocumentCategory = "Blueprint" | "BOQ";
+export type DocumentCategory = "Blueprint" | "BOQ" | "PurchaseOrder" | "Contract" | "Other";
 
 export interface ProjectDocument {
   id: number;
   projectId: number;
+  projectName: string;
   category: DocumentCategory;
+  categoryOther?: string;
+  description?: string;
   fileName: string;
   url: string;
   sizeBytes: number;
@@ -26,22 +29,20 @@ export interface DocumentParseResult {
   items: ParsedBoqRow[];
 }
 
-// Best-effort text/OCR scan of a blueprint for dimension callouts — not a
-// trained model, always needs review. See ml-service/dimension_extractor.py.
-export interface ParsedMeasurementRow {
-  elementType: string;
-  lengthM: number;
-  widthM: number;
-  heightM: number;
-  thicknessM: number;
-  areaLabel?: string;
-  sourcePage: number;
-  ocrUsed: boolean;
+export interface ParsedPoRow {
+  materialName: string;
+  unit: string;
+  actualQuantityOrdered: number;
+  supplierName?: string;
+  orderDate?: string;
+  promisedDeliveryDate?: string;
+  phaseHint?: string;
+  matchedMaterialId?: number;
+  matchedSupplierId?: number;
 }
 
-export interface MeasurementParseResult {
+export interface PoParseResult {
   pageCount: number;
-  ocrPagesUsed: number;
   parseErrors: string[];
-  items: ParsedMeasurementRow[];
+  items: ParsedPoRow[];
 }

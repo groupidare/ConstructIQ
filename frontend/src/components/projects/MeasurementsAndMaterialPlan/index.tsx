@@ -22,7 +22,7 @@ export default function MeasurementsAndMaterialPlan({ project, onClose, initialE
         <div style={{ padding: '1.5rem 1.5rem 0', flexShrink: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.25rem' }}>
             <div>
-              <p style={{ fontWeight: 800, fontSize: '1.15rem', color: '#111827' }}>Measurements &amp; Material Plan</p>
+              <p style={{ fontWeight: 800, fontSize: '1.15rem', color: '#111827' }}>Material Plan</p>
               <p style={{ fontSize: '0.78rem', color: '#9ca3af', marginTop: 2 }}>{project.name}</p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>

@@ -4,9 +4,12 @@ namespace ConstructIQ.API.Models.DTOs.Document;
 
 public class ProjectDocumentDto
 {
-    public int      Id          { get; set; }
-    public int      ProjectId   { get; set; }
-    public string   Category    { get; set; } = string.Empty;
+    public int      Id            { get; set; }
+    public int      ProjectId     { get; set; }
+    public string   ProjectName   { get; set; } = string.Empty;
+    public string   Category      { get; set; } = string.Empty;
+    public string?  CategoryOther { get; set; }
+    public string?  Description   { get; set; }
     public string   FileName    { get; set; } = string.Empty;
     // Relative — e.g. "/uploads/5/guid_plan.pdf". Prefix with the API's origin (not
     // the "/api" base) to get a fetchable URL.
@@ -63,46 +66,43 @@ public class DocumentParseResultDto
     public List<ParsedBoqRowDto> Items       { get; set; } = [];
 }
 
-// ── Measurement (dimension) scan — same ML service, different endpoint ────────
-// Best-effort text/OCR extraction, not a trained model. See dimension_extractor.py.
+// ── Purchase Order scan — same ML service, POST /documents/parse-po ────────────
 
-public class MlParsedMeasurementItem
+public class MlParsedPoItem
 {
-    [JsonPropertyName("element_type")] public string  ElementType { get; set; } = string.Empty;
-    [JsonPropertyName("length_m")]      public double  LengthM     { get; set; }
-    [JsonPropertyName("width_m")]       public double  WidthM      { get; set; }
-    [JsonPropertyName("height_m")]      public double  HeightM     { get; set; }
-    [JsonPropertyName("thickness_m")]   public double  ThicknessM  { get; set; }
-    [JsonPropertyName("area_label")]    public string? AreaLabel   { get; set; }
-    [JsonPropertyName("source_page")]   public int     SourcePage  { get; set; }
-    [JsonPropertyName("ocr_used")]      public bool    OcrUsed     { get; set; }
+    [JsonPropertyName("material_name")]           public string  MaterialName          { get; set; } = string.Empty;
+    [JsonPropertyName("unit")]                     public string  Unit                  { get; set; } = string.Empty;
+    [JsonPropertyName("actual_quantity_ordered")]  public double  ActualQuantityOrdered { get; set; }
+    [JsonPropertyName("supplier_name")]            public string? SupplierName          { get; set; }
+    [JsonPropertyName("order_date")]               public string? OrderDate             { get; set; }
+    [JsonPropertyName("promised_delivery_date")]   public string? PromisedDeliveryDate  { get; set; }
+    [JsonPropertyName("phase_hint")]                public string? PhaseHint             { get; set; }
 }
 
-public class MlDocumentParseMeasurementsResponse
+public class MlDocumentParsePoResponse
 {
-    [JsonPropertyName("project_id")]     public int                          ProjectId     { get; set; }
-    [JsonPropertyName("items")]          public List<MlParsedMeasurementItem> Items        { get; set; } = [];
-    [JsonPropertyName("page_count")]     public int                          PageCount     { get; set; }
-    [JsonPropertyName("ocr_pages_used")] public int                          OcrPagesUsed  { get; set; }
-    [JsonPropertyName("parse_errors")]   public List<string>                ParseErrors   { get; set; } = [];
+    [JsonPropertyName("project_id")]   public int                  ProjectId   { get; set; }
+    [JsonPropertyName("items")]        public List<MlParsedPoItem> Items       { get; set; } = [];
+    [JsonPropertyName("page_count")]   public int                  PageCount   { get; set; }
+    [JsonPropertyName("parse_errors")] public List<string>         ParseErrors { get; set; } = [];
 }
 
-public class ParsedMeasurementRowDto
+public class ParsedPoRowDto
 {
-    public string  ElementType { get; set; } = string.Empty;
-    public decimal LengthM     { get; set; }
-    public decimal WidthM      { get; set; }
-    public decimal HeightM     { get; set; }
-    public decimal ThicknessM  { get; set; }
-    public string? AreaLabel   { get; set; }
-    public int     SourcePage  { get; set; }
-    public bool    OcrUsed     { get; set; }
+    public string   MaterialName          { get; set; } = string.Empty;
+    public string   Unit                  { get; set; } = string.Empty;
+    public decimal  ActualQuantityOrdered { get; set; }
+    public string?  SupplierName          { get; set; }
+    public DateTime? OrderDate            { get; set; }
+    public DateTime? PromisedDeliveryDate { get; set; }
+    public string?  PhaseHint             { get; set; }
+    public int?     MatchedMaterialId     { get; set; }
+    public int?     MatchedSupplierId     { get; set; }
 }
 
-public class MeasurementParseResultDto
+public class PoParseResultDto
 {
-    public int                          PageCount    { get; set; }
-    public int                          OcrPagesUsed { get; set; }
-    public List<string>                 ParseErrors  { get; set; } = [];
-    public List<ParsedMeasurementRowDto> Items        { get; set; } = [];
+    public int                  PageCount   { get; set; }
+    public List<string>         ParseErrors { get; set; } = [];
+    public List<ParsedPoRowDto> Items       { get; set; } = [];
 }

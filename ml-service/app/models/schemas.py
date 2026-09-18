@@ -62,20 +62,18 @@ class DocumentParseResponse(BaseModel):
     parse_errors:list[str] = []
 
 
-class ParsedMeasurementItem(BaseModel):
-    element_type: str
-    length_m:     float = 0
-    width_m:      float = 0
-    height_m:     float = 0
-    thickness_m:  float = 0
-    area_label:   Optional[str] = None
-    source_page:  int
-    ocr_used:     bool = False
+class ParsedPOItem(BaseModel):
+    material_name:           str
+    unit:                    str
+    actual_quantity_ordered: float
+    supplier_name:           Optional[str] = None
+    order_date:              Optional[str] = None  # ISO date string, or None if not found/unparseable
+    promised_delivery_date:  Optional[str] = None
+    phase_hint:              Optional[str] = None
 
 
-class DocumentParseMeasurementsResponse(BaseModel):
-    project_id:     int
-    items:          list[ParsedMeasurementItem]
-    page_count:     int
-    ocr_pages_used: int = 0
-    parse_errors:   list[str] = []
+class DocumentParsePOResponse(BaseModel):
+    project_id:  int
+    items:       list[ParsedPOItem]
+    page_count:  int
+    parse_errors:list[str] = []
