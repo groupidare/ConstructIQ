@@ -46,6 +46,7 @@ export default function LoginPage() {
   const [mfaStep, setMfaStep] = useState<{ challengeToken: string; role: string } | null>(null);
   const [mfaCode, setMfaCode] = useState("");
   const [resending, setResending] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
 
   const { register, handleSubmit, setValue, formState: { errors } } = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -55,6 +56,7 @@ export default function LoginPage() {
   const handleRoleSelect = (value: string) => {
     setSelectedRole(value);
     setValue("role", value, { shouldValidate: true });
+    setGoogleError(null);
   };
 
   const onSubmit = async (data: FormValues) => {
@@ -128,23 +130,23 @@ export default function LoginPage() {
     }
   };
 
-  function reportLoginError(error: unknown) {
+  function loginErrorMessage(error: unknown): string {
     if (typeof error === "object" && error !== null && "response" in error) {
       const axiosError = error as { response?: { data?: { message?: string }; status?: number } };
       const message = axiosError.response?.data?.message;
-      if (message) {
-        toast.error(message);
-      } else if (axiosError.response?.status === 401) {
-        toast.error("Invalid username or password.");
-      } else {
-        toast.error("Unable to login. Please check your connection and try again.");
-      }
-    } else {
-      toast.error("Unable to login. Please try again.");
+      if (message) return message;
+      if (axiosError.response?.status === 401) return "Invalid username or password.";
+      return "Unable to login. Please check your connection and try again.";
     }
+    return "Unable to login. Please try again.";
+  }
+
+  function reportLoginError(error: unknown) {
+    toast.error(loginErrorMessage(error));
   }
 
   const handleGoogleCredential = async (idToken: string) => {
+    setGoogleError(null);
     if (!selectedRole) {
       toast.error("Select your role before continuing with Google.");
       return;
@@ -160,7 +162,7 @@ export default function LoginPage() {
       }
 
       if (res.data.user.role !== selectedRole) {
-        toast.error(`Wrong role. Your account role is "${res.data.user.role}".`);
+        setGoogleError(`Wrong role. Your account role is "${res.data.user.role}".`);
         return;
       }
 
@@ -169,7 +171,11 @@ export default function LoginPage() {
       toast.success(`Welcome back, ${displayName}!`);
       router.push("/projects");
     } catch (error: unknown) {
-      reportLoginError(error);
+      // The Google Identity widget can repaint its iframe right after the
+      // callback fires, which was cutting an ordinary toast off after a
+      // single frame — this error needs to stay on screen until the user
+      // notices it, so it's shown as a persistent inline banner instead.
+      setGoogleError(loginErrorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -303,7 +309,7 @@ export default function LoginPage() {
 
               <form onSubmit={handleVerifyMfa} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                 <div>
-                  <label style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>
+                  <label suppressHydrationWarning style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>
                     Verification code
                   </label>
                   <div style={{ position: "relative" }}>
@@ -311,6 +317,7 @@ export default function LoginPage() {
                     <input
                       value={mfaCode}
                       onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      suppressHydrationWarning
                       autoFocus
                       inputMode="numeric"
                       placeholder="000000"
@@ -330,6 +337,7 @@ export default function LoginPage() {
                 <button
                   type="submit"
                   disabled={loading || mfaCode.length !== 6}
+                  suppressHydrationWarning
                   style={{
                     width: "100%", padding: "12px",
                     borderRadius: 8, border: "none",
@@ -347,6 +355,7 @@ export default function LoginPage() {
                   <button
                     type="button"
                     onClick={() => { setMfaStep(null); setMfaCode(""); }}
+                    suppressHydrationWarning
                     style={{ display: "flex", alignItems: "center", gap: 4, color: "#9ca3af", background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", padding: 0 }}
                   >
                     <ArrowLeft style={{ width: 12, height: 12 }} /> Back to login
@@ -355,6 +364,7 @@ export default function LoginPage() {
                     type="button"
                     onClick={handleResendMfa}
                     disabled={resending}
+                    suppressHydrationWarning
                     style={{ color: "#fb923c", background: "none", border: "none", cursor: resending ? "not-allowed" : "pointer", fontSize: "0.75rem", padding: 0, opacity: resending ? 0.6 : 1 }}
                   >
                     {resending ? "Resending…" : "Resend code"}
@@ -376,7 +386,7 @@ export default function LoginPage() {
 
               {/* Email */}
               <div>
-                <label style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>
+                <label suppressHydrationWarning style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>
                   Email address
                 </label>
                 <div style={{ position: "relative" }}>
@@ -402,7 +412,7 @@ export default function LoginPage() {
 
               {/* Password */}
               <div>
-                <label style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>
+                <label suppressHydrationWarning style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>
                   Password
                 </label>
                 <div style={{ position: "relative" }}>
@@ -427,6 +437,7 @@ export default function LoginPage() {
                     type="button"
                     onClick={() => setShowPassword(s => !s)}
                     aria-label={showPassword ? "Hide password" : "Show password"}
+                    suppressHydrationWarning
                     style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center" }}
                   >
                     {showPassword
@@ -450,6 +461,7 @@ export default function LoginPage() {
                         key={value}
                         type="button"
                         onClick={() => handleRoleSelect(value)}
+                        suppressHydrationWarning
                         style={{
                           display: "flex", alignItems: "center", gap: 6,
                           padding: "6px 12px", borderRadius: 999,
@@ -483,14 +495,14 @@ export default function LoginPage() {
                     id="terms"
                     style={{ marginTop: 2, width: 14, height: 14, accentColor: "#f97316", flexShrink: 0, cursor: "pointer" }}
                   />
-                  <label htmlFor="terms" style={{ color: "#9ca3af", fontSize: "0.75rem", cursor: "pointer", userSelect: "none", lineHeight: 1.5 }}>
+                  <label htmlFor="terms" suppressHydrationWarning style={{ color: "#9ca3af", fontSize: "0.75rem", cursor: "pointer", userSelect: "none", lineHeight: 1.5 }}>
                     I agree to the{" "}
-                    <button type="button" onClick={() => openPrivacy("rights")} style={{ color: "#fb923c", background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", padding: 0, fontFamily: "inherit", textDecoration: "none" }}
+                    <button type="button" onClick={() => openPrivacy("rights")} suppressHydrationWarning style={{ color: "#fb923c", background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", padding: 0, fontFamily: "inherit", textDecoration: "none" }}
                       onMouseEnter={e => (e.currentTarget.style.textDecoration = "underline")}
                       onMouseLeave={e => (e.currentTarget.style.textDecoration = "none")}>
                       Terms and Conditions
                     </button>{" "}and{" "}
-                    <button type="button" onClick={() => openPrivacy("policy")} style={{ color: "#fb923c", background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", padding: 0, fontFamily: "inherit", textDecoration: "none" }}
+                    <button type="button" onClick={() => openPrivacy("policy")} suppressHydrationWarning style={{ color: "#fb923c", background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", padding: 0, fontFamily: "inherit", textDecoration: "none" }}
                       onMouseEnter={e => (e.currentTarget.style.textDecoration = "underline")}
                       onMouseLeave={e => (e.currentTarget.style.textDecoration = "none")}>
                       Privacy Policy
@@ -504,6 +516,7 @@ export default function LoginPage() {
               <button
                 type="submit"
                 disabled={loading}
+                suppressHydrationWarning
                 style={{
                   width: "100%", padding: "12px",
                   borderRadius: 8, border: "none",
@@ -529,15 +542,31 @@ export default function LoginPage() {
                     <div style={{ flex: 1, height: 1, background: "#1e3a5f" }} />
                   </div>
                   <GoogleSignInButton onCredential={handleGoogleCredential} disabled={loading} />
+                  {googleError && (
+                    <div style={{
+                      display: "flex", alignItems: "flex-start", gap: 8,
+                      padding: "10px 12px", borderRadius: 8,
+                      background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)",
+                    }}>
+                      <span style={{ color: "#fca5a5", fontSize: "0.78rem", lineHeight: 1.4, flex: 1 }}>{googleError}</span>
+                      <button
+                        type="button"
+                        onClick={() => setGoogleError(null)}
+                        aria-label="Dismiss"
+                        suppressHydrationWarning
+                        style={{ background: "none", border: "none", color: "#fca5a5", cursor: "pointer", padding: 0, lineHeight: 1, fontSize: "1rem" }}
+                      >×</button>
+                    </div>
+                  )}
                 </>
               )}
 
               {/* Links */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.75rem" }}>
-                <Link href="/forgot-password" style={{ color: "#fb923c", textDecoration: "none" }}>Forgot password?</Link>
+                <Link href="/forgot-password" suppressHydrationWarning style={{ color: "#fb923c", textDecoration: "none" }}>Forgot password?</Link>
                 <span style={{ color: "#6b7280" }}>
                   Need Access?{" "}
-                  <a href="#" style={{ color: "#fb923c", textDecoration: "none" }}>Contact Admin</a>
+                  <a href="#" suppressHydrationWarning style={{ color: "#fb923c", textDecoration: "none" }}>Contact Admin</a>
                 </span>
               </div>
 
