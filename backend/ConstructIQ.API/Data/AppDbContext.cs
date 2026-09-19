@@ -25,6 +25,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<PurchaseOrderMaterial>    PurchaseOrderMaterials    => Set<PurchaseOrderMaterial>();
     public DbSet<DeliveryEvaluation>       DeliveryEvaluations       => Set<DeliveryEvaluation>();
     public DbSet<DeliveryPhoto>            DeliveryPhotos            => Set<DeliveryPhoto>();
+    public DbSet<TrustedDevice>            TrustedDevices            => Set<TrustedDevice>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -32,6 +33,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         mb.Entity<User>().HasIndex(u => u.Username).IsUnique();
         mb.Entity<User>().HasIndex(u => u.Email).IsUnique();
+
+        mb.Entity<TrustedDevice>().HasIndex(d => new { d.UserId, d.DeviceId }).IsUnique();
+        mb.Entity<TrustedDevice>()
+            .HasOne(d => d.User)
+            .WithMany(u => u.TrustedDevices)
+            .HasForeignKey(d => d.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         mb.Entity<InventoryRecord>()
             .HasIndex(i => new { i.ProjectId, i.MaterialId })

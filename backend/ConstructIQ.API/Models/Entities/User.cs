@@ -57,6 +57,14 @@ public class User
     [MaxLength(64)]
     public string? MfaChallengeToken { get; set; }
 
+    // Set while an email-code challenge is outstanding for a device that
+    // isn't trusted yet; cleared (and the device recorded as trusted) once
+    // the code is verified. Null challenges — e.g. an already-trusted device
+    // re-verifying because MfaEnabled is on — never touch this.
+    [MaxLength(128)]
+    public string? PendingDeviceId { get; set; }
+
     public ICollection<Project> ManagedProjects { get; set; } = [];
     public ICollection<ActivityLog> ActivityLogs { get; set; } = [];
+    public ICollection<TrustedDevice> TrustedDevices { get; set; } = [];
 }

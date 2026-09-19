@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/authStore";
 import api from "@/lib/api";
+import { getDeviceId } from "@/lib/auth";
 import type { LoginResponse, LoginSuccessResponse } from "@/types/auth";
 import toast from "react-hot-toast";
 import {
@@ -65,6 +66,7 @@ export default function LoginPage() {
       const res = await api.post<LoginResponse>("/auth/login", {
         username: data.username.trim(),
         password: data.password.trim(),
+        deviceId: getDeviceId(),
       });
 
       if (res.data.mfaRequired) {
@@ -153,7 +155,7 @@ export default function LoginPage() {
     }
     setLoading(true);
     try {
-      const res = await api.post<LoginResponse>("/auth/google", { idToken });
+      const res = await api.post<LoginResponse>("/auth/google", { idToken, deviceId: getDeviceId() });
 
       if (res.data.mfaRequired) {
         setMfaStep({ challengeToken: res.data.challengeToken, role: selectedRole });
