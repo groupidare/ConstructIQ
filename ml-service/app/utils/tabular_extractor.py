@@ -1,21 +1,29 @@
 """Format-dispatching table/text extraction shared by BOQ and PO parsing.
-PDF keeps using pdfplumber (unchanged); .xlsx/.csv go through pandas so they
-feed the exact same header-detection logic instead of returning nothing."""
+PDF prefers pdfplumber (real text layer) and falls back to OCR when there
+isn't one — e.g. a photo of a document saved/exported as .pdf, which has no
+extractable text at all as far as pdfplumber is concerned. .xlsx/.csv go
+through pandas so they feed the exact same header-detection logic instead of
+returning nothing."""
 from pathlib import Path
 
 import pandas as pd
 
 from app.utils.pdf_extractor import extract_tables_from_pdf, extract_text_from_pdf
+from app.utils.ocr_extractor import IMAGE_EXTENSIONS, extract_text_with_ocr, extract_tables_with_ocr
 
 Row = list[str | None]
 Table = list[Row]
 
-SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".csv"}
+SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".csv", *IMAGE_EXTENSIONS}
 
 
 def _df_to_table(df: pd.DataFrame) -> Table:
     df = df.where(pd.notna(df), None)
     return [[None if v is None else str(v) for v in row] for row in df.values.tolist()]
+
+
+def _has_usable_content(tables: list[Table]) -> bool:
+    return any(any(c for c in row if c) for table in tables for row in table)
 
 
 def _read_csv_resilient(path: Path) -> pd.DataFrame:
@@ -42,7 +50,12 @@ def extract_tables(file_path: str) -> list[Table]:
     ext = path.suffix.lower()
     if ext == ".pdf":
         tables, _ = extract_tables_from_pdf(str(path))
-        return tables
+        if _has_usable_content(tables):
+            return tables
+        # No real table structure found — likely a scanned photo saved as
+        # .pdf (no text layer for pdfplumber to read at all). Fall back to
+        # OCR rather than silently reporting zero line items.
+        return extract_tables_with_ocr(file_path)
 
     if ext in (".xlsx", ".xls"):
         excel = pd.ExcelFile(path)
@@ -57,17 +70,28 @@ def extract_tables(file_path: str) -> list[Table]:
         df = _read_csv_resilient(path)
         return [_df_to_table(df)] if not df.empty else []
 
+    if ext in IMAGE_EXTENSIONS:
+        return extract_tables_with_ocr(file_path)
+
     raise ValueError(f"Unsupported file type: {ext}")
 
 
 def extract_text(file_path: str) -> tuple[list[str], int]:
     """Returns (text per 'page', page count). For .pdf this is real extracted
-    text per page. For .xlsx/.csv there's no native text — synthesize one
-    pseudo-page per table so phase/section keyword detection still has
-    something to search, even though it's lower-signal for spreadsheets."""
+    text per page, falling back to OCR when there's no text layer at all
+    (same scanned-photo-as-pdf case handled in extract_tables). For
+    .xlsx/.csv there's no native text — synthesize one pseudo-page per table
+    so phase/section keyword detection still has something to search, even
+    though it's lower-signal for spreadsheets."""
     path = Path(file_path)
-    if path.suffix.lower() == ".pdf":
-        return extract_text_from_pdf(str(path))
+    ext = path.suffix.lower()
+    if ext in IMAGE_EXTENSIONS:
+        return extract_text_with_ocr(file_path)
+    if ext == ".pdf":
+        pages, count = extract_text_from_pdf(str(path))
+        if any(p.strip() for p in pages):
+            return pages, count
+        return extract_text_with_ocr(file_path)
 
     tables = extract_tables(file_path)
     pages = [

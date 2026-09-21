@@ -2,6 +2,8 @@ import pdfplumber
 import re
 from pathlib import Path
 
+from app.utils.ocr_extractor import extract_text_with_ocr
+
 
 QUANTITY_PATTERN  = re.compile(r'\b(\d+(?:\.\d+)?)\s*(pcs?|bags?|m\d?|kg|liters?|gallons?|rolls?|sets?|lengths?|sheets?|units?)\b', re.IGNORECASE)
 PHASE_KEYWORDS    = ["Foundation", "Structural", "Framing", "Roofing", "Walling", "Finishing", "Electrical", "Plumbing", "HVAC"]
@@ -17,6 +19,11 @@ def extract_text_from_pdf(file_path: str) -> tuple[list[str], int]:
         for page in pdf.pages:
             text = page.extract_text() or ""
             pages.append(text)
+
+    # Image-only PDFs have no embedded text layer. Render them and use OCR only
+    # when the digital extraction produced no meaningful text.
+    if sum(len(page.strip()) for page in pages) < 20:
+        return extract_text_with_ocr(file_path)
     return pages, len(pages)
 
 

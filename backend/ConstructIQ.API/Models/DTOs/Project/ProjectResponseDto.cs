@@ -12,6 +12,7 @@ public class ProjectResponseDto
     public DateTime StartDate          { get; set; }
     public DateTime TargetEndDate      { get; set; }
     public string  Status              { get; set; } = string.Empty;
+    public bool    IsHistorical        { get; set; }
     public string? AssignedContractor  { get; set; }
     public int     ProjectManagerId    { get; set; }
     public string  ProjectManagerName  { get; set; } = string.Empty;

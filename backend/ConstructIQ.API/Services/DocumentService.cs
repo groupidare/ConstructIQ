@@ -133,6 +133,8 @@ public class DocumentService(
                 Unit              = i.Unit,
                 EstimatedQuantity = (decimal)i.EstimatedQuantity,
                 PhaseHint         = i.PhaseHint,
+                PrimarySection    = i.PrimarySection,
+                SubCategory       = i.SubCategory,
                 MatchedMaterialId = matches.TryGetValue(i.MaterialName.Trim().ToLower(), out var id) ? id : null,
             }).ToList(),
         };

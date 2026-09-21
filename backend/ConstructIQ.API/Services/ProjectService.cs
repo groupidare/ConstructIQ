@@ -50,6 +50,7 @@ public class ProjectService(AppDbContext db) : IProjectService
             ProjectManagerId   = createdByUserId,
             SiteEngineerId     = dto.SiteEngineerId,
             Status             = string.IsNullOrWhiteSpace(dto.Status) ? ProjectStatus.Planning : Enum.Parse<ProjectStatus>(dto.Status),
+            IsHistorical       = dto.IsHistorical,
         };
 
         foreach (var phaseDto in dto.Phases)
@@ -112,6 +113,7 @@ public class ProjectService(AppDbContext db) : IProjectService
         StartDate          = p.StartDate,
         TargetEndDate      = p.TargetEndDate,
         Status             = p.Status.ToString(),
+        IsHistorical       = p.IsHistorical,
         AssignedContractor = p.AssignedContractor,
         ProjectManagerId   = p.ProjectManagerId,
         ProjectManagerName = $"{p.ProjectManager?.FirstName} {p.ProjectManager?.LastName}",

@@ -29,6 +29,9 @@ export interface Project {
   startDate: string;
   targetEndDate: string;
   status: ProjectStatus;
+  // True only for projects backfilled via "Add Completed Project" — pure
+  // historical training data, not a real project tracked through the app.
+  isHistorical: boolean;
   assignedContractor?: string;
   projectManagerId: number;
   projectManagerName: string;
@@ -60,6 +63,7 @@ export interface ProjectCreateRequest {
   startDate: string;
   targetEndDate: string;
   status?: ProjectStatus;
+  isHistorical?: boolean;
   assignedContractor?: string;
   siteEngineerId?: number;
   phases: Omit<Phase, "id" | "projectId" | "status" | "progressPercent">[];

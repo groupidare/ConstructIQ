@@ -31,6 +31,14 @@ public class Project
     public DateTime TargetEndDate { get; set; }
     public ProjectStatus Status   { get; set; } = ProjectStatus.Planning;
 
+    // True only for projects backfilled via "Add Completed Project" — pure
+    // historical records entered to train the forecasting model. False for
+    // every real project, including ones that reached Completed status
+    // organically by being progressed through the app. This is the only
+    // reliable way to tell the two apart after the fact, since both end up
+    // with Status == Completed.
+    public bool IsHistorical { get; set; }
+
     [MaxLength(200)]
     public string? AssignedContractor { get; set; }
 

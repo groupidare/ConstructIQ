@@ -15,6 +15,10 @@ import { getApiOrigin } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import type { Project as RealProject } from "@/types/project";
 import type { ProjectDocument } from "@/types/document";
+import type { ForecastResult } from "@/types/forecast";
+import type { BOQItem } from "@/types/boq";
+import type { ExcessAnalyticsSummary } from "@/types/excess";
+import type { RedistributionRecommendation } from "@/types/procurement";
 import {
   Plus, MapPin, Calendar, Users, FileText, X, Eye,
   Upload, FolderOpen, Trash2, Search, BarChart3, Camera, Activity, History, ExternalLink, File as FileIcon,
@@ -32,20 +36,21 @@ interface Project {
   id: number; name: string; location: string;
   startDate: string; endDate: string; status: ProjectStatus;
   progress: number; progressColor: string;
-  budget: string; spent: string; materials: number;
+  materials: number;
   manager: string; engineers: string[];
   type: string;
+  isHistorical: boolean;
 }
 
 
 // ── Static Data ────────────────────────────────────────────────────────────────
 
 const INIT_PROJECTS: Project[] = [
-  { id:1, name:"Metro Station Phase 3",   location:"EDSA, QC",     startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",    progress:62,  progressColor:"#f97316", budget:"₱45.0M",  spent:"₱27.9M", materials:8,  manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],   type:"Infrastructure" },
-  { id:2, name:"BGC Tower Complex",        location:"BGC, Taguig",  startDate:"2025-01-15", endDate:"2027-06-30", status:"ACTIVE",    progress:38,  progressColor:"#1e3154", budget:"₱120.0M", spent:"₱45.6M", materials:12, manager:"Remy Santos",  engineers:["Jose Lim"],                  type:"Commercial" },
-  { id:3, name:"Harbor Bridge Renovation", location:"Manila Harbor", startDate:"2024-03-01", endDate:"2025-12-31", status:"ACTIVE",    progress:81,  progressColor:"#22c55e", budget:"₱28.0M",  spent:"₱22.7M", materials:6,  manager:"Remy Santos",  engineers:["Carlos Reyes"],              type:"Infrastructure" },
-  { id:4, name:"Southgate Mall Expansion", location:"BGC, Taguig",  startDate:"2025-06-01", endDate:"2027-09-30", status:"PLANNING",  progress:12,  progressColor:"#374151", budget:"₱75.0M",  spent:"₱9.0M",  materials:4,  manager:"Remy Santos",  engineers:["Ana Cruz","Ben Torres"],     type:"Commercial" },
-  { id:5, name:"PUP ICTC Building",        location:"Sta. Mesa",    startDate:"2023-01-10", endDate:"2025-01-15", status:"COMPLETED", progress:100, progressColor:"#22c55e", budget:"₱19.3M",  spent:"₱19.1M", materials:9,  manager:"Remy Santos",  engineers:["Ana Cruz"],                  type:"Infrastructure" },
+  { id:1, name:"Metro Station Phase 3",   location:"EDSA, QC",     startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",    progress:62,  progressColor:"#f97316", materials:8,  manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],   type:"Infrastructure", isHistorical:false },
+  { id:2, name:"BGC Tower Complex",        location:"BGC, Taguig",  startDate:"2025-01-15", endDate:"2027-06-30", status:"ACTIVE",    progress:38,  progressColor:"#1e3154", materials:12, manager:"Remy Santos",  engineers:["Jose Lim"],                  type:"Commercial", isHistorical:false },
+  { id:3, name:"Harbor Bridge Renovation", location:"Manila Harbor", startDate:"2024-03-01", endDate:"2025-12-31", status:"ACTIVE",    progress:81,  progressColor:"#22c55e", materials:6,  manager:"Remy Santos",  engineers:["Carlos Reyes"],              type:"Infrastructure", isHistorical:false },
+  { id:4, name:"Southgate Mall Expansion", location:"BGC, Taguig",  startDate:"2025-06-01", endDate:"2027-09-30", status:"PLANNING",  progress:12,  progressColor:"#374151", materials:4,  manager:"Remy Santos",  engineers:["Ana Cruz","Ben Torres"],     type:"Commercial", isHistorical:false },
+  { id:5, name:"PUP ICTC Building",        location:"Sta. Mesa",    startDate:"2023-01-10", endDate:"2025-01-15", status:"COMPLETED", progress:100, progressColor:"#22c55e", materials:9,  manager:"Remy Santos",  engineers:["Ana Cruz"],                  type:"Infrastructure", isHistorical:false },
 ];
 
 // ── API ────────────────────────────────────────────────────────────────────────
@@ -68,10 +73,10 @@ function toProject(dto: ProjectResponseDto): Project {
     startDate: dto.startDate.split("T")[0], endDate: dto.targetEndDate.split("T")[0],
     status, progress: demo?.progress ?? (status==="COMPLETED"?100:status==="ACTIVE"?50:10),
     progressColor: demo?.progressColor ?? PROGRESS_COLOR[status] ?? "#374151",
-    budget: `₱${Number(dto.budget).toLocaleString()}`, spent: demo?.spent ?? "₱0",
     materials: demo?.materials ?? 0,
     manager: demo?.manager ?? dto.projectManagerName,
     engineers: demo?.engineers ?? (dto.siteEngineerName ? [dto.siteEngineerName] : []),
+    isHistorical: dto.isHistorical,
   };
 }
 
@@ -647,6 +652,71 @@ function ProjectCard({ project, onView, onMaterialPlan, onReports, onProgress, o
 }) {
   const st = STATUS_STYLE[project.status];
   const btn: React.CSSProperties = { flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"10px 0", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.8rem", fontWeight:600, cursor:"pointer" };
+
+  const [aiPredicted, setAiPredicted] = useState<{ material:string; qty:number; unit:string } | null>(null);
+  const [actualUsage, setActualUsage] = useState<{ material:string; qty:number; unit:string } | null>(null);
+  const [mostUsed, setMostUsed]       = useState<{ material:string; qty:number; unit:string } | null>(null);
+  const [excessStock, setExcessStock]     = useState(0);
+  const [redistributed, setRedistributed] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get<ExcessAnalyticsSummary>(`/excess-waste/summary/${project.id}`)
+      .then(({ data }) => { if (!cancelled) setExcessStock(data.totalExcessQuantity); })
+      .catch(() => {});
+    api.get<RedistributionRecommendation[]>("/redistribution")
+      .then(({ data }) => {
+        if (cancelled) return;
+        const total = data
+          .filter(r => r.status === "Completed" && (r.sourceProjectId === project.id || r.targetProjectId === project.id))
+          .reduce((sum, r) => sum + r.transferQuantity, 0);
+        setRedistributed(total);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [project.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Historical (backfilled) records aren't forecast targets themselves —
+    // they're the training data forecasts are built from. Just show what
+    // was used most, straight from the real BOQ record. Actual Qty is what's
+    // meant to be filled in for these, but until someone does, estimated
+    // qty is still real, useful information — better than showing nothing.
+    if (project.isHistorical) {
+      api.get<BOQItem[]>(`/boq/project/${project.id}`)
+        .then(({ data: boqItems }) => {
+          if (cancelled) return;
+          const effectiveQty = (b: BOQItem) => b.actualQuantity > 0 ? b.actualQuantity : b.estimatedQuantity;
+          const top = boqItems.slice().sort((a, b) => effectiveQty(b) - effectiveQty(a))[0];
+          setMostUsed(top ? { material: top.materialName, qty: effectiveQty(top), unit: top.unit } : null);
+        })
+        .catch(() => {});
+      return () => { cancelled = true; };
+    }
+
+    api.get<ForecastResult[]>(`/forecast/project/${project.id}`)
+      .then(({ data }) => {
+        if (cancelled) return;
+        const top = data[0]?.forecastedMaterials
+          ?.slice()
+          .sort((a, b) => b.forecastedQuantity - a.forecastedQuantity)[0];
+        setAiPredicted(top ? { material: top.materialName, qty: top.forecastedQuantity, unit: top.unit } : null);
+
+        if (project.status !== "COMPLETED" || !top) return;
+        api.get<BOQItem[]>(`/boq/project/${project.id}`)
+          .then(({ data: boqItems }) => {
+            if (cancelled) return;
+            const match = boqItems.find(b => b.materialId === top.materialId && b.actualQuantity > 0);
+            setActualUsage(match ? { material: match.materialName, qty: match.actualQuantity, unit: match.unit } : null);
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [project.id, project.status, project.isHistorical]);
+
   return (
     <div style={{ background:"#fff", borderRadius:14, padding:"1.25rem", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
       {/* Title row */}
@@ -663,7 +733,11 @@ function ProjectCard({ project, onView, onMaterialPlan, onReports, onProgress, o
           )}
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
-          <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 10px", borderRadius:999, background:st.bg, color:st.color, whiteSpace:"nowrap" }}>· {project.status}</span>
+          {project.isHistorical ? (
+            <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 10px", borderRadius:999, background:"#ede9fe", color:"#6d28d9", whiteSpace:"nowrap" }}>HISTORICAL DATA</span>
+          ) : (
+            <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 10px", borderRadius:999, background:st.bg, color:st.color, whiteSpace:"nowrap" }}>· {project.status}</span>
+          )}
           {canDelete && (
             <button onClick={onDelete} title="Delete project" style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#d1d5db", display:"flex", alignItems:"center" }}>
               <Trash2 style={{ width:14, height:14 }} />
@@ -676,6 +750,24 @@ function ProjectCard({ project, onView, onMaterialPlan, onReports, onProgress, o
       <div style={{ display:"flex", gap:14, marginBottom:"0.875rem", flexWrap:"wrap" }}>
         <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><MapPin style={{ width:11, height:11 }} />{project.location}</span>
         <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><Calendar style={{ width:11, height:11 }} />{project.startDate} – {project.endDate}</span>
+      </div>
+
+      {/* AI forecast summary */}
+      <div style={{ display:"flex", flexDirection:"column", gap:2, marginBottom:"0.75rem" }}>
+        {project.isHistorical ? (
+          <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#6d28d9" }}>
+            Most Material Demand/Usage: {mostUsed ? `${mostUsed.qty.toLocaleString()} ${mostUsed.unit} · ${mostUsed.material}` : "—"}
+          </span>
+        ) : (
+          <>
+            <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#7c3aed" }}>
+              AI Predicted: {aiPredicted ? `${aiPredicted.qty.toLocaleString()} ${aiPredicted.unit} · ${aiPredicted.material}` : "—"}
+            </span>
+            <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#6b7280" }}>
+              Actual Usage: {project.status === "COMPLETED" ? (actualUsage ? `${actualUsage.qty.toLocaleString()} ${actualUsage.unit} · ${actualUsage.material}` : "—") : "—"}
+            </span>
+          </>
+        )}
       </div>
 
       {/* Progress */}
@@ -691,7 +783,7 @@ function ProjectCard({ project, onView, onMaterialPlan, onReports, onProgress, o
 
       {/* Stats */}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.5rem", marginBottom:"0.75rem" }}>
-        {[["Budget",project.budget],["Spent",project.spent],["Materials",`${project.materials} items`]].map(([l,v])=>(
+        {[["Excess Stock",`${excessStock.toLocaleString()} units`],["Redistributed",`${redistributed.toLocaleString()} units`],["Materials",`${project.materials} items`]].map(([l,v])=>(
           <div key={l} style={{ background:"#f9fafb", borderRadius:8, padding:"0.5rem 0.75rem" }}>
             <p style={{ fontSize:"0.6rem", color:"#9ca3af" }}>{l}</p>
             <p style={{ fontWeight:700, fontSize:"0.85rem", color:"#111827" }}>{v}</p>
@@ -738,6 +830,10 @@ export default function ProjectsPage() {
   const [loading,  setLoading]  = useState(true);
   const [modal,    setModal]    = useState<ModalState>(null);
   const [deleting, setDeleting] = useState(false);
+  // "Projects" = every real project tracked through the app (any status,
+  // reached via the Progress Tracker). "Historical Data" = pure backfilled
+  // records entered only to train the forecasting model — not real projects.
+  const [view, setView] = useState<"projects" | "historical">("projects");
   const { user } = useAuthStore();
   const role = user?.role ?? "SiteEngineer";
 
@@ -777,6 +873,9 @@ export default function ProjectsPage() {
 
   const proj = modal && "project" in modal ? modal.project : undefined;
   const workspaceProject = modal?.type === "workspace" ? fullProjects.find(p => p.id === modal.projectId) : undefined;
+  const realProjects       = projects.filter(p => !p.isHistorical);
+  const historicalProjects = projects.filter(p => p.isHistorical);
+  const visibleProjects    = view === "historical" ? historicalProjects : realProjects;
 
   return (
     <div style={{ background:"#f5f4f0", minHeight:"100vh" }}>
@@ -830,7 +929,9 @@ export default function ProjectsPage() {
           <div>
             <p style={{ fontWeight:800, fontSize:"1.35rem", color:"#111827" }}>All Projects</p>
             <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>
-              {loading ? "Loading…" : `${projects.length} projects · ${projects.filter(p=>p.status==="ACTIVE").length} active`}
+              {loading ? "Loading…" : view === "historical"
+                ? `${historicalProjects.length} historical record(s) — training data for the forecasting model`
+                : `${realProjects.length} projects · ${realProjects.filter(p=>p.status==="ACTIVE").length} active`}
             </p>
           </div>
           <div style={{ display:"flex", gap:"0.625rem" }}>
@@ -852,14 +953,36 @@ export default function ProjectsPage() {
           </div>
         </div>
 
+        {/* Projects vs. Historical Data tabs */}
+        <div style={{ display:"flex", borderBottom:"1px solid #e5e7eb", marginBottom:"1.25rem" }}>
+          <button
+            onClick={()=>setView("projects")}
+            style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem", background:"transparent",
+              fontWeight: view==="projects" ? 700 : 400, color: view==="projects" ? "#f97316" : "#9ca3af",
+              borderBottom: view==="projects" ? "2px solid #f97316" : "2px solid transparent" }}
+          >
+            Projects ({realProjects.length})
+          </button>
+          <button
+            onClick={()=>setView("historical")}
+            style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem", background:"transparent",
+              fontWeight: view==="historical" ? 700 : 400, color: view==="historical" ? "#f97316" : "#9ca3af",
+              borderBottom: view==="historical" ? "2px solid #f97316" : "2px solid transparent" }}
+          >
+            Historical Data ({historicalProjects.length})
+          </button>
+        </div>
+
         {/* Project grid */}
         {loading ? (
           <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>Loading projects…</div>
-        ) : projects.length === 0 ? (
-          <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>No projects yet. Click "+ New Project" to get started.</div>
+        ) : visibleProjects.length === 0 ? (
+          <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>
+            {view === "historical" ? "No historical records yet. Click \"Add Completed Project\" to backfill one." : "No projects yet. Click \"+ New Project\" to get started."}
+          </div>
         ) : (
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
-            {projects.map(p => (
+            {visibleProjects.map(p => (
               <ProjectCard
                 key={p.id}
                 project={p}

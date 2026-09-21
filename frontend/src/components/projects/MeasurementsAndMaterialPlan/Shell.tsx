@@ -39,6 +39,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [savingBoq, setSavingBoq] = useState(false);
   const [forecasting, setForecasting] = useState(false);
   const [uploadingBlueprint, setUploadingBlueprint] = useState(false);
+  const [parsingBlueprintId, setParsingBlueprintId] = useState<number | null>(null);
   const [uploadingBoq, setUploadingBoq] = useState(false);
   const [uploadingPo, setUploadingPo] = useState(false);
   const [savingPo, setSavingPo] = useState(false);
@@ -127,7 +128,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
           phaseId: item.phaseHint
             ? project.phases.find(p => p.name.toLowerCase() === item.phaseHint!.toLowerCase())?.id
             : undefined,
-          primarySection: 'Others',
+          primarySection: item.primarySection || 'Others',
+          subCategory: item.subCategory,
           materialId: item.matchedMaterialId,
           newMaterialName: item.matchedMaterialId ? undefined : item.materialName,
           unit: item.unit,
@@ -139,6 +141,15 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       if (result.parseErrors.length > 0) toast.error(result.parseErrors[0]);
     } catch {
       toast.error('Failed to scan document.');
+    }
+  }
+
+  async function handleParseBlueprint(documentId: number) {
+    setParsingBlueprintId(documentId);
+    try {
+      await handleParseBoq(documentId);
+    } finally {
+      setParsingBlueprintId(null);
     }
   }
 
@@ -261,8 +272,15 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   async function handleRunForecast() {
     setForecasting(true);
     try {
+      // Run Forecast should reflect exactly what's on screen — save any
+      // reviewed/edited BOQ rows first so a forecast never silently runs
+      // against stale (or missing) data just because "Save Material Plan"
+      // wasn't clicked separately first.
+      if (boqRows.length > 0) {
+        await saveBoqItems(boqRows);
+      }
       await generateForecast({ projectId: project.id, period: 'Monthly', planningWeeks: 4 });
-      toast.success('Forecast generated.');
+      toast.success('Material plan saved and forecast generated.');
       setTab('materialPlan');
     } catch {
       toast.error('Failed to generate forecast — no historical or BOQ data available yet.');
@@ -297,10 +315,10 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     tab, setTab, editable, setEditable,
     projectType, otherTypeSpecify,
     onProjectTypeChange: handleProjectTypeChange, onOtherTypeSpecifyBlur: handleOtherTypeSpecifyBlur, savingProjectType,
-    boqRows, setBoqRows,
+    boqRows, setBoqRows, boqItems,
     blueprints, boqDocs, poDocs, inventory, forecastedMaterials,
-    savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
-    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
+    savingBoq, forecasting, uploadingBlueprint, parsingBlueprintId, uploadingBoq, uploadingPo, savingPo,
+    handleUploadBlueprint, handleParseBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
     handleSaveBoq, handleRunForecast, handleNotify,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
     poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
@@ -353,6 +371,8 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       blueprints={state.blueprints}
       uploading={state.uploadingBlueprint}
       onUploadBlueprint={state.handleUploadBlueprint}
+      parsingBlueprintId={state.parsingBlueprintId}
+      onParseBlueprint={state.handleParseBlueprint}
       onRemoveDocument={state.handleRemoveDocument}
     />
   ) : (
@@ -369,6 +389,7 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onParseBoq={state.handleParseBoq}
       onRemoveDocument={state.handleRemoveDocument}
       rows={state.boqRows}
+      boqItems={state.boqItems}
       onRowsChange={state.setBoqRows}
       onSave={state.handleSaveBoq}
       saving={state.savingBoq}

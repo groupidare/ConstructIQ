@@ -35,6 +35,8 @@ public class MlParsedBoqItem
     [JsonPropertyName("unit")]               public string  Unit              { get; set; } = string.Empty;
     [JsonPropertyName("estimated_quantity")] public double  EstimatedQuantity { get; set; }
     [JsonPropertyName("phase_hint")]         public string? PhaseHint         { get; set; }
+    [JsonPropertyName("primary_section")]    public string? PrimarySection    { get; set; }
+    [JsonPropertyName("sub_category")]       public string? SubCategory       { get; set; }
 }
 
 public class MlDocumentParseResponse
@@ -54,6 +56,8 @@ public class ParsedBoqRowDto
     public string  Unit              { get; set; } = string.Empty;
     public decimal EstimatedQuantity { get; set; }
     public string? PhaseHint         { get; set; }
+    public string? PrimarySection    { get; set; }
+    public string? SubCategory       { get; set; }
     // Best-effort exact-name match against the Materials catalog, so the frontend
     // can pre-select an existing material instead of always treating it as new.
     public int?    MatchedMaterialId { get; set; }

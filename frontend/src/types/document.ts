@@ -20,6 +20,8 @@ export interface ParsedBoqRow {
   unit: string;
   estimatedQuantity: number;
   phaseHint?: string;
+  primarySection?: string;
+  subCategory?: string;
   matchedMaterialId?: number;
 }
 

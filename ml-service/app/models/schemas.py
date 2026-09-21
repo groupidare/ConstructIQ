@@ -53,6 +53,8 @@ class ParsedBOQItem(BaseModel):
     unit:              str
     estimated_quantity:float
     phase_hint:        Optional[str] = None
+    primary_section:   Optional[str] = None
+    sub_category:      Optional[str] = None
 
 
 class DocumentParseResponse(BaseModel):

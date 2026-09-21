@@ -9,7 +9,7 @@ import type { Project, ProjectType } from '@/types/project';
 import type { ProjectDocument } from '@/types/document';
 import type { InventoryRecord } from '@/types/inventory';
 import type { ForecastedMaterial } from '@/types/forecast';
-import type { BOQItemRow } from '@/types/boq';
+import type { BOQItem, BOQItemRow } from '@/types/boq';
 import { PRIMARY_SECTIONS } from '@/types/boq';
 import type { PurchaseOrder, PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import { inp, sel, lbl } from './styles';
@@ -26,6 +26,7 @@ interface Props {
   onUploadBoq: (file: File) => void;
   onParseBoq: (documentId: number) => Promise<void>;
   rows: BOQItemRow[];
+  boqItems: BOQItem[];
   onRowsChange: (rows: BOQItemRow[]) => void;
   onSave: () => void;
   saving: boolean;
@@ -55,7 +56,7 @@ interface Props {
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
-  rows, onRowsChange, onSave, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
+  rows, boqItems, onRowsChange, onSave, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
@@ -190,10 +191,33 @@ export default function MaterialPlanTab({
     return bySection;
   }, [rows]);
 
+  // Totals by unit — rows mix incompatible units (sq.m, pc, l.m, set...), so a
+  // single blind sum across all of them would be meaningless. The source
+  // file itself has no total row at all; this is purely computed for display.
+  const totalsByUnit = useMemo(() => {
+    const est = new Map<string, number>();
+    const actual = new Map<string, number>();
+    rows.forEach(r => {
+      const unit = r.unit?.trim() || '—';
+      est.set(unit, (est.get(unit) ?? 0) + (r.estimatedQuantity || 0));
+      if (isCompleted) actual.set(unit, (actual.get(unit) ?? 0) + (r.actualQuantity || 0));
+    });
+    return { est, actual };
+  }, [rows, isCompleted]);
+
+  // A newly-scanned material has no InventoryRecord yet (that only exists
+  // once stock is actually recorded), so inventory alone can't name it —
+  // boqItems already carries the real Material.Name resolved server-side.
+  const materialNameById = useMemo(() => {
+    const map = new Map<number, string>();
+    boqItems.forEach(b => map.set(b.materialId, b.materialName));
+    inventory.forEach(i => { if (!map.has(i.materialId)) map.set(i.materialId, i.materialName); });
+    return map;
+  }, [boqItems, inventory]);
+
   function materialLabel(r: BOQItemRow): string {
     if (r.materialId) {
-      const inv = inventory.find(i => i.materialId === r.materialId);
-      return inv?.materialName ?? `Material #${r.materialId}`;
+      return materialNameById.get(r.materialId) ?? `Material #${r.materialId}`;
     }
     return r.newMaterialName ?? '(unnamed)';
   }
@@ -205,6 +229,10 @@ export default function MaterialPlanTab({
 
   return (
     <div>
+      <datalist id="primary-section-options">
+        {PRIMARY_SECTIONS.map(s => <option key={s} value={s} />)}
+      </datalist>
+
       {/* Controls */}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '0.75rem', marginBottom: '1rem' }}>
         <div>
@@ -220,6 +248,41 @@ export default function MaterialPlanTab({
       {isCompleted && (
         <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '0.625rem 0.875rem', marginBottom: '1rem', fontSize: '0.72rem', color: '#9a3412' }}>
           This project is marked Completed — fill in <strong>Actual Qty</strong> per material below. This is what trains the forecasting model on real usage.
+        </div>
+      )}
+
+      {/* Forecasted Material Demand — completed projects only; ongoing projects
+          only get the summary label on the project card, not this full breakdown. */}
+      {isCompleted && (
+        <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', marginBottom: '1rem' }}>
+          <div style={{ padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
+            <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>Forecasted Material Demand</p>
+            <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>AI-predicted demand from the latest forecast run on this project.</p>
+          </div>
+          {forecastedMaterials.length === 0 ? (
+            <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No forecast has been run yet — click Run Forecast below.</p>
+          ) : (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.7fr)', gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+                {['MATERIAL', 'FORECASTED QTY', 'CURRENT STOCK', 'SHORTAGE', 'RISK'].map(h => (
+                  <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
+                ))}
+              </div>
+              {forecastedMaterials.map(fm => (
+                <div key={fm.materialId} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.7fr)', gap: 4, padding: '7px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.76rem', color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fm.materialName}</span>
+                  <span style={{ fontSize: '0.76rem', color: '#374151' }}>{fm.forecastedQuantity.toLocaleString()} {fm.unit}</span>
+                  <span style={{ fontSize: '0.76rem', color: '#6b7280' }}>{fm.currentStock.toLocaleString()} {fm.unit}</span>
+                  <span style={{ fontSize: '0.76rem', color: fm.shortage > 0 ? '#ef4444' : '#6b7280' }}>{fm.shortage > 0 ? fm.shortage.toLocaleString() : '—'}</span>
+                  <span style={{
+                    fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, width: 'fit-content',
+                    background: fm.riskLevel === 'Critical' ? '#fee2e2' : fm.riskLevel === 'High' ? '#ffedd5' : fm.riskLevel === 'Medium' ? '#fef3c7' : '#dcfce7',
+                    color: fm.riskLevel === 'Critical' ? '#b91c1c' : fm.riskLevel === 'High' ? '#c2410c' : fm.riskLevel === 'Medium' ? '#92400e' : '#15803d',
+                  }}>{fm.riskLevel}</span>
+                </div>
+              ))}
+            </>
+          )}
         </div>
       )}
 
@@ -333,14 +396,13 @@ export default function MaterialPlanTab({
                               <input disabled={!editable} value={r.newMaterialName ?? ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material name" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', flex: 1, minWidth: 0 }} />
                             )}
                             {editable && (
-                              <select
+                              <input
+                                list="primary-section-options"
                                 title="Primary section"
                                 value={r.primarySection}
                                 onChange={e => updateRow(i, { primarySection: e.target.value })}
-                                style={{ ...sel, padding: '3px 5px', fontSize: '0.64rem', width: 'auto', flexShrink: 0 }}
-                              >
-                                {PRIMARY_SECTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-                              </select>
+                                style={{ ...inp, padding: '3px 5px', fontSize: '0.64rem', width: 130, flexShrink: 0 }}
+                              />
                             )}
                           </div>
                           <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
@@ -394,6 +456,23 @@ export default function MaterialPlanTab({
           <button onClick={addBlankRow} style={{ width: '100%', padding: '8px', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.78rem', color: '#f97316', fontWeight: 600, borderTop: '1px solid #f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
             <Plus style={{ width: 13, height: 13 }} /> Add Row
           </button>
+        )}
+
+        {rows.length > 0 && (
+          <div style={{ padding: '0.625rem 1rem', borderTop: '1px solid #e5e7eb', background: '#f9fafb' }}>
+            <p style={{ fontSize: '0.62rem', fontWeight: 700, color: '#9ca3af', marginBottom: 4 }}>
+              TOTAL EST. QTY {isCompleted && '/ ACTUAL QTY'} BY UNIT
+              <span style={{ fontWeight: 400, textTransform: 'none' }}> — computed, not from the source file</span>
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem 1rem' }}>
+              {Array.from(totalsByUnit.est.entries()).map(([unit, sum]) => (
+                <span key={unit} style={{ fontSize: '0.76rem', color: '#374151' }}>
+                  <strong>{sum.toLocaleString()}</strong> {unit}
+                  {isCompleted && <span style={{ color: '#9ca3af' }}> / {(totalsByUnit.actual.get(unit) ?? 0).toLocaleString()} {unit}</span>}
+                </span>
+              ))}
+            </div>
+          </div>
         )}
       </div>
 

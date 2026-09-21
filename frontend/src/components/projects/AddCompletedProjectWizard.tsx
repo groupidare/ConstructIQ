@@ -58,6 +58,7 @@ export default function AddCompletedProjectWizard({ onCancel, onSkip, onFinish }
         budget: 0,
         targetEndDate: data.endDate,
         status: 'Completed',
+        isHistorical: true,
         phases: [],
       });
       toast.success('Historical project created — now enter its Bill of Quantities and Purchase Orders.');

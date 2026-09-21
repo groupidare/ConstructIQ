@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef } from 'react';
-import { Upload, FileText, ExternalLink, X } from 'lucide-react';
+import { Upload, FileText, ExternalLink, X, ScanLine } from 'lucide-react';
 import { getApiOrigin } from '@/lib/api';
 import type { ProjectType } from '@/types/project';
 import { PROJECT_TYPES } from '@/types/project';
@@ -18,12 +18,15 @@ interface Props {
   blueprints: ProjectDocument[];
   uploading: boolean;
   onUploadBlueprint: (file: File) => void;
+  parsingBlueprintId?: number | null;
+  onParseBlueprint: (documentId: number) => void;
   onRemoveDocument: (documentId: number) => void;
 }
 
 export default function MeasurementsTab({
   editable, projectType, otherTypeSpecify, onProjectTypeChange, onOtherTypeSpecifyBlur, savingProjectType,
   blueprints, uploading, onUploadBlueprint, onRemoveDocument,
+  parsingBlueprintId, onParseBlueprint,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -88,6 +91,16 @@ export default function MeasurementsTab({
                 <span style={{ fontSize: '0.78rem', color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{doc.fileName}</span>
                 <ExternalLink style={{ width: 12, height: 12, color: '#9ca3af', flexShrink: 0 }} />
               </a>
+              {editable && (
+                <button
+                  onClick={() => onParseBlueprint(doc.id)}
+                  disabled={parsingBlueprintId === doc.id}
+                  title="Extract quantities from blueprint"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2563eb', padding: '8px 4px', flexShrink: 0 }}
+                >
+                  <ScanLine style={{ width: 13, height: 13 }} />
+                </button>
+              )}
               {editable && (
                 <button
                   onClick={() => onRemoveDocument(doc.id)}
