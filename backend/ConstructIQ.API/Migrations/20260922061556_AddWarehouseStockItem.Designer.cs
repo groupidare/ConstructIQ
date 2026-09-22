@@ -4,6 +4,7 @@ using ConstructIQ.API.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ConstructIQ.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260922061556_AddWarehouseStockItem")]
+    partial class AddWarehouseStockItem
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1100,40 +1103,6 @@ namespace ConstructIQ.API.Migrations
                     b.ToTable("Suppliers");
                 });
 
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.TrustedDevice", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("DeviceId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("varchar(128)");
-
-                    b.Property<DateTime>("LastUsedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("UserAgent")
-                        .HasMaxLength(255)
-                        .HasColumnType("varchar(255)");
-
-                    b.Property<int>("UserId")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("UserId", "DeviceId")
-                        .IsUnique();
-
-                    b.ToTable("TrustedDevices");
-                });
-
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.User", b =>
                 {
                     b.Property<int>("Id")
@@ -1194,10 +1163,6 @@ namespace ConstructIQ.API.Migrations
 
                     b.Property<DateTime?>("PasswordResetTokenExpiresAt")
                         .HasColumnType("datetime(6)");
-
-                    b.Property<string>("PendingDeviceId")
-                        .HasMaxLength(128)
-                        .HasColumnType("varchar(128)");
 
                     b.Property<string>("PhoneNumber")
                         .HasMaxLength(30)
@@ -1709,17 +1674,6 @@ namespace ConstructIQ.API.Migrations
                     b.Navigation("TargetProject");
                 });
 
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.TrustedDevice", b =>
-                {
-                    b.HasOne("ConstructIQ.API.Models.Entities.User", "User")
-                        .WithMany("TrustedDevices")
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("User");
-                });
-
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.DeliveryEvaluation", b =>
                 {
                     b.Navigation("Photos");
@@ -1795,8 +1749,6 @@ namespace ConstructIQ.API.Migrations
                     b.Navigation("ActivityLogs");
 
                     b.Navigation("ManagedProjects");
-
-                    b.Navigation("TrustedDevices");
                 });
 #pragma warning restore 612, 618
         }
