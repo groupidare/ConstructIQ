@@ -27,15 +27,18 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
             ?? User.FindFirst("sub")?.Value ?? "0");
 
     [HttpGet]
-    public async Task<IActionResult> GetAll()
+    public async Task<IActionResult> GetAll([FromQuery] int? projectId = null)
     {
-        var orders = await db.PurchaseOrders
+        var query = db.PurchaseOrders
             .Include(po => po.Project)
             .Include(po => po.Supplier)
             .Include(po => po.Materials)
-            .OrderByDescending(po => po.CreatedAt)
-            .ToListAsync();
+            .AsQueryable();
 
+        if (projectId.HasValue)
+            query = query.Where(po => po.ProjectId == projectId.Value);
+
+        var orders = await query.OrderByDescending(po => po.CreatedAt).ToListAsync();
         return Ok(orders.Select(ToDto));
     }
 
@@ -59,26 +62,62 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
             db.Suppliers.Add(supplier);
         }
 
+        var validMaterials = dto.Materials.Where(m => !string.IsNullOrWhiteSpace(m.Name) && m.Quantity > 0).ToList();
+        if (validMaterials.Count == 0)
+            return BadRequest(new { message = "At least one valid material is required." });
+
+        // Best-effort exact-name match against the catalog — never auto-created
+        // (unlike BOQ scanning), a PO line with no match just stays unlinked
+        // until reviewed, so a typo can't silently pollute the Materials table.
+        var names = validMaterials.Select(m => m.Name.Trim().ToLower()).Distinct().ToList();
+        var materialMatches = await db.Materials
+            .Where(m => names.Contains(m.Name.ToLower()))
+            .ToDictionaryAsync(m => m.Name.ToLower(), m => m.Id);
+
         var po = new PurchaseOrder
         {
             Number = $"PO-{DateTime.UtcNow.Year}-{Random.Shared.Next(1000, 9999)}",
             Project = project,
             Supplier = supplier,
             Status = PurchaseOrderStatus.Pending,
+            OrderDate = dto.OrderDate ?? DateTime.UtcNow,
             ExpectedDate = dto.ExpectedDate,
             CreatedByUserId = CurrentUserId,
-            Materials = dto.Materials
-                .Where(m => !string.IsNullOrWhiteSpace(m.Name) && m.Quantity > 0)
-                .Select(m => new PurchaseOrderMaterial { Name = m.Name.Trim(), Quantity = m.Quantity, Unit = m.Unit })
+            Materials = validMaterials
+                .Select(m => new PurchaseOrderMaterial
+                {
+                    Name = m.Name.Trim(),
+                    Quantity = m.Quantity,
+                    Unit = m.Unit,
+                    MaterialId = m.MaterialId ?? (materialMatches.TryGetValue(m.Name.Trim().ToLower(), out var id) ? id : null),
+                    PhaseId = m.PhaseId,
+                    PrimarySection = m.PrimarySection,
+                    SubCategory = m.SubCategory,
+                })
                 .ToList(),
         };
-        if (po.Materials.Count == 0)
-            return BadRequest(new { message = "At least one valid material is required." });
 
         db.PurchaseOrders.Add(po);
         await db.SaveChangesAsync();
 
         return Ok(ToDto(po));
+    }
+
+    // Explicit link only — never auto-guessed, so a wrong match can't silently
+    // corrupt training data. Used by the BOQ/PO reconciliation review UI.
+    [HttpPatch("materials/{materialId:int}/link")]
+    [Authorize(Roles = ManageRoles)]
+    public async Task<IActionResult> LinkMaterial(int materialId, [FromBody] LinkPurchaseOrderMaterialDto dto)
+    {
+        var material = await db.PurchaseOrderMaterials.FindAsync(materialId);
+        if (material is null) return NotFound();
+
+        if (dto.BOQItemId.HasValue && await db.BOQItems.FindAsync(dto.BOQItemId.Value) is null)
+            return BadRequest(new { message = "BOQ item not found." });
+
+        material.BOQItemId = dto.BOQItemId;
+        await db.SaveChangesAsync();
+        return NoContent();
     }
 
     [HttpPatch("{id:int}/status")]
@@ -180,7 +219,13 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
         SupplierId = po.SupplierId,
         SupplierName = po.Supplier.Name,
         Status = po.Status.ToString(),
+        OrderDate = po.OrderDate,
         ExpectedDate = po.ExpectedDate,
-        Materials = po.Materials.Select(m => new PurchaseOrderMaterialDto(m.Name, m.Quantity, m.Unit)).ToList(),
+        Materials = po.Materials.Select(m => new PurchaseOrderMaterialDto
+        {
+            Id = m.Id, Name = m.Name, Quantity = m.Quantity, Unit = m.Unit,
+            MaterialId = m.MaterialId, BOQItemId = m.BOQItemId, PhaseId = m.PhaseId,
+            PrimarySection = m.PrimarySection, SubCategory = m.SubCategory,
+        }).ToList(),
     };
 }

@@ -1,6 +1,18 @@
 namespace ConstructIQ.API.Models.DTOs.PurchaseOrders;
 
-public record PurchaseOrderMaterialDto(string Name, decimal Quantity, string Unit);
+public class PurchaseOrderMaterialDto
+{
+    public int?    Id             { get; set; } // present on read, absent on create
+    public string  Name           { get; set; } = "";
+    public decimal Quantity       { get; set; }
+    public string  Unit           { get; set; } = "";
+    // Best-effort/explicit links back to the real catalog/BOQ — see PurchaseOrderMaterial.
+    public int?    MaterialId     { get; set; }
+    public int?    BOQItemId      { get; set; }
+    public int?    PhaseId        { get; set; }
+    public string? PrimarySection { get; set; }
+    public string? SubCategory    { get; set; }
+}
 
 public record PurchaseOrderDto
 {
@@ -11,19 +23,23 @@ public record PurchaseOrderDto
     public int      SupplierId   { get; init; }
     public string   SupplierName { get; init; } = "";
     public string   Status       { get; init; } = "";
+    public DateTime OrderDate    { get; init; }
     public DateTime ExpectedDate { get; init; }
     public List<PurchaseOrderMaterialDto> Materials { get; init; } = [];
 }
 
 public record CreatePurchaseOrderDto
 {
-    public int      ProjectId    { get; init; }
-    public string   SupplierName { get; init; } = "";
-    public DateTime ExpectedDate { get; init; }
+    public int       ProjectId    { get; init; }
+    public string    SupplierName { get; init; } = "";
+    public DateTime? OrderDate    { get; init; } // null = now (live order placed today)
+    public DateTime  ExpectedDate { get; init; }
     public List<PurchaseOrderMaterialDto> Materials { get; init; } = [];
 }
 
 public record UpdatePurchaseOrderStatusDto(string Status);
+
+public record LinkPurchaseOrderMaterialDto(int? BOQItemId);
 
 // Bound from multipart/form-data (photos + scalar fields together), so this
 // is a plain mutable class rather than a record.

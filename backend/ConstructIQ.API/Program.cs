@@ -50,6 +50,11 @@ builder.Services.AddScoped<IExcessWasteService, ExcessWasteService>();
 builder.Services.AddScoped<IForecastService, ForecastService>();
 builder.Services.AddScoped<IProcurementService, ProcurementService>();
 builder.Services.AddScoped<IRedistributionService, RedistributionService>();
+builder.Services.AddScoped<IDocumentService, DocumentService>();
+builder.Services.AddScoped<IMeasurementService, MeasurementService>();
+builder.Services.AddScoped<IBOQService, BOQService>();
+builder.Services.AddScoped<INotificationService, NotificationService>();
+builder.Services.AddScoped<IPhaseService, PhaseService>();
 builder.Services.AddHttpClient("MLService", client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["ML_SERVICE_URL"] ?? "http://localhost:8000");
@@ -96,6 +101,7 @@ app.MapGet("/dev/debug", (AppDbContext db) =>
     catch (Exception ex) { return Results.Ok($"DB ERROR: {ex.Message}"); }
 });
 
+app.UseStaticFiles(); // serves wwwroot/uploads/{projectId}/... for blueprint/BOQ previews
 app.UseCors("FrontendPolicy");
 app.UseStaticFiles(); // serves wwwroot/uploads/avatars/* publicly, e.g. GET /uploads/avatars/8.jpg
 app.UseMiddleware<ActivityLoggingMiddleware>();

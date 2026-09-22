@@ -6,14 +6,9 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-from app.ml.feature_engineering import records_to_dataframe
+from app.ml.feature_engineering import records_to_dataframe, FEATURE_COLS
 
 MODEL_PATH = Path("trained_models/rf_model.pkl")
-FEATURE_COLS = [
-    "boq_quantity", "actual_used", "current_stock", "excess_quantity",
-    "wasted_quantity", "phase_order", "project_type_encoded",
-    "days_into_phase", "phase_duration_days", "progress_percent", "usage_rate",
-]
 
 
 def train(records: list[dict], targets: list[float]) -> dict:

@@ -49,3 +49,15 @@ export interface ForecastAccuracyReport {
   rmse: number;
   comparisons: ForecastComparison[];
 }
+
+export interface ModelMetrics {
+  mae: number;
+  rmse: number;
+  r2: number;
+}
+
+export interface TrainModelsResult {
+  sampleCount: number;
+  randomForest: ModelMetrics;
+  xgboost: ModelMetrics;
+}

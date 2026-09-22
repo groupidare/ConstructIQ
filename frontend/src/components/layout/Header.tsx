@@ -43,7 +43,7 @@ export default function Header({ title }: HeaderProps) {
   }, [notifOpen]);
 
   return (
-    <header style={{
+    <header suppressHydrationWarning style={{
       background: "#fff",
       borderBottom: "1px solid #e5e7eb",
       padding: "0 1.5rem",

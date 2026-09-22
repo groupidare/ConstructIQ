@@ -1,16 +1,27 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import toast from "react-hot-toast";
 import api from "@/lib/api";
 import Header from "@/components/layout/Header";
 import { useAuthStore } from "@/store/authStore";
 import { DatePickerField } from "@/components/ui/DatePickerField";
 import { exportReport } from "@/lib/reportExport";
+import MeasurementsAndMaterialPlan from "@/components/projects/MeasurementsAndMaterialPlan";
+import NewProjectWizardModal from "@/components/projects/NewProjectWizardModal";
+import AddCompletedProjectWizardModal from "@/components/projects/AddCompletedProjectWizardModal";
+import { useDocumentRepository } from "@/hooks/useDocumentRepository";
+import { getApiOrigin } from "@/lib/api";
+import { formatDate } from "@/lib/utils";
+import type { Project as RealProject } from "@/types/project";
+import type { ProjectDocument } from "@/types/document";
+import type { ForecastResult } from "@/types/forecast";
+import type { BOQItem } from "@/types/boq";
+import type { ExcessAnalyticsSummary } from "@/types/excess";
+import type { RedistributionRecommendation } from "@/types/procurement";
 import {
-  Plus, MapPin, Calendar, Users, FileText, X, Pencil,
-  ShoppingCart, Package, Upload, FolderOpen, ChevronDown,
-  ChevronUp, Trash2, Search, Tag, BarChart3, Camera, Activity,
+  Plus, MapPin, Calendar, Users, FileText, X, Eye,
+  Upload, FolderOpen, Trash2, Search, BarChart3, Camera, Activity, History, ExternalLink, File as FileIcon,
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
@@ -25,90 +36,26 @@ interface Project {
   id: number; name: string; location: string;
   startDate: string; endDate: string; status: ProjectStatus;
   progress: number; progressColor: string;
-  budget: string; spent: string; materials: number;
+  materials: number;
   manager: string; engineers: string[];
   type: string;
+  isHistorical: boolean;
 }
 
-interface InventoryItem {
-  id: number; name: string; spec: string; unit: string;
-  category: string; stock: number; price: number;
-}
-
-interface BOMItem {
-  inventoryId: number; name: string; spec: string; unit: string;
-  estQty: number; stock: number; price: number; category: string;
-}
-
-interface ProjectPhase {
-  id: number; name: string;
-  dims: { length: number; width: number; height: number; thickness: number };
-  items: BOMItem[];
-}
-
-interface RepoFile {
-  id: number; name: string;
-  category: "Blueprint / Drawing" | "Contract / Agreement" | "Other Record";
-  status: "Final" | "Draft"; revision: string;
-  docType: string; project: string; author: string;
-  date: string; size: string; description: string; tags: string[];
-}
 
 // ── Static Data ────────────────────────────────────────────────────────────────
 
 const INIT_PROJECTS: Project[] = [
-  { id:1, name:"Metro Station Phase 3",   location:"EDSA, QC",     startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",    progress:62,  progressColor:"#f97316", budget:"₱45.0M",  spent:"₱27.9M", materials:8,  manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],   type:"Infrastructure" },
-  { id:2, name:"BGC Tower Complex",        location:"BGC, Taguig",  startDate:"2025-01-15", endDate:"2027-06-30", status:"ACTIVE",    progress:38,  progressColor:"#1e3154", budget:"₱120.0M", spent:"₱45.6M", materials:12, manager:"Remy Santos",  engineers:["Jose Lim"],                  type:"Commercial" },
-  { id:3, name:"Harbor Bridge Renovation", location:"Manila Harbor", startDate:"2024-03-01", endDate:"2025-12-31", status:"ACTIVE",    progress:81,  progressColor:"#22c55e", budget:"₱28.0M",  spent:"₱22.7M", materials:6,  manager:"Remy Santos",  engineers:["Carlos Reyes"],              type:"Infrastructure" },
-  { id:4, name:"Southgate Mall Expansion", location:"BGC, Taguig",  startDate:"2025-06-01", endDate:"2027-09-30", status:"PLANNING",  progress:12,  progressColor:"#374151", budget:"₱75.0M",  spent:"₱9.0M",  materials:4,  manager:"Remy Santos",  engineers:["Ana Cruz","Ben Torres"],     type:"Commercial" },
-  { id:5, name:"PUP ICTC Building",        location:"Sta. Mesa",    startDate:"2023-01-10", endDate:"2025-01-15", status:"COMPLETED", progress:100, progressColor:"#22c55e", budget:"₱19.3M",  spent:"₱19.1M", materials:9,  manager:"Remy Santos",  engineers:["Ana Cruz"],                  type:"Infrastructure" },
+  { id:1, name:"Metro Station Phase 3",   location:"EDSA, QC",     startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",    progress:62,  progressColor:"#f97316", materials:8,  manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],   type:"Infrastructure", isHistorical:false },
+  { id:2, name:"BGC Tower Complex",        location:"BGC, Taguig",  startDate:"2025-01-15", endDate:"2027-06-30", status:"ACTIVE",    progress:38,  progressColor:"#1e3154", materials:12, manager:"Remy Santos",  engineers:["Jose Lim"],                  type:"Commercial", isHistorical:false },
+  { id:3, name:"Harbor Bridge Renovation", location:"Manila Harbor", startDate:"2024-03-01", endDate:"2025-12-31", status:"ACTIVE",    progress:81,  progressColor:"#22c55e", materials:6,  manager:"Remy Santos",  engineers:["Carlos Reyes"],              type:"Infrastructure", isHistorical:false },
+  { id:4, name:"Southgate Mall Expansion", location:"BGC, Taguig",  startDate:"2025-06-01", endDate:"2027-09-30", status:"PLANNING",  progress:12,  progressColor:"#374151", materials:4,  manager:"Remy Santos",  engineers:["Ana Cruz","Ben Torres"],     type:"Commercial", isHistorical:false },
+  { id:5, name:"PUP ICTC Building",        location:"Sta. Mesa",    startDate:"2023-01-10", endDate:"2025-01-15", status:"COMPLETED", progress:100, progressColor:"#22c55e", materials:9,  manager:"Remy Santos",  engineers:["Ana Cruz"],                  type:"Infrastructure", isHistorical:false },
 ];
-
-const INVENTORY_ITEMS: InventoryItem[] = [
-  { id:1,  name:"Portland Cement",           spec:"40kg/bag, Type I",        unit:"bags",   category:"Masonry",     stock:1240, price:285  },
-  { id:2,  name:"Gravel 3/4",                spec:"Washed fine aggregate",    unit:"m³",     category:"Aggregates",  stock:850,  price:1450 },
-  { id:3,  name:"Coarse Gravel",             spec:'3/4" crushed stone',       unit:"m³",     category:"Aggregates",  stock:420,  price:1450 },
-  { id:4,  name:"Deformed Steel Bar (16mm)", spec:"16mm Ø × 6m",             unit:"pcs",    category:"Metals",      stock:280,  price:580  },
-  { id:5,  name:"Ready-mix Concrete",        spec:"4000 PSI (28 MPa)",        unit:"m³",     category:"Masonry",     stock:0,    price:5800 },
-  { id:6,  name:"CHB 4-inch",               spec:"Standard hollow block",    unit:"pcs",    category:"Masonry",     stock:3200, price:14   },
-  { id:7,  name:"PVC Pipe 4-inch",          spec:'S-1000 pressure rated',    unit:"length", category:"Mechanical",  stock:180,  price:450  },
-  { id:8,  name:"Electrical Conduit",        spec:'EMT 3/4" × 3m',           unit:"length", category:"Electrical",  stock:640,  price:180  },
-  { id:9,  name:"Ceramic Floor Tiles (60×60)", spec:"Polished, glazed",       unit:"sqm",    category:"Paintings",   stock:420,  price:450  },
-  { id:10, name:"Insulated Copper Wire",     spec:"3.5mm², THHN",             unit:"m",      category:"Electrical",  stock:1860, price:42   },
-  { id:11, name:"Galvanized Iron Pipe (1\")", spec:"Sch. 40, 6m length",      unit:"length", category:"Mechanical",  stock:540,  price:864  },
-  { id:12, name:"Interior Paint (White)",   spec:"Latex, 4L/can",            unit:"can",    category:"Paintings",   stock:230,  price:520  },
-  { id:13, name:"Fine Sand",                spec:"Washed fine aggregate",    unit:"m³",     category:"Aggregates",  stock:850,  price:900  },
-  { id:14, name:"Plywood 3/4",             spec:"Marine ply, 4×8ft",        unit:"sheet",  category:"Carpentry",   stock:120,  price:1200 },
-  { id:15, name:"Steel Angle Bar",          spec:"2×2×3/16, 6m",            unit:"pcs",    category:"Metals",      stock:86,   price:890  },
-];
-
-const INV_CATEGORIES = ["All","Masonry","Metals","Carpentry","Mechanical","Electrical","Paintings","Aggregates"];
-
-const INIT_REPO: RepoFile[] = [
-  { id:1, name:"Architectural Floor Plan - Building A", category:"Blueprint / Drawing", status:"Final", revision:"Rev. 3", docType:"Floor Plan", project:"Skyline Tower Residential Complex", author:"Arch. Jose Reyes", date:"2025-11-10", size:"4.2 MB", description:"Main floor plan for Building A ground floor.", tags:["floor plan","building A"] },
-  { id:2, name:"General Construction Contract", category:"Contract / Agreement",  status:"Final", revision:"",     docType:"General Contract", project:"Metro Rail Transit Extension", author:"Legal Dept.", date:"2025-09-01", size:"1.1 MB", description:"Main contract between owner and contractor.", tags:["contract","MRT"] },
-  { id:3, name:"Soil Test Report - Phase 1", category:"Other Record", status:"Final", revision:"",  docType:"Soil Test Report", project:"Harbor Bridge Rehabilitation", author:"Geo Solutions Inc.", date:"2025-08-20", size:"850 KB", description:"Geotechnical investigation results.", tags:["soil","geotech"] },
-];
-
-const PHASE_NAMES = ["Foundation","Structural Framing","Finishing","MEP"];
-
-function defaultPhases(): ProjectPhase[] {
-  return PHASE_NAMES.map((name, i) => ({
-    id: i + 1, name,
-    dims: { length: 0, width: 0, height: 0, thickness: 0.20 },
-    items: [],
-  }));
-}
 
 // ── API ────────────────────────────────────────────────────────────────────────
 
-interface ProjectResponseDto {
-  id: number; name: string; type: string; location: string;
-  description?: string; budget: number; startDate: string;
-  targetEndDate: string; status: string;
-  projectManagerName: string; siteEngineerName?: string;
-  phases: unknown[];
-}
+type ProjectResponseDto = RealProject;
 
 const STATUS_MAP: Record<string, ProjectStatus> = {
   Planning:"PLANNING", Active:"ACTIVE", OnHold:"ON HOLD",
@@ -126,10 +73,10 @@ function toProject(dto: ProjectResponseDto): Project {
     startDate: dto.startDate.split("T")[0], endDate: dto.targetEndDate.split("T")[0],
     status, progress: demo?.progress ?? (status==="COMPLETED"?100:status==="ACTIVE"?50:10),
     progressColor: demo?.progressColor ?? PROGRESS_COLOR[status] ?? "#374151",
-    budget: `₱${Number(dto.budget).toLocaleString()}`, spent: demo?.spent ?? "₱0",
     materials: demo?.materials ?? 0,
     manager: demo?.manager ?? dto.projectManagerName,
     engineers: demo?.engineers ?? (dto.siteEngineerName ? [dto.siteEngineerName] : []),
+    isHistorical: dto.isHistorical,
   };
 }
 
@@ -148,6 +95,15 @@ const inp: React.CSSProperties = {
   outline:"none", background:"#fff", color:"#111827",
 };
 
+const lbl: React.CSSProperties = { display:"block", fontSize:"0.72rem", color:"#6b7280", fontWeight:500, marginBottom:4 };
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
 // ── Overlay ────────────────────────────────────────────────────────────────────
 
 function Overlay({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
@@ -160,644 +116,103 @@ function Overlay({ children, onClose }: { children: React.ReactNode; onClose: ()
   );
 }
 
-// ── New Project Modal ─────────────────────────────────────────────────────────
-
-const MANAGERS = ["Remy Santos","Ana Bonifacio","Carlos Reyes","Jose Lim","Ben Torres"];
-const ENGINEERS = ["Carlo Reyes","Maria Tan","Ana Cruz","Jose Lim","Ben Torres","Carlos Reyes"];
-
-function NewProjectModal({ onClose, onCreate }: { onClose:()=>void; onCreate:(p:Project)=>void }) {
-  const [name,    setName]    = useState("");
-  const [type,    setType]    = useState("Renovation");
-  const [loc,     setLoc]     = useState("");
-  const [budget,  setBudget]  = useState("1500000.00");
-  const [start,   setStart]   = useState("2026-05-05");
-  const [end,     setEnd]     = useState("2026-08-06");
-  const [mgr,     setMgr]     = useState(MANAGERS[0]);
-  const [eng,     setEng]     = useState(ENGINEERS[0]);
-  const [cont,    setCont]    = useState("");
-  const [desc,    setDesc]    = useState("");
-  const [saving,  setSaving]  = useState(false);
-
-  const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
-
-  async function handleCreate() {
-    if (!name.trim() || !loc.trim()) { toast.error("Name and location are required."); return; }
-    setSaving(true);
-    try {
-      const { data } = await api.post<ProjectResponseDto>("/projects", {
-        name:name.trim(), type, location:loc.trim(), description:desc||null,
-        budget:parseFloat(budget)||0, startDate:new Date(start).toISOString(),
-        targetEndDate:new Date(end).toISOString(), assignedContractor:cont||null,
-        siteEngineerId:null, phases:[],
-      });
-      toast.success(`"${data.name}" created!`); onCreate(toProject(data)); onClose();
-    } catch { toast.error("Failed to create project."); }
-    finally  { setSaving(false); }
-  }
-
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, width:480, boxShadow:"0 20px 60px rgba(0,0,0,0.18)", overflow:"hidden", maxHeight:"90vh", display:"flex", flexDirection:"column" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"2rem 2rem 0", flexShrink:0 }}>
-          <p style={{ fontWeight:800, fontSize:"1.15rem", color:"#111827" }}>New Project</p>
-          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-
-        <div style={{ flex:1, overflowY:"auto", padding:"1.5rem 2rem" }}>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
-          <div><label style={lbl}>Project Name</label><input value={name} onChange={e=>setName(e.target.value)} style={inp} placeholder="ICTC Hall" suppressHydrationWarning /></div>
-          <div><label style={lbl}>Project Type</label><select value={type} onChange={e=>setType(e.target.value)} style={sel}>{["Renovation","Commercial","Industrial","Infrastructure","Residential"].map(t=><option key={t}>{t}</option>)}</select></div>
-          <div><label style={lbl}>Location</label><input value={loc} onChange={e=>setLoc(e.target.value)} style={inp} placeholder="BGC Taguig" suppressHydrationWarning /></div>
-          <div><label style={lbl}>Budget (₱)</label><input value={budget} onChange={e=>setBudget(e.target.value)} style={inp} placeholder="1,500,000.00" suppressHydrationWarning /></div>
-          <div><label style={lbl}>Start Date</label><input type="date" value={start} onChange={e=>setStart(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><label style={lbl}>End Date</label><input type="date" value={end} onChange={e=>setEnd(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><label style={lbl}>Project Manager</label><select value={mgr} onChange={e=>setMgr(e.target.value)} style={sel}>{MANAGERS.map(m=><option key={m}>{m}</option>)}</select></div>
-          <div><label style={lbl}>PIC/Site Engineer</label><select value={eng} onChange={e=>setEng(e.target.value)} style={sel}>{ENGINEERS.map(m=><option key={m}>{m}</option>)}</select></div>
-          <div style={{ gridColumn:"1/-1" }}><label style={lbl}>Contractor</label><input value={cont} onChange={e=>setCont(e.target.value)} style={inp} placeholder="Discaya" suppressHydrationWarning /></div>
-          <div style={{ gridColumn:"1/-1" }}><label style={lbl}>Project Description</label><textarea value={desc} onChange={e=>setDesc(e.target.value)} rows={3} style={{ ...inp, resize:"vertical" as React.CSSProperties["resize"] }} placeholder="Renovation" suppressHydrationWarning /></div>
-        </div>
-        </div>
-
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", padding:"1.25rem 2rem", flexShrink:0, borderTop:"1px solid #f3f4f6" }}>
-          <button onClick={onClose} style={{ padding:"10px 24px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleCreate} disabled={saving} style={{ padding:"10px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", opacity:saving?0.7:1 }}>{saving?"Creating…":"Create Project"}</button>
-        </div>
-      </div>
-    </Overlay>
-  );
-}
-
-const lbl: React.CSSProperties = { display:"block", fontSize:"0.72rem", color:"#6b7280", fontWeight:500, marginBottom:4 };
-
-// ── Edit Project Details Modal (pencil button) ────────────────────────────────
-
-type EditTab = "materialPlan" | "measurements";
-type StructType = "Floor Slab" | "Wall" | "Column" | "Beam" | "Footing";
-
-function EditProjectDetailsModal({ project, onClose }: { project:Project; onClose:()=>void }) {
-  const [tab,        setTab]      = useState<EditTab>("materialPlan");
-  const [phases,     setPhases]   = useState<ProjectPhase[]>(defaultPhases);
-  const [activePhase,setActivePhase] = useState(0);
-  const [invCat,     setInvCat]   = useState("All");
-  const [phase,      setPhase]    = useState("Foundation");
-  const [duration,   setDuration] = useState("30 days");
-
-  // Measurements
-  const [structType, setStructType] = useState<StructType>("Floor Slab");
-  const [subType,    setSubType]    = useState<"Wall"|"Column"|"Beam"|"Slab">("Wall");
-  const dims = phases[activePhase]?.dims ?? { length:0, width:0, height:0, thickness:0.20 };
-
-  function setDim(field: keyof ProjectPhase["dims"], val: string) {
-    setPhases(prev => prev.map((ph, i) => i === activePhase
-      ? { ...ph, dims: { ...ph.dims, [field]: parseFloat(val) || 0 } }
-      : ph
-    ));
-  }
-
-  const vol = structType === "Wall"
-    ? dims.length * dims.height * dims.thickness
-    : dims.length * dims.width * dims.thickness;
-  const area = structType === "Wall"
-    ? dims.length * dims.height
-    : dims.length * dims.width;
-
-  function addItem(inv: InventoryItem) {
-    setPhases(prev => prev.map((ph, i) => {
-      if (i !== activePhase) return ph;
-      if (ph.items.find(it => it.inventoryId === inv.id)) return ph;
-      return { ...ph, items: [...ph.items, { inventoryId:inv.id, name:inv.name, spec:inv.spec, unit:inv.unit, estQty:0, stock:inv.stock, price:inv.price, category:inv.category }] };
-    }));
-  }
-
-  function removeItem(inventoryId: number) {
-    setPhases(prev => prev.map((ph, i) => i === activePhase
-      ? { ...ph, items: ph.items.filter(it => it.inventoryId !== inventoryId) }
-      : ph
-    ));
-  }
-
-  function setItemQty(inventoryId: number, val: string) {
-    setPhases(prev => prev.map((ph, i) => i === activePhase
-      ? { ...ph, items: ph.items.map(it => it.inventoryId === inventoryId ? { ...it, estQty: parseFloat(val) || 0 } : it) }
-      : ph
-    ));
-  }
-
-  const filtered = invCat === "All" ? INVENTORY_ITEMS : INVENTORY_ITEMS.filter(i => i.category === invCat);
-  const currentItems = phases[activePhase]?.items ?? [];
-  const totalCost = currentItems.reduce((s, it) => s + it.estQty * it.price, 0);
-  const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
-
-  const tabBtn = (t: EditTab, label: string) => (
-    <button onClick={()=>setTab(t)} style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 18px", borderRadius:8, border:"none", cursor:"pointer", background:tab===t?"#111827":"#f3f4f6", color:tab===t?"#fff":"#6b7280", fontWeight:tab===t?600:400, fontSize:"0.85rem" }}>
-      {t==="materialPlan" ? <FileText style={{ width:14, height:14 }} /> : <Pencil style={{ width:14, height:14 }} />}
-      {label}
-    </button>
-  );
-
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:520, boxShadow:"0 20px 60px rgba(0,0,0,0.18)" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1rem" }}>
-          <div>
-            <p style={{ fontWeight:800, fontSize:"1.1rem", color:"#111827" }}>Edit Project Details</p>
-            <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{project.name}</p>
-          </div>
-          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-
-        {/* Tabs */}
-        <div style={{ display:"flex", gap:6, marginBottom:"1.25rem" }}>
-          {tabBtn("materialPlan","Material Plan")}
-          {tabBtn("measurements","Measurements")}
-        </div>
-
-        {tab === "materialPlan" && (
-          <>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem", marginBottom:"1rem" }}>
-              <div><label style={lbl}>Phase</label><select value={phase} onChange={e=>setPhase(e.target.value)} style={sel}>{PHASE_NAMES.map(n=><option key={n}>{n}</option>)}</select></div>
-              <div><label style={lbl}>Phase Duration</label><select value={duration} onChange={e=>setDuration(e.target.value)} style={sel}>{["30 days","60 days","90 days","120 days"].map(d=><option key={d}>{d}</option>)}</select></div>
-            </div>
-
-            <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem", marginBottom:"1rem" }}>
-              <p style={{ fontWeight:700, fontSize:"0.875rem", marginBottom:"0.75rem" }}>Select from Inventory</p>
-              <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:"0.75rem" }}>
-                {INV_CATEGORIES.map(c=>(
-                  <button key={c} onClick={()=>setInvCat(c)} style={{ padding:"4px 12px", borderRadius:999, border:"none", cursor:"pointer", fontSize:"0.75rem", fontWeight:invCat===c?700:400, background:invCat===c?"#111827":"#f3f4f6", color:invCat===c?"#fff":"#374151" }}>{c}</button>
-                ))}
-              </div>
-              <div style={{ maxHeight:160, overflowY:"auto" }}>
-                {filtered.map(inv=>(
-                  <div key={inv.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 4px", borderBottom:"1px solid #f9fafb" }}>
-                    <div>
-                      <p style={{ fontSize:"0.82rem", fontWeight:500, color:"#111827" }}>{inv.name}</p>
-                      <p style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{inv.category} · Stock: {inv.stock.toLocaleString()} · ₱{inv.price.toLocaleString()}</p>
-                    </div>
-                    <button onClick={()=>addItem(inv)} style={{ width:26, height:26, borderRadius:"50%", border:"none", background:"transparent", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#f97316", fontSize:"1.1rem", fontWeight:700 }}>+</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {currentItems.length > 0 && (
-              <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem", marginBottom:"1rem" }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.75rem" }}>
-                  <p style={{ fontWeight:700, fontSize:"0.875rem" }}>Selected Materials</p>
-                  <button onClick={()=>toast.success("Procurement team notified!")} style={{ display:"flex", alignItems:"center", gap:5, padding:"5px 12px", borderRadius:8, border:"1px solid #f97316", background:"#fff7ed", color:"#f97316", fontSize:"0.72rem", fontWeight:600, cursor:"pointer" }}>
-                    🔔 Notify Procurement
-                  </button>
-                </div>
-                {currentItems.map(it=>(
-                  <div key={it.inventoryId} style={{ display:"grid", gridTemplateColumns:"1fr auto auto auto", gap:8, alignItems:"center", marginBottom:6 }}>
-                    <div>
-                      <p style={{ fontSize:"0.8rem", fontWeight:500 }}>{it.name}</p>
-                      <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>{it.category}</p>
-                    </div>
-                    <input value={it.estQty||""} onChange={e=>setItemQty(it.inventoryId,e.target.value)} type="number" placeholder="Qty" style={{ ...inp, width:70, padding:"5px 8px" }} suppressHydrationWarning />
-                    <span style={{ fontSize:"0.72rem", color:"#22c55e", whiteSpace:"nowrap" }}>Available: {it.stock.toLocaleString()}</span>
-                    <button onClick={()=>removeItem(it.inventoryId)} style={{ background:"none", border:"none", cursor:"pointer", color:"#ef4444", padding:0 }}><X style={{ width:15, height:15 }} /></button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <p style={{ fontSize:"0.78rem", color:"#9ca3af" }}>Total Materials: {currentItems.length} · Total Cost: <strong style={{ color:"#111827" }}>₱{totalCost.toLocaleString()}</strong></p>
-              <div style={{ display:"flex", gap:8 }}>
-                <button onClick={onClose} style={{ padding:"9px 18px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer" }}>Cancel</button>
-                <button onClick={()=>{ toast.success("Material plan saved!"); onClose(); }} style={{ padding:"9px 18px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.82rem", fontWeight:700, cursor:"pointer" }}>Save Material Plan</button>
-              </div>
-            </div>
-          </>
-        )}
-
-        {tab === "measurements" && (
-          <>
-            {/* Primary structure type */}
-            <div style={{ display:"flex", gap:6, marginBottom:"0.875rem", flexWrap:"wrap" }}>
-              {(["Floor Slab","Wall","Column","Beam","Footing"] as StructType[]).map(t=>(
-                <button key={t} onClick={()=>setStructType(t)} style={{ padding:"7px 16px", borderRadius:999, border:"none", cursor:"pointer", fontSize:"0.82rem", fontWeight:structType===t?700:400, background:structType===t?"#f97316":"#f3f4f6", color:structType===t?"#fff":"#374151" }}>{t}</button>
-              ))}
-            </div>
-
-            {/* Sub-type */}
-            <div style={{ marginBottom:"1rem" }}>
-              <p style={{ fontSize:"0.75rem", color:"#9ca3af", marginBottom:"0.5rem" }}>Structure Type</p>
-              <div style={{ display:"flex", gap:6 }}>
-                {(["Wall","Column","Beam","Slab"] as const).map(t=>(
-                  <button key={t} onClick={()=>setSubType(t)} style={{ padding:"6px 14px", borderRadius:999, border:"none", cursor:"pointer", fontSize:"0.82rem", fontWeight:subType===t?700:400, background:subType===t?"#f97316":"#f3f4f6", color:subType===t?"#fff":"#374151" }}>{t}</button>
-                ))}
-              </div>
-            </div>
-
-            {/* Dimensions */}
-            <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem", marginBottom:"1rem" }}>
-              <p style={{ fontWeight:700, fontSize:"0.875rem", marginBottom:"0.75rem" }}>Enter Dimensions (meters)</p>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-                <div><label style={lbl}>Length</label><input value={dims.length||""} onChange={e=>setDim("length",e.target.value)} type="number" style={inp} placeholder="1450" suppressHydrationWarning /></div>
-                <div><label style={lbl}>Width</label><input value={dims.width||""} onChange={e=>setDim("width",e.target.value)} type="number" style={inp} placeholder="1840" suppressHydrationWarning /></div>
-                <div><label style={lbl}>Height</label><input value={dims.height||""} onChange={e=>setDim("height",e.target.value)} type="number" style={inp} placeholder="150" suppressHydrationWarning /></div>
-                <div><label style={lbl}>Thickness</label><input value={dims.thickness||""} onChange={e=>setDim("thickness",e.target.value)} type="number" style={inp} placeholder="100" suppressHydrationWarning /></div>
-              </div>
-            </div>
-
-            {/* Calculated results */}
-            {(vol > 0 || area > 0) && (
-              <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem", marginBottom:"1rem", background:"#f9fafb" }}>
-                <p style={{ fontWeight:700, fontSize:"0.875rem", marginBottom:"0.75rem" }}>Calculated Results</p>
-                <div style={{ display:"flex", justifyContent:"space-between" }}>
-                  <span style={{ fontSize:"0.82rem", color:"#6b7280" }}>Volume:</span>
-                  <span style={{ fontSize:"0.82rem", fontWeight:600 }}>{vol.toFixed(5)} m³</span>
-                </div>
-                <div style={{ display:"flex", justifyContent:"space-between" }}>
-                  <span style={{ fontSize:"0.82rem", color:"#6b7280" }}>Surface Area:</span>
-                  <span style={{ fontSize:"0.82rem", fontWeight:600 }}>{area.toFixed(3)} m²</span>
-                </div>
-              </div>
-            )}
-
-            <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
-              <button onClick={onClose} style={{ padding:"9px 18px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer" }}>Cancel</button>
-              <button onClick={()=>{ if(vol===0){toast.error("Enter dimensions first."); return;} toast.success("Material requirements calculated!"); }} style={{ padding:"9px 18px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.82rem", fontWeight:700, cursor:"pointer" }}>Calculate Material Requirements</button>
-            </div>
-          </>
-        )}
-      </div>
-    </Overlay>
-  );
-}
-
-// ── Material Planning & Measurements Modal (main button) ──────────────────────
-
-type MPTab = "measurements" | "materialPlan";
-type AlertType = "procurement" | "warehouse";
-
-interface TooltipState { itemName: string; qty: number; type: AlertType; }
-
-function MaterialPlanMeasurementsModal({ project, onClose }: { project:Project; onClose:()=>void }) {
-  const [tab,          setTab]         = useState<MPTab>("measurements");
-  const [phases,       setPhases]      = useState<ProjectPhase[]>(defaultPhases);
-  const [activePhIdx,  setActivePhIdx] = useState(0);
-  const [structType,   setStructType]  = useState<StructType>("Floor Slab");
-  const [invCat,       setInvCat]      = useState("All");
-  const [planType,     setPlanType]    = useState("");
-  const [timeRange,    setTimeRange]   = useState("");
-  const [expandedPhs,  setExpandedPhs] = useState<number[]>([0]);
-  const [tooltip,      setTooltip]     = useState<TooltipState|null>(null);
-  const [tooltipTimer, setTooltipTimer]= useState<ReturnType<typeof setTimeout>|null>(null);
-
-  function togglePhase(idx: number) {
-    setExpandedPhs(prev => prev.includes(idx) ? prev.filter(i=>i!==idx) : [...prev, idx]);
-  }
-
-  const dims = phases[activePhIdx]?.dims ?? { length:0, width:0, height:0, thickness:0.20 };
-
-  function setDim(field: keyof ProjectPhase["dims"], val: string) {
-    setPhases(prev => prev.map((ph,i) => i===activePhIdx
-      ? { ...ph, dims:{ ...ph.dims, [field]:parseFloat(val)||0 } } : ph));
-  }
-
-  const vol  = structType==="Wall" ? dims.length*dims.height*dims.thickness : dims.length*dims.width*dims.thickness;
-  const area = structType==="Wall" ? dims.length*dims.height : dims.length*dims.width;
-  const concreteMix = vol * 0.85;
-  const steelReinf  = vol * 80;
-  const formwork    = area * 1.15;
-
-  function addToPhase(inv: InventoryItem) {
-    setPhases(prev => prev.map((ph,i) => {
-      if (i !== activePhIdx) return ph;
-      if (ph.items.find(it=>it.inventoryId===inv.id)) return ph;
-      return { ...ph, items:[...ph.items, { inventoryId:inv.id, name:inv.name, spec:inv.spec, unit:inv.unit, estQty:0, stock:inv.stock, price:inv.price, category:inv.category }] };
-    }));
-    toast.success(`${inv.name} added to Material Plan.`);
-  }
-
-  function setItemQty(phIdx: number, inventoryId: number, val: string) {
-    setPhases(prev => prev.map((ph,i) => i===phIdx
-      ? { ...ph, items:ph.items.map(it=>it.inventoryId===inventoryId?{...it,estQty:parseFloat(val)||0}:it) }
-      : ph));
-  }
-
-  function removeFromPhase(phIdx: number, inventoryId: number) {
-    setPhases(prev => prev.map((ph,i) => i===phIdx
-      ? { ...ph, items:ph.items.filter(it=>it.inventoryId!==inventoryId) } : ph));
-  }
-
-  function showAlert(itemName: string, qty: number, type: AlertType) {
-    if (tooltipTimer) clearTimeout(tooltipTimer);
-    setTooltip({ itemName, qty, type });
-    const t = setTimeout(() => setTooltip(null), 3500);
-    setTooltipTimer(t);
-    if (type === "procurement") toast.success(`Purchase Requisition raised for ${itemName}.`, { icon:"🛒" });
-    else toast.success(`Warehouse flagged for ${itemName} check.`, { icon:"📦" });
-  }
-
-  const allItems = phases.flatMap(ph => ph.items);
-  const totalMat = allItems.length;
-  const totalCost = allItems.reduce((s,it)=>s+it.estQty*it.price,0);
-  const alertCount = allItems.filter(it=>it.estQty>it.stock).length;
-
-  const filtered = invCat==="All" ? INVENTORY_ITEMS : INVENTORY_ITEMS.filter(i=>i.category===invCat);
-  const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
-
-  const tabStyle = (t: MPTab): React.CSSProperties => ({
-    display:"flex", alignItems:"center", gap:6, padding:"10px 18px",
-    border:"none", cursor:"pointer", fontSize:"0.875rem", fontWeight:tab===t?700:400,
-    background:"transparent", color:tab===t?"#f97316":"#9ca3af",
-    borderBottom:tab===t?"2px solid #f97316":"2px solid transparent",
-    transition:"all 0.15s",
-  });
-
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, width:660, boxShadow:"0 20px 60px rgba(0,0,0,0.18)", overflow:"hidden", maxHeight:"90vh", display:"flex", flexDirection:"column" }}>
-        {/* Header */}
-        <div style={{ padding:"1.5rem 1.5rem 0", flexShrink:0 }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.25rem" }}>
-            <div>
-              <p style={{ fontWeight:800, fontSize:"1.15rem", color:"#111827" }}>Material Planning & Measurements</p>
-              <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{project.name}</p>
-            </div>
-            <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
-          </div>
-          {/* Tabs */}
-          <div style={{ display:"flex", borderBottom:"1px solid #e5e7eb", marginTop:"0.75rem" }}>
-            <button style={tabStyle("measurements")} onClick={()=>setTab("measurements")}>
-              <Pencil style={{ width:14, height:14 }} /> Measurements
-            </button>
-            <button style={tabStyle("materialPlan")} onClick={()=>setTab("materialPlan")}>
-              <FileText style={{ width:14, height:14 }} /> Material Plan
-              {totalMat>0 && <span style={{ background:"#f97316", color:"#fff", borderRadius:999, fontSize:"0.62rem", fontWeight:800, padding:"1px 6px", marginLeft:2 }}>{totalMat}</span>}
-            </button>
-          </div>
-        </div>
-
-        {/* Body */}
-        <div style={{ flex:1, overflowY:"auto", padding:"1.25rem 1.5rem" }}>
-
-          {/* ── MEASUREMENTS TAB ── */}
-          {tab==="measurements" && (
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1.6fr", gap:"1rem" }}>
-              {/* Left col */}
-              <div>
-                <p style={{ fontSize:"0.65rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.08em", marginBottom:"0.5rem" }}>BLUEPRINT / PDF</p>
-                <div style={{ border:"2px dashed #e5e7eb", borderRadius:10, padding:"1.25rem", textAlign:"center", marginBottom:"1rem", cursor:"pointer", background:"#fafafa" }}>
-                  <div style={{ width:40, height:40, borderRadius:10, background:"#fff7ed", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 0.5rem" }}>
-                    <Upload style={{ width:18, height:18, color:"#f97316" }} />
-                  </div>
-                  <p style={{ fontSize:"0.8rem", fontWeight:600, color:"#374151" }}>Upload Blueprint PDF</p>
-                  <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginTop:2 }}>Drag &amp; drop or click to browse</p>
-                  <p style={{ fontSize:"0.68rem", color:"#f97316", marginTop:4, fontWeight:500 }}>Auto-fills all phase dimensions on upload</p>
-                </div>
-
-                <p style={{ fontSize:"0.65rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.08em", marginBottom:"0.5rem" }}>PHASE SUMMARY</p>
-                {phases.map((ph,i) => {
-                  const v = ph.dims.length*ph.dims.width*ph.dims.thickness;
-                  const a = ph.dims.length*ph.dims.width;
-                  const configured = v > 0 || a > 0;
-                  return (
-                    <div key={ph.id} onClick={()=>setActivePhIdx(i)} style={{ padding:"0.625rem 0.875rem", borderRadius:8, marginBottom:4, cursor:"pointer", border:activePhIdx===i?"1px solid #fed7aa":"1px solid #e5e7eb", background:activePhIdx===i?"#fff7ed":"#fff" }}>
-                      <p style={{ fontSize:"0.8rem", fontWeight:activePhIdx===i?700:500, color:activePhIdx===i?"#f97316":"#374151" }}>Phase {i+1}: {ph.name}</p>
-                      {configured
-                        ? <p style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{v.toFixed(1)} m³ · {a.toFixed(1)} m²</p>
-                        : <p style={{ fontSize:"0.68rem", color:"#d1d5db" }}>Not configured</p>
-                      }
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Right col */}
-              <div>
-                <p style={{ fontSize:"0.75rem", color:"#9ca3af", marginBottom:"0.5rem" }}>Structure Type</p>
-                <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:"1rem" }}>
-                  {(["Floor Slab","Wall","Column","Beam","Footing"] as StructType[]).map(t=>(
-                    <button key={t} onClick={()=>setStructType(t)} style={{ padding:"6px 13px", borderRadius:999, border:"none", cursor:"pointer", fontSize:"0.8rem", fontWeight:structType===t?700:400, background:structType===t?"#f97316":"#f3f4f6", color:structType===t?"#fff":"#374151" }}>{t}</button>
-                  ))}
-                </div>
-
-                <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem", marginBottom:"1rem" }}>
-                  <p style={{ fontWeight:700, fontSize:"0.875rem", marginBottom:"0.75rem" }}>Phase {activePhIdx+1}: {phases[activePhIdx]?.name} — Dim</p>
-                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.625rem" }}>
-                    <div><label style={lbl}>Length (M)</label><input value={dims.length||""} onChange={e=>setDim("length",e.target.value)} type="number" style={inp} placeholder="15" suppressHydrationWarning /></div>
-                    <div><label style={lbl}>Width (M)</label><input value={dims.width||""} onChange={e=>setDim("width",e.target.value)} type="number" style={inp} placeholder="10" suppressHydrationWarning /></div>
-                    <div><label style={lbl}>Height (M)</label><input value={dims.height||""} onChange={e=>setDim("height",e.target.value)} type="number" style={{ ...inp, background:structType==="Floor Slab"||structType==="Footing"?"#f9fafb":"#fff" }} placeholder="0.00" suppressHydrationWarning /></div>
-                    <div><label style={lbl}>Thickness (M)</label><input value={dims.thickness||""} onChange={e=>setDim("thickness",e.target.value)} type="number" style={inp} placeholder="0.20" suppressHydrationWarning /></div>
-                  </div>
-                </div>
-
-                {vol > 0 && (
-                  <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem" }}>
-                    <p style={{ fontWeight:700, fontSize:"0.875rem", marginBottom:"0.75rem" }}>Calculated Results</p>
-                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.625rem", marginBottom:"0.75rem" }}>
-                      <div style={{ background:"#f9fafb", borderRadius:8, padding:"0.75rem", textAlign:"center" }}>
-                        <p style={{ fontSize:"1.3rem", fontWeight:800, color:"#111827" }}>{vol.toFixed(2)}</p>
-                        <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>m³ Volume</p>
-                      </div>
-                      <div style={{ background:"#f9fafb", borderRadius:8, padding:"0.75rem", textAlign:"center" }}>
-                        <p style={{ fontSize:"1.3rem", fontWeight:800, color:"#111827" }}>{area.toFixed(2)}</p>
-                        <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>m² Surface Area</p>
-                      </div>
-                    </div>
-                    <div style={{ fontSize:"0.78rem", color:"#6b7280" }}>
-                      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Concrete mix vol (85%)</span><span style={{ fontWeight:600 }}>{concreteMix.toFixed(2)} m³</span></div>
-                      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Est. steel reinforcement</span><span style={{ fontWeight:600 }}>{Math.round(steelReinf)} kg</span></div>
-                      <div style={{ display:"flex", justifyContent:"space-between" }}><span>Formwork area</span><span style={{ fontWeight:600 }}>{formwork.toFixed(2)} m²</span></div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ── MATERIAL PLAN TAB ── */}
-          {tab==="materialPlan" && (
-            <>
-              {/* Controls */}
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr auto", gap:"0.75rem", marginBottom:"1rem", alignItems:"end" }}>
-                <div><label style={lbl}>Plan Type</label><select value={planType} onChange={e=>setPlanType(e.target.value)} style={sel}><option value="">Select…</option><option>Phase-based</option><option>Monthly</option></select></div>
-                <div><label style={lbl}>Time Range</label><select value={timeRange} onChange={e=>setTimeRange(e.target.value)} style={sel}><option value="">Select…</option><option>30 days</option><option>60 days</option><option>90 days</option></select></div>
-                <div style={{ background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:8, padding:"7px 12px", display:"flex", alignItems:"center", gap:5, whiteSpace:"nowrap" }}>
-                  <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", display:"inline-block" }} />
-                  <span style={{ fontSize:"0.75rem", color:"#15803d", fontWeight:500 }}>Forecast Applied</span>
-                </div>
-              </div>
-
-              {/* Add from Inventory */}
-              <div style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem", marginBottom:"1rem" }}>
-                <p style={{ fontWeight:700, fontSize:"0.875rem", marginBottom:"0.75rem" }}>Add from Inventory</p>
-                <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:"0.75rem" }}>
-                  {INV_CATEGORIES.map(c=>(
-                    <button key={c} onClick={()=>setInvCat(c)} style={{ padding:"4px 11px", borderRadius:999, border:"none", cursor:"pointer", fontSize:"0.73rem", fontWeight:invCat===c?700:400, background:invCat===c?"#111827":"#f3f4f6", color:invCat===c?"#fff":"#374151" }}>{c}</button>
-                  ))}
-                </div>
-                <div style={{ maxHeight:140, overflowY:"auto" }}>
-                  {filtered.map(inv=>(
-                    <div key={inv.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"7px 4px", borderBottom:"1px solid #f9fafb" }}>
-                      <div>
-                        <p style={{ fontSize:"0.8rem", fontWeight:500, color:"#111827" }}>{inv.name}</p>
-                        <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>{inv.category} · Stock: {inv.stock.toLocaleString()} · ₱{inv.price.toLocaleString()}</p>
-                      </div>
-                      <button onClick={()=>addToPhase(inv)} style={{ width:24, height:24, borderRadius:"50%", border:"none", background:"transparent", cursor:"pointer", color:"#f97316", fontSize:"1.1rem", fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>+</button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Bill of Materials */}
-              <div style={{ border:"1px solid #e5e7eb", borderRadius:10, overflow:"hidden", position:"relative" }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0.875rem 1rem", borderBottom:"1px solid #e5e7eb" }}>
-                  <p style={{ fontWeight:700, fontSize:"0.875rem" }}>Bill of Materials</p>
-                  <div style={{ display:"flex", alignItems:"center", gap:6, background:"#fff7ed", border:"1px solid #fed7aa", borderRadius:999, padding:"4px 12px" }}>
-                    <span style={{ fontSize:"0.72rem", color:"#f97316" }}>▶ Forecast Applied</span>
-                  </div>
-                </div>
-                {/* Header row */}
-                <div style={{ display:"grid", gridTemplateColumns:"1.8fr 1.3fr 0.5fr 0.8fr 0.6fr 0.7fr", gap:4, padding:"0.5rem 1rem", background:"#f9fafb", borderBottom:"1px solid #e5e7eb" }}>
-                  {["MATERIAL","SPECIFICATION","UNIT","EST. QTY","STOCK","ALERTS"].map(h=>(
-                    <span key={h} style={{ fontSize:"0.6rem", color:"#9ca3af", fontWeight:700 }}>{h}</span>
-                  ))}
-                </div>
-
-                <div style={{ maxHeight:260, overflowY:"auto" }}>
-                  {phases.map((ph, phIdx) => (
-                    <div key={ph.id}>
-                      {/* Phase header */}
-                      <button onClick={()=>togglePhase(phIdx)} style={{ width:"100%", display:"grid", gridTemplateColumns:"1fr auto", padding:"8px 1rem", background:"#eff6ff", border:"none", cursor:"pointer", borderBottom:"1px solid #dbeafe", alignItems:"center" }}>
-                        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                          {expandedPhs.includes(phIdx) ? <ChevronDown style={{ width:13, height:13, color:"#2563eb" }} /> : <ChevronUp style={{ width:13, height:13, color:"#2563eb" }} />}
-                          <span style={{ fontWeight:700, fontSize:"0.82rem", color:"#2563eb" }}>Phase {phIdx+1}: {ph.name}</span>
-                        </div>
-                        <span style={{ fontSize:"0.72rem", color:"#6b7280" }}>{ph.items.length} items</span>
-                      </button>
-
-                      {/* Phase rows */}
-                      {expandedPhs.includes(phIdx) && ph.items.map(it => {
-                        const needsAlert = it.estQty > it.stock;
-                        return (
-                          <div key={it.inventoryId} style={{ display:"grid", gridTemplateColumns:"1.8fr 1.3fr 0.5fr 0.8fr 0.6fr 0.7fr", gap:4, padding:"8px 1rem", borderBottom:"1px solid #f9fafb", alignItems:"center" }}>
-                            <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-                              {needsAlert && <span style={{ color:"#f97316", fontSize:"0.7rem" }}>⚠</span>}
-                              <span style={{ fontSize:"0.78rem", fontWeight:500, color:"#111827", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{it.name}</span>
-                            </div>
-                            <span style={{ fontSize:"0.72rem", color:"#9ca3af", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{it.spec}</span>
-                            <span style={{ fontSize:"0.72rem", color:"#9ca3af" }}>{it.unit}</span>
-                            <input value={it.estQty||""} onChange={e=>setItemQty(phIdx,it.inventoryId,e.target.value)} type="number" style={{ border:"1px solid #e5e7eb", borderRadius:6, padding:"4px 6px", fontSize:"0.78rem", width:"100%", outline:"none" }} suppressHydrationWarning />
-                            <span style={{ fontSize:"0.82rem", fontWeight:700, color:it.stock===0?"#ef4444":it.stock<it.estQty?"#f97316":"#22c55e" }}>{it.stock.toLocaleString()}</span>
-                            <div style={{ display:"flex", gap:4 }}>
-                              <button onClick={()=>showAlert(it.name,it.estQty,"procurement")} title="Raise Purchase Requisition" style={{ width:26, height:26, borderRadius:6, border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", background:needsAlert?"#fee2e2":"#f3f4f6" }}>
-                                <ShoppingCart style={{ width:13, height:13, color:needsAlert?"#ef4444":"#9ca3af" }} />
-                              </button>
-                              <button onClick={()=>showAlert(it.name,it.estQty,"warehouse")} title="Flag for Warehouse Check" style={{ width:26, height:26, borderRadius:6, border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", background:needsAlert?"#fee2e2":"#f3f4f6" }}>
-                                <Package style={{ width:13, height:13, color:needsAlert?"#ef4444":"#9ca3af" }} />
-                              </button>
-                              <button onClick={()=>removeFromPhase(phIdx,it.inventoryId)} style={{ width:26, height:26, borderRadius:6, border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", background:"transparent" }}>
-                                <X style={{ width:12, height:12, color:"#d1d5db" }} />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-
-                      {/* Add row */}
-                      {expandedPhs.includes(phIdx) && (
-                        <button onClick={()=>{ setTab("materialPlan"); setActivePhIdx(phIdx); }} style={{ width:"100%", padding:"6px", border:"none", background:"transparent", cursor:"pointer", fontSize:"0.75rem", color:"#9ca3af", borderBottom:"1px solid #f9fafb" }}>
-                          + + Add Row
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                {/* Tooltip overlay */}
-                {tooltip && (
-                  <div style={{ position:"absolute", bottom:80, left:"50%", transform:"translateX(-50%)", background:"#111827", color:"#fff", borderRadius:10, padding:"0.875rem 1rem", width:300, zIndex:10, boxShadow:"0 8px 24px rgba(0,0,0,0.25)" }}>
-                    <div style={{ display:"flex", gap:8 }}>
-                      <div style={{ width:28, height:28, borderRadius:"50%", background:"#374151", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                        {tooltip.type==="procurement" ? <ShoppingCart style={{ width:13, height:13, color:"#fff" }} /> : <Package style={{ width:13, height:13, color:"#fff" }} />}
-                      </div>
-                      <div>
-                        <p style={{ fontWeight:700, fontSize:"0.8rem" }}>
-                          {tooltip.type==="procurement" ? `Purchase Requisition Raised — ${tooltip.itemName} (${tooltip.qty})` : `Warehouse Flagged — ${tooltip.itemName} (${tooltip.qty})`}
-                        </p>
-                        <p style={{ fontSize:"0.7rem", color:"#9ca3af", marginTop:3, lineHeight:1.4 }}>
-                          {tooltip.type==="procurement"
-                            ? `Current stock: ${INVENTORY_ITEMS.find(i=>i.name===tooltip.itemName)?.stock??0} ${INVENTORY_ITEMS.find(i=>i.name===tooltip.itemName)?.unit??""}  | Required: ${tooltip.qty}. Procurement team notified.`
-                            : `Inventory system notified to verify physical stock. Allocation check initiated.`}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Legend */}
-                <div style={{ padding:"0.5rem 1rem", background:"#fafafa", borderTop:"1px solid #e5e7eb", display:"flex", gap:12 }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:4 }}><ShoppingCart style={{ width:11, height:11, color:"#ef4444" }} /><span style={{ fontSize:"0.65rem", color:"#6b7280" }}>Procurement alert</span></div>
-                  <div style={{ display:"flex", alignItems:"center", gap:4 }}><Package style={{ width:11, height:11, color:"#f97316" }} /><span style={{ fontSize:"0.65rem", color:"#6b7280" }}>Warehouse alert</span></div>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div style={{ padding:"0.875rem 1.5rem", borderTop:"1px solid #e5e7eb", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
-          {tab === "materialPlan"
-            ? <p style={{ fontSize:"0.78rem", color:"#6b7280" }}>{totalMat} materials · Est. <strong>₱{totalCost.toLocaleString()}</strong>{alertCount>0&&<span style={{ color:"#f97316", marginLeft:6 }}>⚠ {alertCount} alert(s)</span>}</p>
-            : <p style={{ fontSize:"0.72rem", color:"#9ca3af" }}>Enter dims per phase → Run Forecast</p>
-          }
-          <div style={{ display:"flex", gap:8 }}>
-            <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer" }}>Cancel</button>
-            {tab === "materialPlan"
-              ? <button onClick={()=>{ toast.success("Material plan saved!"); onClose(); }} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.82rem", fontWeight:700, cursor:"pointer" }}>Save Plan</button>
-              : <button onClick={()=>{ toast.success("Forecast generated!"); }} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.82rem", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>▶ Run Forecast</button>
-            }
-          </div>
-        </div>
-      </div>
-    </Overlay>
-  );
-}
-
 // ── File Repository Modal ─────────────────────────────────────────────────────
 
 type RepoTab = "upload" | "repository";
-const CATEGORIES = ["Blueprint / Drawing","Contract / Agreement","Other Record"] as const;
 
-function FileRepositoryModal({ onClose }: { onClose:()=>void }) {
-  const [tab,       setTab]      = useState<RepoTab>("upload");
-  const [files,     setFiles]    = useState<RepoFile[]>(INIT_REPO);
-  const [docName,   setDocName]  = useState("");
-  const [category,  setCategory] = useState<typeof CATEGORIES[number]>("Blueprint / Drawing");
-  const [version,   setVersion]  = useState("V1.0");
-  const [remarks,   setRemarks]  = useState("");
-  const [fileQ,     setFileQ]    = useState(0);
-  const [search,    setSearch]   = useState("");
+function categoryDisplay(doc: ProjectDocument): { label: string; bg: string; color: string } {
+  switch (doc.category) {
+    case "Blueprint":     return { label: "Blueprint / Drawing", bg: "#dbeafe", color: "#1d4ed8" };
+    case "Contract":      return { label: "Contract / Agreement", bg: "#dcfce7", color: "#15803d" };
+    case "BOQ":           return { label: "Bill of Quantities", bg: "#eff6ff", color: "#2563eb" };
+    case "PurchaseOrder": return { label: "Purchase Order", bg: "#fff7ed", color: "#c2410c" };
+    default:
+      return doc.categoryOther
+        ? { label: `Others — ${doc.categoryOther}`, bg: "#ffedd5", color: "#c2410c" }
+        : { label: "Other Record", bg: "#ffedd5", color: "#c2410c" };
+  }
+}
 
-  function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
-    if (e.target.files && e.target.files.length > 0) setFileQ(prev => prev + e.target.files!.length);
+interface StagedFile { id: string; file: File; previewUrl: string }
+
+function FileRepositoryModal({ onClose, projects }: { onClose:()=>void; projects: RealProject[] }) {
+  const { documents, fetchAll, upload, remove } = useDocumentRepository();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [tab,           setTab]           = useState<RepoTab>("upload");
+  const [staged,         setStaged]        = useState<StagedFile[]>([]);
+  const [projectId,      setProjectId]     = useState<number | "">("");
+  const [description,    setDescription]   = useState("");
+  const [saving,         setSaving]        = useState(false);
+  const [search,         setSearch]        = useState("");
+  const [projectFilter,  setProjectFilter] = useState<number | "">("");
+
+  useEffect(() => { fetchAll(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleFilesPicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = e.target.files;
+    if (picked && picked.length > 0) {
+      const additions: StagedFile[] = Array.from(picked).map(file => ({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        file,
+        previewUrl: URL.createObjectURL(file),
+      }));
+      setStaged(prev => [...prev, ...additions]);
+    }
+    e.target.value = "";
   }
 
-  function saveToRepo() {
-    if (!docName.trim()) { toast.error("Document name is required."); return; }
-    const newFile: RepoFile = { id:Date.now(), name:docName.trim(), category, status:"Draft", revision:version, docType:category.split(" ")[0], project:"—", author:"Ana Bonifacio", date:new Date().toISOString().split("T")[0], size:"—", description:remarks, tags:[] };
-    setFiles(prev=>[newFile,...prev]);
-    toast.success(`"${docName}" saved to repository.`);
-    setTab("repository"); setDocName(""); setRemarks(""); setFileQ(0);
+  function removeStaged(id: string) {
+    setStaged(prev => {
+      const target = prev.find(s => s.id === id);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter(s => s.id !== id);
+    });
   }
 
-  function deleteFile(id: number) {
-    setFiles(prev=>prev.filter(f=>f.id!==id));
-    toast.success("File removed from repository.");
+  async function saveToRepo() {
+    if (!projectId) { toast.error("Select a project."); return; }
+    if (staged.length === 0) { toast.error("Attach at least one file."); return; }
+
+    setSaving(true);
+    let successCount = 0;
+    const failedNames: string[] = [];
+
+    for (const s of staged) {
+      try {
+        await upload(s.file, Number(projectId), "Other", undefined, description.trim() || undefined);
+        successCount++;
+      } catch {
+        failedNames.push(s.file.name);
+      }
+    }
+    staged.forEach(s => URL.revokeObjectURL(s.previewUrl));
+    setSaving(false);
+
+    if (successCount > 0) {
+      toast.success(`${successCount} file(s) saved to repository.`);
+      setStaged([]); setDescription("");
+      setTab("repository");
+    }
+    if (failedNames.length > 0) toast.error(`Failed to upload: ${failedNames.join(", ")}`);
   }
 
-  const filtered = files.filter(f => !search || f.name.toLowerCase().includes(search.toLowerCase()) || f.project.toLowerCase().includes(search.toLowerCase()));
+  async function handleDelete(doc: ProjectDocument) {
+    if (!window.confirm(`Delete "${doc.fileName}"? This removes it permanently — this cannot be undone.`)) return;
+    try {
+      await remove(doc.id);
+      toast.success("File deleted.");
+    } catch {
+      toast.error("Failed to delete file.");
+    }
+  }
 
-  const catIcon = (cat: string) => {
-    if (cat.includes("Blueprint")) return { bg:"#dbeafe", color:"#1d4ed8" };
-    if (cat.includes("Contract")) return { bg:"#dcfce7", color:"#15803d" };
-    return { bg:"#ffedd5", color:"#c2410c" };
-  };
+  const filtered = documents.filter(d => {
+    if (projectFilter && d.projectId !== projectFilter) return false;
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return d.fileName.toLowerCase().includes(q) || d.projectName.toLowerCase().includes(q);
+  });
 
   const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
   const tabStyle = (t: RepoTab): React.CSSProperties => ({
@@ -826,7 +241,7 @@ function FileRepositoryModal({ onClose }: { onClose:()=>void }) {
           </div>
           <div style={{ display:"flex", borderBottom:"1px solid #e5e7eb" }}>
             <button style={tabStyle("upload")} onClick={()=>setTab("upload")}>Upload Files</button>
-            <button style={tabStyle("repository")} onClick={()=>setTab("repository")}>Repository ({files.length})</button>
+            <button style={tabStyle("repository")} onClick={()=>setTab("repository")}>Repository ({documents.length})</button>
           </div>
         </div>
 
@@ -835,24 +250,48 @@ function FileRepositoryModal({ onClose }: { onClose:()=>void }) {
 
           {tab==="upload" && (
             <>
-              <div style={{ border:"2px dashed #e5e7eb", borderRadius:12, padding:"2rem", textAlign:"center", marginBottom:"1.25rem", cursor:"pointer", background:"#fafafa" }} onClick={()=>document.getElementById("fileInput")?.click()}>
-                <input id="fileInput" type="file" multiple accept=".pdf,.dwg,.docx,.xlsx,.png,.jpg" onChange={handleFileInput} style={{ display:"none" }} />
+              <input ref={fileInputRef} type="file" multiple onChange={handleFilesPicked} style={{ display:"none" }} />
+
+              <div style={{ border:"2px dashed #e5e7eb", borderRadius:12, padding:"2rem", textAlign:"center", marginBottom:"1.25rem", cursor:"pointer", background:"#fafafa" }} onClick={()=>fileInputRef.current?.click()}>
                 <Upload style={{ width:28, height:28, color:"#9ca3af", margin:"0 auto 0.625rem" }} />
                 <p style={{ fontSize:"0.875rem", color:"#374151" }}>Drag &amp; drop or <span style={{ color:"#f97316", fontWeight:600, cursor:"pointer" }}>browse</span> to attach a file</p>
-                <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:4 }}>PDF, DWG, DOCX, XLSX, PNG, JPG — max 100 MB</p>
+                <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:4 }}>Any file type — max 25 MB each</p>
               </div>
+
+              {staged.length > 0 && (
+                <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:"1.25rem" }}>
+                  {staged.map(s => (
+                    <div key={s.id} style={{ display:"flex", alignItems:"center", gap:8, border:"1px solid #e5e7eb", borderRadius:8, padding:"8px 10px" }}>
+                      {s.file.type.startsWith("image/") ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={s.previewUrl} alt={s.file.name} style={{ width:36, height:36, objectFit:"cover", borderRadius:6, flexShrink:0 }} />
+                      ) : (
+                        <div style={{ width:36, height:36, borderRadius:6, background:"#f3f4f6", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                          <FileIcon style={{ width:16, height:16, color:"#9ca3af" }} />
+                        </div>
+                      )}
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <p style={{ fontSize:"0.8rem", color:"#374151", fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{s.file.name}</p>
+                        <p style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{formatBytes(s.file.size)}</p>
+                      </div>
+                      <a href={s.previewUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize:"0.72rem", fontWeight:600, color:"#f97316", textDecoration:"none", whiteSpace:"nowrap" }}>Preview</a>
+                      <button onClick={()=>removeStaged(s.id)} title="Remove" style={{ background:"none", border:"none", cursor:"pointer", color:"#ef4444", padding:4, flexShrink:0 }}>
+                        <X style={{ width:14, height:14 }} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div style={{ display:"flex", flexDirection:"column", gap:"0.875rem" }}>
-                <div><label style={lbl}>Document Name <span style={{ color:"#ef4444" }}>*</span></label><input value={docName} onChange={e=>setDocName(e.target.value)} style={inp} placeholder="Architectural Floor Plan - Building A" suppressHydrationWarning /></div>
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-                  <div><label style={lbl}>Category <span style={{ color:"#ef4444" }}>*</span></label><select value={category} onChange={e=>setCategory(e.target.value as typeof CATEGORIES[number])} style={sel}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
-                  <div><label style={lbl}>Version / Revision</label><input value={version} onChange={e=>setVersion(e.target.value)} style={inp} placeholder="V1.0" suppressHydrationWarning /></div>
+                <div>
+                  <label style={lbl}>Project <span style={{ color:"#ef4444" }}>*</span></label>
+                  <select value={projectId} onChange={e=>setProjectId(e.target.value ? Number(e.target.value) : "")} style={sel}>
+                    <option value="">Select a project…</option>
+                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
                 </div>
-                <div><label style={lbl}>Description / Remarks</label><textarea value={remarks} onChange={e=>setRemarks(e.target.value)} rows={3} style={{ ...inp, resize:"vertical" as React.CSSProperties["resize"] }} placeholder="Brief description of the document contents..." suppressHydrationWarning /></div>
-              </div>
-
-              <div style={{ border:"2px dashed #e5e7eb", borderRadius:8, padding:"0.875rem", textAlign:"center", marginTop:"1rem", cursor:"pointer" }} onClick={()=>document.getElementById("fileInput")?.click()}>
-                <span style={{ fontSize:"0.82rem", color:"#9ca3af" }}>+ Add Another File</span>
+                <div><label style={lbl}>Description / Remarks</label><textarea value={description} onChange={e=>setDescription(e.target.value)} rows={3} style={{ ...inp, resize:"vertical" as React.CSSProperties["resize"] }} placeholder="Brief description of the document contents..." suppressHydrationWarning /></div>
               </div>
             </>
           )}
@@ -862,46 +301,43 @@ function FileRepositoryModal({ onClose }: { onClose:()=>void }) {
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem", marginBottom:"1rem" }}>
                 <div style={{ position:"relative" }}>
                   <Search style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", width:14, height:14, color:"#9ca3af" }} />
-                  <input value={search} onChange={e=>setSearch(e.target.value)} style={{ ...inp, paddingLeft:32 }} placeholder="Floor Plan" suppressHydrationWarning />
+                  <input value={search} onChange={e=>setSearch(e.target.value)} style={{ ...inp, paddingLeft:32 }} placeholder="Search files or projects" suppressHydrationWarning />
                 </div>
-                <select style={{ ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] }}><option>All Projects</option><option>Metro Station Phase 3</option><option>BGC Tower Complex</option></select>
+                <select value={projectFilter} onChange={e=>setProjectFilter(e.target.value ? Number(e.target.value) : "")} style={{ ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] }}>
+                  <option value="">All Projects</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
               </div>
 
               <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
-                {filtered.map(f => {
-                  const ic = catIcon(f.category);
+                {filtered.map(doc => {
+                  const cat = categoryDisplay(doc);
                   return (
-                    <div key={f.id} style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem" }}>
+                    <div key={doc.id} style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem" }}>
                       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.5rem" }}>
-                        <div style={{ display:"flex", gap:10, alignItems:"flex-start" }}>
-                          <div style={{ width:32, height:32, borderRadius:8, background:ic.bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                            <FolderOpen style={{ width:15, height:15, color:ic.color }} />
+                        <div style={{ display:"flex", gap:10, alignItems:"flex-start", minWidth:0, flex:1 }}>
+                          <div style={{ width:32, height:32, borderRadius:8, background:cat.bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                            <FolderOpen style={{ width:15, height:15, color:cat.color }} />
                           </div>
-                          <div>
-                            <p style={{ fontWeight:700, fontSize:"0.875rem", color:"#111827" }}>{f.name}</p>
+                          <div style={{ minWidth:0 }}>
+                            <p style={{ fontWeight:700, fontSize:"0.875rem", color:"#111827", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{doc.fileName}</p>
                             <div style={{ display:"flex", gap:5, marginTop:4, flexWrap:"wrap" }}>
-                              <span style={{ fontSize:"0.65rem", fontWeight:600, padding:"2px 8px", borderRadius:999, background:ic.bg, color:ic.color }}>{f.category}</span>
-                              <span style={{ fontSize:"0.65rem", fontWeight:600, padding:"2px 8px", borderRadius:999, background:"#dcfce7", color:"#15803d" }}>{f.status}</span>
-                              {f.revision && <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>{f.revision}</span>}
+                              <span style={{ fontSize:"0.65rem", fontWeight:600, padding:"2px 8px", borderRadius:999, background:cat.bg, color:cat.color }}>{cat.label}</span>
                             </div>
                           </div>
                         </div>
-                        <button onClick={()=>deleteFile(f.id)} style={{ background:"none", border:"none", cursor:"pointer", color:"#d1d5db", padding:4 }}>
-                          <Trash2 style={{ width:15, height:15 }} />
-                        </button>
-                      </div>
-                      <p style={{ fontSize:"0.72rem", color:"#6b7280", marginBottom:2 }}>{f.docType} · {f.project}</p>
-                      <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginBottom:4 }}>{f.author} · {f.date}{f.size!=="—"?` · ${f.size}`:""}</p>
-                      {f.description && <p style={{ fontSize:"0.72rem", color:"#6b7280", marginBottom:6 }}>{f.description}</p>}
-                      {f.tags.length>0 && (
-                        <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
-                          {f.tags.map(tag=>(
-                            <span key={tag} style={{ display:"flex", alignItems:"center", gap:3, fontSize:"0.65rem", padding:"2px 8px", borderRadius:999, background:"#f3f4f6", color:"#374151" }}>
-                              <Tag style={{ width:9, height:9 }} />{tag}
-                            </span>
-                          ))}
+                        <div style={{ display:"flex", alignItems:"center", gap:4, flexShrink:0 }}>
+                          <a href={`${getApiOrigin()}${doc.url}`} target="_blank" rel="noopener noreferrer" title="Preview" style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af", padding:4, display:"flex" }}>
+                            <ExternalLink style={{ width:15, height:15 }} />
+                          </a>
+                          <button onClick={()=>handleDelete(doc)} title="Delete" style={{ background:"none", border:"none", cursor:"pointer", color:"#d1d5db", padding:4 }}>
+                            <Trash2 style={{ width:15, height:15 }} />
+                          </button>
                         </div>
-                      )}
+                      </div>
+                      <p style={{ fontSize:"0.72rem", color:"#6b7280", marginBottom:2 }}>{doc.projectName}</p>
+                      <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginBottom:4 }}>{doc.uploadedBy} · {formatDate(doc.uploadedAt)} · {formatBytes(doc.sizeBytes)}</p>
+                      {doc.description && <p style={{ fontSize:"0.72rem", color:"#6b7280" }}>{doc.description}</p>}
                     </div>
                   );
                 })}
@@ -913,15 +349,15 @@ function FileRepositoryModal({ onClose }: { onClose:()=>void }) {
 
         {/* Footer */}
         <div style={{ padding:"0.875rem 1.5rem", borderTop:"1px solid #e5e7eb", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
-          {tab==="upload"
-            ? <p style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{fileQ>0?`${fileQ} file(s) queued`:"No file selected"}</p>
-            : <p style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{filtered.length} of {files.length} records</p>
+          {tab==="repository"
+            ? <p style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{filtered.length} of {documents.length} records</p>
+            : <div />
           }
           <div style={{ display:"flex", gap:8 }}>
             {tab==="upload"
               ? <>
                   <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer" }}>Cancel</button>
-                  <button onClick={saveToRepo} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.82rem", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}><Upload style={{ width:13, height:13 }} /> Save to Repository</button>
+                  <button onClick={saveToRepo} disabled={saving} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.82rem", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6, opacity:saving?0.7:1 }}><Upload style={{ width:13, height:13 }} /> {saving ? "Saving…" : "Save to Repository"}</button>
                 </>
               : <>
                   <button onClick={()=>setTab("upload")} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>+ Upload New</button>
@@ -1170,20 +606,117 @@ function ProgressTrackerModal({ project, onClose, onSave }: {
   );
 }
 
+// ── Delete Confirmation Modal ──────────────────────────────────────────────────
+
+function DeleteProjectModal({ project, onClose, onConfirm, deleting }: {
+  project: Project; onClose: ()=>void; onConfirm: ()=>void; deleting: boolean;
+}) {
+  return (
+    <Overlay onClose={onClose}>
+      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:420, boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:"1rem" }}>
+          <div style={{ width:40, height:40, borderRadius:10, background:"#fee2e2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+            <Trash2 style={{ width:18, height:18, color:"#dc2626" }} />
+          </div>
+          <div>
+            <p style={{ fontWeight:800, fontSize:"1.05rem", color:"#111827" }}>Delete Project</p>
+            <p style={{ fontSize:"0.8rem", color:"#6b7280", marginTop:4 }}>
+              This will permanently delete <strong>{project.name}</strong> and all of its phases, BOQ items, purchase orders, documents, and forecast data. This action cannot be undone.
+            </p>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:"1.25rem" }}>
+          <button onClick={onClose} disabled={deleting} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:deleting?"default":"pointer" }}>Cancel</button>
+          <button onClick={onConfirm} disabled={deleting} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#dc2626", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:deleting?"default":"pointer", opacity:deleting?0.7:1 }}>
+            {deleting ? "Deleting…" : "Delete Project"}
+          </button>
+        </div>
+      </div>
+    </Overlay>
+  );
+}
+
 // ── Project Card ──────────────────────────────────────────────────────────────
 
-function ProjectCard({ project, onEdit, onMaterialPlan, onReports, onProgress, canEdit, showProgress, viewOnly }: {
+function ProjectCard({ project, onView, onMaterialPlan, onReports, onProgress, onDelete, canEdit, canDelete, showProgress, viewOnly }: {
   project: Project;
-  onEdit: ()=>void;
+  onView: ()=>void;
   onMaterialPlan: ()=>void;
   onReports: ()=>void;
   onProgress?: ()=>void;
+  onDelete?: ()=>void;
   canEdit: boolean;
+  canDelete: boolean;
   showProgress: boolean;
   viewOnly: boolean;
 }) {
   const st = STATUS_STYLE[project.status];
   const btn: React.CSSProperties = { flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"10px 0", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.8rem", fontWeight:600, cursor:"pointer" };
+
+  const [aiPredicted, setAiPredicted] = useState<{ material:string; qty:number; unit:string } | null>(null);
+  const [actualUsage, setActualUsage] = useState<{ material:string; qty:number; unit:string } | null>(null);
+  const [mostUsed, setMostUsed]       = useState<{ material:string; qty:number; unit:string } | null>(null);
+  const [excessStock, setExcessStock]     = useState(0);
+  const [redistributed, setRedistributed] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get<ExcessAnalyticsSummary>(`/excess-waste/summary/${project.id}`)
+      .then(({ data }) => { if (!cancelled) setExcessStock(data.totalExcessQuantity); })
+      .catch(() => {});
+    api.get<RedistributionRecommendation[]>("/redistribution")
+      .then(({ data }) => {
+        if (cancelled) return;
+        const total = data
+          .filter(r => r.status === "Completed" && (r.sourceProjectId === project.id || r.targetProjectId === project.id))
+          .reduce((sum, r) => sum + r.transferQuantity, 0);
+        setRedistributed(total);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [project.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Historical (backfilled) records aren't forecast targets themselves —
+    // they're the training data forecasts are built from. Just show what
+    // was used most, straight from the real BOQ record. Actual Qty is what's
+    // meant to be filled in for these, but until someone does, estimated
+    // qty is still real, useful information — better than showing nothing.
+    if (project.isHistorical) {
+      api.get<BOQItem[]>(`/boq/project/${project.id}`)
+        .then(({ data: boqItems }) => {
+          if (cancelled) return;
+          const effectiveQty = (b: BOQItem) => b.actualQuantity > 0 ? b.actualQuantity : b.estimatedQuantity;
+          const top = boqItems.slice().sort((a, b) => effectiveQty(b) - effectiveQty(a))[0];
+          setMostUsed(top ? { material: top.materialName, qty: effectiveQty(top), unit: top.unit } : null);
+        })
+        .catch(() => {});
+      return () => { cancelled = true; };
+    }
+
+    api.get<ForecastResult[]>(`/forecast/project/${project.id}`)
+      .then(({ data }) => {
+        if (cancelled) return;
+        const top = data[0]?.forecastedMaterials
+          ?.slice()
+          .sort((a, b) => b.forecastedQuantity - a.forecastedQuantity)[0];
+        setAiPredicted(top ? { material: top.materialName, qty: top.forecastedQuantity, unit: top.unit } : null);
+
+        if (project.status !== "COMPLETED" || !top) return;
+        api.get<BOQItem[]>(`/boq/project/${project.id}`)
+          .then(({ data: boqItems }) => {
+            if (cancelled) return;
+            const match = boqItems.find(b => b.materialId === top.materialId && b.actualQuantity > 0);
+            setActualUsage(match ? { material: match.materialName, qty: match.actualQuantity, unit: match.unit } : null);
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [project.id, project.status, project.isHistorical]);
+
   return (
     <div style={{ background:"#fff", borderRadius:14, padding:"1.25rem", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
       {/* Title row */}
@@ -1191,21 +724,50 @@ function ProjectCard({ project, onEdit, onMaterialPlan, onReports, onProgress, c
         <div style={{ display:"flex", alignItems:"center", gap:8, flex:1, minWidth:0 }}>
           <p style={{ fontWeight:700, fontSize:"1rem", color:"#1d4ed8", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{project.name}</p>
           {canEdit && (
-            <button onClick={onEdit} style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#9ca3af", display:"flex", alignItems:"center", flexShrink:0 }}>
-              <Pencil style={{ width:13, height:13 }} />
+            <button onClick={onView} title="View" style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#9ca3af", display:"flex", alignItems:"center", flexShrink:0 }}>
+              <Eye style={{ width:13, height:13 }} />
             </button>
           )}
           {viewOnly && (
             <span style={{ fontSize:"0.6rem", fontWeight:700, padding:"2px 7px", borderRadius:999, background:"#f3f4f6", color:"#6b7280", flexShrink:0 }}>VIEW ONLY</span>
           )}
         </div>
-        <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 10px", borderRadius:999, background:st.bg, color:st.color, whiteSpace:"nowrap", flexShrink:0 }}>· {project.status}</span>
+        <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
+          {project.isHistorical ? (
+            <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 10px", borderRadius:999, background:"#ede9fe", color:"#6d28d9", whiteSpace:"nowrap" }}>HISTORICAL DATA</span>
+          ) : (
+            <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 10px", borderRadius:999, background:st.bg, color:st.color, whiteSpace:"nowrap" }}>· {project.status}</span>
+          )}
+          {canDelete && (
+            <button onClick={onDelete} title="Delete project" style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#d1d5db", display:"flex", alignItems:"center" }}>
+              <Trash2 style={{ width:14, height:14 }} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Meta */}
       <div style={{ display:"flex", gap:14, marginBottom:"0.875rem", flexWrap:"wrap" }}>
         <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><MapPin style={{ width:11, height:11 }} />{project.location}</span>
         <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><Calendar style={{ width:11, height:11 }} />{project.startDate} – {project.endDate}</span>
+      </div>
+
+      {/* AI forecast summary */}
+      <div style={{ display:"flex", flexDirection:"column", gap:2, marginBottom:"0.75rem" }}>
+        {project.isHistorical ? (
+          <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#6d28d9" }}>
+            Most Material Demand/Usage: {mostUsed ? `${mostUsed.qty.toLocaleString()} ${mostUsed.unit} · ${mostUsed.material}` : "—"}
+          </span>
+        ) : (
+          <>
+            <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#7c3aed" }}>
+              AI Predicted: {aiPredicted ? `${aiPredicted.qty.toLocaleString()} ${aiPredicted.unit} · ${aiPredicted.material}` : "—"}
+            </span>
+            <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#6b7280" }}>
+              Actual Usage: {project.status === "COMPLETED" ? (actualUsage ? `${actualUsage.qty.toLocaleString()} ${actualUsage.unit} · ${actualUsage.material}` : "—") : "—"}
+            </span>
+          </>
+        )}
       </div>
 
       {/* Progress */}
@@ -1221,7 +783,7 @@ function ProjectCard({ project, onEdit, onMaterialPlan, onReports, onProgress, c
 
       {/* Stats */}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.5rem", marginBottom:"0.75rem" }}>
-        {[["Budget",project.budget],["Spent",project.spent],["Materials",`${project.materials} items`]].map(([l,v])=>(
+        {[["Excess Stock",`${excessStock.toLocaleString()} units`],["Redistributed",`${redistributed.toLocaleString()} units`],["Materials",`${project.materials} items`]].map(([l,v])=>(
           <div key={l} style={{ background:"#f9fafb", borderRadius:8, padding:"0.5rem 0.75rem" }}>
             <p style={{ fontSize:"0.6rem", color:"#9ca3af" }}>{l}</p>
             <p style={{ fontWeight:700, fontSize:"0.85rem", color:"#111827" }}>{v}</p>
@@ -1237,7 +799,7 @@ function ProjectCard({ project, onEdit, onMaterialPlan, onReports, onProgress, c
 
       {/* Action buttons */}
       <div style={{ display:"flex", gap:"0.5rem" }}>
-        <button onClick={onMaterialPlan} style={btn}><FileText style={{ width:13, height:13 }} /> Material Plan &amp; Measurements</button>
+        <button onClick={onMaterialPlan} style={btn}><FileText style={{ width:13, height:13 }} /> Material Plan</button>
         {showProgress && project.status !== "COMPLETED" && (
           <button onClick={onProgress} style={{ ...btn, flex:"0 0 auto", padding:"10px 14px", background:"#1e3154" }}>
             <Activity style={{ width:13, height:13 }} /> Progress
@@ -1252,45 +814,102 @@ function ProjectCard({ project, onEdit, onMaterialPlan, onReports, onProgress, c
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 type ModalState =
-  | { type:"new" }
-  | { type:"edit"; project:Project }
-  | { type:"materialPlan"; project:Project }
+  | { type:"newProject" }
+  | { type:"addCompletedProject" }
+  | { type:"workspace"; projectId:number; editable:boolean }
   | { type:"reports"; project:Project }
   | { type:"forecast"; project:Project }
   | { type:"repository" }
   | { type:"progress"; project:Project }
+  | { type:"deleteConfirm"; project:Project }
   | null;
 
 export default function ProjectsPage() {
-  const [projects, setProjects] = useState<Project[]>(INIT_PROJECTS);
+  const [projects,     setProjects]     = useState<Project[]>(INIT_PROJECTS);
+  const [fullProjects, setFullProjects] = useState<RealProject[]>([]);
   const [loading,  setLoading]  = useState(true);
   const [modal,    setModal]    = useState<ModalState>(null);
+  const [deleting, setDeleting] = useState(false);
+  // "Projects" = every real project tracked through the app (any status,
+  // reached via the Progress Tracker). "Historical Data" = pure backfilled
+  // records entered only to train the forecasting model — not real projects.
+  const [view, setView] = useState<"projects" | "historical">("projects");
   const { user } = useAuthStore();
   const role = user?.role ?? "SiteEngineer";
 
   // Role-based permissions
   const canCreate    = role === "Admin" || role === "ProjectManager";
   const canEdit      = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
+  const canDelete    = role === "Admin";
   const showProgress = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
   const viewOnly     = role === "ProcurementOfficer";
 
-  useEffect(() => {
-    api.get<ProjectResponseDto[]>("/projects")
-      .then(r => setProjects(r.data.map(toProject)))
+  async function handleDeleteProject(id: number) {
+    setDeleting(true);
+    try {
+      await api.delete(`/projects/${id}`);
+      setProjects(prev => prev.filter(p => p.id !== id));
+      setFullProjects(prev => prev.filter(p => p.id !== id));
+      toast.success("Project deleted.");
+      setModal(null);
+    } catch {
+      toast.error("Failed to delete project.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  function refreshProjects() {
+    return api.get<ProjectResponseDto[]>("/projects")
+      .then(r => {
+        setProjects(r.data.map(toProject));
+        setFullProjects(r.data);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }
+
+  useEffect(() => { refreshProjects(); }, []);
 
   const proj = modal && "project" in modal ? modal.project : undefined;
+  const workspaceProject = modal?.type === "workspace" ? fullProjects.find(p => p.id === modal.projectId) : undefined;
+  const realProjects       = projects.filter(p => !p.isHistorical);
+  const historicalProjects = projects.filter(p => p.isHistorical);
+  const visibleProjects    = view === "historical" ? historicalProjects : realProjects;
 
   return (
     <div style={{ background:"#f5f4f0", minHeight:"100vh" }}>
-      {modal?.type==="new"          && <NewProjectModal onClose={()=>setModal(null)} onCreate={p=>setProjects(prev=>[...prev,p])} />}
-      {modal?.type==="edit"         && proj && <EditProjectDetailsModal project={proj} onClose={()=>setModal(null)} />}
-      {modal?.type==="materialPlan" && proj && <MaterialPlanMeasurementsModal project={proj} onClose={()=>setModal(null)} />}
+      {modal?.type==="newProject" && (
+        <NewProjectWizardModal
+          onClose={()=>setModal(null)}
+          onDone={()=>{ setModal(null); refreshProjects(); }}
+        />
+      )}
+      {modal?.type==="addCompletedProject" && (
+        <AddCompletedProjectWizardModal
+          onClose={()=>setModal(null)}
+          onDone={()=>{ setModal(null); refreshProjects(); }}
+        />
+      )}
+      {modal?.type==="workspace" && workspaceProject && (
+        <MeasurementsAndMaterialPlan
+          project={workspaceProject}
+          initialEditable={modal.editable}
+          onClose={()=>setModal(null)}
+          onProjectSaved={(updated)=>setFullProjects(prev=>prev.map(p=>p.id===updated.id?updated:p))}
+        />
+      )}
       {modal?.type==="reports"      && proj && <ReportsModal project={proj} onClose={()=>setModal(null)} />}
       {modal?.type==="forecast"     && proj && <ForecastModal project={proj} onClose={()=>setModal(null)} />}
-      {modal?.type==="repository"   && <FileRepositoryModal onClose={()=>setModal(null)} />}
+      {modal?.type==="repository"   && <FileRepositoryModal onClose={()=>setModal(null)} projects={fullProjects} />}
+      {modal?.type==="deleteConfirm" && (
+        <DeleteProjectModal
+          project={modal.project}
+          deleting={deleting}
+          onClose={()=>setModal(null)}
+          onConfirm={()=>handleDeleteProject(modal.project.id)}
+        />
+      )}
       {modal?.type==="progress"     && proj && (
         <ProgressTrackerModal
           project={proj}
@@ -1310,7 +929,9 @@ export default function ProjectsPage() {
           <div>
             <p style={{ fontWeight:800, fontSize:"1.35rem", color:"#111827" }}>All Projects</p>
             <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>
-              {loading ? "Loading…" : `${projects.length} projects · ${projects.filter(p=>p.status==="ACTIVE").length} active`}
+              {loading ? "Loading…" : view === "historical"
+                ? `${historicalProjects.length} historical record(s) — training data for the forecasting model`
+                : `${realProjects.length} projects · ${realProjects.filter(p=>p.status==="ACTIVE").length} active`}
             </p>
           </div>
           <div style={{ display:"flex", gap:"0.625rem" }}>
@@ -1320,29 +941,58 @@ export default function ProjectsPage() {
               </button>
             )}
             {canCreate && (
-              <button onClick={()=>setModal({type:"new"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>
+              <button onClick={()=>setModal({type:"addCompletedProject"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }} title="Backfill a finished project as historical data for the forecasting model">
+                <History style={{ width:14, height:14 }} /> Add Completed Project
+              </button>
+            )}
+            {canCreate && (
+              <button onClick={()=>setModal({type:"newProject"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>
                 <Plus style={{ width:15, height:15 }} /> New Project
               </button>
             )}
           </div>
         </div>
 
+        {/* Projects vs. Historical Data tabs */}
+        <div style={{ display:"flex", borderBottom:"1px solid #e5e7eb", marginBottom:"1.25rem" }}>
+          <button
+            onClick={()=>setView("projects")}
+            style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem", background:"transparent",
+              fontWeight: view==="projects" ? 700 : 400, color: view==="projects" ? "#f97316" : "#9ca3af",
+              borderBottom: view==="projects" ? "2px solid #f97316" : "2px solid transparent" }}
+          >
+            Projects ({realProjects.length})
+          </button>
+          <button
+            onClick={()=>setView("historical")}
+            style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem", background:"transparent",
+              fontWeight: view==="historical" ? 700 : 400, color: view==="historical" ? "#f97316" : "#9ca3af",
+              borderBottom: view==="historical" ? "2px solid #f97316" : "2px solid transparent" }}
+          >
+            Historical Data ({historicalProjects.length})
+          </button>
+        </div>
+
         {/* Project grid */}
         {loading ? (
           <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>Loading projects…</div>
-        ) : projects.length === 0 ? (
-          <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>No projects yet. Click "+ New Project" to get started.</div>
+        ) : visibleProjects.length === 0 ? (
+          <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>
+            {view === "historical" ? "No historical records yet. Click \"Add Completed Project\" to backfill one." : "No projects yet. Click \"+ New Project\" to get started."}
+          </div>
         ) : (
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
-            {projects.map(p => (
+            {visibleProjects.map(p => (
               <ProjectCard
                 key={p.id}
                 project={p}
-                onEdit={()=>setModal({type:"edit",project:p})}
-                onMaterialPlan={()=>setModal({type:"materialPlan",project:p})}
+                onView={()=>setModal({type:"workspace",projectId:p.id,editable:false})}
+                onMaterialPlan={()=>setModal({type:"workspace",projectId:p.id,editable:true})}
                 onReports={()=>setModal({type:"reports",project:p})}
                 onProgress={()=>setModal({type:"progress",project:p})}
+                onDelete={()=>setModal({type:"deleteConfirm",project:p})}
                 canEdit={canEdit}
+                canDelete={canDelete}
                 showProgress={showProgress}
                 viewOnly={viewOnly}
               />

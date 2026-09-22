@@ -40,6 +40,7 @@ public class ProjectService(AppDbContext db) : IProjectService
         {
             Name               = dto.Name,
             Type               = Enum.Parse<ProjectType>(dto.Type),
+            OtherTypeSpecify   = dto.OtherTypeSpecify,
             Location           = dto.Location,
             Description        = dto.Description,
             Budget             = dto.Budget,
@@ -48,6 +49,8 @@ public class ProjectService(AppDbContext db) : IProjectService
             AssignedContractor = dto.AssignedContractor,
             ProjectManagerId   = createdByUserId,
             SiteEngineerId     = dto.SiteEngineerId,
+            Status             = string.IsNullOrWhiteSpace(dto.Status) ? ProjectStatus.Planning : Enum.Parse<ProjectStatus>(dto.Status),
+            IsHistorical       = dto.IsHistorical,
         };
 
         foreach (var phaseDto in dto.Phases)
@@ -73,6 +76,7 @@ public class ProjectService(AppDbContext db) : IProjectService
 
         project.Name               = dto.Name;
         project.Type               = Enum.Parse<ProjectType>(dto.Type);
+        project.OtherTypeSpecify   = dto.OtherTypeSpecify;
         project.Location           = dto.Location;
         project.Description        = dto.Description;
         project.Budget             = dto.Budget;
@@ -80,6 +84,8 @@ public class ProjectService(AppDbContext db) : IProjectService
         project.TargetEndDate      = dto.TargetEndDate;
         project.AssignedContractor = dto.AssignedContractor;
         project.SiteEngineerId     = dto.SiteEngineerId;
+        if (!string.IsNullOrWhiteSpace(dto.Status))
+            project.Status = Enum.Parse<ProjectStatus>(dto.Status);
         project.UpdatedAt          = DateTime.UtcNow;
 
         await db.SaveChangesAsync();
@@ -100,12 +106,14 @@ public class ProjectService(AppDbContext db) : IProjectService
         Id                 = p.Id,
         Name               = p.Name,
         Type               = p.Type.ToString(),
+        OtherTypeSpecify   = p.OtherTypeSpecify,
         Location           = p.Location,
         Description        = p.Description,
         Budget             = p.Budget,
         StartDate          = p.StartDate,
         TargetEndDate      = p.TargetEndDate,
         Status             = p.Status.ToString(),
+        IsHistorical       = p.IsHistorical,
         AssignedContractor = p.AssignedContractor,
         ProjectManagerId   = p.ProjectManagerId,
         ProjectManagerName = $"{p.ProjectManager?.FirstName} {p.ProjectManager?.LastName}",

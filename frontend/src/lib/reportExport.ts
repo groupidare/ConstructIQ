@@ -4,7 +4,7 @@ import autoTable from "jspdf-autotable";
 export interface ReportProject {
   name: string; location: string; type: string; status: string;
   progress: number; startDate: string; endDate: string;
-  budget: string; spent: string; materials: number;
+  materials: number;
   manager: string; engineers: string[];
 }
 
@@ -35,8 +35,6 @@ function buildRows(data: ReportData): [string, string][] {
     ["Progress", `${project.progress}%`],
     ["Start Date", project.startDate],
     ["Target End Date", project.endDate],
-    ["Budget", project.budget],
-    ["Spent", project.spent],
     ["Materials Tracked", String(project.materials)],
     ["Project Manager", project.manager],
     ["Engineers", project.engineers.join(", ") || "—"],

@@ -23,6 +23,12 @@ public class PurchaseOrder
 
     public PurchaseOrderStatus Status { get; set; } = PurchaseOrderStatus.Pending;
 
+    // When the order was actually placed — distinct from CreatedAt (when the
+    // record was entered into the system), so a historical/scanned PO can
+    // carry its true date instead of "today". Defaults to CreatedAt's date
+    // for live orders entered as they happen.
+    public DateTime OrderDate { get; set; } = DateTime.UtcNow;
+
     public DateTime ExpectedDate { get; set; }
 
     public int CreatedByUserId { get; set; }
@@ -50,4 +56,23 @@ public class PurchaseOrderMaterial
 
     [MaxLength(20)]
     public string Unit { get; set; } = "pcs";
+
+    // Links this PO line to the real Material/BOQ data it corresponds to, so it
+    // can feed BOQItem.ActualQuantity syncing and ML training. Nullable because
+    // a scanned/typed name may not match anything yet — MaterialId is set via
+    // best-effort name-matching on save (never auto-created, unlike BOQ scanning),
+    // BOQItemId only via an explicit user link (never auto-guessed, to avoid
+    // silently corrupting training data with a wrong match). PhaseId/PrimarySection/
+    // SubCategory are a fallback pairing key for rows without an explicit link.
+    public int? MaterialId { get; set; }
+    public Material? Material { get; set; }
+
+    public int? BOQItemId { get; set; }
+    public BOQItem? BOQItem { get; set; }
+
+    public int? PhaseId { get; set; }
+    public Phase? Phase { get; set; }
+
+    [MaxLength(100)] public string? PrimarySection { get; set; }
+    [MaxLength(100)] public string? SubCategory    { get; set; }
 }

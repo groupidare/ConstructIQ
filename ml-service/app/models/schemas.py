@@ -53,10 +53,29 @@ class ParsedBOQItem(BaseModel):
     unit:              str
     estimated_quantity:float
     phase_hint:        Optional[str] = None
+    primary_section:   Optional[str] = None
+    sub_category:      Optional[str] = None
 
 
 class DocumentParseResponse(BaseModel):
     project_id:  int
     items:       list[ParsedBOQItem]
+    page_count:  int
+    parse_errors:list[str] = []
+
+
+class ParsedPOItem(BaseModel):
+    material_name:           str
+    unit:                    str
+    actual_quantity_ordered: float
+    supplier_name:           Optional[str] = None
+    order_date:              Optional[str] = None  # ISO date string, or None if not found/unparseable
+    promised_delivery_date:  Optional[str] = None
+    phase_hint:              Optional[str] = None
+
+
+class DocumentParsePOResponse(BaseModel):
+    project_id:  int
+    items:       list[ParsedPOItem]
     page_count:  int
     parse_errors:list[str] = []

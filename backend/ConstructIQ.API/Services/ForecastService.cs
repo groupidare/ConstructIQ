@@ -58,6 +58,21 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory) : 
             .ToListAsync();
     }
 
+    public async Task<TrainModelsResponseDto> TrainModelsAsync()
+    {
+        var client = httpFactory.CreateClient("MLService");
+        var response = await client.PostAsync("/forecast/train", null);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync();
+            throw new InvalidOperationException($"Training failed: {body}");
+        }
+
+        var result = await response.Content.ReadFromJsonAsync<TrainModelsResponseDto>();
+        return result!;
+    }
+
     public async Task<ForecastAccuracyReportDto> GetAccuracyReportAsync(int projectId)
     {
         var project = await db.Projects.FindAsync(projectId);

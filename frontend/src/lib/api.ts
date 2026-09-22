@@ -29,4 +29,11 @@ api.interceptors.response.use(
   }
 );
 
+// Static files (uploaded blueprints/BOQ docs) are served from the API's origin,
+// not under "/api" — strip that suffix to get a fetchable base for relative Urls.
+export function getApiOrigin(): string {
+  const base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000/api";
+  return base.replace(/\/api\/?$/, "");
+}
+
 export default api;

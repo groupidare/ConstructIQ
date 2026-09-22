@@ -96,7 +96,7 @@ export default function Sidebar() {
         />
       )}
 
-      <aside id="app-sidebar" style={{
+      <aside id="app-sidebar" suppressHydrationWarning style={{
         width: collapsed ? 76 : 260, flexShrink: 0,
         background: "#1a2235",
         display: "flex", flexDirection: "column",

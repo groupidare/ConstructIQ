@@ -59,7 +59,7 @@ export default function ProjectInventoryPage() {
           <p className="text-sm text-gray-500">{project?.name ?? `Project #${pid}`}</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="secondary" onClick={fetchInventory}><RefreshCw size={14} /> Refresh</Button>
+          <Button variant="secondary" onClick={() => fetchInventory()}><RefreshCw size={14} /> Refresh</Button>
           <Button onClick={() => setShowMovementModal(true)}><Plus size={14} /> Record Movement</Button>
         </div>
       </div>

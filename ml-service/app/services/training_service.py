@@ -4,8 +4,20 @@ from sqlalchemy.engine import Engine
 from app.services.forecasting_service import get_engine
 from app.ml import random_forest, xgboost_model
 
-# PhaseStatus enum (backend): Pending = 0, Active = 1, Completed = 2.
-# Only completed phases have a final, trustworthy ActualQuantity to learn from.
+# ProjectStatus enum (backend): Planning=0, Active=1, OnHold=2, Completed=3, Cancelled=4.
+# PurchaseOrderStatus enum (backend): Pending=0, Approved=1, Delivered=2.
+# Historical training data comes from whole completed projects (backfilled via the
+# "add a completed project" flow), not individual completed phases — a project can
+# have real actual-usage figures entered without every phase being marked Completed.
+# LEFT JOIN phases: a BOQ row without a phase assigned still has a usable target.
+# ActualQuantity > 0 excludes rows that were never backfilled (default 0, not a
+# real "zero used" reading).
+#
+# supplier_lead_time_days is a correlated scalar subquery, not a JOIN+GROUP BY —
+# a BOQ row can match several PurchaseOrderMaterial rows (multiple deliveries of
+# the same material), and a plain join would fan that out into duplicate BOQ
+# rows, breaking the 1:1 alignment train_models() assumes between records/targets.
+# Only Delivered POs count — Pending/Approved aren't real actuals yet.
 _TRAINING_SQL = text("""
     SELECT
         m.Id         AS material_id,
@@ -17,16 +29,27 @@ _TRAINING_SQL = text("""
         COALESCE(ir.AvailableQuantity, 0) AS current_stock,
         COALESCE(ir.ExcessQuantity, 0)    AS excess_quantity,
         COALESCE(ir.WastedQuantity, 0)    AS wasted_quantity,
-        ph.Name AS phase_name,
-        p.Type  AS project_type_encoded,
-        DATEDIFF(ph.EndDate, ph.StartDate) AS days_into_phase,
-        DATEDIFF(ph.EndDate, ph.StartDate) AS phase_duration_days,
-        ph.ProgressPercent AS progress_percent
+        COALESCE(bi.PrimarySection, '') AS primary_section,
+        COALESCE(bi.CoverageArea, 0) AS coverage_area,
+        p.Type AS project_type_encoded,
+        DATEDIFF(COALESCE(ph.EndDate, p.TargetEndDate), COALESCE(ph.StartDate, p.StartDate)) AS days_into_phase,
+        DATEDIFF(COALESCE(ph.EndDate, p.TargetEndDate), COALESCE(ph.StartDate, p.StartDate)) AS phase_duration_days,
+        COALESCE(ph.ProgressPercent, 100) AS progress_percent,
+        COALESCE((
+            SELECT AVG(de.ActualLeadDays)
+            FROM purchaseordermaterials pom
+            JOIN purchaseorders po ON po.Id = pom.PurchaseOrderId AND po.Status = 2
+            JOIN deliveryevaluations de ON de.PurchaseOrderId = po.Id
+            WHERE pom.BOQItemId = bi.Id
+               OR (pom.BOQItemId IS NULL AND pom.MaterialId = bi.MaterialId
+                   AND (pom.PhaseId = bi.PhaseId OR (pom.PhaseId IS NULL AND bi.PhaseId IS NULL)))
+        ), 7) AS supplier_lead_time_days
     FROM boqitems bi
-    JOIN phases ph   ON ph.Id = bi.PhaseId AND ph.Status = 2
     JOIN materials m ON m.Id = bi.MaterialId
-    JOIN projects p  ON p.Id = bi.ProjectId
+    JOIN projects p  ON p.Id = bi.ProjectId AND p.Status = 3
+    LEFT JOIN phases ph ON ph.Id = bi.PhaseId
     LEFT JOIN inventoryrecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
+    WHERE bi.ActualQuantity > 0
 """)
 
 

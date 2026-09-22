@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace ConstructIQ.API.Models.DTOs.Forecast;
 
 public class ForecastRequestDto
@@ -51,4 +53,19 @@ public class ForecastComparisonDto
     public decimal Variance           { get; set; }
     public decimal VariancePercent    { get; set; }
     public decimal AccuracyPercent    { get; set; }
+}
+
+public class ModelMetricsDto
+{
+    public decimal Mae  { get; set; }
+    public decimal Rmse { get; set; }
+    public decimal R2   { get; set; }
+}
+
+// Mirrors the ML service's /forecast/train response (snake_case wire format).
+public class TrainModelsResponseDto
+{
+    [JsonPropertyName("sample_count")]  public int             SampleCount  { get; set; }
+    [JsonPropertyName("random_forest")] public ModelMetricsDto RandomForest { get; set; } = new();
+    [JsonPropertyName("xgboost")]       public ModelMetricsDto Xgboost      { get; set; } = new();
 }
