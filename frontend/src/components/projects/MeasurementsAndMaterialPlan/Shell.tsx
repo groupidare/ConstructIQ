@@ -131,7 +131,10 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
           primarySection: item.primarySection || 'Others',
           subCategory: item.subCategory,
           materialId: item.matchedMaterialId,
-          newMaterialName: item.matchedMaterialId ? undefined : item.materialName,
+          // Keep the scanned name even when a catalog match was found — it's
+          // the only display text available until this row is saved and the
+          // real catalog name comes back from the backend on refetch.
+          newMaterialName: item.materialName,
           unit: item.unit,
           estimatedQuantity: item.estimatedQuantity,
           notes: 'Auto-scanned',
