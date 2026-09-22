@@ -4,7 +4,7 @@ export interface ExcessWasteRecord {
   id: number;
   projectId: number;
   projectName: string;
-  phaseId: number;
+  phaseId: number | null;
   phaseName: string;
   materialId: number;
   materialName: string;
@@ -22,8 +22,10 @@ export interface ExcessWasteRecord {
 
 export interface ExcessWasteCreateRequest {
   projectId: number;
-  phaseId: number;
-  materialId: number;
+  phaseId?: number;
+  materialId?: number;
+  newMaterialName?: string;
+  unit?: string;
   excessType: ExcessType;
   quantity: number;
   unitCost: number;

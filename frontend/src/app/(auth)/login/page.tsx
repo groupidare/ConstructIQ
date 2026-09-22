@@ -21,7 +21,7 @@ import GoogleSignInButton from "@/components/auth/GoogleSignInButton";
 
 const ROLES = [
   { label: "Project Manager", value: "ProjectManager", icon: BarChart2 },
-  { label: "Site",            value: "SiteEngineer",   icon: MapPin    },
+  { label: "Engineer",            value: "SiteEngineer",   icon: MapPin    },
   { label: "Admin",           value: "Admin",           icon: Shield    },
   { label: "Warehouse",       value: "WarehousePersonnel", icon: Package },
   { label: "Procurement",     value: "ProcurementOfficer", icon: ShoppingCart },
