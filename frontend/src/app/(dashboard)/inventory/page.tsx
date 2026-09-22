@@ -57,8 +57,9 @@ export default function InventoryPage() {
     try {
       const result = await sync();
       toast.success(`Synced ${result.itemCount} material(s) from the warehouse sheet.`);
-    } catch {
-      toast.error("Failed to sync — check the Google Sheets API key and sheet sharing settings.");
+    } catch (error) {
+      const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message || "Failed to sync — check the Google Sheets API key and sheet sharing settings.");
     }
   }
 
