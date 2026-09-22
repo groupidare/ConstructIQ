@@ -12,8 +12,8 @@ public class ExcessWasteRecord
     public int ProjectId { get; set; }
     public Project Project { get; set; } = null!;
 
-    public int PhaseId { get; set; }
-    public Phase Phase { get; set; } = null!;
+    public int? PhaseId { get; set; }
+    public Phase? Phase { get; set; }
 
     public int MaterialId { get; set; }
     public Material Material { get; set; } = null!;

@@ -13,14 +13,15 @@ import AddCompletedProjectWizardModal from "@/components/projects/AddCompletedPr
 import { useDocumentRepository } from "@/hooks/useDocumentRepository";
 import { getApiOrigin } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import type { Project as RealProject } from "@/types/project";
+import type { Project as RealProject, ProjectType } from "@/types/project";
+import { PROJECT_TYPES, PROJECT_STATUSES } from "@/types/project";
 import type { ProjectDocument } from "@/types/document";
 import type { ForecastResult } from "@/types/forecast";
 import type { BOQItem } from "@/types/boq";
 import type { ExcessAnalyticsSummary } from "@/types/excess";
 import type { RedistributionRecommendation } from "@/types/procurement";
 import {
-  Plus, MapPin, Calendar, Users, FileText, X, Eye,
+  Plus, MapPin, Calendar, Users, FileText, X, Eye, Pencil,
   Upload, FolderOpen, Trash2, Search, BarChart3, Camera, Activity, History, ExternalLink, File as FileIcon,
 } from "lucide-react";
 import {
@@ -643,9 +644,99 @@ function DeleteProjectModal({ project, onClose, onConfirm, deleting }: {
   );
 }
 
+// ── Edit Project Details Modal ─────────────────────────────────────────────────
+
+function EditProjectModal({ project, onClose, onSaved }: {
+  project: RealProject; onClose: ()=>void; onSaved: (p: RealProject)=>void;
+}) {
+  const [name, setName]               = useState(project.name);
+  const [type, setType]               = useState<ProjectType>(project.type);
+  const [otherType, setOtherType]     = useState(project.otherTypeSpecify ?? "");
+  const [location, setLocation]       = useState(project.location);
+  const [description, setDescription] = useState(project.description ?? "");
+  const [startDate, setStartDate]     = useState(new Date(project.startDate));
+  const [endDate, setEndDate]         = useState(new Date(project.targetEndDate));
+  const [status, setStatus]           = useState(project.status);
+  const [contractor, setContractor]   = useState(project.assignedContractor ?? "");
+  const [saving, setSaving]           = useState(false);
+
+  const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
+
+  async function handleSave() {
+    if (!name.trim() || !location.trim()) { toast.error("Name and location are required."); return; }
+    setSaving(true);
+    try {
+      const { data } = await api.put<RealProject>(`/projects/${project.id}`, {
+        name: name.trim(),
+        type,
+        otherTypeSpecify: type === "Others" ? otherType.trim() : undefined,
+        location: location.trim(),
+        description: description.trim() || undefined,
+        budget: project.budget,
+        startDate: startDate.toISOString(),
+        targetEndDate: endDate.toISOString(),
+        status,
+        assignedContractor: contractor.trim() || undefined,
+        phases: [],
+      });
+      toast.success("Project details updated.");
+      onSaved(data);
+      onClose();
+    } catch {
+      toast.error("Failed to update project.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Overlay onClose={onClose}>
+      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:520, boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"1rem" }}>
+          <div><p style={{ fontWeight:800, fontSize:"1.05rem", color:"#111827" }}>Edit Project Details</p><p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>{project.name}</p></div>
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", gap:"0.875rem", maxHeight:"60vh", overflowY:"auto", paddingRight:4 }}>
+          <div><label style={lbl}>Project Name</label><input value={name} onChange={e=>setName(e.target.value)} style={inp} /></div>
+          <div style={{ display:"grid", gridTemplateColumns: type==="Others" ? "1fr 1fr" : "1fr", gap:"0.75rem" }}>
+            <div>
+              <label style={lbl}>Project Type</label>
+              <select value={type} onChange={e=>setType(e.target.value as ProjectType)} style={sel}>
+                {PROJECT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            {type === "Others" && (
+              <div><label style={lbl}>Specify Type</label><input value={otherType} onChange={e=>setOtherType(e.target.value)} style={inp} /></div>
+            )}
+          </div>
+          <div><label style={lbl}>Location</label><input value={location} onChange={e=>setLocation(e.target.value)} style={inp} /></div>
+          <div><label style={lbl}>Description</label><textarea value={description} onChange={e=>setDescription(e.target.value)} rows={3} style={{ ...inp, resize:"vertical" as const }} /></div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
+            <div><label style={lbl}>Start Date</label><DatePickerField value={startDate} onChange={setStartDate} inputStyle={{ ...inp, width:"100%", boxSizing:"border-box" as const }} /></div>
+            <div><label style={lbl}>Target End Date</label><DatePickerField value={endDate} onChange={setEndDate} inputStyle={{ ...inp, width:"100%", boxSizing:"border-box" as const }} /></div>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
+            <div>
+              <label style={lbl}>Status</label>
+              <select value={status} onChange={e=>setStatus(e.target.value as typeof status)} style={sel}>
+                {PROJECT_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div><label style={lbl}>Assigned Contractor</label><input value={contractor} onChange={e=>setContractor(e.target.value)} style={inp} /></div>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:"1.25rem" }}>
+          <button onClick={onClose} disabled={saving} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:saving?"default":"pointer" }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontWeight:700, fontSize:"0.875rem", cursor:saving?"default":"pointer", opacity:saving?0.7:1 }}>{saving?"Saving…":"Save Changes"}</button>
+        </div>
+      </div>
+    </Overlay>
+  );
+}
+
 // ── Project Card ──────────────────────────────────────────────────────────────
 
-function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, onProgress, onDelete, canEdit, canDelete, showProgress, viewOnly }: {
+function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, onProgress, onDelete, onEditDetails, canEdit, canDelete, canEditDetails, showProgress, viewOnly }: {
   project: Project;
   // Bumped by the parent whenever a Material Plan session closes (for any
   // project) — this card doesn't otherwise know a forecast/BOQ save
@@ -656,8 +747,10 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
   onReports: ()=>void;
   onProgress?: ()=>void;
   onDelete?: ()=>void;
+  onEditDetails?: ()=>void;
   canEdit: boolean;
   canDelete: boolean;
+  canEditDetails: boolean;
   showProgress: boolean;
   viewOnly: boolean;
 }) {
@@ -745,6 +838,11 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
           {canEdit && (
             <button onClick={onView} title="View" style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#9ca3af", display:"flex", alignItems:"center", flexShrink:0 }}>
               <Eye style={{ width:13, height:13 }} />
+            </button>
+          )}
+          {canEditDetails && (
+            <button onClick={onEditDetails} title="Edit project details" style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#9ca3af", display:"flex", alignItems:"center", flexShrink:0 }}>
+              <Pencil style={{ width:13, height:13 }} />
             </button>
           )}
           {viewOnly && (
@@ -841,6 +939,7 @@ type ModalState =
   | { type:"repository" }
   | { type:"progress"; project:Project }
   | { type:"deleteConfirm"; project:Project }
+  | { type:"editProject"; fullProject:RealProject }
   | null;
 
 export default function ProjectsPage() {
@@ -862,6 +961,7 @@ export default function ProjectsPage() {
   // Role-based permissions
   const canCreate    = role === "Admin" || role === "ProjectManager";
   const canEdit      = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
+  const canEditDetails = role === "Admin" || role === "ProjectManager";
   const canDelete    = role === "Admin";
   const showProgress = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
   const viewOnly     = role === "ProcurementOfficer";
@@ -942,6 +1042,16 @@ export default function ProjectsPage() {
           }}
         />
       )}
+      {modal?.type==="editProject" && (
+        <EditProjectModal
+          project={modal.fullProject}
+          onClose={()=>setModal(null)}
+          onSaved={(updated) => {
+            setFullProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
+            setProjects(prev => prev.map(p => p.id === updated.id ? toProject(updated) : p));
+          }}
+        />
+      )}
 
       <Header title="Projects" />
 
@@ -1014,8 +1124,13 @@ export default function ProjectsPage() {
                 onReports={()=>setModal({type:"reports",project:p})}
                 onProgress={()=>setModal({type:"progress",project:p})}
                 onDelete={()=>setModal({type:"deleteConfirm",project:p})}
+                onEditDetails={()=>{
+                  const full = fullProjects.find(fp => fp.id === p.id);
+                  if (full) setModal({type:"editProject", fullProject: full});
+                }}
                 canEdit={canEdit}
                 canDelete={canDelete}
+                canEditDetails={canEditDetails}
                 showProgress={showProgress}
                 viewOnly={viewOnly}
               />

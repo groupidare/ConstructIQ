@@ -5,8 +5,10 @@ namespace ConstructIQ.API.Models.DTOs.ExcessWaste;
 public class ExcessWasteCreateDto
 {
     [Required] public int     ProjectId   { get; set; }
-    [Required] public int     PhaseId     { get; set; }
-    [Required] public int     MaterialId  { get; set; }
+    public int?    PhaseId         { get; set; }
+    public int?    MaterialId      { get; set; }
+    public string? NewMaterialName { get; set; }
+    public string? Unit            { get; set; }
     [Required] public string  ExcessType  { get; set; } = string.Empty;
     [Range(0.0001, double.MaxValue)] public decimal Quantity { get; set; }
     [Range(0, double.MaxValue)]      public decimal UnitCost { get; set; }
@@ -14,12 +16,21 @@ public class ExcessWasteCreateDto
     public string? Notes      { get; set; }
 }
 
+public class ExcessWasteUpdateDto
+{
+    public string? NewMaterialName { get; set; }
+    public string? Unit            { get; set; }
+    [Required] public string ExcessType { get; set; } = string.Empty;
+    [Range(0.0001, double.MaxValue)] public decimal Quantity { get; set; }
+    public bool IsReusable { get; set; }
+}
+
 public class ExcessWasteResponseDto
 {
     public int      Id           { get; set; }
     public int      ProjectId    { get; set; }
     public string   ProjectName  { get; set; } = string.Empty;
-    public int      PhaseId      { get; set; }
+    public int?     PhaseId      { get; set; }
     public string   PhaseName    { get; set; } = string.Empty;
     public int      MaterialId   { get; set; }
     public string   MaterialName { get; set; } = string.Empty;

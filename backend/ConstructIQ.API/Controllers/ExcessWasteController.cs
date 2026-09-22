@@ -30,4 +30,12 @@ public class ExcessWasteController(IExcessWasteService excessWasteService) : Con
         var created = await excessWasteService.CreateAsync(dto, CurrentUserId);
         return Ok(created);
     }
+
+    [HttpPut("{id:int}")]
+    [Authorize(Roles = "Admin,SiteEngineer,WarehousePersonnel")]
+    public async Task<IActionResult> Update(int id, [FromBody] ExcessWasteUpdateDto dto)
+    {
+        var updated = await excessWasteService.UpdateAsync(id, dto);
+        return Ok(updated);
+    }
 }
