@@ -36,7 +36,6 @@ interface Project {
   id: number; name: string; location: string;
   startDate: string; endDate: string; status: ProjectStatus;
   progress: number; progressColor: string;
-  materials: number;
   manager: string; engineers: string[];
   type: string;
   isHistorical: boolean;
@@ -46,11 +45,11 @@ interface Project {
 // ── Static Data ────────────────────────────────────────────────────────────────
 
 const INIT_PROJECTS: Project[] = [
-  { id:1, name:"Metro Station Phase 3",   location:"EDSA, QC",     startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",    progress:62,  progressColor:"#f97316", materials:8,  manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],   type:"Infrastructure", isHistorical:false },
-  { id:2, name:"BGC Tower Complex",        location:"BGC, Taguig",  startDate:"2025-01-15", endDate:"2027-06-30", status:"ACTIVE",    progress:38,  progressColor:"#1e3154", materials:12, manager:"Remy Santos",  engineers:["Jose Lim"],                  type:"Commercial", isHistorical:false },
-  { id:3, name:"Harbor Bridge Renovation", location:"Manila Harbor", startDate:"2024-03-01", endDate:"2025-12-31", status:"ACTIVE",    progress:81,  progressColor:"#22c55e", materials:6,  manager:"Remy Santos",  engineers:["Carlos Reyes"],              type:"Infrastructure", isHistorical:false },
-  { id:4, name:"Southgate Mall Expansion", location:"BGC, Taguig",  startDate:"2025-06-01", endDate:"2027-09-30", status:"PLANNING",  progress:12,  progressColor:"#374151", materials:4,  manager:"Remy Santos",  engineers:["Ana Cruz","Ben Torres"],     type:"Commercial", isHistorical:false },
-  { id:5, name:"PUP ICTC Building",        location:"Sta. Mesa",    startDate:"2023-01-10", endDate:"2025-01-15", status:"COMPLETED", progress:100, progressColor:"#22c55e", materials:9,  manager:"Remy Santos",  engineers:["Ana Cruz"],                  type:"Infrastructure", isHistorical:false },
+  { id:1, name:"Metro Station Phase 3",   location:"EDSA, QC",     startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",    progress:62,  progressColor:"#f97316", manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],   type:"Infrastructure", isHistorical:false },
+  { id:2, name:"BGC Tower Complex",        location:"BGC, Taguig",  startDate:"2025-01-15", endDate:"2027-06-30", status:"ACTIVE",    progress:38,  progressColor:"#1e3154", manager:"Remy Santos",  engineers:["Jose Lim"],                  type:"Commercial", isHistorical:false },
+  { id:3, name:"Harbor Bridge Renovation", location:"Manila Harbor", startDate:"2024-03-01", endDate:"2025-12-31", status:"ACTIVE",    progress:81,  progressColor:"#22c55e", manager:"Remy Santos",  engineers:["Carlos Reyes"],              type:"Infrastructure", isHistorical:false },
+  { id:4, name:"Southgate Mall Expansion", location:"BGC, Taguig",  startDate:"2025-06-01", endDate:"2027-09-30", status:"PLANNING",  progress:12,  progressColor:"#374151", manager:"Remy Santos",  engineers:["Ana Cruz","Ben Torres"],     type:"Commercial", isHistorical:false },
+  { id:5, name:"PUP ICTC Building",        location:"Sta. Mesa",    startDate:"2023-01-10", endDate:"2025-01-15", status:"COMPLETED", progress:100, progressColor:"#22c55e", manager:"Remy Santos",  engineers:["Ana Cruz"],                  type:"Infrastructure", isHistorical:false },
 ];
 
 // ── API ────────────────────────────────────────────────────────────────────────
@@ -73,7 +72,6 @@ function toProject(dto: ProjectResponseDto): Project {
     startDate: dto.startDate.split("T")[0], endDate: dto.targetEndDate.split("T")[0],
     status, progress: demo?.progress ?? (status==="COMPLETED"?100:status==="ACTIVE"?50:10),
     progressColor: demo?.progressColor ?? PROGRESS_COLOR[status] ?? "#374151",
-    materials: demo?.materials ?? 0,
     manager: demo?.manager ?? dto.projectManagerName,
     engineers: demo?.engineers ?? (dto.siteEngineerName ? [dto.siteEngineerName] : []),
     isHistorical: dto.isHistorical,
@@ -378,7 +376,16 @@ function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void 
   const [from, setFrom] = useState(new Date("2026-05-01"));
   const [to,   setTo]   = useState(new Date("2026-06-01"));
   const [fmt,  setFmt]  = useState(".PDF");
+  const [materialsCount, setMaterialsCount] = useState(0);
   const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get<BOQItem[]>(`/boq/project/${project.id}`)
+      .then(({ data }) => { if (!cancelled) setMaterialsCount(data.length); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [project.id]);
   return (
     <Overlay onClose={onClose}>
       <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:460, boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
@@ -397,7 +404,7 @@ function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void 
         <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:"1.25rem" }}>
           <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
           <button onClick={()=>{
-            exportReport(fmt, { project, reportType: type, from, to });
+            exportReport(fmt, { project: { ...project, materials: materialsCount }, reportType: type, from, to });
             toast.success(`${type}${fmt} downloaded!`);
             onClose();
           }} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Generate</button>
@@ -638,8 +645,12 @@ function DeleteProjectModal({ project, onClose, onConfirm, deleting }: {
 
 // ── Project Card ──────────────────────────────────────────────────────────────
 
-function ProjectCard({ project, onView, onMaterialPlan, onReports, onProgress, onDelete, canEdit, canDelete, showProgress, viewOnly }: {
+function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, onProgress, onDelete, canEdit, canDelete, showProgress, viewOnly }: {
   project: Project;
+  // Bumped by the parent whenever a Material Plan session closes (for any
+  // project) — this card doesn't otherwise know a forecast/BOQ save
+  // happened while its modal was open, since project.id/status don't change.
+  refreshKey: number;
   onView: ()=>void;
   onMaterialPlan: ()=>void;
   onReports: ()=>void;
@@ -658,6 +669,7 @@ function ProjectCard({ project, onView, onMaterialPlan, onReports, onProgress, o
   const [mostUsed, setMostUsed]       = useState<{ material:string; qty:number; unit:string } | null>(null);
   const [excessStock, setExcessStock]     = useState(0);
   const [redistributed, setRedistributed] = useState(0);
+  const [materialsCount, setMaterialsCount] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -674,27 +686,34 @@ function ProjectCard({ project, onView, onMaterialPlan, onReports, onProgress, o
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [project.id]);
+  }, [project.id, refreshKey]);
 
   useEffect(() => {
     let cancelled = false;
 
-    // Historical (backfilled) records aren't forecast targets themselves —
-    // they're the training data forecasts are built from. Just show what
-    // was used most, straight from the real BOQ record. Actual Qty is what's
-    // meant to be filled in for these, but until someone does, estimated
-    // qty is still real, useful information — better than showing nothing.
-    if (project.isHistorical) {
-      api.get<BOQItem[]>(`/boq/project/${project.id}`)
-        .then(({ data: boqItems }) => {
-          if (cancelled) return;
+    // Real materials count, fetched once and reused below instead of
+    // relying on a hardcoded demo fallback that was always 0 for any
+    // project outside the original 5 mock entries.
+    api.get<BOQItem[]>(`/boq/project/${project.id}`)
+      .then(({ data: boqItems }) => {
+        if (cancelled) return;
+        setMaterialsCount(boqItems.length);
+
+        // Historical (backfilled) records aren't forecast targets themselves —
+        // they're the training data forecasts are built from. Just show what
+        // was used most, straight from the real BOQ record. Actual Qty is
+        // what's meant to be filled in for these, but until someone does,
+        // estimated qty is still real, useful information — better than
+        // showing nothing.
+        if (project.isHistorical) {
           const effectiveQty = (b: BOQItem) => b.actualQuantity > 0 ? b.actualQuantity : b.estimatedQuantity;
           const top = boqItems.slice().sort((a, b) => effectiveQty(b) - effectiveQty(a))[0];
           setMostUsed(top ? { material: top.materialName, qty: effectiveQty(top), unit: top.unit } : null);
-        })
-        .catch(() => {});
-      return () => { cancelled = true; };
-    }
+        }
+      })
+      .catch(() => {});
+
+    if (project.isHistorical) return () => { cancelled = true; };
 
     api.get<ForecastResult[]>(`/forecast/project/${project.id}`)
       .then(({ data }) => {
@@ -715,7 +734,7 @@ function ProjectCard({ project, onView, onMaterialPlan, onReports, onProgress, o
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [project.id, project.status, project.isHistorical]);
+  }, [project.id, project.status, project.isHistorical, refreshKey]);
 
   return (
     <div style={{ background:"#fff", borderRadius:14, padding:"1.25rem", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
@@ -783,7 +802,7 @@ function ProjectCard({ project, onView, onMaterialPlan, onReports, onProgress, o
 
       {/* Stats */}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.5rem", marginBottom:"0.75rem" }}>
-        {[["Excess Stock",`${excessStock.toLocaleString()} units`],["Redistributed",`${redistributed.toLocaleString()} units`],["Materials",`${project.materials} items`]].map(([l,v])=>(
+        {[["Excess Stock",`${excessStock.toLocaleString()} units`],["Redistributed",`${redistributed.toLocaleString()} units`],["Materials",`${materialsCount} items`]].map(([l,v])=>(
           <div key={l} style={{ background:"#f9fafb", borderRadius:8, padding:"0.5rem 0.75rem" }}>
             <p style={{ fontSize:"0.6rem", color:"#9ca3af" }}>{l}</p>
             <p style={{ fontWeight:700, fontSize:"0.85rem", color:"#111827" }}>{v}</p>
@@ -834,6 +853,9 @@ export default function ProjectsPage() {
   // reached via the Progress Tracker). "Historical Data" = pure backfilled
   // records entered only to train the forecasting model — not real projects.
   const [view, setView] = useState<"projects" | "historical">("projects");
+  // Bumped whenever a Material Plan session closes, so cards refetch their
+  // forecast/BOQ-derived summaries (see ProjectCard's refreshKey prop).
+  const [refreshKey, setRefreshKey] = useState(0);
   const { user } = useAuthStore();
   const role = user?.role ?? "SiteEngineer";
 
@@ -895,7 +917,7 @@ export default function ProjectsPage() {
         <MeasurementsAndMaterialPlan
           project={workspaceProject}
           initialEditable={modal.editable}
-          onClose={()=>setModal(null)}
+          onClose={()=>{ setModal(null); setRefreshKey(k=>k+1); }}
           onProjectSaved={(updated)=>setFullProjects(prev=>prev.map(p=>p.id===updated.id?updated:p))}
         />
       )}
@@ -986,6 +1008,7 @@ export default function ProjectsPage() {
               <ProjectCard
                 key={p.id}
                 project={p}
+                refreshKey={refreshKey}
                 onView={()=>setModal({type:"workspace",projectId:p.id,editable:false})}
                 onMaterialPlan={()=>setModal({type:"workspace",projectId:p.id,editable:true})}
                 onReports={()=>setModal({type:"reports",project:p})}

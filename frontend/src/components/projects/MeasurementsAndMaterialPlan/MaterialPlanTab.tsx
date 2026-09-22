@@ -217,7 +217,11 @@ export default function MaterialPlanTab({
 
   function materialLabel(r: BOQItemRow): string {
     if (r.materialId) {
-      return materialNameById.get(r.materialId) ?? `Material #${r.materialId}`;
+      // Prefer the resolved catalog name (present once this row has been
+      // saved and refetched); until then, the scanned name is the only
+      // thing we actually know about this material — show that instead of
+      // a meaningless "Material #N".
+      return materialNameById.get(r.materialId) ?? r.newMaterialName ?? `Material #${r.materialId}`;
     }
     return r.newMaterialName ?? '(unnamed)';
   }
