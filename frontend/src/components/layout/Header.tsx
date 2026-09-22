@@ -1,14 +1,10 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { Bell, Search, Sun, Moon, Menu, X } from "lucide-react";
+import { useRef, useState, useEffect } from "react";
+import { Bell, Search, Sun, Menu, X } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useAuthStore } from "@/store/authStore";
-import { useTheme } from "@/store/themeStore";
-import { useSidebarStore } from "@/store/sidebarStore";
 import { useAlertStore, ALERT_ICON_STYLES } from "@/store/alertStore";
-import { Avatar } from "@/components/ui/Avatar";
 import WeatherChip from "./WeatherChip";
 
 interface HeaderProps {
@@ -16,12 +12,8 @@ interface HeaderProps {
 }
 
 export default function Header({ title }: HeaderProps) {
-  const router   = useRouter();
   const user     = useAuthStore((s) => s.user);
   const initials = `${user?.firstName?.[0] ?? ""}${user?.lastName?.[0] ?? ""}`.toUpperCase();
-  const theme       = useTheme((s) => s.theme);
-  const toggleTheme = useTheme((s) => s.toggleTheme);
-  const toggleSidebar = useSidebarStore((s) => s.toggleCollapsed);
 
   const alerts      = useAlertStore((s) => s.alerts);
   const markRead    = useAlertStore((s) => s.markRead);
@@ -43,7 +35,7 @@ export default function Header({ title }: HeaderProps) {
   }, [notifOpen]);
 
   return (
-    <header suppressHydrationWarning style={{
+    <header style={{
       background: "#fff",
       borderBottom: "1px solid #e5e7eb",
       padding: "0 1.5rem",
@@ -59,7 +51,7 @@ export default function Header({ title }: HeaderProps) {
 
       {/* ── Left: hamburger + title + breadcrumb ── */}
       <div style={{ display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
-        <button onClick={toggleSidebar} title="Toggle sidebar" style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:0, display:"flex", alignItems:"center" }}>
+        <button style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:0, display:"flex", alignItems:"center" }}>
           <Menu style={{ width:20, height:20 }} />
         </button>
         <div>
@@ -170,22 +162,20 @@ export default function Header({ title }: HeaderProps) {
         </div>
 
         {/* Theme toggle */}
-        <button
-          onClick={toggleTheme}
-          aria-label="Toggle dark mode"
-          style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:4, display:"flex", alignItems:"center" }}
-        >
-          {theme === "dark" ? <Moon style={{ width:18, height:18 }} /> : <Sun style={{ width:18, height:18 }} />}
+        <button style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:4, display:"flex", alignItems:"center" }}>
+          <Sun style={{ width:18, height:18 }} />
         </button>
 
         {/* Avatar */}
-        <button
-          onClick={() => router.push("/admin/settings")}
-          aria-label="Go to settings"
-          style={{ background:"none", border:"none", padding:0, cursor:"pointer", display:"flex", flexShrink:0 }}
-        >
-          <Avatar avatarUrl={user?.avatarUrl} initials={initials} size={36} />
-        </button>
+        <div style={{
+          width:36, height:36, borderRadius:"50%",
+          background:"#f97316",
+          display:"flex", alignItems:"center", justifyContent:"center",
+          color:"#fff", fontWeight:700, fontSize:"0.8rem",
+          cursor:"pointer", flexShrink:0, userSelect:"none",
+        }}>
+          {initials || "?"}
+        </div>
       </div>
     </header>
   );
