@@ -54,9 +54,14 @@ builder.Services.AddScoped<IMeasurementService, MeasurementService>();
 builder.Services.AddScoped<IBOQService, BOQService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IPhaseService, PhaseService>();
+builder.Services.AddScoped<IWarehouseStockService, WarehouseStockService>();
 builder.Services.AddHttpClient("MLService", client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["ML_SERVICE_URL"] ?? "http://localhost:8000");
+});
+builder.Services.AddHttpClient("GoogleSheets", client =>
+{
+    client.BaseAddress = new Uri("https://sheets.googleapis.com/");
 });
 
 // ── CORS ─────────────────────────────────────────────────────────────────────

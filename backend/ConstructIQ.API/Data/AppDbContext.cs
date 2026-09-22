@@ -28,6 +28,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<PurchaseOrderMaterial>    PurchaseOrderMaterials    => Set<PurchaseOrderMaterial>();
     public DbSet<DeliveryEvaluation>       DeliveryEvaluations       => Set<DeliveryEvaluation>();
     public DbSet<DeliveryPhoto>            DeliveryPhotos            => Set<DeliveryPhoto>();
+    public DbSet<WarehouseStockItem>       WarehouseStockItems       => Set<WarehouseStockItem>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
