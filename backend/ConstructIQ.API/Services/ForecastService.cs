@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory) : IForecastService
+public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, ILogger<ForecastService> logger) : IForecastService
 {
     public async Task<ForecastResponseDto> GenerateForecastAsync(ForecastRequestDto request)
     {
@@ -21,8 +21,23 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory) : 
             planning_weeks= request.PlanningWeeks ?? 4,
         };
 
-        var response = await client.PostAsJsonAsync("/forecast/predict", payload);
-        response.EnsureSuccessStatusCode();
+        HttpResponseMessage response;
+        try
+        {
+            response = await client.PostAsJsonAsync("/forecast/predict", payload);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Forecast generation failed to reach the ML service for project {ProjectId}.", request.ProjectId);
+            throw new InvalidOperationException("Couldn't reach the forecasting service. Make sure it's running and try again.");
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync();
+            logger.LogError("Forecast generation failed for project {ProjectId}: {Status} {Body}", request.ProjectId, response.StatusCode, body);
+            throw new InvalidOperationException("Couldn't generate a forecast for this project right now. It usually means the model needs to be (re)trained, or this project doesn't have enough BOQ data yet.");
+        }
 
         var mlResult = await response.Content.ReadFromJsonAsync<ForecastResponseDto>();
         return mlResult!;

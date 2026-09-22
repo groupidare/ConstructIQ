@@ -14,8 +14,11 @@ public class ForecastController(IForecastService forecastService) : ControllerBa
     [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> Generate([FromBody] ForecastRequestDto request)
     {
-        var result = await forecastService.GenerateForecastAsync(request);
-        return Ok(result);
+        try
+        {
+            return Ok(await forecastService.GenerateForecastAsync(request));
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpGet("project/{projectId:int}")]

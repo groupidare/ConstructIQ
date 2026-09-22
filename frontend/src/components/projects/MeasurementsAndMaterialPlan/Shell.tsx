@@ -290,8 +290,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       await generateForecast({ projectId: project.id, period: 'Monthly', planningWeeks: 4 });
       toast.success('Material plan saved and forecast generated.');
       setTab('materialPlan');
-    } catch {
-      toast.error('Failed to generate forecast — no historical or BOQ data available yet.');
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to generate forecast.'));
     } finally {
       setForecasting(false);
     }
