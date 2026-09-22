@@ -21,6 +21,7 @@ export interface User {
 export interface LoginRequest {
   username: string;
   password: string;
+  deviceId?: string;
 }
 
 export interface MfaChallengeResponse {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
-import { Bell, Search, Sun, Menu, X } from "lucide-react";
+import { Bell, Sun, Menu, X } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useAuthStore } from "@/store/authStore";
 import { useAlertStore, ALERT_ICON_STYLES } from "@/store/alertStore";
@@ -60,22 +60,6 @@ export default function Header({ title }: HeaderProps) {
             ConstructIQ &nbsp;›&nbsp; <span style={{ color:"#f97316", fontWeight:500 }}>{title}</span>
           </p>
         </div>
-      </div>
-
-      {/* ── Center: search ── */}
-      <div style={{ position:"relative", flex:1, maxWidth:420 }}>
-        <Search style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)", width:15, height:15, color:"#9ca3af", pointerEvents:"none" }} />
-        <input
-          suppressHydrationWarning
-          placeholder="Search materials, projects..."
-          style={{
-            width:"100%", boxSizing:"border-box" as const,
-            paddingLeft:36, paddingRight:14, paddingTop:9, paddingBottom:9,
-            borderRadius:999, background:"#f3f4f6",
-            border:"1px solid #e5e7eb", fontSize:"0.8rem",
-            outline:"none", color:"#111827",
-          }}
-        />
       </div>
 
       {/* ── Right: weather · bell · sun · avatar ── */}

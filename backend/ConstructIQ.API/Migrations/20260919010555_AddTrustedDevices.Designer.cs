@@ -4,6 +4,7 @@ using ConstructIQ.API.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ConstructIQ.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260919010555_AddTrustedDevices")]
+    partial class AddTrustedDevices
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -73,9 +76,6 @@ namespace ConstructIQ.API.Migrations
                     b.Property<decimal>("ActualQuantity")
                         .HasColumnType("decimal(18,4)");
 
-                    b.Property<decimal?>("CoverageArea")
-                        .HasColumnType("decimal(18,4)");
-
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)");
 
@@ -94,19 +94,11 @@ namespace ConstructIQ.API.Migrations
                     b.Property<string>("Notes")
                         .HasColumnType("longtext");
 
-                    b.Property<int?>("PhaseId")
+                    b.Property<int>("PhaseId")
                         .HasColumnType("int");
-
-                    b.Property<string>("PrimarySection")
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
 
                     b.Property<int>("ProjectId")
                         .HasColumnType("int");
-
-                    b.Property<string>("SubCategory")
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("datetime(6)");
@@ -491,117 +483,6 @@ namespace ConstructIQ.API.Migrations
                     b.ToTable("MaterialMovements");
                 });
 
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.Measurement", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("AreaLabel")
-                        .HasMaxLength(150)
-                        .HasColumnType("varchar(150)");
-
-                    b.Property<decimal>("AreaSqm")
-                        .HasColumnType("decimal(12,3)");
-
-                    b.Property<string>("ConcreteMixRatio")
-                        .IsRequired()
-                        .HasMaxLength(30)
-                        .HasColumnType("varchar(30)");
-
-                    b.Property<int>("ElementType")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("HeightM")
-                        .HasColumnType("decimal(10,3)");
-
-                    b.Property<decimal>("LengthM")
-                        .HasColumnType("decimal(10,3)");
-
-                    b.Property<int>("PhaseId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("ProjectId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("RecordedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<int>("RecordedByUserId")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("ThicknessM")
-                        .HasColumnType("decimal(10,3)");
-
-                    b.Property<decimal>("VolumeCbm")
-                        .HasColumnType("decimal(12,3)");
-
-                    b.Property<decimal>("WasteAllowancePct")
-                        .HasColumnType("decimal(5,2)");
-
-                    b.Property<decimal>("WidthM")
-                        .HasColumnType("decimal(10,3)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("PhaseId");
-
-                    b.HasIndex("ProjectId");
-
-                    b.HasIndex("RecordedByUserId");
-
-                    b.ToTable("Measurements");
-                });
-
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.Notification", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<int>("CreatedByUserId")
-                        .HasColumnType("int");
-
-                    b.Property<bool>("IsRead")
-                        .HasColumnType("tinyint(1)");
-
-                    b.Property<int>("Kind")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("MaterialId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Message")
-                        .IsRequired()
-                        .HasColumnType("longtext");
-
-                    b.Property<int>("ProjectId")
-                        .HasColumnType("int");
-
-                    b.Property<decimal?>("Quantity")
-                        .HasColumnType("decimal(12,3)");
-
-                    b.Property<int>("RecipientRole")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CreatedByUserId");
-
-                    b.HasIndex("MaterialId");
-
-                    b.HasIndex("ProjectId");
-
-                    b.ToTable("Notifications");
-                });
-
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.Phase", b =>
                 {
                     b.Property<int>("Id")
@@ -717,9 +598,6 @@ namespace ConstructIQ.API.Migrations
                     b.Property<string>("Description")
                         .HasColumnType("longtext");
 
-                    b.Property<bool>("IsHistorical")
-                        .HasColumnType("tinyint(1)");
-
                     b.Property<string>("Location")
                         .IsRequired()
                         .HasMaxLength(300)
@@ -727,10 +605,6 @@ namespace ConstructIQ.API.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<string>("OtherTypeSpecify")
                         .HasMaxLength(200)
                         .HasColumnType("varchar(200)");
 
@@ -764,56 +638,6 @@ namespace ConstructIQ.API.Migrations
                     b.ToTable("Projects");
                 });
 
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.ProjectDocument", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("Category")
-                        .HasColumnType("int");
-
-                    b.Property<string>("CategoryOther")
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(1000)
-                        .HasColumnType("varchar(1000)");
-
-                    b.Property<string>("FileName")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("varchar(255)");
-
-                    b.Property<int>("ProjectId")
-                        .HasColumnType("int");
-
-                    b.Property<long>("SizeBytes")
-                        .HasColumnType("bigint");
-
-                    b.Property<string>("StoragePath")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("varchar(500)");
-
-                    b.Property<DateTime>("UploadedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<int>("UploadedByUserId")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ProjectId");
-
-                    b.HasIndex("UploadedByUserId");
-
-                    b.ToTable("ProjectDocuments");
-                });
-
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.PurchaseOrder", b =>
                 {
                     b.Property<int>("Id")
@@ -835,9 +659,6 @@ namespace ConstructIQ.API.Migrations
                         .IsRequired()
                         .HasMaxLength(30)
                         .HasColumnType("varchar(30)");
-
-                    b.Property<DateTime>("OrderDate")
-                        .HasColumnType("datetime(6)");
 
                     b.Property<int>("ProjectId")
                         .HasColumnType("int");
@@ -873,23 +694,10 @@ namespace ConstructIQ.API.Migrations
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<int?>("BOQItemId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("MaterialId")
-                        .HasColumnType("int");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("varchar(200)");
-
-                    b.Property<int?>("PhaseId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("PrimarySection")
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
 
                     b.Property<int>("PurchaseOrderId")
                         .HasColumnType("int");
@@ -897,22 +705,12 @@ namespace ConstructIQ.API.Migrations
                     b.Property<decimal>("Quantity")
                         .HasColumnType("decimal(18,4)");
 
-                    b.Property<string>("SubCategory")
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
-
                     b.Property<string>("Unit")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("varchar(20)");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("BOQItemId");
-
-                    b.HasIndex("MaterialId");
-
-                    b.HasIndex("PhaseId");
 
                     b.HasIndex("PurchaseOrderId");
 
@@ -1225,35 +1023,6 @@ namespace ConstructIQ.API.Migrations
                     b.ToTable("Users");
                 });
 
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.WarehouseStockItem", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<decimal>("Balance")
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<string>("MaterialName")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<DateTime>("SyncedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("Unit")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("varchar(50)");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("WarehouseStockItems");
-                });
-
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.ActivityLog", b =>
                 {
                     b.HasOne("ConstructIQ.API.Models.Entities.User", "User")
@@ -1274,7 +1043,9 @@ namespace ConstructIQ.API.Migrations
 
                     b.HasOne("ConstructIQ.API.Models.Entities.Phase", "Phase")
                         .WithMany("BOQItems")
-                        .HasForeignKey("PhaseId");
+                        .HasForeignKey("PhaseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.HasOne("ConstructIQ.API.Models.Entities.Project", "Project")
                         .WithMany("BOQItems")
@@ -1451,58 +1222,6 @@ namespace ConstructIQ.API.Migrations
                     b.Navigation("RecordedBy");
                 });
 
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.Measurement", b =>
-                {
-                    b.HasOne("ConstructIQ.API.Models.Entities.Phase", "Phase")
-                        .WithMany("Measurements")
-                        .HasForeignKey("PhaseId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("ConstructIQ.API.Models.Entities.Project", "Project")
-                        .WithMany()
-                        .HasForeignKey("ProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("ConstructIQ.API.Models.Entities.User", "RecordedBy")
-                        .WithMany()
-                        .HasForeignKey("RecordedByUserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Phase");
-
-                    b.Navigation("Project");
-
-                    b.Navigation("RecordedBy");
-                });
-
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.Notification", b =>
-                {
-                    b.HasOne("ConstructIQ.API.Models.Entities.User", "CreatedBy")
-                        .WithMany()
-                        .HasForeignKey("CreatedByUserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("ConstructIQ.API.Models.Entities.Material", "Material")
-                        .WithMany()
-                        .HasForeignKey("MaterialId");
-
-                    b.HasOne("ConstructIQ.API.Models.Entities.Project", "Project")
-                        .WithMany()
-                        .HasForeignKey("ProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("CreatedBy");
-
-                    b.Navigation("Material");
-
-                    b.Navigation("Project");
-                });
-
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.Phase", b =>
                 {
                     b.HasOne("ConstructIQ.API.Models.Entities.Project", "Project")
@@ -1551,25 +1270,6 @@ namespace ConstructIQ.API.Migrations
                     b.Navigation("SiteEngineer");
                 });
 
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.ProjectDocument", b =>
-                {
-                    b.HasOne("ConstructIQ.API.Models.Entities.Project", "Project")
-                        .WithMany()
-                        .HasForeignKey("ProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("ConstructIQ.API.Models.Entities.User", "UploadedBy")
-                        .WithMany()
-                        .HasForeignKey("UploadedByUserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Project");
-
-                    b.Navigation("UploadedBy");
-                });
-
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.PurchaseOrder", b =>
                 {
                     b.HasOne("ConstructIQ.API.Models.Entities.User", "CreatedBy")
@@ -1581,7 +1281,7 @@ namespace ConstructIQ.API.Migrations
                     b.HasOne("ConstructIQ.API.Models.Entities.Project", "Project")
                         .WithMany()
                         .HasForeignKey("ProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.HasOne("ConstructIQ.API.Models.Entities.Supplier", "Supplier")
@@ -1599,32 +1299,11 @@ namespace ConstructIQ.API.Migrations
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.PurchaseOrderMaterial", b =>
                 {
-                    b.HasOne("ConstructIQ.API.Models.Entities.BOQItem", "BOQItem")
-                        .WithMany()
-                        .HasForeignKey("BOQItemId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("ConstructIQ.API.Models.Entities.Material", "Material")
-                        .WithMany()
-                        .HasForeignKey("MaterialId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("ConstructIQ.API.Models.Entities.Phase", "Phase")
-                        .WithMany()
-                        .HasForeignKey("PhaseId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
                     b.HasOne("ConstructIQ.API.Models.Entities.PurchaseOrder", "PurchaseOrder")
                         .WithMany("Materials")
                         .HasForeignKey("PurchaseOrderId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.Navigation("BOQItem");
-
-                    b.Navigation("Material");
-
-                    b.Navigation("Phase");
 
                     b.Navigation("PurchaseOrder");
                 });
@@ -1689,13 +1368,13 @@ namespace ConstructIQ.API.Migrations
                     b.HasOne("ConstructIQ.API.Models.Entities.Project", "SourceProject")
                         .WithMany()
                         .HasForeignKey("SourceProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.HasOne("ConstructIQ.API.Models.Entities.Project", "TargetProject")
                         .WithMany()
                         .HasForeignKey("TargetProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("ApprovedBy");
@@ -1754,8 +1433,6 @@ namespace ConstructIQ.API.Migrations
                     b.Navigation("ExcessWasteRecords");
 
                     b.Navigation("MaterialMovements");
-
-                    b.Navigation("Measurements");
                 });
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.ProcurementRecommendation", b =>

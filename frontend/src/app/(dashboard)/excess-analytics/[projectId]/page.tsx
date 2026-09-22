@@ -25,7 +25,7 @@ export default function ExcessAnalyticsProjectPage() {
   const [showModal, setShowModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState<ExcessWasteCreateRequest>({
-    projectId: pid, phaseId: undefined, materialId: 0,
+    projectId: pid, phaseId: 0, materialId: 0,
     excessType: 'Unused', quantity: 0, unitCost: 0, isReusable: false, notes: '',
   });
 

@@ -17,6 +17,11 @@ import type { PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import MeasurementsTab from './MeasurementsTab';
 import MaterialPlanTab from './MaterialPlanTab';
 
+function apiErrorMessage(error: unknown, fallback: string): string {
+  const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+  return message || fallback;
+}
+
 export type Tab = 'measurements' | 'materialPlan';
 
 export interface ShellProps {
@@ -142,8 +147,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       ]);
       toast.success(`${result.items.length} line item(s) scanned — review and edit as needed.`);
       if (result.parseErrors.length > 0) toast.error(result.parseErrors[0]);
-    } catch {
-      toast.error('Failed to scan document.');
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to scan document.'));
     }
   }
 
@@ -190,8 +195,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       ]);
       toast.success(`${result.items.length} line item(s) scanned — review and edit as needed.`);
       if (result.parseErrors.length > 0) toast.error(result.parseErrors[0]);
-    } catch {
-      toast.error('Failed to scan document.');
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to scan document.'));
     }
   }
 

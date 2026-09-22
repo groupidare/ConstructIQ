@@ -9,7 +9,12 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class AuthService(AppDbContext db, IConfiguration config, IEmailService emailService, ILogger<AuthService> logger) : IAuthService
+public class AuthService(
+    AppDbContext db,
+    IConfiguration config,
+    IEmailService emailService,
+    IHttpContextAccessor httpContextAccessor,
+    ILogger<AuthService> logger) : IAuthService
 {
     public async Task<LoginResponseDto?> LoginAsync(LoginRequestDto request)
     {
@@ -20,8 +25,9 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
         if (user is null || !PasswordHasher.Verify(request.Password, user.PasswordHash))
             return null;
 
-        if (user.MfaEnabled)
-            return await IssueMfaChallengeAsync(user);
+        var deviceTrusted = await IsDeviceTrustedAsync(user.Id, request.DeviceId);
+        if (user.MfaEnabled || !deviceTrusted)
+            return await IssueMfaChallengeAsync(user, deviceTrusted ? null : request.DeviceId);
 
         return await BuildLoginResponse(user);
     }
@@ -61,8 +67,9 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
 
         if (user is null) return null;
 
-        if (user.MfaEnabled)
-            return await IssueMfaChallengeAsync(user);
+        var deviceTrusted = await IsDeviceTrustedAsync(user.Id, request.DeviceId);
+        if (user.MfaEnabled || !deviceTrusted)
+            return await IssueMfaChallengeAsync(user, deviceTrusted ? null : request.DeviceId);
 
         return await BuildLoginResponse(user);
     }
@@ -77,9 +84,17 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
         if (user is null || user.MfaCode != request.Code.Trim())
             return null;
 
+        // A pending device id means this challenge exists (at least in part)
+        // because the device wasn't recognized yet — passing the code proves
+        // it now, so it's remembered and won't be challenged again purely for
+        // being unrecognized (an always-on MfaEnabled account still will be).
+        if (!string.IsNullOrEmpty(user.PendingDeviceId))
+            await TrustDeviceAsync(user, user.PendingDeviceId);
+
         user.MfaCode           = null;
         user.MfaCodeExpiresAt  = null;
         user.MfaChallengeToken = null;
+        user.PendingDeviceId   = null;
 
         return await BuildLoginResponse(user);
     }
@@ -89,14 +104,18 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
         var user = await db.Users.FirstOrDefaultAsync(u => u.MfaChallengeToken == request.ChallengeToken);
         if (user is null) return false;
 
-        await SendMfaCodeAsync(user);
+        await SendMfaCodeAsync(user, isNewDevice: !string.IsNullOrEmpty(user.PendingDeviceId));
         return true;
     }
 
-    private async Task<LoginResponseDto> IssueMfaChallengeAsync(User user)
+    // A trusted device only ever needs re-verifying if the account has 2FA
+    // permanently enabled; deviceId null here means "already trusted, no new
+    // device to remember" and the challenge is purely the MfaEnabled case.
+    private async Task<LoginResponseDto> IssueMfaChallengeAsync(User user, string? unrecognizedDeviceId)
     {
         user.MfaChallengeToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
-        await SendMfaCodeAsync(user);
+        user.PendingDeviceId   = unrecognizedDeviceId;
+        await SendMfaCodeAsync(user, isNewDevice: unrecognizedDeviceId is not null);
 
         return new LoginResponseDto
         {
@@ -105,7 +124,7 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
         };
     }
 
-    private async Task SendMfaCodeAsync(User user)
+    private async Task SendMfaCodeAsync(User user, bool isNewDevice = false)
     {
         var code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
 
@@ -115,11 +134,45 @@ public class AuthService(AppDbContext db, IConfiguration config, IEmailService e
 
         try
         {
-            await emailService.SendMfaCodeEmailAsync(user.Email, user.FirstName, code);
+            await emailService.SendMfaCodeEmailAsync(user.Email, user.FirstName, code, isNewDevice);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Failed to send MFA code email to {Email}.", user.Email);
+        }
+    }
+
+    // Empty/absent deviceId (e.g. an older frontend build, or a browser with
+    // localStorage disabled) is never treated as trusted — it always
+    // challenges, which is the safe default.
+    private async Task<bool> IsDeviceTrustedAsync(int userId, string? deviceId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId)) return false;
+
+        var device = await db.TrustedDevices.FirstOrDefaultAsync(d => d.UserId == userId && d.DeviceId == deviceId);
+        if (device is null) return false;
+
+        device.LastUsedAt = DateTime.UtcNow; // persisted by the SaveChangesAsync inside BuildLoginResponse
+        return true;
+    }
+
+    private async Task TrustDeviceAsync(User user, string deviceId)
+    {
+        var userAgent = httpContextAccessor.HttpContext?.Request.Headers.UserAgent.ToString();
+        var existing = await db.TrustedDevices.FirstOrDefaultAsync(d => d.UserId == user.Id && d.DeviceId == deviceId);
+        if (existing is null)
+        {
+            db.TrustedDevices.Add(new TrustedDevice
+            {
+                UserId    = user.Id,
+                DeviceId  = deviceId,
+                UserAgent = userAgent,
+            });
+        }
+        else
+        {
+            existing.UserAgent  = userAgent;
+            existing.LastUsedAt = DateTime.UtcNow;
         }
     }
 
