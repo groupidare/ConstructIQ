@@ -83,6 +83,23 @@ public class RedistributionService(AppDbContext db) : IRedistributionService
             .Select(r => (r.MaterialId, r.SourceProjectId, r.TargetProjectId))
             .ToHashSet();
 
+        // Best-effort link back to the specific logged excess entry each match
+        // draws from, so the Excess Recording Log can show where it went — an
+        // aggregate match may not trace to one exact record, but usually does.
+        var linkedExcessRecordIds = (await db.RedistributionRequests
+            .Where(r => ActiveStatuses.Contains(r.Status) && r.SourceExcessWasteRecordId != null)
+            .Select(r => r.SourceExcessWasteRecordId!.Value)
+            .ToListAsync())
+            .ToHashSet();
+
+        var bestExcessRecordByKey = (await db.ExcessWasteRecords
+            .Where(r => r.IsReusable && ReusableExcessTypes.Contains(r.ExcessType))
+            .OrderByDescending(r => r.RecordedAt)
+            .ToListAsync())
+            .Where(r => !linkedExcessRecordIds.Contains(r.Id))
+            .GroupBy(r => (r.ProjectId, r.MaterialId))
+            .ToDictionary(g => g.Key, g => g.First());
+
         foreach (var match in matches)
         {
             var key = (match.MaterialId, match.SourceProjectId, match.TargetProjectId);
@@ -98,11 +115,19 @@ public class RedistributionService(AppDbContext db) : IRedistributionService
                 ? MapUrgencyToPriority(urgency)
                 : RedistributionPriority.Medium;
 
+            int? sourceExcessRecordId = null;
+            if (bestExcessRecordByKey.TryGetValue((match.SourceProjectId, match.MaterialId), out var excessRecord))
+            {
+                sourceExcessRecordId = excessRecord.Id;
+                bestExcessRecordByKey.Remove((match.SourceProjectId, match.MaterialId)); // one link per record per generation pass
+            }
+
             db.RedistributionRequests.Add(new RedistributionRequest
             {
-                MaterialId              = match.MaterialId,
-                SourceProjectId         = match.SourceProjectId,
-                TargetProjectId         = match.TargetProjectId,
+                MaterialId                = match.MaterialId,
+                SourceProjectId           = match.SourceProjectId,
+                SourceExcessWasteRecordId = sourceExcessRecordId,
+                TargetProjectId           = match.TargetProjectId,
                 Quantity                = match.TransferQuantity,
                 AvailableExcessAtSource = match.AvailableExcess,
                 NeededQuantityAtTarget  = match.NeededQuantity,
@@ -128,6 +153,33 @@ public class RedistributionService(AppDbContext db) : IRedistributionService
         request.Status           = RedistributionStatus.Approved;
         request.ApprovedByUserId = userId;
         request.ApprovedAt       = DateTime.UtcNow;
+
+        await db.SaveChangesAsync();
+        return true;
+    }
+
+    // Undoes an accidental approval — back to PendingApproval, not Rejected,
+    // since the recommendation itself is still valid and may be approved again.
+    public async Task<bool> CancelApprovalAsync(int recommendationId)
+    {
+        var request = await db.RedistributionRequests.FindAsync(recommendationId);
+        if (request is null || request.Status != RedistributionStatus.Approved) return false;
+
+        request.Status           = RedistributionStatus.PendingApproval;
+        request.ApprovedByUserId = null;
+        request.ApprovedAt       = null;
+
+        await db.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task<bool> RejectTransferAsync(int recommendationId, int userId)
+    {
+        var request = await db.RedistributionRequests.FindAsync(recommendationId);
+        if (request is null) return false;
+        if (request.Status is RedistributionStatus.Completed or RedistributionStatus.Rejected) return false;
+
+        request.Status = RedistributionStatus.Rejected;
 
         await db.SaveChangesAsync();
         return true;
@@ -161,9 +213,10 @@ public class RedistributionService(AppDbContext db) : IRedistributionService
 
         var request = new RedistributionRequest
         {
-            MaterialId              = record.MaterialId,
-            SourceProjectId         = record.ProjectId,
-            TargetProjectId         = dto.TargetProjectId,
+            MaterialId                = record.MaterialId,
+            SourceProjectId           = record.ProjectId,
+            SourceExcessWasteRecordId = record.Id,
+            TargetProjectId           = dto.TargetProjectId,
             Quantity                = quantity,
             AvailableExcessAtSource = record.Quantity,
             NeededQuantityAtTarget  = demand?.RecommendedQuantity ?? quantity,

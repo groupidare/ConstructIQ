@@ -35,6 +35,22 @@ public class RedistributionController(IRedistributionService redistributionServi
         return success ? Ok(new { message = "Transfer approved." }) : NotFound();
     }
 
+    [HttpPost("{id:int}/reject")]
+    [Authorize(Roles = "Admin,ProjectManager,WarehousePersonnel")]
+    public async Task<IActionResult> Reject(int id)
+    {
+        var success = await redistributionService.RejectTransferAsync(id, CurrentUserId);
+        return success ? Ok(new { message = "Transfer rejected." }) : NotFound();
+    }
+
+    [HttpPost("{id:int}/cancel-approval")]
+    [Authorize(Roles = "Admin,ProjectManager,WarehousePersonnel")]
+    public async Task<IActionResult> CancelApproval(int id)
+    {
+        var success = await redistributionService.CancelApprovalAsync(id);
+        return success ? Ok(new { message = "Approval cancelled." }) : NotFound();
+    }
+
     [HttpGet("suggest-targets/{excessWasteRecordId:int}")]
     public async Task<IActionResult> SuggestTargets(int excessWasteRecordId)
     {

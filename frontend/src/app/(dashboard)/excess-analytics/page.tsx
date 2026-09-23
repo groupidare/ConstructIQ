@@ -14,27 +14,24 @@ import {
   TrendingUp, FileText, Plus, Search, Recycle, ChevronDown, ChevronRight, Pencil,
 } from "lucide-react";
 
-// ── Static data (Overview tab only — see note below) ─────────────────────────
+function average(nums: number[]): number {
+  return nums.length === 0 ? 0 : nums.reduce((s, n) => s + n, 0) / nums.length;
+}
 
-const CHART_DATA = [
-  { project: "Metro Station Phase 3",   rate: 6.2 },
-  { project: "BGC Tower Complex",       rate: 3.1 },
-  { project: "Harbor Bridge Renovation",rate: 7.1 },
-  { project: "Southgate Mall Expansion",rate: 4.8 },
-  { project: "PUP ICTC Building",       rate: 2.3 },
-  { project: "ICTC HALL",               rate: 3.6 },
-  { project: "PUP North Wing",          rate: 5.4 },
-  { project: "Group 11 House",          rate: 2.9 },
-];
-
-const MAX_RATE = Math.max(...CHART_DATA.map(d => d.rate));
-
-const EXCESS_TYPE_STYLE: Record<string, { bg: string; color: string }> = {
-  Unused:      { bg: "#fef3c7", color: "#b45309" },
-  Overordered: { bg: "#fef3c7", color: "#b45309" },
-  Damaged:     { bg: "#fee2e2", color: "#dc2626" },
-  Expired:     { bg: "#fee2e2", color: "#dc2626" },
+// Colors for a linked redistribution request's status — shown alongside the
+// "Redistribute" action (not instead of it) so the user still knows the
+// current target project but can still send it elsewhere.
+const REDISTRIBUTION_STATUS_STYLE: Record<string, { bg: string; color: string }> = {
+  AiSuggested:     { bg: "#f3f4f6", color: "#6b7280" },
+  PendingApproval: { bg: "#fef3c7", color: "#b45309" },
+  Approved:        { bg: "#dbeafe", color: "#1d4ed8" },
+  InTransit:       { bg: "#dbeafe", color: "#1d4ed8" },
+  Completed:       { bg: "#dcfce7", color: "#15803d" },
 };
+
+// The "Redistribute To" column only names a target once it's actually
+// approved — a still-pending AI suggestion isn't a real destination yet.
+const APPROVED_REDISTRIBUTION_STATUSES = new Set(["Approved", "InTransit", "Completed"]);
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
@@ -84,6 +81,39 @@ export default function ExcessAnalyticsPage() {
     );
   }, [filteredLog]);
 
+  // ── Real Overview metrics, derived from the recorded entries ──────────────
+  const overview = useMemo(() => {
+    const wasteRecords  = records.filter(e => !e.isReusable);
+    const excessRecords = records.filter(e => e.isReusable);
+
+    const totalWasteRate  = average(wasteRecords.map(e => e.excessPercent));
+    const totalExcessRate = average(records.map(e => e.excessPercent));
+
+    const reusableMaterialsCount = new Set(excessRecords.map(e => e.materialId)).size;
+
+    const byProjectMap = new Map<number, { project: string; wasteRates: number[]; excessRates: number[] }>();
+
+    // Completed projects always get a bar, even with 0% so far — they're the
+    // ones with a final excess/waste story worth tracking to completion.
+    for (const p of projects) {
+      if (p.status === "Completed") byProjectMap.set(p.id, { project: p.name, wasteRates: [], excessRates: [] });
+    }
+
+    for (const e of records) {
+      if (!byProjectMap.has(e.projectId)) byProjectMap.set(e.projectId, { project: e.projectName, wasteRates: [], excessRates: [] });
+      const bucket = byProjectMap.get(e.projectId)!;
+      (e.isReusable ? bucket.excessRates : bucket.wasteRates).push(e.excessPercent);
+    }
+    const chartData = Array.from(byProjectMap.values())
+      .map(p => ({ project: p.project, wasteRate: average(p.wasteRates), excessRate: average(p.excessRates) }))
+      .sort((a, b) => (b.wasteRate + b.excessRate) - (a.wasteRate + a.excessRate))
+      .slice(0, 8);
+
+    return { totalWasteRate, totalExcessRate, reusableMaterialsCount, chartData };
+  }, [records, projects]);
+
+  const maxChartRate = Math.max(1, ...overview.chartData.flatMap(d => [d.wasteRate, d.excessRate]));
+
   const TABS: { id: Tab; label: string }[] = [
     { id:"overview", label:"Overview" },
     { id:"log",      label:"Excess Recording Log" },
@@ -126,21 +156,18 @@ export default function ExcessAnalyticsPage() {
 
       <div style={{ padding:"1.25rem 1.5rem" }}>
 
-        {/* ── 3 stat cards ──────────────────────────────────────────────────── */}
+        {/* ── 3 stat cards — computed from real recorded entries ──────────────── */}
         <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:"1rem", marginBottom:"1.5rem" }}>
           {[
-            { icon:Trash2,     iconBg:"#fee2e2", iconColor:"#dc2626", value:"5.2%", label:"Total Waste Rate",   badge:"↑ -1.3%", badgeBg:"#dcfce7", badgeColor:"#166534" },
-            { icon:Monitor,    iconBg:"#ccfbf1", iconColor:"#0d9488", value:"127",  label:"Reusable Materials", badge:"↑ +15%",  badgeBg:"#dcfce7", badgeColor:"#166534" },
-            { icon:Package,    iconBg:"#ffedd5", iconColor:"#ea580c", value:"6",    label:"Dead Stock Items",   badge:"↑ -2",    badgeBg:"#dcfce7", badgeColor:"#166534" },
+            { icon:Trash2,     iconBg:"#fee2e2", iconColor:"#dc2626", value:`${overview.totalWasteRate.toFixed(1)}%`,  label:"Total Waste Rate" },
+            { icon:TrendingUp, iconBg:"#fffbeb", iconColor:"#d97706", value:`${overview.totalExcessRate.toFixed(1)}%`, label:"Total Excess Rate" },
+            { icon:Monitor,    iconBg:"#ccfbf1", iconColor:"#0d9488", value:`${overview.reusableMaterialsCount}`,      label:"Reusable Materials" },
           ].map(s => {
             const Icon = s.icon;
             return (
               <div key={s.label} style={{ background:"#fff", borderRadius:14, padding:"1.25rem", boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.875rem" }}>
-                  <div style={{ width:40, height:40, borderRadius:10, background:s.iconBg, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                    <Icon style={{ width:20, height:20, color:s.iconColor }} />
-                  </div>
-                  <span style={{ fontSize:"0.68rem", fontWeight:700, padding:"3px 8px", borderRadius:999, background:s.badgeBg, color:s.badgeColor }}>{s.badge}</span>
+                <div style={{ width:40, height:40, borderRadius:10, background:s.iconBg, display:"flex", alignItems:"center", justifyContent:"center", marginBottom:"0.875rem" }}>
+                  <Icon style={{ width:20, height:20, color:s.iconColor }} />
                 </div>
                 <p style={{ fontSize:"1.9rem", fontWeight:800, color:"#111827", lineHeight:1 }}>{s.value}</p>
                 <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:4 }}>{s.label}</p>
@@ -164,9 +191,7 @@ export default function ExcessAnalyticsPage() {
         </div>
 
         {/* ════════════════════════════════════════════════════════════════════ */}
-        {/* Tab: Overview — still uses illustrative sample data, not yet wired    */}
-        {/* to the real per-project excess/waste API. See the Log tab for the    */}
-        {/* real, cross-project view.                                            */}
+        {/* Tab: Overview — real metrics, derived live from recorded entries      */}
         {/* ════════════════════════════════════════════════════════════════════ */}
         {tab === "overview" && (
           <div style={{ display:"grid", gridTemplateColumns:"1fr 320px", gap:"1rem" }}>
@@ -177,35 +202,48 @@ export default function ExcessAnalyticsPage() {
                 <div style={{ width:26, height:26, borderRadius:6, background:"#f3f4f6", display:"flex", alignItems:"center", justifyContent:"center" }}>
                   <Package style={{ width:14, height:14, color:"#6b7280" }} />
                 </div>
-                <span style={{ fontWeight:700, fontSize:"1rem" }}>Excess by Project</span>
+                <span style={{ fontWeight:700, fontSize:"1rem" }}>Excess &amp; Waste by Project</span>
               </div>
-              <p style={{ color:"#9ca3af", fontSize:"0.72rem", marginBottom:"1.5rem" }}>Excess rate per project</p>
+              <p style={{ color:"#9ca3af", fontSize:"0.72rem", marginBottom:"1.5rem" }}>Excess and waste rate per project</p>
 
-              <div style={{ display:"flex", flexDirection:"column", gap:"1.1rem" }}>
-                {CHART_DATA.map(d => (
-                  <div key={d.project} style={{ display:"flex", alignItems:"center", gap:"1rem" }}>
-                    <span style={{ fontSize:"0.78rem", color:"#374151", width:180, flexShrink:0, textAlign:"right" }}>{d.project}</span>
-                    <div style={{ flex:1 }}>
-                      <div style={{ height:10, background:"#f3f4f6", borderRadius:99 }}>
-                        <div style={{ height:"100%", width:`${(d.rate/MAX_RATE)*100}%`, background:"#fbbf24", borderRadius:99 }} />
+              {overview.chartData.length === 0 ? (
+                <p style={{ textAlign:"center", color:"#9ca3af", fontSize:"0.85rem", padding:"2rem 0" }}>
+                  No excess entries recorded yet — use &quot;+ Excess Log&quot; to start tracking.
+                </p>
+              ) : (
+                <>
+                  <div style={{ display:"flex", flexDirection:"column", gap:"1.1rem" }}>
+                    {overview.chartData.map(d => (
+                      <div key={d.project} style={{ display:"flex", alignItems:"center", gap:"1rem" }}>
+                        <span style={{ fontSize:"0.78rem", color:"#374151", width:180, flexShrink:0, textAlign:"right", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{d.project}</span>
+                        <div style={{ flex:1, display:"flex", flexDirection:"column", gap:4 }}>
+                          <div style={{ height:10, background:"#f3f4f6", borderRadius:99 }}>
+                            <div style={{ height:"100%", width:`${(d.excessRate/maxChartRate)*100}%`, background:"#fbbf24", borderRadius:99 }} />
+                          </div>
+                          <div style={{ height:10, background:"#f3f4f6", borderRadius:99 }}>
+                            <div style={{ height:"100%", width:`${(d.wasteRate/maxChartRate)*100}%`, background:"#dc2626", borderRadius:99 }} />
+                          </div>
+                        </div>
+                        <div style={{ display:"flex", flexDirection:"column", width:44, flexShrink:0 }}>
+                          <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#b45309" }}>{d.excessRate.toFixed(1)}%</span>
+                          <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#dc2626" }}>{d.wasteRate.toFixed(1)}%</span>
+                        </div>
                       </div>
+                    ))}
+                  </div>
+
+                  <div style={{ display:"flex", gap:"1.5rem", justifyContent:"center", marginTop:"1.25rem" }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                      <div style={{ width:12, height:12, borderRadius:"50%", background:"#fbbf24" }} />
+                      <span style={{ fontSize:"0.75rem", color:"#6b7280" }}>Excess Rate (%)</span>
+                    </div>
+                    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                      <div style={{ width:12, height:12, borderRadius:"50%", background:"#dc2626" }} />
+                      <span style={{ fontSize:"0.75rem", color:"#6b7280" }}>Waste Rate (%)</span>
                     </div>
                   </div>
-                ))}
-              </div>
-
-              <div style={{ display:"flex", justifyContent:"flex-end", paddingLeft:196, marginTop:"0.75rem" }}>
-                <div style={{ flex:1, display:"flex", justifyContent:"space-between" }}>
-                  {["0","2%","4%","6%","8%"].map(l => <span key={l} style={{ fontSize:"0.65rem", color:"#9ca3af" }}>{l}</span>)}
-                </div>
-              </div>
-
-              <div style={{ display:"flex", gap:"1.5rem", justifyContent:"center", marginTop:"1rem" }}>
-                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                  <div style={{ width:12, height:12, borderRadius:"50%", background:"#fbbf24" }} />
-                  <span style={{ fontSize:"0.75rem", color:"#6b7280" }}>Excess Rate (%)</span>
-                </div>
-              </div>
+                </>
+              )}
             </div>
 
             {/* Excess Summary panel */}
@@ -217,7 +255,8 @@ export default function ExcessAnalyticsPage() {
               <p style={{ color:"#9ca3af", fontSize:"0.72rem", marginBottom:"1.5rem" }}>Overall project summary</p>
 
               {[
-                { icon:TrendingUp, iconBg:"#fffbeb", iconColor:"#d97706", label:"Total Excess Rate", value:"3.1%" },
+                { icon:TrendingUp, iconBg:"#fffbeb", iconColor:"#d97706", label:"Total Excess Rate", value:`${overview.totalExcessRate.toFixed(1)}%` },
+                { icon:Trash2,     iconBg:"#fee2e2", iconColor:"#dc2626", label:"Total Waste Rate",  value:`${overview.totalWasteRate.toFixed(1)}%` },
               ].map(r => {
                 const Icon = r.icon;
                 return (
@@ -234,7 +273,9 @@ export default function ExcessAnalyticsPage() {
               })}
 
               <p style={{ fontSize:"0.78rem", color:"#9ca3af", lineHeight:1.6, marginTop:"1rem" }}>
-                Excess rate stands at 3.1% across all active projects, remaining within acceptable thresholds for the current period.
+                {records.length === 0
+                  ? "No excess or waste has been recorded yet."
+                  : `Excess rate stands at ${overview.totalExcessRate.toFixed(1)}% and waste rate at ${overview.totalWasteRate.toFixed(1)}% across all recorded entries.`}
               </p>
             </div>
           </div>
@@ -307,28 +348,41 @@ export default function ExcessAnalyticsPage() {
                                 <table style={{ width:"100%", borderCollapse:"collapse" }}>
                                   <thead>
                                     <tr>
-                                      {["DATE","PHASE","MATERIAL","TYPE","QTY","UNIT","ACTION"].map(h => (
+                                      {["DATE","MATERIAL","TYPE","QTY","UNIT","REDISTRIBUTE TO","ACTION"].map(h => (
                                         <th key={h} style={{ padding:"8px 10px", textAlign:"left", fontSize:"0.62rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.05em" }}>{h}</th>
                                       ))}
                                     </tr>
                                   </thead>
                                   <tbody>
                                     {g.records.map(e => {
-                                      const typeStyle = EXCESS_TYPE_STYLE[e.excessType] ?? { bg:"#f3f4f6", color:"#6b7280" };
+                                      const typeStyle = e.isReusable
+                                        ? { label: "Excess", bg: "#fef3c7", color: "#b45309" }
+                                        : { label: "Waste",  bg: "#fee2e2", color: "#dc2626" };
                                       return (
                                         <tr key={e.id} style={{ borderTop:"1px solid #e5e7eb" }}>
                                           <td style={{ padding:"10px", fontSize:"0.8rem", color:"#374151", whiteSpace:"nowrap" }}>{formatDate(e.recordedAt)}</td>
-                                          <td style={{ padding:"10px" }}>
-                                            <span style={{ fontSize:"0.72rem", fontWeight:500, color:"#374151", padding:"3px 9px", borderRadius:999, border:"1px solid #e5e7eb", background:"#fff", whiteSpace:"nowrap" }}>{e.phaseName || "—"}</span>
-                                          </td>
                                           <td style={{ padding:"10px", fontSize:"0.8rem", fontWeight:600, color:"#111827" }}>{e.materialName}</td>
                                           <td style={{ padding:"10px" }}>
                                             <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 8px", borderRadius:999, background:typeStyle.bg, color:typeStyle.color, whiteSpace:"nowrap" }}>
-                                              {e.excessType}
+                                              {typeStyle.label}
                                             </span>
                                           </td>
                                           <td style={{ padding:"10px", fontSize:"0.8rem", color:"#374151" }}>{e.quantity.toLocaleString()}</td>
                                           <td style={{ padding:"10px", fontSize:"0.8rem", color:"#9ca3af" }}>{e.unit}</td>
+                                          <td style={{ padding:"10px" }}>
+                                            {!e.isReusable ? null : e.redistributionTargetProjectName && APPROVED_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "") ? (
+                                              <span style={{
+                                                display:"inline-flex", alignItems:"center", gap:5, padding:"3px 9px", borderRadius:999,
+                                                background: REDISTRIBUTION_STATUS_STYLE[e.redistributionStatus!]?.bg ?? "#f3f4f6",
+                                                color: REDISTRIBUTION_STATUS_STYLE[e.redistributionStatus!]?.color ?? "#6b7280",
+                                                fontSize:"0.72rem", fontWeight:600, whiteSpace:"nowrap",
+                                              }}>
+                                                <Recycle style={{ width:11, height:11 }} /> {e.redistributionTargetProjectName}
+                                              </span>
+                                            ) : (
+                                              <span style={{ color:"#d1d5db", fontSize:"0.8rem" }}>—</span>
+                                            )}
+                                          </td>
                                           <td style={{ padding:"10px" }}>
                                             <div style={{ display:"flex", gap:6 }}>
                                               <button
@@ -337,14 +391,19 @@ export default function ExcessAnalyticsPage() {
                                               >
                                                 <Pencil style={{ width:11, height:11 }} /> Edit
                                               </button>
-                                              {e.isReusable && (
-                                                <button
-                                                  onClick={() => setRedistributeTarget(e)}
-                                                  style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.7rem", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
-                                                >
-                                                  <Recycle style={{ width:11, height:11 }} /> Redistribute
-                                                </button>
-                                              )}
+                                              {e.isReusable && (() => {
+                                                const alreadyRedistributed = APPROVED_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "");
+                                                return (
+                                                  <button
+                                                    onClick={() => !alreadyRedistributed && setRedistributeTarget(e)}
+                                                    disabled={alreadyRedistributed}
+                                                    title={alreadyRedistributed ? `Already redistributed to ${e.redistributionTargetProjectName}` : undefined}
+                                                    style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb", background: alreadyRedistributed ? "#f3f4f6" : "#fff", color: alreadyRedistributed ? "#9ca3af" : "#374151", fontSize:"0.7rem", fontWeight:600, cursor: alreadyRedistributed ? "not-allowed" : "pointer", whiteSpace:"nowrap" }}
+                                                  >
+                                                    <Recycle style={{ width:11, height:11 }} /> Redistribute
+                                                  </button>
+                                                );
+                                              })()}
                                             </div>
                                           </td>
                                         </tr>

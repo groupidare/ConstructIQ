@@ -10,13 +10,24 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
 {
     public async Task<IEnumerable<ExcessWasteResponseDto>> GetByProjectAsync(int projectId)
     {
-        return await db.ExcessWasteRecords
+        var records = await db.ExcessWasteRecords
             .Include(e => e.Project).Include(e => e.Phase)
             .Include(e => e.Material).Include(e => e.RecordedBy)
             .Where(e => e.ProjectId == projectId)
             .OrderByDescending(e => e.RecordedAt)
-            .Select(e => ToDto(e))
             .ToListAsync();
+
+        var recordIds = records.Select(r => r.Id).ToList();
+        var redistributionByRecordId = (await db.RedistributionRequests
+            .Include(r => r.TargetProject)
+            .Where(r => r.SourceExcessWasteRecordId != null
+                && recordIds.Contains(r.SourceExcessWasteRecordId.Value)
+                && r.Status != RedistributionStatus.Rejected)
+            .ToListAsync())
+            .GroupBy(r => r.SourceExcessWasteRecordId!.Value)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(r => r.RequestedAt).First());
+
+        return records.Select(e => ToDto(e, redistributionByRecordId.GetValueOrDefault(e.Id)));
     }
 
     public async Task<ExcessWasteResponseDto> CreateAsync(ExcessWasteCreateDto dto, int userId)
@@ -176,7 +187,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         };
     }
 
-    private static ExcessWasteResponseDto ToDto(ExcessWasteRecord e) => new()
+    private static ExcessWasteResponseDto ToDto(ExcessWasteRecord e, RedistributionRequest? redistribution = null) => new()
     {
         Id           = e.Id,
         ProjectId    = e.ProjectId,
@@ -195,5 +206,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         Notes        = e.Notes,
         RecordedBy   = e.RecordedBy is null ? string.Empty : $"{e.RecordedBy.FirstName} {e.RecordedBy.LastName}",
         RecordedAt   = e.RecordedAt,
+        RedistributionStatus            = redistribution?.Status.ToString(),
+        RedistributionTargetProjectName = redistribution?.TargetProject?.Name,
     };
 }

@@ -44,6 +44,16 @@ export function useProcurement(projectId: number) {
     await fetchRedistribution();
   }
 
+  async function rejectTransfer(id: number) {
+    await api.post(`/redistribution/${id}/reject`, {});
+    await fetchRedistribution();
+  }
+
+  async function cancelApproval(id: number) {
+    await api.post(`/redistribution/${id}/cancel-approval`, {});
+    await fetchRedistribution();
+  }
+
   async function redistributeFromExcess(payload: RedistributeFromExcessRequest): Promise<RedistributionRecommendation> {
     const { data } = await api.post<RedistributionRecommendation>('/redistribution/from-excess', payload);
     await fetchRedistribution();
@@ -59,6 +69,6 @@ export function useProcurement(projectId: number) {
     recommendations, purchaseRequests, redistribution, loading,
     fetchRecommendations, generateRecommendations,
     createPurchaseRequest,
-    fetchRedistribution, generateRedistribution, approveTransfer, redistributeFromExcess, suggestTargets,
+    fetchRedistribution, generateRedistribution, approveTransfer, rejectTransfer, cancelApproval, redistributeFromExcess, suggestTargets,
   };
 }
