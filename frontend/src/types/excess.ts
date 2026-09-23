@@ -18,6 +18,8 @@ export interface ExcessWasteRecord {
   notes?: string;
   recordedBy: string;
   recordedAt: string;
+  redistributionStatus?: string;
+  redistributionTargetProjectName?: string;
 }
 
 export interface ExcessWasteCreateRequest {

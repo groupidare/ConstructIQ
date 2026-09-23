@@ -29,7 +29,7 @@ export default function RedistributeModal({ record, onClose, onSuccess }: Redist
   const [suggestions, setSuggestions]           = useState<RedistributionTargetSuggestion[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(true);
   const [targetProjectId, setTargetProjectId]   = useState(0);
-  const [quantity, setQuantity]                 = useState(record.quantity);
+  const [quantity, setQuantity]                 = useState(String(record.quantity));
   const [notes, setNotes]                       = useState("");
   const [submitting, setSubmitting]             = useState(false);
 
@@ -49,12 +49,14 @@ export default function RedistributeModal({ record, onClose, onSuccess }: Redist
 
   async function handleSubmit() {
     if (!targetProjectId) { toast.error("Select a target project."); return; }
+    const numericQuantity = Number(quantity);
+    if (!numericQuantity || numericQuantity <= 0) { toast.error("Enter a quantity greater than 0."); return; }
     setSubmitting(true);
     try {
       await redistributeFromExcess({
         excessWasteRecordId: record.id,
         targetProjectId,
-        quantity,
+        quantity: numericQuantity,
         notes: notes || undefined,
       });
       toast.success("Sent to the Redistribution dashboard.");
@@ -139,7 +141,7 @@ export default function RedistributeModal({ record, onClose, onSuccess }: Redist
             <label style={{ display: "block", fontSize: "0.72rem", fontWeight: 600, color: "#374151", marginBottom: 5 }}>Quantity to transfer</label>
             <input
               type="number" step="0.01" max={record.quantity} value={quantity}
-              onChange={e => setQuantity(+e.target.value)}
+              onChange={e => setQuantity(e.target.value)}
               style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid #e5e7eb", fontSize: "0.85rem", outline: "none", color: "#111827" }}
             />
           </div>

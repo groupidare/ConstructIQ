@@ -7,6 +7,8 @@ public interface IRedistributionService
     Task<IEnumerable<RedistributionRecommendationDto>> GetRecommendationsAsync();
     Task GenerateRecommendationsAsync();
     Task<bool> ApproveTransferAsync(int recommendationId, int userId);
+    Task<bool> RejectTransferAsync(int recommendationId, int userId);
+    Task<bool> CancelApprovalAsync(int recommendationId);
     Task<RedistributionRecommendationDto> CreateFromExcessRecordAsync(RedistributeFromExcessDto dto, int userId);
     Task<IEnumerable<RedistributionTargetSuggestionDto>> SuggestTargetsAsync(int excessWasteRecordId);
 }

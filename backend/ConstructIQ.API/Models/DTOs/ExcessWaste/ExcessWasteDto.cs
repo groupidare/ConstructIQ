@@ -44,6 +44,11 @@ public class ExcessWasteResponseDto
     public string?  Notes        { get; set; }
     public string   RecordedBy   { get; set; } = string.Empty;
     public DateTime RecordedAt   { get; set; }
+
+    // Set only when this excess entry has a real, non-rejected redistribution
+    // request against it — lets the log show where the material actually went.
+    public string? RedistributionStatus            { get; set; }
+    public string? RedistributionTargetProjectName { get; set; }
 }
 
 public class ExcessAnalyticsSummaryDto

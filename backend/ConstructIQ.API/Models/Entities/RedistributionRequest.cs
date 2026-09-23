@@ -17,6 +17,11 @@ public class RedistributionRequest
     public int SourceProjectId { get; set; }
     public Project SourceProject { get; set; } = null!;
 
+    // The specific logged excess entry this transfer draws from, when one can be
+    // identified — lets the Excess Recording Log show where a material went.
+    public int?               SourceExcessWasteRecordId { get; set; }
+    public ExcessWasteRecord? SourceExcessWasteRecord   { get; set; }
+
     public int TargetProjectId { get; set; }
     public Project TargetProject { get; set; } = null!;
 

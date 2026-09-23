@@ -3,20 +3,16 @@
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
-import { useProjects } from "@/hooks/useProjects";
 import { useProcurement } from "@/hooks/useProcurement";
-import api from "@/lib/api";
-import { formatCurrency } from "@/lib/utils";
-import type { ExcessAnalyticsSummary } from "@/types/excess";
 import type { RedistributionRecommendation, RedistributionStatus } from "@/types/procurement";
-import { Trash2, DollarSign, Repeat, Package, Zap, CheckSquare, Eye, X, RefreshCw } from "lucide-react";
+import { Zap, Package, ClipboardCheck, Repeat, CheckSquare, Eye, X, RefreshCw } from "lucide-react";
 
-// ── Compatibility (how well transfer qty satisfies the target's need) ──────
+// ── Need coverage (how much of the target's shortage the transfer fills) ───
 function compatibilityOf(r: RedistributionRecommendation) {
   const ratio = r.neededQuantity > 0 ? r.transferQuantity / r.neededQuantity : 1;
-  if (ratio >= 0.9) return { label: "HIGHLY COMPATIBLE", bg: "#dcfce7", color: "#15803d", ratio };
-  if (ratio >= 0.5) return { label: "COMPATIBLE",         bg: "#fef3c7", color: "#b45309", ratio };
-  return              { label: "LESS COMPATIBLE",         bg: "#fee2e2", color: "#dc2626", ratio };
+  if (ratio >= 0.9) return { label: "90%+ NEED COVERAGE",   bg: "#dcfce7", color: "#15803d", ratio };
+  if (ratio >= 0.5) return { label: "50-89% NEED COVERAGE", bg: "#fef3c7", color: "#b45309", ratio };
+  return              { label: "<50% NEED COVERAGE",        bg: "#fee2e2", color: "#dc2626", ratio };
 }
 
 const ACTIVE_STATUSES: RedistributionStatus[] = ["AiSuggested", "PendingApproval", "Approved", "InTransit"];
@@ -28,26 +24,6 @@ const PRIORITY_STYLE: Record<string, { bg: string; color: string }> = {
   Low:    { bg: "#f3f4f6", color: "#6b7280" },
 };
 
-// Rough embodied-carbon estimate per unit, by material keyword. Clearly presented
-// as an estimate in the UI — there's no real emissions sensor behind this.
-const CO2_FACTOR_PER_UNIT: { match: RegExp; kgPerUnit: number }[] = [
-  { match: /cement|concrete/i, kgPerUnit: 90 },
-  { match: /steel|rebar|bar/i, kgPerUnit: 190 },
-  { match: /aggregate|gravel|sand/i, kgPerUnit: 5 },
-  { match: /pvc|pipe/i, kgPerUnit: 15 },
-  { match: /lumber|wood|timber/i, kgPerUnit: 2 },
-  { match: /tile/i, kgPerUnit: 12 },
-  { match: /chb|block/i, kgPerUnit: 3 },
-];
-function estimateCO2SavedKg(materialName: string, quantity: number): number {
-  const factor = CO2_FACTOR_PER_UNIT.find(f => f.match.test(materialName))?.kgPerUnit ?? 20;
-  return Math.round(factor * quantity);
-}
-
-function estimateTransportCost(transferValue: number): number {
-  return Math.max(2000, Math.round(transferValue * 0.04));
-}
-
 function priorityAdvice(priority: string): string {
   if (priority === "High")   return "High priority — the target project has an active shortage. Recommend immediate transfer.";
   if (priority === "Medium") return "Medium priority — schedule the transfer within the week to stay ahead of the target project's reorder point.";
@@ -58,9 +34,6 @@ function priorityAdvice(priority: string): string {
 
 function ReviewModal({ item, onClose }: { item: RedistributionRecommendation; onClose: () => void }) {
   const compat = compatibilityOf(item);
-  const transferValue = item.transferQuantity * item.unitCost;
-  const transportCost = estimateTransportCost(transferValue);
-  const co2Kg = estimateCO2SavedKg(item.materialName, item.transferQuantity);
 
   const row = (label: string, value: string) => (
     <div>
@@ -94,15 +67,6 @@ function ReviewModal({ item, onClose }: { item: RedistributionRecommendation; on
           {row("AVAILABLE AT SOURCE", `${item.availableQuantity.toLocaleString()} ${item.unit}`)}
           {row("NEEDED AT TARGET", `${item.neededQuantity.toLocaleString()} ${item.unit}`)}
           {row("TRANSFER QUANTITY", `${item.transferQuantity.toLocaleString()} ${item.unit}`)}
-          {row("MARKET VALUE", `${formatCurrency(item.unitCost)} per ${item.unit}`)}
-          {row("ESTIMATED TRANSPORT COST", `${formatCurrency(transportCost)} (est.)`)}
-          {row("ESTIMATED ENVIRONMENTAL IMPACT", `~${co2Kg.toLocaleString()} kg CO₂ avoided (est.)`)}
-        </div>
-
-        <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10, padding: "0.9rem 1rem", marginBottom: "0.75rem" }}>
-          <p style={{ fontSize: "0.65rem", fontWeight: 700, color: "#15803d", letterSpacing: "0.05em", marginBottom: 4 }}>ESTIMATED SAVINGS</p>
-          <p style={{ fontSize: "1.1rem", fontWeight: 800, color: "#15803d" }}>{formatCurrency(item.estimatedSavings)}</p>
-          <p style={{ fontSize: "0.68rem", color: "#166534", marginTop: 2 }}>vs. purchasing {item.transferQuantity.toLocaleString()} {item.unit} of new stock</p>
         </div>
 
         <div>
@@ -120,13 +84,13 @@ function ReviewModal({ item, onClose }: { item: RedistributionRecommendation; on
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function RedistributionPage() {
-  const { projects } = useProjects();
-  const { redistribution, fetchRedistribution, generateRedistribution, approveTransfer } = useProcurement(0);
+  const { redistribution, fetchRedistribution, generateRedistribution, approveTransfer, rejectTransfer, cancelApproval } = useProcurement(0);
 
-  const [summaries, setSummaries] = useState<ExcessAnalyticsSummary[]>([]);
   const [generating, setGenerating] = useState(false);
   const [executingAll, setExecutingAll] = useState(false);
   const [approvingId, setApprovingId] = useState<number | null>(null);
+  const [rejectingId, setRejectingId] = useState<number | null>(null);
+  const [cancelingId, setCancelingId] = useState<number | null>(null);
   const [reviewItem, setReviewItem] = useState<RedistributionRecommendation | null>(null);
 
   useEffect(() => {
@@ -134,26 +98,10 @@ export default function RedistributionPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    if (projects.length === 0) return;
-    let cancelled = false;
-    Promise.all(
-      projects.map(p => api.get<ExcessAnalyticsSummary>(`/excess-waste/summary/${p.id}`).then(r => r.data).catch(() => null))
-    ).then(results => {
-      if (!cancelled) setSummaries(results.filter((s): s is ExcessAnalyticsSummary => s !== null));
-    });
-    return () => { cancelled = true; };
-  }, [projects]);
+  const deadStockCount = new Set(redistribution.map(r => `${r.sourceProjectId}-${r.sourceMaterialId}`)).size;
 
-  const totalExcessCost    = summaries.reduce((s, x) => s + x.totalExcessCost, 0);
-  const totalReusableValue = summaries.reduce((s, x) => s + x.reusableValue, 0);
-  const totalBudget        = projects.reduce((s, p) => s + p.budget, 0);
-  const excessRatePct      = totalBudget > 0 ? (totalExcessCost / totalBudget) * 100 : 0;
-  const deadStockCount     = new Set(redistribution.map(r => `${r.sourceProjectId}-${r.sourceMaterialId}`)).size;
-
-  const activeOpportunities  = redistribution.filter(r => ACTIVE_STATUSES.includes(r.status));
+  const activeOpportunities     = redistribution.filter(r => ACTIVE_STATUSES.includes(r.status));
   const approvableOpportunities = redistribution.filter(r => APPROVABLE_STATUSES.includes(r.status));
-  const totalEstimatedSavings = activeOpportunities.reduce((s, r) => s + r.estimatedSavings, 0);
 
   async function handleGenerate() {
     setGenerating(true);
@@ -179,6 +127,31 @@ export default function RedistributionPage() {
     }
   }
 
+  async function handleReject(id: number) {
+    if (!window.confirm("Reject this AI-recommended transfer? It won't be suggested again unless conditions change.")) return;
+    setRejectingId(id);
+    try {
+      await rejectTransfer(id);
+      toast.success("Recommendation rejected.");
+    } catch {
+      toast.error("Failed to reject recommendation.");
+    } finally {
+      setRejectingId(null);
+    }
+  }
+
+  async function handleCancelApproval(id: number) {
+    setCancelingId(id);
+    try {
+      await cancelApproval(id);
+      toast.success("Approval cancelled — back to pending.");
+    } catch {
+      toast.error("Failed to cancel approval.");
+    } finally {
+      setCancelingId(null);
+    }
+  }
+
   async function handleExecuteAll() {
     if (approvableOpportunities.length === 0) return;
     setExecutingAll(true);
@@ -199,13 +172,12 @@ export default function RedistributionPage() {
 
       <div style={{ padding: "1.25rem 1.5rem" }}>
 
-        {/* ── 4 stat cards — all derived from real excess-waste + redistribution data ── */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "1rem", marginBottom: "1.5rem" }}>
+        {/* ── 3 stat cards — all derived from real redistribution data ─────────── */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "1rem", marginBottom: "1.5rem" }}>
           {[
-            { icon: Trash2,     color: "#dc2626", bg: "#fee2e2", label: "Excess Rate (of budget)",  value: `${excessRatePct.toFixed(1)}%` },
-            { icon: DollarSign, color: "#15803d", bg: "#dcfce7", label: "Excess Cost",               value: formatCurrency(totalExcessCost) },
-            { icon: Repeat,     color: "#0d9488", bg: "#ccfbf1", label: "Reusable Material Value",   value: formatCurrency(totalReusableValue) },
-            { icon: Package,    color: "#b45309", bg: "#fef3c7", label: "Dead Stock Items",          value: String(deadStockCount) },
+            { icon: Repeat,         color: "#0d9488", bg: "#ccfbf1", label: "Active Opportunities", value: String(activeOpportunities.length) },
+            { icon: ClipboardCheck, color: "#15803d", bg: "#dcfce7", label: "Pending Approval",      value: String(approvableOpportunities.length) },
+            { icon: Package,        color: "#b45309", bg: "#fef3c7", label: "Dead Stock Items",      value: String(deadStockCount) },
           ].map(s => {
             const Icon = s.icon;
             return (
@@ -229,7 +201,7 @@ export default function RedistributionPage() {
                 AI Redistribution Engine — {activeOpportunities.length} opportunit{activeOpportunities.length === 1 ? "y" : "ies"} detected
               </p>
               <p style={{ fontSize: "0.78rem", color: "#6b7280", marginTop: 2 }}>
-                Estimated savings through material redistribution: <strong style={{ color: "#f97316" }}>{formatCurrency(totalEstimatedSavings)}</strong>
+                AI-recommended transfers between projects with matching excess and shortages
               </p>
             </div>
           </div>
@@ -277,17 +249,43 @@ export default function RedistributionPage() {
                       <span style={{ fontSize: "0.78rem", color: "#374151", background: "#f9fafb", padding: "3px 10px", borderRadius: 6 }}>{r.targetProjectName}</span>
                     </div>
                     <p style={{ fontSize: "0.78rem", color: "#6b7280" }}>
-                      Qty: {r.transferQuantity.toLocaleString()} {r.unit} · Est. Savings: <strong style={{ color: "#15803d" }}>{formatCurrency(r.estimatedSavings)}</strong>
+                      Qty: {r.transferQuantity.toLocaleString()} {r.unit}
                     </p>
                   </div>
                   <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                    <button
-                      onClick={() => handleApprove(r.id)}
-                      disabled={!canApprove || approvingId === r.id}
-                      style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "none", background: canApprove ? "#f97316" : "#e5e7eb", color: canApprove ? "#fff" : "#9ca3af", fontSize: "0.8rem", fontWeight: 600, cursor: canApprove && approvingId !== r.id ? "pointer" : "default" }}
-                    >
-                      <CheckSquare style={{ width: 14, height: 14 }} /> {approvingId === r.id ? "Approving…" : canApprove ? "Approve" : r.status}
-                    </button>
+                    {r.status === "Approved" ? (
+                      <>
+                        <span style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, background: "#e5e7eb", color: "#9ca3af", fontSize: "0.8rem", fontWeight: 600 }}>
+                          <CheckSquare style={{ width: 14, height: 14 }} /> Approved
+                        </span>
+                        <button
+                          onClick={() => handleCancelApproval(r.id)}
+                          disabled={cancelingId === r.id}
+                          style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #fecaca", background: "#fff", color: "#dc2626", fontSize: "0.8rem", fontWeight: 600, cursor: cancelingId === r.id ? "default" : "pointer" }}
+                        >
+                          <X style={{ width: 14, height: 14 }} /> {cancelingId === r.id ? "Cancelling…" : "Cancel"}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => handleApprove(r.id)}
+                          disabled={!canApprove || approvingId === r.id}
+                          style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "none", background: canApprove ? "#f97316" : "#e5e7eb", color: canApprove ? "#fff" : "#9ca3af", fontSize: "0.8rem", fontWeight: 600, cursor: canApprove && approvingId !== r.id ? "pointer" : "default" }}
+                        >
+                          <CheckSquare style={{ width: 14, height: 14 }} /> {approvingId === r.id ? "Approving…" : canApprove ? "Approve" : r.status}
+                        </button>
+                        {canApprove && (
+                          <button
+                            onClick={() => handleReject(r.id)}
+                            disabled={rejectingId === r.id}
+                            style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #fecaca", background: "#fff", color: "#dc2626", fontSize: "0.8rem", fontWeight: 600, cursor: rejectingId === r.id ? "default" : "pointer" }}
+                          >
+                            <X style={{ width: 14, height: 14 }} /> {rejectingId === r.id ? "Rejecting…" : "Reject"}
+                          </button>
+                        )}
+                      </>
+                    )}
                     <button onClick={() => setReviewItem(r)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", fontWeight: 500, cursor: "pointer" }}>
                       <Eye style={{ width: 14, height: 14 }} /> Review
                     </button>

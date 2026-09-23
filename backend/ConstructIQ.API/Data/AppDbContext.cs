@@ -106,6 +106,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasForeignKey(r => r.ApprovedByUserId)
             .OnDelete(DeleteBehavior.SetNull);
 
+        mb.Entity<RedistributionRequest>()
+            .HasOne(r => r.SourceExcessWasteRecord)
+            .WithMany()
+            .HasForeignKey(r => r.SourceExcessWasteRecordId)
+            .OnDelete(DeleteBehavior.SetNull);
+
         mb.Entity<Measurement>()
             .HasOne(m => m.RecordedBy)
             .WithMany()
