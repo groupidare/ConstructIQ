@@ -420,7 +420,7 @@ export default function MaterialPlanTab({
                     {['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA / QUANTITY'].map(h => <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>)}
                   </div>
                   {rows.length === 0 ? <p style={{ padding: '1rem', fontSize: '0.78rem', color: '#9ca3af' }}>No BOQ rows extracted yet.</p> : rows.map((row, index) => (
-                    <div key={row.id ?? index} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.2fr 2fr 0.7fr 1fr', gap: 8, padding: '0.7rem 1rem', borderBottom: '1px solid #f3f4f6', alignItems: 'center' }}>
+                    <div key={`${row.id ?? 'new'}-${index}`} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.2fr 2fr 0.7fr 1fr', gap: 8, padding: '0.7rem 1rem', borderBottom: '1px solid #f3f4f6', alignItems: 'center' }}>
                       <span style={{ fontSize: '0.76rem', color: '#374151' }}>{row.primarySection || '—'}</span>
                       <span style={{ fontSize: '0.76rem', color: '#374151' }}>{row.subCategory || '—'}</span>
                       <span style={{ fontSize: '0.76rem', color: '#111827' }}>{row.specification || materialLabel(row)}</span>
