@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import { Pencil, Eye, FileText, Folder } from 'lucide-react';
 import { useDocuments } from '@/hooks/useDocuments';
@@ -9,9 +10,10 @@ import { useInventory } from '@/hooks/useInventory';
 import { useForecasting } from '@/hooks/useForecasting';
 import { useNotifications } from '@/hooks/useNotifications';
 import { useMaterialRequests } from '@/hooks/useMaterialRequests';
+import { useWarehouseRequests } from '@/hooks/useWarehouseRequests';
+import { useAlertStore } from '@/store/alertStore';
 import { useProjects } from '@/hooks/useProjects';
 import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
-import { useAlertStore } from '@/store/alertStore';
 import type { Project, ProjectType } from '@/types/project';
 import type { BOQItemRow } from '@/types/boq';
 import type { PurchaseOrderMaterial } from '@/types/purchaseOrder';
@@ -54,15 +56,18 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [poOrderDate, setPoOrderDate] = useState('');
   const [poExpectedDate, setPoExpectedDate] = useState('');
 
+  const router = useRouter();
+
   const { documents, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument } = useDocuments(project.id);
   const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems } = useBOQ(project.id);
   const { inventory, fetchInventory } = useInventory(project.id);
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
   const { sendNotification } = useNotifications();
   const { createRequest: createMaterialRequest } = useMaterialRequests();
+  const { createRequest: createWarehouseRequest } = useWarehouseRequests();
+  const addAlert = useAlertStore(s => s.addAlert);
   const { editProject } = useProjects();
   const { items: purchaseOrders, fetchItems: fetchPurchaseOrders, createOrder, linkMaterial } = usePurchaseOrders(project.id);
-  const addAlert = useAlertStore(s => s.addAlert);
 
   const seededBoq = useRef(false);
 
@@ -80,7 +85,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     seededBoq.current = true;
     setBoqRows(boqItems.map(b => ({
       id: b.id, phaseId: b.phaseId, primarySection: b.primarySection, subCategory: b.subCategory,
-      materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, notes: b.notes,
+      specification: b.specification, materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, notes: b.notes,
+      historicalSupply: b.historicalSupply,
     })));
   }, [boqItems]);
 
@@ -137,6 +143,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
             : undefined,
           primarySection: item.primarySection || 'Others',
           subCategory: item.subCategory,
+          specification: item.specification,
           materialId: item.matchedMaterialId,
           // Keep the scanned name even when a catalog match was found — it's
           // the only display text available until this row is saved and the
@@ -144,6 +151,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
           newMaterialName: item.materialName,
           unit: item.unit,
           estimatedQuantity: item.estimatedQuantity,
+          historicalSupply: item.historicalSupply,
           notes: 'Auto-scanned',
         })),
       ]);
@@ -272,8 +280,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     try {
       await saveBoqItems(boqRows);
       toast.success('Material plan saved.');
-    } catch {
-      toast.error('Failed to save material plan.');
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to save material plan.'));
     } finally {
       setSavingBoq(false);
     }
@@ -293,7 +301,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       toast.success('Material plan saved and forecast generated.');
       setTab('materialPlan');
     } catch (error) {
-      toast.error(apiErrorMessage(error, 'Failed to generate forecast.'));
+      toast.error(apiErrorMessage(error, 'Failed to generate forecast — no historical or BOQ data available yet.'));
     } finally {
       setForecasting(false);
     }
@@ -302,41 +310,43 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   async function handleNotify(kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string) {
     const isProcurement = kind === 'ProcurementOrder';
 
-    // Notifying Procurement also raises a real, trackable Material Request —
-    // that needs a resolved catalog material and an actual shortage to make
-    // sense (a request for a not-yet-linked material can't be matched against
-    // supplier history, and a zero/negative quantity is nothing to fulfill).
-    if (isProcurement) {
-      if (!materialId) {
-        toast.error('Link this row to a catalog material before requesting it from Procurement.');
-        return;
-      }
-      if (quantity <= 0) {
-        toast.error('Nothing to request — current stock already covers the estimated quantity.');
-        return;
-      }
+    // Both flows raise a real, trackable request now — that needs a resolved
+    // catalog material and an actual shortage to make sense (a request for a
+    // not-yet-linked material can't be matched against supplier history, and
+    // a zero/negative quantity is nothing to fulfill or release).
+    if (!materialId) {
+      toast.error(isProcurement
+        ? 'Link this row to a catalog material before requesting it from Procurement.'
+        : 'Link this row to a catalog material before requesting it from the warehouse.');
+      return;
+    }
+    if (quantity <= 0) {
+      toast.error('Nothing to request — current stock already covers the estimated quantity.');
+      return;
     }
 
     const message = isProcurement
       ? `${materialName}: order ${quantity.toLocaleString()} more for "${project.name}".`
       : `Please verify stock/quality of ${materialName} for "${project.name}".`;
+
     try {
       if (isProcurement) {
-        await createMaterialRequest({ projectId: project.id, materialId: materialId!, quantity, unit });
+        await createMaterialRequest({ projectId: project.id, materialId, quantity, unit });
+        await sendNotification({
+          projectId: project.id, materialId,
+          recipientRole: 'ProcurementOfficer',
+          kind, message, quantity,
+        });
+        addAlert({ kind: 'delay', title: 'Procurement Alert', body: message });
+        toast.success('Procurement notified — request added to their queue.');
+      } else {
+        await createWarehouseRequest({ projectId: project.id, materialId, requestedQuantity: quantity });
+        addAlert({ kind: 'overstock', title: 'Warehouse Alert', body: message });
+        toast.success(`Material request sent for ${materialName}.`);
+        router.push('/inventory?tab=requests');
       }
-      await sendNotification({
-        projectId: project.id, materialId,
-        recipientRole: isProcurement ? 'ProcurementOfficer' : 'WarehousePersonnel',
-        kind, message, quantity: isProcurement ? quantity : undefined,
-      });
-      addAlert({
-        kind: isProcurement ? 'delay' : 'overstock',
-        title: isProcurement ? 'Procurement Alert' : 'Warehouse Alert',
-        body: message,
-      });
-      toast.success(isProcurement ? 'Procurement notified — request added to their queue.' : 'Warehouse notified.');
     } catch (error) {
-      toast.error(apiErrorMessage(error, isProcurement ? 'Failed to send the material request.' : 'Failed to send notification.'));
+      toast.error(apiErrorMessage(error, isProcurement ? 'Failed to send the material request.' : 'Failed to create warehouse request.'));
     }
   }
 

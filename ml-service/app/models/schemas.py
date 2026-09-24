@@ -47,6 +47,17 @@ class DocumentParseRequest(BaseModel):
     project_id: int
 
 
+class HistoricalSupplyLine(BaseModel):
+    """One real, already-happened purchase line extracted from a historical
+    project's combined BOQ+PO report — only populated when the source sheet
+    has a PO block after the plain BOQ columns; empty for a plain BOQ file."""
+    material_name: str
+    unit:          str
+    quantity:      float
+    supplier_name: Optional[str] = None
+    po_number:     Optional[str] = None
+
+
 class ParsedBOQItem(BaseModel):
     material_name:     str
     specification:     str
@@ -55,6 +66,7 @@ class ParsedBOQItem(BaseModel):
     phase_hint:        Optional[str] = None
     primary_section:   Optional[str] = None
     sub_category:      Optional[str] = None
+    historical_supply: list[HistoricalSupplyLine] = []
 
 
 class DocumentParseResponse(BaseModel):

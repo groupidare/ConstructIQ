@@ -19,6 +19,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ProcurementRecommendation> ProcurementRecommendations => Set<ProcurementRecommendation>();
     public DbSet<PurchaseRequest>          PurchaseRequests          => Set<PurchaseRequest>();
     public DbSet<RedistributionRequest>    RedistributionRequests    => Set<RedistributionRequest>();
+    public DbSet<WarehouseRequest>         WarehouseRequests         => Set<WarehouseRequest>();
+    public DbSet<HistoricalMaterialSupply> HistoricalMaterialSupplies => Set<HistoricalMaterialSupply>();
     public DbSet<ActivityLog>              ActivityLogs              => Set<ActivityLog>();
     public DbSet<Measurement>              Measurements              => Set<Measurement>();
     public DbSet<ProjectDocument>          ProjectDocuments          => Set<ProjectDocument>();
@@ -111,6 +113,42 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasOne(r => r.SourceExcessWasteRecord)
             .WithMany()
             .HasForeignKey(r => r.SourceExcessWasteRecordId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<WarehouseRequest>()
+            .HasOne(m => m.Project)
+            .WithMany()
+            .HasForeignKey(m => m.ProjectId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<WarehouseRequest>()
+            .HasOne(m => m.Material)
+            .WithMany()
+            .HasForeignKey(m => m.MaterialId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<WarehouseRequest>()
+            .HasOne(m => m.RequestedBy)
+            .WithMany()
+            .HasForeignKey(m => m.RequestedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<WarehouseRequest>()
+            .HasOne(m => m.ApprovedBy)
+            .WithMany()
+            .HasForeignKey(m => m.ApprovedByUserId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<HistoricalMaterialSupply>()
+            .HasOne(h => h.BOQItem)
+            .WithMany(b => b.HistoricalSupplies)
+            .HasForeignKey(h => h.BOQItemId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<HistoricalMaterialSupply>()
+            .HasOne(h => h.Supplier)
+            .WithMany()
+            .HasForeignKey(h => h.SupplierId)
             .OnDelete(DeleteBehavior.SetNull);
 
         mb.Entity<Measurement>()

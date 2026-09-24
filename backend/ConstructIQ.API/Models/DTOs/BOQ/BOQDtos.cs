@@ -18,6 +18,18 @@ public class BOQItemUpsertDto
     // data — live projects derive actual usage from inventory movements instead.
     public decimal? ActualQuantity   { get; set; }
     public string? Notes             { get; set; }
+    // Real purchase lines extracted from a historical project's combined
+    // BOQ+PO report — full-replace on every save, see BOQService.BulkSaveAsync.
+    public List<HistoricalSupplyLineDto>? HistoricalSupply { get; set; }
+}
+
+public class HistoricalSupplyLineDto
+{
+    public string? PoNumber     { get; set; }
+    public string  MaterialName { get; set; } = string.Empty;
+    public string  Unit         { get; set; } = string.Empty;
+    public decimal Quantity     { get; set; }
+    public string? SupplierName { get; set; }
 }
 
 public class BOQBulkSaveDto
@@ -44,4 +56,16 @@ public class BOQItemResponseDto
     public decimal  ActualQuantity    { get; set; }
     public string?  Notes             { get; set; }
     public DateTime CreatedAt         { get; set; }
+    public List<HistoricalSupplyResponseDto> HistoricalSupply { get; set; } = [];
+}
+
+public class HistoricalSupplyResponseDto
+{
+    public int      Id           { get; set; }
+    public int?     SupplierId   { get; set; }
+    public string?  SupplierName { get; set; }
+    public string?  PoNumber     { get; set; }
+    public string   MaterialName { get; set; } = string.Empty;
+    public string   Unit         { get; set; } = string.Empty;
+    public decimal  Quantity     { get; set; }
 }

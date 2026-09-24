@@ -13,6 +13,7 @@ public class BOQService(AppDbContext db) : IBOQService
         var rows = await db.BOQItems
             .Include(b => b.Material)
             .Include(b => b.Phase)
+            .Include(b => b.HistoricalSupplies).ThenInclude(h => h.Supplier)
             .Where(b => b.ProjectId == projectId)
             .ToListAsync();
 
@@ -21,6 +22,20 @@ public class BOQService(AppDbContext db) : IBOQService
 
     public async Task<IEnumerable<BOQItemResponseDto>> BulkSaveAsync(int projectId, List<BOQItemUpsertDto> items, int userId)
     {
+        var project = await db.Projects.FindAsync(projectId)
+            ?? throw new InvalidOperationException("Project not found.");
+
+        // Real completed projects need a real Purchase Order on file before their
+        // Material Plan can be saved — historical backfills are training data,
+        // not real procurement-tracked projects, so they're exempt.
+        if (project.Status == ProjectStatus.Completed && !project.IsHistorical)
+        {
+            var hasPurchaseOrder = await db.PurchaseOrders.AnyAsync(po => po.ProjectId == projectId);
+            if (!hasPurchaseOrder)
+                throw new InvalidOperationException(
+                    "This project is marked Completed and needs at least one Purchase Order on file before the Material Plan can be saved.");
+        }
+
         var saved = new List<BOQItem>();
 
         foreach (var item in items)
@@ -60,14 +75,42 @@ public class BOQService(AppDbContext db) : IBOQService
             entity.UpdatedAt         = DateTime.UtcNow;
 
             saved.Add(entity);
-        }
+            await db.SaveChangesAsync(); // need entity.Id below for a new row
 
-        await db.SaveChangesAsync();
+            // Full-replace the historical supply lines for this row — a scan
+            // is always a fresh snapshot of the source file, not an upsert.
+            if (item.HistoricalSupply is not null)
+            {
+                var existingSupplies = await db.HistoricalMaterialSupplies
+                    .Where(h => h.BOQItemId == entity.Id)
+                    .ToListAsync();
+                db.HistoricalMaterialSupplies.RemoveRange(existingSupplies);
+
+                foreach (var line in item.HistoricalSupply)
+                {
+                    int? supplierId = !string.IsNullOrWhiteSpace(line.SupplierName)
+                        ? await FindOrCreateSupplierAsync(line.SupplierName)
+                        : null;
+
+                    db.HistoricalMaterialSupplies.Add(new HistoricalMaterialSupply
+                    {
+                        BOQItemId    = entity.Id,
+                        SupplierId   = supplierId,
+                        PoNumber     = line.PoNumber,
+                        MaterialName = line.MaterialName,
+                        Unit         = line.Unit,
+                        Quantity     = line.Quantity,
+                    });
+                }
+                await db.SaveChangesAsync();
+            }
+        }
 
         var ids = saved.Select(s => s.Id).ToList();
         var reloaded = await db.BOQItems
             .Include(b => b.Material)
             .Include(b => b.Phase)
+            .Include(b => b.HistoricalSupplies).ThenInclude(h => h.Supplier)
             .Where(b => ids.Contains(b.Id))
             .ToListAsync();
         return reloaded.Select(ToDto);
@@ -116,6 +159,21 @@ public class BOQService(AppDbContext db) : IBOQService
         return material.Id;
     }
 
+    // Mirrors PurchaseOrdersController's supplier find-or-create-by-name — the
+    // only way new suppliers enter the system, kept consistent everywhere a
+    // free-text supplier name needs to resolve to a real Supplier row.
+    private async Task<int> FindOrCreateSupplierAsync(string name)
+    {
+        var trimmed = name.Trim();
+        var existing = await db.Suppliers.FirstOrDefaultAsync(s => s.Name.ToLower() == trimmed.ToLower());
+        if (existing is not null) return existing.Id;
+
+        var supplier = new Supplier { Name = trimmed };
+        db.Suppliers.Add(supplier);
+        await db.SaveChangesAsync();
+        return supplier.Id;
+    }
+
     private static BOQItemResponseDto ToDto(BOQItem b) => new()
     {
         Id                = b.Id,
@@ -132,5 +190,15 @@ public class BOQService(AppDbContext db) : IBOQService
         ActualQuantity    = b.ActualQuantity,
         Notes             = b.Notes,
         CreatedAt         = b.CreatedAt,
+        HistoricalSupply  = b.HistoricalSupplies.Select(h => new HistoricalSupplyResponseDto
+        {
+            Id           = h.Id,
+            SupplierId   = h.SupplierId,
+            SupplierName = h.Supplier?.Name,
+            PoNumber     = h.PoNumber,
+            MaterialName = h.MaterialName,
+            Unit         = h.Unit,
+            Quantity     = h.Quantity,
+        }).ToList(),
     };
 }

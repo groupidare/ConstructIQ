@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ConstructIQ.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260924072219_AddMaterialRequests")]
+    [Migration("20260924070731_AddMaterialRequests")]
     partial class AddMaterialRequests
     {
         /// <inheritdoc />
@@ -502,10 +502,10 @@ namespace ConstructIQ.API.Migrations
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<DateTime>("CreatedAt")
+                    b.Property<DateTime?>("ApprovedAt")
                         .HasColumnType("datetime(6)");
 
-                    b.Property<int?>("FulfilledByPurchaseOrderId")
+                    b.Property<int?>("ApprovedByUserId")
                         .HasColumnType("int");
 
                     b.Property<int>("MaterialId")
@@ -514,20 +514,21 @@ namespace ConstructIQ.API.Migrations
                     b.Property<int>("ProjectId")
                         .HasColumnType("int");
 
-                    b.Property<decimal>("Quantity")
-                        .HasColumnType("decimal(18,4)");
+                    b.Property<DateTime>("RequestedAt")
+                        .HasColumnType("datetime(6)");
 
                     b.Property<int>("RequestedByUserId")
                         .HasColumnType("int");
 
-                    b.Property<string>("Unit")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("varchar(20)");
+                    b.Property<decimal>("RequestedQuantity")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("FulfilledByPurchaseOrderId");
+                    b.HasIndex("ApprovedByUserId");
 
                     b.HasIndex("MaterialId");
 
@@ -1503,9 +1504,9 @@ namespace ConstructIQ.API.Migrations
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.MaterialRequest", b =>
                 {
-                    b.HasOne("ConstructIQ.API.Models.Entities.PurchaseOrder", "FulfilledByPurchaseOrder")
+                    b.HasOne("ConstructIQ.API.Models.Entities.User", "ApprovedBy")
                         .WithMany()
-                        .HasForeignKey("FulfilledByPurchaseOrderId")
+                        .HasForeignKey("ApprovedByUserId")
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.HasOne("ConstructIQ.API.Models.Entities.Material", "Material")
@@ -1526,7 +1527,7 @@ namespace ConstructIQ.API.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.Navigation("FulfilledByPurchaseOrder");
+                    b.Navigation("ApprovedBy");
 
                     b.Navigation("Material");
 

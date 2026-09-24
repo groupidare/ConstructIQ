@@ -40,4 +40,6 @@ public class BOQItem
     public int CreatedByUserId { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    public ICollection<HistoricalMaterialSupply> HistoricalSupplies { get; set; } = [];
 }
