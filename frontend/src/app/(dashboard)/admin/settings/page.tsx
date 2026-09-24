@@ -461,14 +461,13 @@ function EditProfileModal({ onClose }: { onClose: () => void }) {
   const updateUser = useAuthStore(s => s.updateUser);
   const [firstName, setFirstName] = useState(user?.firstName ?? "");
   const [lastName,  setLastName]  = useState(user?.lastName  ?? "");
-  const [email,     setEmail]     = useState(user?.email     ?? "");
   const [saving,    setSaving]    = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const initials = `${user?.firstName?.[0] ?? ""}${user?.lastName?.[0] ?? ""}`.toUpperCase();
 
   // Avatar changes are staged locally and only sent to the server when
   // "Save Changes" is clicked, so "Cancel" genuinely discards them — same
-  // as the name/email fields already do.
+  // as the name fields already do. Email is intentionally not editable here.
   const [pendingAvatarFile, setPendingAvatarFile] = useState<File | null>(null);
   const [previewUrl,        setPreviewUrl]        = useState<string | null>(null);
   const [avatarRemoved,     setAvatarRemoved]     = useState(false);
@@ -510,8 +509,8 @@ function EditProfileModal({ onClose }: { onClose: () => void }) {
   }
 
   async function handleSave() {
-    if (!firstName.trim() || !lastName.trim() || !email.trim()) {
-      toast.error("First name, last name, and email are required.");
+    if (!firstName.trim() || !lastName.trim()) {
+      toast.error("First name and last name are required.");
       return;
     }
     setSaving(true);
@@ -534,10 +533,10 @@ function EditProfileModal({ onClose }: { onClose: () => void }) {
       }
 
       const { data } = await api.put("/users/me", {
-        firstName: firstName.trim(), lastName: lastName.trim(), email: email.trim(),
+        firstName: firstName.trim(), lastName: lastName.trim(),
       });
       updateUser({
-        firstName: data.firstName, lastName: data.lastName, email: data.email,
+        firstName: data.firstName, lastName: data.lastName,
         ...(newAvatarUrl !== undefined ? { avatarUrl: newAvatarUrl } : {}),
       });
       toast.success("Profile updated.");
@@ -612,7 +611,6 @@ function EditProfileModal({ onClose }: { onClose: () => void }) {
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem", marginBottom:"0.75rem" }}>
           <div><p style={{ fontSize:"0.72rem", color:"#6b7280", fontWeight:600, marginBottom:5 }}>First Name</p><input value={firstName} onChange={e=>setFirstName(e.target.value)} style={inp} suppressHydrationWarning /></div>
           <div><p style={{ fontSize:"0.72rem", color:"#6b7280", fontWeight:600, marginBottom:5 }}>Last Name</p><input value={lastName} onChange={e=>setLastName(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div style={{ gridColumn:"1/-1" }}><p style={{ fontSize:"0.72rem", color:"#6b7280", fontWeight:600, marginBottom:5 }}>Email</p><input value={email} onChange={e=>setEmail(e.target.value)} style={inp} suppressHydrationWarning /></div>
         </div>
         <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1rem" }}>
           <button onClick={handleCancel} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>

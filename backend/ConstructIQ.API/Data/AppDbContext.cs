@@ -30,6 +30,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<PurchaseOrderMaterial>    PurchaseOrderMaterials    => Set<PurchaseOrderMaterial>();
     public DbSet<DeliveryEvaluation>       DeliveryEvaluations       => Set<DeliveryEvaluation>();
     public DbSet<DeliveryPhoto>            DeliveryPhotos            => Set<DeliveryPhoto>();
+    public DbSet<DeliveryBatch>            DeliveryBatches           => Set<DeliveryBatch>();
+    public DbSet<DeliveryBatchPhoto>       DeliveryBatchPhotos       => Set<DeliveryBatchPhoto>();
     public DbSet<TrustedDevice>            TrustedDevices            => Set<TrustedDevice>();
     public DbSet<WarehouseStockItem>       WarehouseStockItems       => Set<WarehouseStockItem>();
     public DbSet<MaterialRequest>          MaterialRequests          => Set<MaterialRequest>();
@@ -204,6 +206,18 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasOne(e => e.RatedBy)
             .WithMany()
             .HasForeignKey(e => e.RatedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<DeliveryBatch>()
+            .HasOne(b => b.PurchaseOrder)
+            .WithMany(po => po.DeliveryBatches)
+            .HasForeignKey(b => b.PurchaseOrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<DeliveryBatch>()
+            .HasOne(b => b.UploadedBy)
+            .WithMany()
+            .HasForeignKey(b => b.UploadedByUserId)
             .OnDelete(DeleteBehavior.Restrict);
 
         mb.Entity<Supplier>()

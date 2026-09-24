@@ -168,15 +168,13 @@ public class UsersController(AppDbContext db, IWebHostEnvironment env) : Control
         var user = await db.Users.FindAsync(userId);
         if (user is null) return NotFound();
 
-        if (string.IsNullOrWhiteSpace(dto.FirstName) || string.IsNullOrWhiteSpace(dto.LastName) || string.IsNullOrWhiteSpace(dto.Email))
-            return BadRequest(new { message = "First name, last name, and email are required." });
+        if (string.IsNullOrWhiteSpace(dto.FirstName) || string.IsNullOrWhiteSpace(dto.LastName))
+            return BadRequest(new { message = "First name and last name are required." });
 
-        if (await db.Users.AnyAsync(u => u.Id != userId && u.Email == dto.Email))
-            return Conflict(new { message = "That email is already in use by another account." });
-
+        // Email is intentionally not user-editable here — it's the account's
+        // login identity, so changing it goes through an admin, not self-service.
         user.FirstName   = dto.FirstName.Trim();
         user.LastName    = dto.LastName.Trim();
-        user.Email       = dto.Email.Trim();
         user.PhoneNumber = dto.PhoneNumber;
         user.UpdatedAt   = DateTime.UtcNow;
 
@@ -379,6 +377,5 @@ public record UpdateMfaDto(bool Enabled);
 public record UpdateProfileDto(
     string FirstName,
     string LastName,
-    string Email,
     string? PhoneNumber = null
 );

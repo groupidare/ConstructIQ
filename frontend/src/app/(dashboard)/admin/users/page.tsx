@@ -81,12 +81,6 @@ const ROLES = [
   { value:"Admin",              label:"System Administrator",  icon:Shield,          desc:"Full system access, user management, backups"          },
 ];
 
-interface ProjectListDto {
-  id: number; name: string; status: string;
-}
-
-const PROJECT_ROLES = ["ProjectManager", "SiteEngineer"];
-
 // ── New User modal ────────────────────────────────────────────────────────────
 
 function NewUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: (u: UserRecord) => void }) {
@@ -99,25 +93,7 @@ function NewUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
   const [status,     setStatus]     = useState("Active");
   const [forceReset, setForceReset] = useState("Yes (Recommended)");
   const [role,       setRole]       = useState("ProjectManager");
-  const [projects,   setProjects]   = useState<string[]>([]);
   const [saving,     setSaving]     = useState(false);
-  const [activeProjects, setActiveProjects] = useState<string[]>([]);
-
-  const needsProjects = PROJECT_ROLES.includes(role);
-
-  useEffect(() => {
-    api.get<ProjectListDto[]>("/projects")
-      .then(({ data }) => setActiveProjects(data.filter(p => p.status === "Active").map(p => p.name)))
-      .catch(() => setActiveProjects([]));
-  }, []);
-
-  function toggleProject(p: string) {
-    setProjects(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
-  }
-
-  useEffect(() => {
-    if (!needsProjects) setProjects([]);
-  }, [needsProjects]);
 
   async function handleAdd() {
     if (!firstName || !lastName || !email || !username || !password) {
@@ -224,41 +200,12 @@ function NewUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
           })}
         </div>
 
-        {needsProjects && (
-          <>
-            <hr style={{ border:"none", borderTop:"1px solid #f3f4f6", marginBottom:"1.25rem" }} />
-
-            {/* Project Assignment */}
-            <p style={{ fontSize:"0.65rem", fontWeight:800, color:"#9ca3af", letterSpacing:"0.1em", marginBottom:"0.625rem" }}>PROJECT ASSIGNMENT</p>
-            <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:"0.5rem" }}>ASSIGN TO PROJECTS *</p>
-            {activeProjects.length > 0 ? (
-              <div style={{ background:"#fff", border:"1px solid #e5e7eb", borderRadius:8, overflow:"hidden", marginBottom:4 }}>
-                {activeProjects.map((p, i) => (
-                  <button key={p} onClick={()=>toggleProject(p)} style={{
-                    display:"block", width:"100%", textAlign:"left",
-                    padding:"9px 14px", fontSize:"0.875rem", cursor:"pointer", border:"none",
-                    background: projects.includes(p) ? "#fff7ed" : "#fff",
-                    color: projects.includes(p) ? "#ea580c" : "#374151",
-                    fontWeight: projects.includes(p) ? 600 : 400,
-                    borderBottom: i < activeProjects.length - 1 ? "1px solid #f3f4f6" : "none",
-                  }}>
-                    {p}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <p style={{ fontSize:"0.8rem", color:"#9ca3af", padding:"9px 0" }}>No active projects available.</p>
-            )}
-            <p style={{ fontSize:"0.7rem", color:"#9ca3af", marginBottom:"1.5rem" }}>Click to select / deselect multiple</p>
-          </>
-        )}
-
         {/* Footer */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
           <p style={{ fontSize:"0.72rem", color:"#9ca3af" }}>* Required fields</p>
           <div style={{ display:"flex", gap:"0.75rem" }}>
             <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-            <button onClick={handleAdd} disabled={saving} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", opacity: saving ? 0.7 : 1 }}>
+            <button onClick={handleAdd} disabled={saving} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", opacity: saving ? 0.7 : 1 }}>
               {saving ? "Adding..." : "Add User"}
             </button>
           </div>
@@ -320,23 +267,22 @@ function EditUserModal({ user, onClose, onUpdated }: { user: UserRecord; onClose
   const [lastName,  setLastName]  = useState(user.lastName);
   const [email,     setEmail]     = useState(user.email);
   const [phone,     setPhone]     = useState(user.phoneNumber ?? "");
-  const [role,      setRole]      = useState(user.role);
   const [isActive,  setIsActive]  = useState(user.isActive);
   const [saving,    setSaving]    = useState(false);
 
   const inp: React.CSSProperties = {
     width: "100%", boxSizing: "border-box" as const,
-    background: "#111827", color: "#fff", border: "none",
+    background: "#fff", color: "#111827", border: "1px solid #e5e7eb",
     borderRadius: 8, padding: "9px 12px", fontSize: "0.875rem", outline: "none",
   };
-  const lbl: React.CSSProperties = { fontSize: "0.65rem", color: "#9ca3af", marginBottom: 4, display:"block", fontWeight:700 };
+  const label: React.CSSProperties = { fontSize: "0.65rem", color: "#9ca3af", marginBottom: 4, display: "block", fontWeight: 700, letterSpacing: "0.05em" };
 
   async function handleSave() {
     setSaving(true);
     try {
-      await api.put(`/users/${user.id}`, { firstName, lastName, email, role, isActive, phoneNumber: phone || null });
+      await api.put(`/users/${user.id}`, { firstName, lastName, email, role: user.role, isActive, phoneNumber: phone || null });
       toast.success("User updated.");
-      onUpdated({ ...user, firstName, lastName, email, role, isActive, phoneNumber: phone || undefined });
+      onUpdated({ ...user, firstName, lastName, email, isActive, phoneNumber: phone || undefined });
       onClose();
     } catch {
       toast.error("Failed to update user.");
@@ -346,33 +292,57 @@ function EditUserModal({ user, onClose, onUpdated }: { user: UserRecord; onClose
   }
 
   return (
-    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }}>
-      <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:520, boxShadow:"0 20px 60px rgba(0,0,0,0.2)" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
-          <p style={{ fontWeight:800, fontSize:"1rem" }}>Edit User — {user.firstName} {user.lastName}</p>
+    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:"1rem" }}>
+      <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:600, maxHeight:"90vh", overflowY:"auto", boxShadow:"0 24px 64px rgba(0,0,0,0.2)" }}>
+        {/* Header */}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.25rem" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={{ width:32, height:32, borderRadius:8, background:"#f3f4f6", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <Pencil style={{ width:16, height:16, color:"#374151" }} />
+            </div>
+            <div>
+              <p style={{ fontWeight:800, fontSize:"1rem" }}>Edit User</p>
+              <p style={{ fontSize:"0.72rem", color:"#9ca3af" }}>{user.firstName} {user.lastName}</p>
+            </div>
+          </div>
           <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:18, height:18 }} /></button>
         </div>
+
+        <hr style={{ border:"none", borderTop:"1px solid #f3f4f6", marginBottom:"1.25rem" }} />
+
+        {/* Personal Information */}
+        <p style={{ fontSize:"0.65rem", fontWeight:800, color:"#9ca3af", letterSpacing:"0.1em", marginBottom:"0.75rem" }}>PERSONAL INFORMATION</p>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem", marginBottom:"0.75rem" }}>
-          <div><span style={lbl}>FIRST NAME</span><input value={firstName} onChange={e=>setFirstName(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><span style={lbl}>LAST NAME</span><input value={lastName}  onChange={e=>setLastName(e.target.value)}  style={inp} suppressHydrationWarning /></div>
-          <div><span style={lbl}>EMAIL</span><input value={email} onChange={e=>setEmail(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><span style={lbl}>PHONE</span><input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="+ 63 9xx xxx xxxx" style={inp} suppressHydrationWarning /></div>
-          <div>
-            <span style={lbl}>ROLE</span>
-            <select value={role} onChange={e=>setRole(e.target.value)} style={{ ...inp, appearance:"none" as any }}>
-              {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-            </select>
-          </div>
-          <div>
-            <span style={lbl}>STATUS</span>
-            <select value={isActive ? "Active" : "Inactive"} onChange={e=>setIsActive(e.target.value === "Active")} style={{ ...inp, appearance:"none" as any }}>
-              <option>Active</option><option>Inactive</option>
-            </select>
-          </div>
+          <div><span style={label}>FIRST NAME</span><input value={firstName} onChange={e=>setFirstName(e.target.value)} style={inp} suppressHydrationWarning /></div>
+          <div><span style={label}>LAST NAME</span><input value={lastName}  onChange={e=>setLastName(e.target.value)}  style={inp} suppressHydrationWarning /></div>
+          <div><span style={label}>EMAIL ADDRESS</span><input value={email} onChange={e=>setEmail(e.target.value)} style={inp} suppressHydrationWarning /></div>
+          <div><span style={label}>PHONE NUMBER</span><input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="+ 63 9xx xxx xxxx" style={inp} suppressHydrationWarning /></div>
         </div>
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1rem" }}>
+
+        <hr style={{ border:"none", borderTop:"1px solid #f3f4f6", marginBottom:"1.25rem" }} />
+
+        {/* Account Status */}
+        <p style={{ fontSize:"0.65rem", fontWeight:800, color:"#9ca3af", letterSpacing:"0.1em", marginBottom:"0.75rem" }}>ACCOUNT STATUS</p>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.5rem", marginBottom:"1.25rem" }}>
+          {(["Active", "Inactive"] as const).map(s => {
+            const sel = (isActive ? "Active" : "Inactive") === s;
+            return (
+              <button key={s} onClick={()=>setIsActive(s === "Active")} style={{
+                textAlign:"left", padding:"10px 12px", borderRadius:8, cursor:"pointer",
+                border: sel ? "2px solid #f97316" : "1px solid #e5e7eb",
+                background: sel ? "#fff7ed" : "#f9fafb",
+                transition: "all 0.15s",
+              }}>
+                <p style={{ fontWeight:700, fontSize:"0.82rem", color: sel ? "#ea580c" : "#111827" }}>{s}</p>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Footer */}
+        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end" }}>
           <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleSave} disabled={saving} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", opacity: saving ? 0.7 : 1 }}>
+          <button onClick={handleSave} disabled={saving} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", opacity: saving ? 0.7 : 1 }}>
             {saving ? "Saving..." : "Save Changes"}
           </button>
         </div>
