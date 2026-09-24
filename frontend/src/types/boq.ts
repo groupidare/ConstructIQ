@@ -15,6 +15,7 @@ export interface BOQItemRow {
   phaseId?: number;
   primarySection: string;
   subCategory?: string;
+  specification?: string;
   materialId?: number;
   newMaterialName?: string;
   unit?: string;
@@ -22,6 +23,15 @@ export interface BOQItemRow {
   // Only entered for historical/completed projects backfilling training data.
   actualQuantity?: number;
   notes?: string;
+  historicalSupply?: HistoricalSupplyLine[];
+}
+
+export interface HistoricalSupplyLine {
+  poNumber?: string;
+  materialName: string;
+  unit: string;
+  quantity: number;
+  supplierName?: string;
 }
 
 export interface BOQItem {
@@ -33,10 +43,12 @@ export interface BOQItem {
   subCategory?: string;
   materialId: number;
   materialName: string;
+  specification?: string;
   unit: string;
   estimatedQuantity: number;
   actualQuantity: number;
   notes?: string;
+  historicalSupply?: HistoricalSupplyLine[];
   createdAt: string;
 }
 

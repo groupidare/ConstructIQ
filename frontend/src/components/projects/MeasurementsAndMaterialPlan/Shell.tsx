@@ -81,7 +81,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     seededBoq.current = true;
     setBoqRows(boqItems.map(b => ({
       id: b.id, phaseId: b.phaseId, primarySection: b.primarySection, subCategory: b.subCategory,
-      materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, notes: b.notes,
+      specification: b.specification, materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, notes: b.notes,
+      historicalSupply: b.historicalSupply,
     })));
   }, [boqItems]);
 
@@ -138,6 +139,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
             : undefined,
           primarySection: item.primarySection || 'Others',
           subCategory: item.subCategory,
+          specification: item.specification,
           materialId: item.matchedMaterialId,
           // Keep the scanned name even when a catalog match was found — it's
           // the only display text available until this row is saved and the
@@ -145,6 +147,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
           newMaterialName: item.materialName,
           unit: item.unit,
           estimatedQuantity: item.estimatedQuantity,
+          historicalSupply: item.historicalSupply,
           notes: 'Auto-scanned',
         })),
       ]);

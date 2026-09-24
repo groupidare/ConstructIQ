@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Models.DTOs.Document;
+using ConstructIQ.API.Models.DTOs.BOQ;
 using ConstructIQ.API.Models.Entities;
 using ConstructIQ.API.Services.Interfaces;
 using Microsoft.AspNetCore.Hosting;
@@ -135,6 +136,14 @@ public class DocumentService(
                 PhaseHint         = i.PhaseHint,
                 PrimarySection    = i.PrimarySection,
                 SubCategory       = i.SubCategory,
+                HistoricalSupply  = i.HistoricalSupply.Select(s => new HistoricalSupplyLineDto
+                {
+                    PoNumber     = s.PoNumber,
+                    MaterialName = s.MaterialName,
+                    Unit         = s.Unit,
+                    Quantity     = (decimal)s.Quantity,
+                    SupplierName = s.SupplierName,
+                }).ToList(),
                 MatchedMaterialId = matches.TryGetValue(i.MaterialName.Trim().ToLower(), out var id) ? id : null,
             }).ToList(),
         };

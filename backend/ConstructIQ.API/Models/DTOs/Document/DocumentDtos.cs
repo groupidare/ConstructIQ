@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using ConstructIQ.API.Models.DTOs.BOQ;
 
 namespace ConstructIQ.API.Models.DTOs.Document;
 
@@ -37,6 +38,16 @@ public class MlParsedBoqItem
     [JsonPropertyName("phase_hint")]         public string? PhaseHint         { get; set; }
     [JsonPropertyName("primary_section")]    public string? PrimarySection    { get; set; }
     [JsonPropertyName("sub_category")]       public string? SubCategory       { get; set; }
+    [JsonPropertyName("historical_supply")]  public List<MlHistoricalSupplyLine> HistoricalSupply { get; set; } = [];
+}
+
+public class MlHistoricalSupplyLine
+{
+    [JsonPropertyName("po_number")]     public string? PoNumber { get; set; }
+    [JsonPropertyName("material_name")] public string MaterialName { get; set; } = string.Empty;
+    [JsonPropertyName("unit")]          public string Unit { get; set; } = string.Empty;
+    [JsonPropertyName("quantity")]      public double Quantity { get; set; }
+    [JsonPropertyName("supplier_name")] public string? SupplierName { get; set; }
 }
 
 public class MlDocumentParseResponse
@@ -58,6 +69,7 @@ public class ParsedBoqRowDto
     public string? PhaseHint         { get; set; }
     public string? PrimarySection    { get; set; }
     public string? SubCategory       { get; set; }
+    public List<HistoricalSupplyLineDto> HistoricalSupply { get; set; } = [];
     // Best-effort exact-name match against the Materials catalog, so the frontend
     // can pre-select an existing material instead of always treating it as new.
     public int?    MatchedMaterialId { get; set; }

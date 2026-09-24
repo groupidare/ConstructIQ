@@ -22,7 +22,16 @@ export interface ParsedBoqRow {
   phaseHint?: string;
   primarySection?: string;
   subCategory?: string;
+  historicalSupply?: HistoricalSupplyLine[];
   matchedMaterialId?: number;
+}
+
+export interface HistoricalSupplyLine {
+  poNumber?: string;
+  materialName: string;
+  unit: string;
+  quantity: number;
+  supplierName?: string;
 }
 
 export interface DocumentParseResult {

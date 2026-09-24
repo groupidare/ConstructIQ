@@ -196,6 +196,11 @@ export default function MaterialPlanTab({
     return bySection;
   }, [rows]);
 
+  const historicalPurchaseRows = useMemo(
+    () => rows.flatMap(row => row.historicalSupply ?? []),
+    [rows],
+  );
+
   // Historical projects never get a real AI forecast run against them (they're
   // training data for other projects, not a forecast target themselves) — the
   // most-demanded material extracted from the BOQ is the closest thing they
@@ -370,7 +375,7 @@ export default function MaterialPlanTab({
       {/* Bill of Quantities */}
       <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
-          <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>Bill of Quantities</p>
+          <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>{isHistorical ? 'Bill of Quantities and Purchased Orders Summary' : 'Bill of Quantities'}</p>
           {editable && (
             <button onClick={() => fileInputRef.current?.click()} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer' }}>
               <Upload style={{ width: 12, height: 12 }} /> {uploading ? 'Uploading…' : 'Upload BOQ'}
@@ -403,13 +408,60 @@ export default function MaterialPlanTab({
           </div>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+        {isHistorical && (
+          <div style={{ display: 'grid', gap: '1.25rem', padding: '1rem' }}>
+            <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ padding: '0.75rem 1rem', background: '#eff6ff', borderBottom: '1px solid #dbeafe' }}>
+                <p style={{ fontWeight: 700, fontSize: '0.82rem', color: '#1d4ed8' }}>Bill of Quantities (BOQ)</p>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <div style={{ minWidth: 760 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.2fr 2fr 0.7fr 1fr', gap: 8, padding: '0.55rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+                    {['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA / QUANTITY'].map(h => <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>)}
+                  </div>
+                  {rows.length === 0 ? <p style={{ padding: '1rem', fontSize: '0.78rem', color: '#9ca3af' }}>No BOQ rows extracted yet.</p> : rows.map((row, index) => (
+                    <div key={row.id ?? index} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.2fr 2fr 0.7fr 1fr', gap: 8, padding: '0.7rem 1rem', borderBottom: '1px solid #f3f4f6', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.76rem', color: '#374151' }}>{row.primarySection || '—'}</span>
+                      <span style={{ fontSize: '0.76rem', color: '#374151' }}>{row.subCategory || '—'}</span>
+                      <span style={{ fontSize: '0.76rem', color: '#111827' }}>{row.specification || materialLabel(row)}</span>
+                      <span style={{ fontSize: '0.76rem', color: '#6b7280' }}>{row.unit || '—'}</span>
+                      <span style={{ fontSize: '0.76rem', color: '#111827' }}>{row.estimatedQuantity.toLocaleString()}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ padding: '0.75rem 1rem', background: '#fff7ed', borderBottom: '1px solid #fed7aa' }}>
+                <p style={{ fontWeight: 700, fontSize: '0.82rem', color: '#c2410c' }}>Purchased Order (PO)</p>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <div style={{ minWidth: 760 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr 0.7fr 1fr 1.8fr', gap: 8, padding: '0.55rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+                    {['PO NUMBER', 'MATERIAL NAME', 'UNIT', 'QUANTITY', 'SUPPLIER'].map(h => <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>)}
+                  </div>
+                  {historicalPurchaseRows.length === 0 ? <p style={{ padding: '1rem', fontSize: '0.78rem', color: '#9ca3af' }}>No purchased-order rows extracted yet.</p> : historicalPurchaseRows.map((row, index) => (
+                    <div key={`${row.poNumber ?? 'po'}-${index}`} style={{ display: 'grid', gridTemplateColumns: '1fr 2fr 0.7fr 1fr 1.8fr', gap: 8, padding: '0.7rem 1rem', borderBottom: '1px solid #f3f4f6', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.76rem', color: '#374151' }}>{row.poNumber || '—'}</span>
+                      <span style={{ fontSize: '0.76rem', color: '#111827' }}>{row.materialName}</span>
+                      <span style={{ fontSize: '0.76rem', color: '#6b7280' }}>{row.unit || '—'}</span>
+                      <span style={{ fontSize: '0.76rem', color: '#111827' }}>{row.quantity.toLocaleString()}</span>
+                      <span style={{ fontSize: '0.76rem', color: '#374151' }}>{row.supplierName || '—'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: isHistorical ? 'none' : 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
           {(isCompleted ? ['MATERIAL', 'UNIT', 'PHASE', 'EST. QTY', 'ACTUAL QTY', 'ALERTS'] : ['MATERIAL', 'UNIT', 'PHASE', 'EST. QTY', 'ALERTS']).map(h => (
             <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
           ))}
         </div>
 
-        <div style={{ maxHeight: 320, overflowY: 'auto', overflowX: 'hidden' }}>
+        <div style={{ display: isHistorical ? 'none' : 'block', maxHeight: 320, overflowY: 'auto', overflowX: 'hidden' }}>
           {rows.length === 0 ? (
             <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No materials added yet.</p>
           ) : (
@@ -499,13 +551,13 @@ export default function MaterialPlanTab({
           )}
         </div>
 
-        {editable && (
+        {editable && !isHistorical && (
           <button onClick={addBlankRow} style={{ width: '100%', padding: '8px', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.78rem', color: '#f97316', fontWeight: 600, borderTop: '1px solid #f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
             <Plus style={{ width: 13, height: 13 }} /> Add Row
           </button>
         )}
 
-        {rows.length > 0 && (
+        {rows.length > 0 && !isHistorical && (
           <div style={{ padding: '0.625rem 1rem', borderTop: '1px solid #e5e7eb', background: '#f9fafb' }}>
             <p style={{ fontSize: '0.62rem', fontWeight: 700, color: '#9ca3af', marginBottom: 4 }}>
               TOTAL EST. QTY {isCompleted && '/ ACTUAL QTY'} BY UNIT
