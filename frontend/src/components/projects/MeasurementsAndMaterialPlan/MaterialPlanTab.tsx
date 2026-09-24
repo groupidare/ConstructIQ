@@ -30,7 +30,7 @@ interface Props {
   onRowsChange: (rows: BOQItemRow[]) => void;
   onSave: () => void;
   saving: boolean;
-  onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number) => void;
+  onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string) => void;
   onRemoveDocument: (documentId: number) => void;
   onRunForecast: () => void;
   forecasting: boolean;
@@ -427,14 +427,14 @@ export default function MaterialPlanTab({
                           )}
                           <div style={{ display: 'flex', gap: 4 }}>
                             <button
-                              onClick={() => onNotify('ProcurementOrder', r.materialId, materialLabel(r), toOrder)}
+                              onClick={() => onNotify('ProcurementOrder', r.materialId, materialLabel(r), toOrder, r.unit ?? '')}
                               title={`Notify procurement — order ${toOrder}`}
                               style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert ? '#fee2e2' : '#f3f4f6' }}
                             >
                               <ShoppingCart style={{ width: 12, height: 12, color: needsAlert ? '#ef4444' : '#9ca3af' }} />
                             </button>
                             <button
-                              onClick={() => onNotify('WarehouseCheck', r.materialId, materialLabel(r), r.estimatedQuantity)}
+                              onClick={() => onNotify('WarehouseCheck', r.materialId, materialLabel(r), r.estimatedQuantity, r.unit ?? '')}
                               title="Notify warehouse to check material"
                               style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}
                             >

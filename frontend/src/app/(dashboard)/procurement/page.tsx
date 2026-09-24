@@ -7,7 +7,7 @@ import {
   Clock, CheckCircle2, PackageCheck, AlertTriangle, Truck,
   ShoppingCart, Download, Plus, Eye,
   Send, History, X, Mail, Phone, Pencil, Camera, Upload, Check,
-  Wind, Droplets, CloudRain,
+  Wind, Droplets, CloudRain, ClipboardList, ChevronRight, ArrowRight,
 } from "lucide-react";
 import { useWeatherStore } from "@/store/weatherStore";
 import { useAlertStore } from "@/store/alertStore";
@@ -246,6 +246,52 @@ function mapSupplier(a: ApiSupplier): Supplier {
   };
 }
 
+// ── Material Requests ─────────────────────────────────────────────────────────
+
+interface ProjectWithRequests {
+  projectId: number;
+  projectName: string;
+  pendingCount: number;
+}
+
+interface RequestRow {
+  id: number;
+  materialId: number;
+  materialName: string;
+  quantity: number;
+  unit: string;
+  requestedByName: string;
+}
+
+interface SuggestedSupplier {
+  id: number;
+  name: string;
+  rating: number;
+  onTimePct: number;
+  deliveries: number;
+  hasHistoryWithMaterial: boolean;
+}
+
+interface ApiProjectWithRequests { projectId: number; projectName: string; pendingCount: number; }
+interface ApiMaterialRequest {
+  id: number; materialId: number; materialName: string;
+  quantity: number; unit: string; requestedByName: string; createdAt: string;
+}
+interface ApiSuggestedSupplier {
+  id: number; name: string; rating: number; onTimePct: number; deliveries: number; hasHistoryWithMaterial: boolean;
+}
+interface ApiGeneratedResult {
+  purchaseOrders: unknown[];
+  requestPoNumbers: Record<number, string>;
+}
+
+function mapRequestRow(a: ApiMaterialRequest): RequestRow {
+  return {
+    id: a.id, materialId: a.materialId, materialName: a.materialName,
+    quantity: a.quantity, unit: a.unit, requestedByName: a.requestedByName,
+  };
+}
+
 // ── Export CSV ────────────────────────────────────────────────────────────────
 
 function exportPOs(orders: PO[]) {
@@ -420,6 +466,178 @@ function NewPOModal({ onClose, onAdd, supplierNames }: {
           <button onClick={handleSubmit} disabled={saving} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.875rem", cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.7 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
             <Plus style={{ width: 14, height: 14 }} /> {saving ? "Creating…" : "Create PO"}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Requests Overlay Modal ───────────────────────────────────────────────────
+// Reviews every pending material request for one project: pick a supplier
+// per material (ranked by order history + rating, or type a new one), then
+// generate real purchase orders — one per unique supplier chosen, grouping
+// every material assigned to that supplier onto the same PO/number.
+
+function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: {
+  projectId: number;
+  projectName: string;
+  onClose: () => void;
+  onGenerated: () => void;
+}) {
+  const [rows, setRows] = useState<RequestRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [suggestionsByMaterial, setSuggestionsByMaterial] = useState<Record<number, SuggestedSupplier[]>>({});
+  const [assignments, setAssignments] = useState<Record<number, string>>({});
+  const [expectedDate, setExpectedDate] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [poNumbers, setPoNumbers] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const { data } = await api.get<ApiMaterialRequest[]>(`/material-requests/project/${projectId}`);
+        const mapped = data.map(mapRequestRow);
+        setRows(mapped);
+
+        const uniqueMaterialIds = [...new Set(mapped.map(r => r.materialId))];
+        const entries = await Promise.all(
+          uniqueMaterialIds.map(async id => {
+            const res = await api.get<ApiSuggestedSupplier[]>(`/material-requests/suggested-suppliers/${id}`);
+            return [id, res.data] as const;
+          })
+        );
+        setSuggestionsByMaterial(Object.fromEntries(entries));
+      } catch {
+        toast.error("Failed to load material requests.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [projectId]);
+
+  const generated = Object.keys(poNumbers).length > 0;
+  const allAssigned = rows.length > 0 && rows.every(r => assignments[r.id]?.trim());
+
+  async function handleGenerate() {
+    if (!expectedDate) { toast.error("Pick an expected delivery date."); return; }
+    if (!allAssigned) { toast.error("Choose a supplier for every material."); return; }
+    setGenerating(true);
+    try {
+      const { data } = await api.post<ApiGeneratedResult>("/material-requests/generate-pos", {
+        projectId,
+        expectedDate,
+        assignments: rows.map(r => ({ requestId: r.id, supplierName: assignments[r.id] })),
+      });
+      setPoNumbers(data.requestPoNumbers);
+      toast.success("Purchase order(s) generated.");
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to generate purchase orders.");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function handleGoToPurchaseOrders() {
+    onGenerated();
+    onClose();
+  }
+
+  const fieldStyle: React.CSSProperties = {
+    width: "100%", boxSizing: "border-box", padding: "7px 9px", borderRadius: 7,
+    border: "1px solid #e5e7eb", fontSize: "0.82rem", outline: "none", color: "#111827",
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: 640, maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1.5rem 1.5rem 1rem", flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 38, height: 38, borderRadius: 10, background: "#fff7ed", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <ClipboardList style={{ width: 18, height: 18, color: "#f97316" }} />
+            </div>
+            <div>
+              <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>{projectName}</h2>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>Requested materials</p>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
+        </div>
+
+        <div style={{ padding: "0 1.5rem", flex: 1, overflowY: "auto" }}>
+          {loading ? (
+            <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "2rem 0" }}>Loading requested materials…</p>
+          ) : (
+            <>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginBottom: "0.75rem" }}>
+                Supplier suggestions are ranked by past orders of that exact material first, then overall rating — or type a new supplier name.
+              </p>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
+                    {["MATERIAL", "UNIT", "QTY", "SUPPLIER", "PO #"].map(h => (
+                      <th key={h} style={{ padding: "6px 8px", textAlign: "left", fontSize: "0.62rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r, i) => {
+                    const suggestions = suggestionsByMaterial[r.materialId] ?? [];
+                    const poNumber = poNumbers[r.id];
+                    return (
+                      <tr key={r.id} style={{ borderBottom: i < rows.length - 1 ? "1px solid #f9fafb" : "none" }}>
+                        <td style={{ padding: "8px", fontSize: "0.82rem", fontWeight: 600, color: "#111827" }}>{r.materialName}</td>
+                        <td style={{ padding: "8px", fontSize: "0.78rem", color: "#6b7280" }}>{r.unit}</td>
+                        <td style={{ padding: "8px", fontSize: "0.78rem", color: "#6b7280" }}>{r.quantity}</td>
+                        <td style={{ padding: "8px", minWidth: 180 }}>
+                          {poNumber ? (
+                            <span style={{ fontSize: "0.8rem", color: "#111827" }}>{assignments[r.id]}</span>
+                          ) : (
+                            <>
+                              <input
+                                list={`suppliers-for-material-${r.materialId}`}
+                                value={assignments[r.id] ?? ""}
+                                onChange={e => setAssignments(prev => ({ ...prev, [r.id]: e.target.value }))}
+                                placeholder="Pick or type a supplier"
+                                style={fieldStyle}
+                              />
+                              <datalist id={`suppliers-for-material-${r.materialId}`}>
+                                {suggestions.map(s => <option key={s.id} value={s.name} />)}
+                              </datalist>
+                            </>
+                          )}
+                        </td>
+                        <td style={{ padding: "8px", fontSize: "0.8rem", fontWeight: 700, color: "#f97316", whiteSpace: "nowrap" }}>{poNumber ?? "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </>
+          )}
+        </div>
+
+        <div style={{ padding: "1rem 1.5rem 1.5rem", flexShrink: 0, borderTop: "1px solid #f3f4f6", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem" }}>
+          <div>
+            <label style={{ display: "block", fontSize: "0.68rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>Expected Delivery</label>
+            <input type="date" value={expectedDate} onChange={e => setExpectedDate(e.target.value)} disabled={generated}
+              style={{ ...fieldStyle, width: 170, opacity: generated ? 0.6 : 1 }} />
+          </div>
+          {generated ? (
+            <button onClick={handleGoToPurchaseOrders} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 8, border: "none", background: "#111827", color: "#fff", fontWeight: 700, fontSize: "0.85rem", cursor: "pointer" }}>
+              Purchase Order <ArrowRight style={{ width: 14, height: 14 }} />
+            </button>
+          ) : (
+            <button onClick={handleGenerate} disabled={generating || loading || rows.length === 0} style={{
+              display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 8, border: "none",
+              background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.85rem",
+              cursor: (generating || loading || rows.length === 0) ? "not-allowed" : "pointer",
+              opacity: (generating || loading || rows.length === 0) ? 0.7 : 1,
+            }}>
+              {generating ? "Generating…" : "Generate P.O. Number"}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -976,7 +1194,7 @@ function DeliveryConfirmModal({ po, supplier, onClose, onSubmit }: {
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ProcurementPage() {
-  const [tab,      setTab]      = useState<"po" | "suppliers">("po");
+  const [tab,      setTab]      = useState<"po" | "requests" | "suppliers">("po");
   const [orders,   setOrders]   = useState<PO[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading,  setLoading]  = useState(true);
@@ -987,12 +1205,15 @@ export default function ProcurementPage() {
   const [historySupplierId, setHistorySupplierId] = useState<number | null>(null);
   const [ratingSupplierId, setRatingSupplierId] = useState<number | null>(null);
   const [deliveryConfirmPOId, setDeliveryConfirmPOId] = useState<number | null>(null);
+  const [requestsProjects, setRequestsProjects] = useState<ProjectWithRequests[]>([]);
+  const [openRequestsProjectId, setOpenRequestsProjectId] = useState<number | null>(null);
 
   const viewingPO       = orders.find(o => o.id === viewingPOId) ?? null;
   const contactSupplier = suppliers.find(s => s.id === contactSupplierId) ?? null;
   const historySupplier = suppliers.find(s => s.id === historySupplierId) ?? null;
   const ratingSupplier  = suppliers.find(s => s.id === ratingSupplierId) ?? null;
   const deliveryConfirmPO = orders.find(o => o.id === deliveryConfirmPOId) ?? null;
+  const openRequestsProject = requestsProjects.find(p => p.projectId === openRequestsProjectId) ?? null;
 
   const { user } = useAuthStore();
   const role = user?.role ?? "SiteEngineer";
@@ -1011,12 +1232,23 @@ export default function ProcurementPage() {
     ]);
     setOrders(ordersRes.data.map(mapPO));
     setSuppliers(suppliersRes.data.map(mapSupplier));
+
+    // Isolated from the Promise.all above on purpose: a 403 here (roles that
+    // don't manage POs) must never take down orders/suppliers loading too,
+    // and the tab itself is already hidden for those roles regardless.
+    try {
+      const requestsRes = await api.get<ApiProjectWithRequests[]>("/material-requests/projects-with-pending");
+      setRequestsProjects(requestsRes.data);
+    } catch {
+      setRequestsProjects([]);
+    }
   }
 
   useEffect(() => {
     refetch()
       .catch(() => toast.error("Failed to load procurement data."))
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleAddPO(input: NewPOInput) {
@@ -1151,6 +1383,14 @@ export default function ProcurementPage() {
           onSubmit={submission => handleConfirmDelivery(deliveryConfirmPO, submission)}
         />
       )}
+      {openRequestsProject && (
+        <RequestsOverlayModal
+          projectId={openRequestsProject.projectId}
+          projectName={openRequestsProject.projectName}
+          onClose={() => setOpenRequestsProjectId(null)}
+          onGenerated={() => { refetch(); setTab("po"); }}
+        />
+      )}
       <Header title="Procurement" />
 
       <div style={{ padding: "1.25rem 1.5rem" }}>
@@ -1274,7 +1514,11 @@ export default function ProcurementPage() {
 
         {/* ── Tabs ─────────────────────────────────────────────────────────── */}
         <div style={{ display: "flex", gap: 4, background: "#e5e7eb", borderRadius: 8, padding: 4, width: "fit-content", marginBottom: "1.25rem" }}>
-          {([{ id: "po", label: "Purchase Orders" }, { id: "suppliers", label: "Suppliers" }] as const).map(t => (
+          {([
+            { id: "po", label: "Purchase Orders" },
+            ...(canManagePOs ? [{ id: "requests", label: "Requests" }] as const : []),
+            { id: "suppliers", label: "Suppliers" },
+          ] as const).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} style={{
               padding: "6px 20px", borderRadius: 6, fontSize: "0.875rem",
               fontWeight: tab === t.id ? 600 : 400, border: "none", cursor: "pointer",
@@ -1381,6 +1625,47 @@ export default function ProcurementPage() {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* ────────────────────────────────────────────────────────────────── */}
+        {/* Tab: Requests — projects with pending material requests only;      */}
+        {/* a project with nothing outstanding simply doesn't appear.          */}
+        {/* ────────────────────────────────────────────────────────────────── */}
+        {tab === "requests" && (
+          <div style={{ background: "#fff", borderRadius: 12, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "1.25rem" }}>
+              <ClipboardList style={{ width: 16, height: 16, color: "#f97316" }} />
+              <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Material Requests</span>
+            </div>
+
+            {requestsProjects.length === 0 ? (
+              <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "2rem 0" }}>
+                No projects have pending material requests right now.
+              </p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {requestsProjects.map(p => (
+                  <button
+                    key={p.projectId}
+                    onClick={() => setOpenRequestsProjectId(p.projectId)}
+                    style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      width: "100%", padding: "14px 16px", borderRadius: 10, border: "none",
+                      background: "#f9fafb", cursor: "pointer", textAlign: "left",
+                    }}
+                  >
+                    <div>
+                      <p style={{ fontWeight: 700, fontSize: "0.88rem", color: "#111827" }}>{p.projectName}</p>
+                      <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginTop: 2 }}>
+                        {p.pendingCount} material{p.pendingCount !== 1 ? "s" : ""} requested
+                      </p>
+                    </div>
+                    <ChevronRight style={{ width: 16, height: 16, color: "#9ca3af" }} />
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

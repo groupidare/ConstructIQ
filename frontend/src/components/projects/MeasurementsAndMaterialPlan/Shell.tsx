@@ -8,6 +8,7 @@ import { useBOQ } from '@/hooks/useBOQ';
 import { useInventory } from '@/hooks/useInventory';
 import { useForecasting } from '@/hooks/useForecasting';
 import { useNotifications } from '@/hooks/useNotifications';
+import { useMaterialRequests } from '@/hooks/useMaterialRequests';
 import { useProjects } from '@/hooks/useProjects';
 import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
 import { useAlertStore } from '@/store/alertStore';
@@ -58,6 +59,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const { inventory, fetchInventory } = useInventory(project.id);
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
   const { sendNotification } = useNotifications();
+  const { createRequest: createMaterialRequest } = useMaterialRequests();
   const { editProject } = useProjects();
   const { items: purchaseOrders, fetchItems: fetchPurchaseOrders, createOrder, linkMaterial } = usePurchaseOrders(project.id);
   const addAlert = useAlertStore(s => s.addAlert);
@@ -297,12 +299,31 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     }
   }
 
-  async function handleNotify(kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number) {
+  async function handleNotify(kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string) {
     const isProcurement = kind === 'ProcurementOrder';
+
+    // Notifying Procurement also raises a real, trackable Material Request —
+    // that needs a resolved catalog material and an actual shortage to make
+    // sense (a request for a not-yet-linked material can't be matched against
+    // supplier history, and a zero/negative quantity is nothing to fulfill).
+    if (isProcurement) {
+      if (!materialId) {
+        toast.error('Link this row to a catalog material before requesting it from Procurement.');
+        return;
+      }
+      if (quantity <= 0) {
+        toast.error('Nothing to request — current stock already covers the estimated quantity.');
+        return;
+      }
+    }
+
     const message = isProcurement
       ? `${materialName}: order ${quantity.toLocaleString()} more for "${project.name}".`
       : `Please verify stock/quality of ${materialName} for "${project.name}".`;
     try {
+      if (isProcurement) {
+        await createMaterialRequest({ projectId: project.id, materialId: materialId!, quantity, unit });
+      }
       await sendNotification({
         projectId: project.id, materialId,
         recipientRole: isProcurement ? 'ProcurementOfficer' : 'WarehousePersonnel',
@@ -313,9 +334,9 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
         title: isProcurement ? 'Procurement Alert' : 'Warehouse Alert',
         body: message,
       });
-      toast.success(isProcurement ? 'Procurement notified.' : 'Warehouse notified.');
-    } catch {
-      toast.error('Failed to send notification.');
+      toast.success(isProcurement ? 'Procurement notified — request added to their queue.' : 'Warehouse notified.');
+    } catch (error) {
+      toast.error(apiErrorMessage(error, isProcurement ? 'Failed to send the material request.' : 'Failed to send notification.'));
     }
   }
 

@@ -30,6 +30,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<DeliveryPhoto>            DeliveryPhotos            => Set<DeliveryPhoto>();
     public DbSet<TrustedDevice>            TrustedDevices            => Set<TrustedDevice>();
     public DbSet<WarehouseStockItem>       WarehouseStockItems       => Set<WarehouseStockItem>();
+    public DbSet<MaterialRequest>          MaterialRequests          => Set<MaterialRequest>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -187,6 +188,32 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasOne(m => m.Phase)
             .WithMany()
             .HasForeignKey(m => m.PhaseId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        // Cascade: a project's material requests have no meaning once the
+        // project itself is gone — matches PurchaseOrder's own project FK.
+        mb.Entity<MaterialRequest>()
+            .HasOne(r => r.Project)
+            .WithMany()
+            .HasForeignKey(r => r.ProjectId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<MaterialRequest>()
+            .HasOne(r => r.Material)
+            .WithMany()
+            .HasForeignKey(r => r.MaterialId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<MaterialRequest>()
+            .HasOne(r => r.RequestedBy)
+            .WithMany()
+            .HasForeignKey(r => r.RequestedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<MaterialRequest>()
+            .HasOne(r => r.FulfilledByPurchaseOrder)
+            .WithMany()
+            .HasForeignKey(r => r.FulfilledByPurchaseOrderId)
             .OnDelete(DeleteBehavior.SetNull);
     }
 }
