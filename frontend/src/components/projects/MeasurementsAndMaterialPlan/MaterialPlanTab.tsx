@@ -203,13 +203,23 @@ export default function MaterialPlanTab({
 
   // Historical projects never get a real AI forecast run against them (they're
   // training data for other projects, not a forecast target themselves) — the
-  // most-demanded material extracted from the BOQ is the closest thing they
-  // have to a "forecast", mirroring the same calc the project card itself
-  // uses (effective qty = Actual if entered, else Estimated).
-  const mostDemandedBoqItem = useMemo(() => {
-    if (!isHistorical || boqItems.length === 0) return null;
-    const effectiveQty = (b: BOQItem) => (b.actualQuantity > 0 ? b.actualQuantity : b.estimatedQuantity);
-    return boqItems.slice().sort((a, b) => effectiveQty(b) - effectiveQty(a))[0];
+  // top-demanded materials extracted from the BOQ+PO are the closest thing
+  // they have to a "forecast", mirroring the same calc the project card
+  // itself uses. Real PO quantities (historicalSupply — genuine supplier
+  // lines from the combined BOQ+PO extraction) are preferred over the BOQ's
+  // own estimate/actual qty since they're truer usage; a BOQ line falls back
+  // to its own qty only when it has no PO data at all.
+  const topDemandEntries = useMemo(() => {
+    if (!isHistorical || boqItems.length === 0) return [];
+    const entries: { material: string; qty: number; unit: string }[] = [];
+    boqItems.forEach(b => {
+      if (b.historicalSupply && b.historicalSupply.length > 0) {
+        b.historicalSupply.forEach(s => entries.push({ material: s.materialName, qty: s.quantity, unit: s.unit }));
+      } else {
+        entries.push({ material: b.materialName, qty: b.actualQuantity > 0 ? b.actualQuantity : b.estimatedQuantity, unit: b.unit });
+      }
+    });
+    return entries.sort((a, b) => b.qty - a.qty).slice(0, 5);
   }, [isHistorical, boqItems]);
 
   // Same ranking, but over every saved BOQ row (not just the single top one) —
@@ -293,13 +303,15 @@ export default function MaterialPlanTab({
             <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>AI-predicted demand from the latest forecast run on this project.</p>
           </div>
           {forecastedMaterials.length === 0 ? (
-            isHistorical && mostDemandedBoqItem ? (
+            isHistorical && topDemandEntries.length > 0 ? (
               <div style={{ padding: '1rem' }}>
-                <p style={{ fontSize: '0.65rem', fontWeight: 700, color: '#9ca3af', letterSpacing: '0.05em', marginBottom: 4 }}>MOST MATERIAL DEMAND/USAGE</p>
-                <p style={{ fontSize: '0.85rem', fontWeight: 600, color: '#6d28d9' }}>
-                  {(mostDemandedBoqItem.actualQuantity > 0 ? mostDemandedBoqItem.actualQuantity : mostDemandedBoqItem.estimatedQuantity).toLocaleString()} {mostDemandedBoqItem.unit} · {mostDemandedBoqItem.materialName}
-                </p>
-                <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 6 }}>Extracted from the uploaded BOQ — historical projects aren&apos;t forecast targets themselves, they train the forecast for other projects.</p>
+                <p style={{ fontSize: '0.65rem', fontWeight: 700, color: '#9ca3af', letterSpacing: '0.05em', marginBottom: 6 }}>TOP 5 MATERIAL DEMAND/USAGE</p>
+                {topDemandEntries.map((m, i) => (
+                  <p key={i} style={{ fontSize: '0.85rem', fontWeight: 600, color: '#6d28d9', marginBottom: 2 }}>
+                    {i + 1}. {m.qty.toLocaleString()} {m.unit} · {m.material}
+                  </p>
+                ))}
+                <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 6 }}>Extracted from the uploaded BOQ and PO data — historical projects aren&apos;t forecast targets themselves, they train the forecast for other projects.</p>
               </div>
             ) : (
               <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No forecast has been run yet — click Run Forecast below.</p>
