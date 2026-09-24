@@ -4,6 +4,7 @@ using ConstructIQ.API.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ConstructIQ.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260924070731_AddMaterialRequests")]
+    partial class AddMaterialRequests
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -335,46 +338,6 @@ namespace ConstructIQ.API.Migrations
                     b.HasIndex("MaterialId");
 
                     b.ToTable("ForecastedMaterials");
-                });
-
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.HistoricalMaterialSupply", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("BOQItemId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("MaterialName")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<string>("PoNumber")
-                        .HasMaxLength(30)
-                        .HasColumnType("varchar(30)");
-
-                    b.Property<decimal>("Quantity")
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<int?>("SupplierId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Unit")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("varchar(20)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("BOQItemId");
-
-                    b.HasIndex("SupplierId");
-
-                    b.ToTable("HistoricalMaterialSupplies");
                 });
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.InventoryRecord", b =>
@@ -1484,24 +1447,6 @@ namespace ConstructIQ.API.Migrations
                     b.Navigation("Material");
                 });
 
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.HistoricalMaterialSupply", b =>
-                {
-                    b.HasOne("ConstructIQ.API.Models.Entities.BOQItem", "BOQItem")
-                        .WithMany("HistoricalSupplies")
-                        .HasForeignKey("BOQItemId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("ConstructIQ.API.Models.Entities.Supplier", "Supplier")
-                        .WithMany()
-                        .HasForeignKey("SupplierId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("BOQItem");
-
-                    b.Navigation("Supplier");
-                });
-
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.InventoryRecord", b =>
                 {
                     b.HasOne("ConstructIQ.API.Models.Entities.Material", "Material")
@@ -1865,11 +1810,6 @@ namespace ConstructIQ.API.Migrations
                         .IsRequired();
 
                     b.Navigation("User");
-                });
-
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.BOQItem", b =>
-                {
-                    b.Navigation("HistoricalSupplies");
                 });
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.DeliveryEvaluation", b =>

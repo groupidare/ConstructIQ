@@ -30,7 +30,8 @@ interface Props {
   onRowsChange: (rows: BOQItemRow[]) => void;
   onSave: () => void;
   saving: boolean;
-  onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number) => void;
+  onRequestPurchase: (materialId: number | undefined, materialName: string, quantity: number) => void;
+  onRequestFromWarehouse: (materialId: number | undefined, materialName: string, quantity: number) => void;
   onRemoveDocument: (documentId: number) => void;
   onRunForecast: () => void;
   forecasting: boolean;
@@ -56,7 +57,7 @@ interface Props {
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
-  rows, boqItems, onRowsChange, onSave, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
+  rows, boqItems, onRowsChange, onSave, saving, onRequestPurchase, onRequestFromWarehouse, onRemoveDocument, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
@@ -66,6 +67,7 @@ export default function MaterialPlanTab({
   const [parsingPoId, setParsingPoId] = useState<number | null>(null);
   const [phaseChoice, setPhaseChoice] = useState<Record<number, number | ''>>({});
   const isCompleted = project.status === 'Completed';
+  const isHistorical = project.isHistorical;
   const columnsTemplate = isCompleted
     ? 'minmax(0,2fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.7fr)'
     : 'minmax(0,2.2fr) minmax(0,0.8fr) minmax(0,0.5fr) minmax(0,0.8fr) minmax(0,0.7fr)';
@@ -111,7 +113,10 @@ export default function MaterialPlanTab({
   }
 
   function addBlankRow() {
-    onRowsChange([...rows, { primarySection: PRIMARY_SECTIONS[0], estimatedQuantity: 0 }]);
+    // Leave primarySection blank rather than silently defaulting to the first
+    // option — the user picks it via the same datalist input every row already
+    // has, instead of it being pre-filled without any real choice being made.
+    onRowsChange([...rows, { primarySection: '', estimatedQuantity: 0 }]);
   }
 
   function handleFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
@@ -191,6 +196,25 @@ export default function MaterialPlanTab({
     return bySection;
   }, [rows]);
 
+  // Historical projects never get a real AI forecast run against them (they're
+  // training data for other projects, not a forecast target themselves) — the
+  // most-demanded material extracted from the BOQ is the closest thing they
+  // have to a "forecast", mirroring the same calc the project card itself
+  // uses (effective qty = Actual if entered, else Estimated).
+  const mostDemandedBoqItem = useMemo(() => {
+    if (!isHistorical || boqItems.length === 0) return null;
+    const effectiveQty = (b: BOQItem) => (b.actualQuantity > 0 ? b.actualQuantity : b.estimatedQuantity);
+    return boqItems.slice().sort((a, b) => effectiveQty(b) - effectiveQty(a))[0];
+  }, [isHistorical, boqItems]);
+
+  // Same ranking, but over every saved BOQ row (not just the single top one) —
+  // feeds the historical-only "Materials by Demand" list below.
+  const rowsByDemand = useMemo(() => {
+    if (!isHistorical) return [];
+    const effectiveQty = (r: BOQItemRow) => ((r.actualQuantity ?? 0) > 0 ? (r.actualQuantity as number) : r.estimatedQuantity);
+    return linkableBoqRows.slice().sort((a, b) => effectiveQty(b) - effectiveQty(a));
+  }, [isHistorical, linkableBoqRows]);
+
   // Totals by unit — rows mix incompatible units (sq.m, pc, l.m, set...), so a
   // single blind sum across all of them would be meaningless. The source
   // file itself has no total row at all; this is purely computed for display.
@@ -264,7 +288,17 @@ export default function MaterialPlanTab({
             <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>AI-predicted demand from the latest forecast run on this project.</p>
           </div>
           {forecastedMaterials.length === 0 ? (
-            <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No forecast has been run yet — click Run Forecast below.</p>
+            isHistorical && mostDemandedBoqItem ? (
+              <div style={{ padding: '1rem' }}>
+                <p style={{ fontSize: '0.65rem', fontWeight: 700, color: '#9ca3af', letterSpacing: '0.05em', marginBottom: 4 }}>MOST MATERIAL DEMAND/USAGE</p>
+                <p style={{ fontSize: '0.85rem', fontWeight: 600, color: '#6d28d9' }}>
+                  {(mostDemandedBoqItem.actualQuantity > 0 ? mostDemandedBoqItem.actualQuantity : mostDemandedBoqItem.estimatedQuantity).toLocaleString()} {mostDemandedBoqItem.unit} · {mostDemandedBoqItem.materialName}
+                </p>
+                <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 6 }}>Extracted from the uploaded BOQ — historical projects aren&apos;t forecast targets themselves, they train the forecast for other projects.</p>
+              </div>
+            ) : (
+              <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No forecast has been run yet — click Run Forecast below.</p>
+            )
           ) : (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.7fr)', gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
@@ -290,44 +324,48 @@ export default function MaterialPlanTab({
         </div>
       )}
 
-      {/* Add from Inventory */}
-      <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: '1rem', marginBottom: '1rem' }}>
-        <p style={{ fontWeight: 700, fontSize: '0.875rem', marginBottom: '0.25rem' }}>Add from Inventory</p>
-        <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginBottom: '0.75rem' }}>Only materials currently in stock — forecasted quantities shown when a forecast has been run.</p>
-        <div style={{ maxHeight: 220, overflowY: 'auto', overflowX: 'hidden' }}>
-          {inventory.length === 0 ? (
-            <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '0.5rem 0' }}>No in-stock materials available for this project.</p>
-          ) : (
-            inventory.map(inv => {
-              const forecast = forecastByMaterial.get(inv.materialId);
-              return (
-                <div key={inv.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 4px', borderBottom: '1px solid #f9fafb', gap: 8 }}>
-                  <div style={{ minWidth: 0 }}>
-                    <p style={{ fontSize: '0.82rem', fontWeight: 500, color: '#111827' }}>{inv.materialName}</p>
-                    <p style={{ fontSize: '0.68rem', color: '#9ca3af' }}>
-                      Stock: {inv.availableQuantity.toLocaleString()} {inv.unit}
-                      {forecast && <span style={{ color: '#f97316', fontWeight: 600 }}> · Forecasted: {forecast.forecastedQuantity.toLocaleString()} {inv.unit} ({forecast.riskLevel} risk)</span>}
-                    </p>
-                  </div>
-                  {editable && (
-                    <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                      <select
-                        value={phaseChoice[inv.materialId] ?? ''}
-                        onChange={e => setPhaseChoice(prev => ({ ...prev, [inv.materialId]: e.target.value ? Number(e.target.value) : '' }))}
-                        style={{ ...sel, width: 110, padding: '5px 6px', fontSize: '0.72rem' }}
-                      >
-                        <option value="">Phase…</option>
-                        {project.phases.map(ph => <option key={ph.id} value={ph.id}>{ph.name}</option>)}
-                      </select>
-                      <button onClick={() => addRow(inv.materialId, inv.materialName, inv.unit)} style={{ width: 26, height: 26, borderRadius: '50%', border: 'none', background: 'transparent', cursor: 'pointer', color: '#f97316', fontSize: '1.1rem', fontWeight: 700 }}>+</button>
+      {/* Add from Inventory — not applicable to historical projects: there's no
+          real inventory stock to add from, since they're backfilled training
+          data rather than a real project tracked through the app. */}
+      {!isHistorical && (
+        <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: '1rem', marginBottom: '1rem' }}>
+          <p style={{ fontWeight: 700, fontSize: '0.875rem', marginBottom: '0.25rem' }}>Add from Inventory</p>
+          <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginBottom: '0.75rem' }}>Only materials currently in stock — forecasted quantities shown when a forecast has been run.</p>
+          <div style={{ maxHeight: 220, overflowY: 'auto', overflowX: 'hidden' }}>
+            {inventory.length === 0 ? (
+              <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '0.5rem 0' }}>No in-stock materials available for this project.</p>
+            ) : (
+              inventory.map(inv => {
+                const forecast = forecastByMaterial.get(inv.materialId);
+                return (
+                  <div key={inv.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 4px', borderBottom: '1px solid #f9fafb', gap: 8 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <p style={{ fontSize: '0.82rem', fontWeight: 500, color: '#111827' }}>{inv.materialName}</p>
+                      <p style={{ fontSize: '0.68rem', color: '#9ca3af' }}>
+                        Stock: {inv.availableQuantity.toLocaleString()} {inv.unit}
+                        {forecast && <span style={{ color: '#f97316', fontWeight: 600 }}> · Forecasted: {forecast.forecastedQuantity.toLocaleString()} {inv.unit} ({forecast.riskLevel} risk)</span>}
+                      </p>
                     </div>
-                  )}
-                </div>
-              );
-            })
-          )}
+                    {editable && (
+                      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                        <select
+                          value={phaseChoice[inv.materialId] ?? ''}
+                          onChange={e => setPhaseChoice(prev => ({ ...prev, [inv.materialId]: e.target.value ? Number(e.target.value) : '' }))}
+                          style={{ ...sel, width: 110, padding: '5px 6px', fontSize: '0.72rem' }}
+                        >
+                          <option value="">Phase…</option>
+                          {project.phases.map(ph => <option key={ph.id} value={ph.id}>{ph.name}</option>)}
+                        </select>
+                        <button onClick={() => addRow(inv.materialId, inv.materialName, inv.unit)} style={{ width: 26, height: 26, borderRadius: '50%', border: 'none', background: 'transparent', cursor: 'pointer', color: '#f97316', fontSize: '1.1rem', fontWeight: 700 }}>+</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Bill of Quantities */}
       <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
@@ -391,6 +429,7 @@ export default function MaterialPlanTab({
                       const stock = currentStock(r);
                       const toOrder = Math.max(0, r.estimatedQuantity - stock);
                       const needsAlert = toOrder > 0;
+                      const canRequest = editable && !isCompleted && !!r.materialId;
                       return (
                         <div key={i} style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
@@ -426,20 +465,24 @@ export default function MaterialPlanTab({
                             />
                           )}
                           <div style={{ display: 'flex', gap: 4 }}>
-                            <button
-                              onClick={() => onNotify('ProcurementOrder', r.materialId, materialLabel(r), toOrder)}
-                              title={`Notify procurement — order ${toOrder}`}
-                              style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert ? '#fee2e2' : '#f3f4f6' }}
-                            >
-                              <ShoppingCart style={{ width: 12, height: 12, color: needsAlert ? '#ef4444' : '#9ca3af' }} />
-                            </button>
-                            <button
-                              onClick={() => onNotify('WarehouseCheck', r.materialId, materialLabel(r), r.estimatedQuantity)}
-                              title="Notify warehouse to check material"
-                              style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}
-                            >
-                              <Package style={{ width: 12, height: 12, color: '#9ca3af' }} />
-                            </button>
+                            {canRequest && (
+                              <>
+                                <button
+                                  onClick={() => onRequestPurchase(r.materialId, materialLabel(r), toOrder)}
+                                  title={`Request purchase — order ${toOrder}`}
+                                  style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert ? '#fee2e2' : '#f3f4f6' }}
+                                >
+                                  <ShoppingCart style={{ width: 12, height: 12, color: needsAlert ? '#ef4444' : '#9ca3af' }} />
+                                </button>
+                                <button
+                                  onClick={() => onRequestFromWarehouse(r.materialId, materialLabel(r), r.estimatedQuantity)}
+                                  title="Request from warehouse"
+                                  style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}
+                                >
+                                  <Package style={{ width: 12, height: 12, color: '#9ca3af' }} />
+                                </button>
+                              </>
+                            )}
                             {editable && (
                               <button onClick={() => removeRow(i)} style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent' }}>
                                 <Trash2 style={{ width: 12, height: 12, color: '#d1d5db' }} />
@@ -498,7 +541,10 @@ export default function MaterialPlanTab({
         </div>
       )}
 
-      {/* Purchase Orders — actual ordered quantities, paired against the BOQ estimates above */}
+      {/* Purchase Orders — actual ordered quantities, paired against the BOQ
+          estimates above. Not applicable to historical projects: they're
+          backfilled training data, there's nothing real to order. */}
+      {!isHistorical && (
       <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', marginTop: '1.5rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
           <div>
@@ -617,12 +663,49 @@ export default function MaterialPlanTab({
           )}
         </div>
       </div>
+      )}
 
-      {/* Historical reconciliation — only meaningful once both BOQ (planned) and
-          linked PO (actual) data exist for a Completed project. This is what
-          "Data Review & Verification" means: confirm the two sides actually
-          line up per material before the row counts as real training data. */}
-      {isCompleted && (
+      {/* Historical projects have no Purchase Orders to reconcile against (that
+          section is hidden for them above) — instead, rank the BOQ itself by
+          demand, using the same effective-qty rule as the project card and
+          the Forecasted Material Demand panel above. */}
+      {isCompleted && isHistorical && (
+        <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', marginTop: '1.5rem' }}>
+          <div style={{ padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
+            <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>Materials by Demand</p>
+            <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>Every material in the uploaded BOQ, ranked by demand/usage (highest first).</p>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2fr) minmax(0,1fr) minmax(0,0.8fr)', gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+            {['MATERIAL', 'QTY', 'UNIT'].map(h => (
+              <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
+            ))}
+          </div>
+
+          {rowsByDemand.length === 0 ? (
+            <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>Save the Bill of Quantities above first.</p>
+          ) : (
+            rowsByDemand.map(r => {
+              const qty = (r.actualQuantity ?? 0) > 0 ? r.actualQuantity : r.estimatedQuantity;
+              return (
+                <div key={r.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2fr) minmax(0,1fr) minmax(0,0.8fr)', gap: 4, padding: '7px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.76rem', color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{materialLabel(r)}</span>
+                  <span style={{ fontSize: '0.76rem', fontWeight: 600, color: '#111827' }}>{qty?.toLocaleString()}</span>
+                  <span style={{ fontSize: '0.76rem', color: '#6b7280' }}>{r.unit}</span>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* BOQ vs. Purchase Order reconciliation — only meaningful once both BOQ
+          (planned) and linked PO (actual) data exist for a real Completed
+          project. This is what "Data Review & Verification" means: confirm
+          the two sides actually line up per material before the row counts
+          as real training data. Not shown for historical projects, which have
+          no Purchase Orders section at all (see the ranked list above instead). */}
+      {isCompleted && !isHistorical && (
         <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', marginTop: '1.5rem' }}>
           <div style={{ padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
             <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>BOQ vs. Purchase Order Reconciliation</p>

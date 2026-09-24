@@ -1,16 +1,17 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import { Pencil, Eye, FileText, Folder } from 'lucide-react';
 import { useDocuments } from '@/hooks/useDocuments';
 import { useBOQ } from '@/hooks/useBOQ';
 import { useInventory } from '@/hooks/useInventory';
 import { useForecasting } from '@/hooks/useForecasting';
-import { useNotifications } from '@/hooks/useNotifications';
 import { useProjects } from '@/hooks/useProjects';
 import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
-import { useAlertStore } from '@/store/alertStore';
+import { useProcurement } from '@/hooks/useProcurement';
+import { useMaterialRequests } from '@/hooks/useMaterialRequests';
 import type { Project, ProjectType } from '@/types/project';
 import type { BOQItemRow } from '@/types/boq';
 import type { PurchaseOrderMaterial } from '@/types/purchaseOrder';
@@ -53,14 +54,16 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [poOrderDate, setPoOrderDate] = useState('');
   const [poExpectedDate, setPoExpectedDate] = useState('');
 
+  const router = useRouter();
+
   const { documents, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument } = useDocuments(project.id);
   const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems } = useBOQ(project.id);
   const { inventory, fetchInventory } = useInventory(project.id);
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
-  const { sendNotification } = useNotifications();
   const { editProject } = useProjects();
   const { items: purchaseOrders, fetchItems: fetchPurchaseOrders, createOrder, linkMaterial } = usePurchaseOrders(project.id);
-  const addAlert = useAlertStore(s => s.addAlert);
+  const { createPurchaseRequest } = useProcurement(project.id);
+  const { createRequest: createMaterialRequest } = useMaterialRequests();
 
   const seededBoq = useRef(false);
 
@@ -270,8 +273,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     try {
       await saveBoqItems(boqRows);
       toast.success('Material plan saved.');
-    } catch {
-      toast.error('Failed to save material plan.');
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to save material plan.'));
     } finally {
       setSavingBoq(false);
     }
@@ -290,32 +293,41 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       await generateForecast({ projectId: project.id, period: 'Monthly', planningWeeks: 4 });
       toast.success('Material plan saved and forecast generated.');
       setTab('materialPlan');
-    } catch {
-      toast.error('Failed to generate forecast — no historical or BOQ data available yet.');
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to generate forecast — no historical or BOQ data available yet.'));
     } finally {
       setForecasting(false);
     }
   }
 
-  async function handleNotify(kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number) {
-    const isProcurement = kind === 'ProcurementOrder';
-    const message = isProcurement
-      ? `${materialName}: order ${quantity.toLocaleString()} more for "${project.name}".`
-      : `Please verify stock/quality of ${materialName} for "${project.name}".`;
+  async function handleRequestPurchase(materialId: number | undefined, materialName: string, quantity: number) {
+    if (!materialId) return;
     try {
-      await sendNotification({
-        projectId: project.id, materialId,
-        recipientRole: isProcurement ? 'ProcurementOfficer' : 'WarehousePersonnel',
-        kind, message, quantity: isProcurement ? quantity : undefined,
+      await createPurchaseRequest({
+        projectId: project.id,
+        materialId,
+        requestedQuantity: quantity,
+        estimatedUnitCost: 0,
       });
-      addAlert({
-        kind: isProcurement ? 'delay' : 'overstock',
-        title: isProcurement ? 'Procurement Alert' : 'Warehouse Alert',
-        body: message,
+      toast.success(`Purchase request created for ${materialName}.`);
+      router.push(`/procurement/${project.id}`);
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to create purchase request.'));
+    }
+  }
+
+  async function handleRequestFromWarehouse(materialId: number | undefined, materialName: string, quantity: number) {
+    if (!materialId) return;
+    try {
+      await createMaterialRequest({
+        projectId: project.id,
+        materialId,
+        requestedQuantity: quantity,
       });
-      toast.success(isProcurement ? 'Procurement notified.' : 'Warehouse notified.');
-    } catch {
-      toast.error('Failed to send notification.');
+      toast.success(`Material request sent for ${materialName}.`);
+      router.push('/inventory?tab=requests');
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to create material request.'));
     }
   }
 
@@ -327,7 +339,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     blueprints, boqDocs, poDocs, inventory, forecastedMaterials,
     savingBoq, forecasting, uploadingBlueprint, parsingBlueprintId, uploadingBoq, uploadingPo, savingPo,
     handleUploadBlueprint, handleParseBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
-    handleSaveBoq, handleRunForecast, handleNotify,
+    handleSaveBoq, handleRunForecast, handleRequestPurchase, handleRequestFromWarehouse,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
     poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
     poOrderDate, setPoOrderDate, poExpectedDate, setPoExpectedDate,
@@ -401,7 +413,8 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onRowsChange={state.setBoqRows}
       onSave={state.handleSaveBoq}
       saving={state.savingBoq}
-      onNotify={state.handleNotify}
+      onRequestPurchase={state.handleRequestPurchase}
+      onRequestFromWarehouse={state.handleRequestFromWarehouse}
       onRunForecast={state.handleRunForecast}
       forecasting={state.forecasting}
       purchaseOrders={state.purchaseOrders}

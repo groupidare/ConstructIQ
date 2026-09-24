@@ -4,7 +4,7 @@ import pandas as pd
 
 from app.models.schemas import (
     DocumentParseRequest, DocumentParseResponse, ParsedBOQItem,
-    DocumentParsePOResponse, ParsedPOItem,
+    DocumentParsePOResponse, ParsedPOItem, HistoricalSupplyLine,
 )
 from app.utils.pdf_extractor import detect_phase_from_text, parse_quantity_from_cell
 from app.utils.tabular_extractor import extract_tables, extract_text
@@ -210,12 +210,38 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
             sub_section_col = next((i for i, h in enumerate(headers) if "sub" in h and ("section" in h or "category" in h)), None)
             section_col = next((i for i, h in enumerate(headers) if i != sub_section_col and ("section" in h or "category" in h)), None)
 
+            # A historical project's combined BOQ+PO report has a second block
+            # of columns after the plain BOQ ones: PO Number, PO Date, Material
+            # Name (Supplier), Unit, Qty, Supplier, Unit Cost, Total Cost. "unit"
+            # and "qty" both appear twice in the header row (once per block), so
+            # this second pass is deliberately scoped to columns after po_col —
+            # a second *global* scan would just re-find the first BOQ-side
+            # column again. When po_col isn't found (a plain BOQ file — the
+            # normal, non-historical case), none of this activates and parsing
+            # behaves exactly as before.
+            po_col = next((i for i, h in enumerate(headers) if "po number" in h or "po no" in h or "po#" in h.replace(" ", "")), None)
+            po_desc_col = po_unit_col = po_qty_col = supplier_col = None
+            if po_col is not None:
+                for i, h in enumerate(headers):
+                    if i <= po_col:
+                        continue
+                    if po_desc_col is None and ("material" in h or "desc" in h):
+                        po_desc_col = i
+                    elif po_unit_col is None and (h in ("unit", "um") or "uom" in h):
+                        po_unit_col = i
+                    elif po_qty_col is None and ("qty" in h or "quantity" in h):
+                        po_qty_col = i
+                    elif supplier_col is None and ("supplier" in h or "vendor" in h):
+                        supplier_col = i
+
             if desc_col is None or qty_col is None:
                 continue
 
             current_section = None
             current_primary_section = None
             current_sub_category = None
+            current_po_number = None
+            last_boq_item = None  # for combined-format PO-only continuation rows
             for row in table[header_row + 1:]:
                 if not row or all(c is None for c in row):
                     continue
@@ -241,17 +267,46 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
                 if sub_section:
                     current_sub_category = sub_section
 
+                # Combined-format PO block, if this table has one — captured
+                # regardless of whether the BOQ side of this same row has data,
+                # since the sample report's BOQ estimate cell is merged down to
+                # only the first row of a multi-supplier group (see below).
+                supply_line = None
+                if po_desc_col is not None:
+                    if po_col is not None and po_col < len(row):
+                        po_val = str(row[po_col] or "").strip()
+                        if po_val:
+                            current_po_number = po_val
+                    supply_desc = _clean_description(str(row[po_desc_col] or "").strip()) if po_desc_col < len(row) else ""
+                    supply_qty = parse_quantity_from_cell(row[po_qty_col]) if po_qty_col is not None and po_qty_col < len(row) else None
+                    if supply_desc and supply_qty is not None and supply_qty > 0:
+                        supply_unit = str(row[po_unit_col] or "").strip() if po_unit_col is not None and po_unit_col < len(row) else ""
+                        supply_supplier = str(row[supplier_col] or "").strip() if supplier_col is not None and supplier_col < len(row) else ""
+                        supply_line = HistoricalSupplyLine(
+                            material_name = supply_desc,
+                            unit          = supply_unit,
+                            quantity      = supply_qty,
+                            supplier_name = supply_supplier or None,
+                            po_number     = current_po_number,
+                        )
+
                 if qty is None or qty <= 0:
-                    # No quantity — usually a section/sub-section heading
-                    # ("I. GENERAL REQUIREMENTS") rather than a real line item.
-                    # Remember it so later real rows inherit the right section.
+                    # No BOQ-side quantity on this row. In a combined report
+                    # this is normal for the 2nd/3rd+ supplier line of a BOQ
+                    # group whose estimate cell only appears once — attach it
+                    # to the BOQ item that started the group instead of
+                    # dropping it (the old plain-BOQ behavior, unchanged when
+                    # there's no PO block at all).
+                    if supply_line is not None and last_boq_item is not None:
+                        last_boq_item.historical_supply.append(supply_line)
+                        continue
                     if _is_section_heading(desc):
                         current_section = desc
                     continue
                 if not _looks_like_real_name(desc):
                     continue
 
-                items.append(ParsedBOQItem(
+                new_item = ParsedBOQItem(
                     material_name      = desc,
                     specification      = spec,
                     unit               = unit,
@@ -259,7 +314,10 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
                     phase_hint         = current_section or current_phase,
                     primary_section    = current_primary_section,
                     sub_category       = current_sub_category,
-                ))
+                    historical_supply  = [supply_line] if supply_line is not None else [],
+                )
+                items.append(new_item)
+                last_boq_item = new_item
 
         if not items:
             items.extend(
