@@ -19,7 +19,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ProcurementRecommendation> ProcurementRecommendations => Set<ProcurementRecommendation>();
     public DbSet<PurchaseRequest>          PurchaseRequests          => Set<PurchaseRequest>();
     public DbSet<RedistributionRequest>    RedistributionRequests    => Set<RedistributionRequest>();
-    public DbSet<MaterialRequest>          MaterialRequests          => Set<MaterialRequest>();
+    public DbSet<WarehouseRequest>         WarehouseRequests         => Set<WarehouseRequest>();
     public DbSet<HistoricalMaterialSupply> HistoricalMaterialSupplies => Set<HistoricalMaterialSupply>();
     public DbSet<ActivityLog>              ActivityLogs              => Set<ActivityLog>();
     public DbSet<Measurement>              Measurements              => Set<Measurement>();
@@ -30,8 +30,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<PurchaseOrderMaterial>    PurchaseOrderMaterials    => Set<PurchaseOrderMaterial>();
     public DbSet<DeliveryEvaluation>       DeliveryEvaluations       => Set<DeliveryEvaluation>();
     public DbSet<DeliveryPhoto>            DeliveryPhotos            => Set<DeliveryPhoto>();
-    public DbSet<WarehouseStockItem>       WarehouseStockItems       => Set<WarehouseStockItem>();
+    public DbSet<DeliveryBatch>            DeliveryBatches           => Set<DeliveryBatch>();
+    public DbSet<DeliveryBatchPhoto>       DeliveryBatchPhotos       => Set<DeliveryBatchPhoto>();
     public DbSet<TrustedDevice>            TrustedDevices            => Set<TrustedDevice>();
+    public DbSet<WarehouseStockItem>       WarehouseStockItems       => Set<WarehouseStockItem>();
+    public DbSet<MaterialRequest>          MaterialRequests          => Set<MaterialRequest>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -114,25 +117,25 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasForeignKey(r => r.SourceExcessWasteRecordId)
             .OnDelete(DeleteBehavior.SetNull);
 
-        mb.Entity<MaterialRequest>()
+        mb.Entity<WarehouseRequest>()
             .HasOne(m => m.Project)
             .WithMany()
             .HasForeignKey(m => m.ProjectId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        mb.Entity<MaterialRequest>()
+        mb.Entity<WarehouseRequest>()
             .HasOne(m => m.Material)
             .WithMany()
             .HasForeignKey(m => m.MaterialId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        mb.Entity<MaterialRequest>()
+        mb.Entity<WarehouseRequest>()
             .HasOne(m => m.RequestedBy)
             .WithMany()
             .HasForeignKey(m => m.RequestedByUserId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        mb.Entity<MaterialRequest>()
+        mb.Entity<WarehouseRequest>()
             .HasOne(m => m.ApprovedBy)
             .WithMany()
             .HasForeignKey(m => m.ApprovedByUserId)
@@ -205,6 +208,18 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasForeignKey(e => e.RatedByUserId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        mb.Entity<DeliveryBatch>()
+            .HasOne(b => b.PurchaseOrder)
+            .WithMany(po => po.DeliveryBatches)
+            .HasForeignKey(b => b.PurchaseOrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<DeliveryBatch>()
+            .HasOne(b => b.UploadedBy)
+            .WithMany()
+            .HasForeignKey(b => b.UploadedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         mb.Entity<Supplier>()
             .HasIndex(s => s.Name)
             .IsUnique();
@@ -225,6 +240,32 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasOne(m => m.Phase)
             .WithMany()
             .HasForeignKey(m => m.PhaseId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        // Cascade: a project's material requests have no meaning once the
+        // project itself is gone — matches PurchaseOrder's own project FK.
+        mb.Entity<MaterialRequest>()
+            .HasOne(r => r.Project)
+            .WithMany()
+            .HasForeignKey(r => r.ProjectId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<MaterialRequest>()
+            .HasOne(r => r.Material)
+            .WithMany()
+            .HasForeignKey(r => r.MaterialId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<MaterialRequest>()
+            .HasOne(r => r.RequestedBy)
+            .WithMany()
+            .HasForeignKey(r => r.RequestedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<MaterialRequest>()
+            .HasOne(r => r.FulfilledByPurchaseOrder)
+            .WithMany()
+            .HasForeignKey(r => r.FulfilledByPurchaseOrderId)
             .OnDelete(DeleteBehavior.SetNull);
     }
 }

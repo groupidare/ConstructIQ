@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { FileText, LifeBuoy } from "lucide-react";
 import { PrivacyModal } from "@/components/modals/PrivacyModal";
 
@@ -397,6 +397,7 @@ export default function LandingPage() {
   const router  = useRouter();
   const [scrolled, setScrolled] = useState(false);
   const [footerModal, setFooterModal] = useState<FooterModal>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 10);
@@ -408,6 +409,10 @@ export default function LandingPage() {
 
   function scrollTo(id: string) {
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+  }
+
+  function playVideo() {
+    videoRef.current?.play();
   }
 
   return (
@@ -435,7 +440,7 @@ export default function LandingPage() {
                 display: "flex", alignItems: "center", justifyContent: "center",
                 boxShadow: "0 4px 14px rgba(249,115,22,0.38)", flexShrink: 0,
               }}>
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" strokeWidth="1.0" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block" }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block" }}>
                   <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
                 </svg>
               </div>
@@ -503,39 +508,28 @@ export default function LandingPage() {
                 {/* Left copy */}
                 <div style={{ flex: "0 0 190px" }}>
                   <h3 style={{ fontSize: "1.75rem", fontWeight: 900, color: "#111827", lineHeight: 1.1, marginBottom: "0.85rem" }}>
-                    Video<br />tutorials
+                    Construction Intelligence
                   </h3>
                   <p style={{ fontSize: "0.72rem", color: "#6b7280", lineHeight: 1.65, marginBottom: "1rem" }}>
-                    Learn how to use ConstructIQ with step-by-step guides covering
-                    forecasting, inventory, procurement, and more.
+                    Experience how automated material management and real-time insights
+                    bring complex building projects to life.
                   </p>
-                  <button onClick={goLogin} style={{
+                  <button onClick={playVideo} style={{
                     padding: "7px 18px", borderRadius: 6, border: "none", cursor: "pointer",
                     background: "#3b82f6", color: "#fff", fontSize: "0.78rem", fontWeight: 600,
-                  }}>Sign Up</button>
+                  }}>Watch Overview</button>
                 </div>
-                {/* Right — monitor mockup */}
-                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12 }}>
-                  <div style={{ background: "#fff", borderRadius: 10, padding: "1rem", boxShadow: "0 4px 20px rgba(0,0,0,0.1)" }}>
-                    <div style={{ height: 7, background: "#e5e7eb", borderRadius: 4, marginBottom: 7, width: "90%" }} />
-                    <div style={{ height: 7, background: "#e5e7eb", borderRadius: 4, marginBottom: 7, width: "75%" }} />
-                    <div style={{ height: 7, background: "#e5e7eb", borderRadius: 4, width: "55%" }} />
-                    <div style={{ display: "flex", justifyContent: "center", marginTop: "0.85rem" }}>
-                      <div style={{
-                        width: 36, height: 36, borderRadius: "50%", background: "#1a2235",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                      }}>
-                        <svg width="13" height="13" viewBox="0 0 13 13" fill="#fff">
-                          <polygon points="3,1 12,6.5 3,12" />
-                        </svg>
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "center", gap: 10 }}>
-                    {["#f97316", "#3b82f6", "#22c55e"].map(c => (
-                      <div key={c} style={{ width: 30, height: 30, borderRadius: "50%", background: c, border: "2.5px solid #dde0f0" }} />
-                    ))}
-                  </div>
+                {/* Right — real product walkthrough video */}
+                <div style={{ flex: 1 }}>
+                  <video
+                    ref={videoRef}
+                    src="/landing-video.mp4"
+                    controls
+                    preload="metadata"
+                    style={{ width: "100%", display: "block", borderRadius: 10, boxShadow: "0 4px 20px rgba(0,0,0,0.1)", background: "#000" }}
+                  >
+                    Your browser does not support the video tag.
+                  </video>
                 </div>
               </div>
             </div>

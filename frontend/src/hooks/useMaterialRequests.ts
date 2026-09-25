@@ -1,31 +1,45 @@
 import { useState } from 'react';
 import api from '@/lib/api';
-import type { MaterialRequest, MaterialRequestCreateRequest } from '@/types/materialRequest';
+import type {
+  MaterialRequest, ProjectWithRequests, SuggestedSupplier,
+  CreateMaterialRequestPayload, GeneratePOsFromRequestsPayload, GeneratedPOsResult,
+} from '@/types/materialRequest';
 
 export function useMaterialRequests() {
-  const [requests, setRequests] = useState<MaterialRequest[]>([]);
-  const [loading, setLoading]   = useState(false);
+  const [projectsWithPending, setProjectsWithPending] = useState<ProjectWithRequests[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  async function fetchAll() {
+  async function createRequest(payload: CreateMaterialRequestPayload): Promise<void> {
+    await api.post('/material-requests', payload);
+  }
+
+  async function fetchProjectsWithPending() {
     setLoading(true);
     try {
-      const { data } = await api.get<MaterialRequest[]>('/material-requests');
-      setRequests(data);
+      const { data } = await api.get<ProjectWithRequests[]>('/material-requests/projects-with-pending');
+      setProjectsWithPending(data);
     } finally {
       setLoading(false);
     }
   }
 
-  async function createRequest(payload: MaterialRequestCreateRequest): Promise<MaterialRequest> {
-    const { data } = await api.post<MaterialRequest>('/material-requests', payload);
-    setRequests(prev => [data, ...prev]);
+  async function fetchForProject(projectId: number): Promise<MaterialRequest[]> {
+    const { data } = await api.get<MaterialRequest[]>(`/material-requests/project/${projectId}`);
     return data;
   }
 
-  async function approveRequest(id: number) {
-    await api.post(`/material-requests/${id}/approve`, {});
-    await fetchAll();
+  async function fetchSuggestedSuppliers(materialId: number): Promise<SuggestedSupplier[]> {
+    const { data } = await api.get<SuggestedSupplier[]>(`/material-requests/suggested-suppliers/${materialId}`);
+    return data;
   }
 
-  return { requests, loading, fetchAll, createRequest, approveRequest };
+  async function generatePOs(payload: GeneratePOsFromRequestsPayload): Promise<GeneratedPOsResult> {
+    const { data } = await api.post<GeneratedPOsResult>('/material-requests/generate-pos', payload);
+    return data;
+  }
+
+  return {
+    projectsWithPending, loading,
+    createRequest, fetchProjectsWithPending, fetchForProject, fetchSuggestedSuppliers, generatePOs,
+  };
 }

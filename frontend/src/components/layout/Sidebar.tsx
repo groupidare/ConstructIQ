@@ -100,19 +100,29 @@ export default function Sidebar() {
         width: collapsed ? 76 : 260, flexShrink: 0,
         background: "#1a2235",
         display: "flex", flexDirection: "column",
-        height: "100%", overflowY: "auto",
+        height: "100%", overflowY: "auto", overflowX: "hidden",
         transition: "width 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
       }}>
         {/* Logo */}
-        <div style={{ padding: collapsed ? "1.5rem 0.5rem 1rem" : "1.5rem 1.25rem 1rem", display:"flex", alignItems:"center", gap:10, transition:"padding 0.28s cubic-bezier(0.4, 0, 0.2, 1)" }}>
+        <div style={{
+          padding: collapsed ? "1.5rem 0.5rem 1rem" : "1.5rem 1.25rem 1rem",
+          display:"flex", alignItems:"center",
+          justifyContent: collapsed ? "center" : "flex-start",
+          gap: collapsed ? 0 : 10,
+          transition:"padding 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
+        }}>
           <div style={{
             width:40, height:40, borderRadius:10,
             background:"#f97316",
             display:"flex", alignItems:"center", justifyContent:"center",
-            flexShrink:0, boxShadow:"0 4px 12px rgba(249,115,22,0.35)",
+            flexShrink:0, overflow:"hidden", boxShadow:"0 4px 12px rgba(249,115,22,0.35)",
           }}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo.svg" alt="" style={{ width:50, height:50 }} />
+            {/* Same inline pulse icon as the login page's logo — no border
+                artifact, unlike the rasterized logo.svg (a stroke-only path
+                has no bounding-box edge to show against the orange fill). */}
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ display:"block" }}>
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+            </svg>
           </div>
           <span style={{
             color:"#fff", fontWeight:800, fontSize:"1.1rem", letterSpacing:"-0.01em",
@@ -123,7 +133,7 @@ export default function Sidebar() {
         </div>
 
         {/* Nav */}
-        <nav style={{ flex:1, overflowY:"auto", padding: collapsed ? "0.5rem 0.5rem" : "0.5rem 0.75rem", transition:"padding 0.28s cubic-bezier(0.4, 0, 0.2, 1)" }}>
+        <nav style={{ flex:1, overflowY:"auto", overflowX:"hidden", padding: collapsed ? "0.5rem 0.5rem" : "0.5rem 0.75rem", transition:"padding 0.28s cubic-bezier(0.4, 0, 0.2, 1)" }}>
           <p style={{
             color:"#4b5563", fontSize:"0.65rem", fontWeight:700, letterSpacing:"0.1em", textTransform:"uppercase",
             padding: collapsed ? "0 0.5rem" : "0.5rem 0.5rem 0.75rem",
@@ -144,7 +154,7 @@ export default function Sidebar() {
                 href={item.href}
                 title={collapsed ? item.label : undefined}
                 style={{
-                  display:"flex", alignItems:"center", gap:10,
+                  display:"flex", alignItems:"center", gap: collapsed ? 0 : 10,
                   padding: collapsed ? "0.6rem 0" : "0.55rem 0.75rem",
                   borderRadius:8, marginBottom:2,
                   textDecoration:"none",
@@ -168,12 +178,15 @@ export default function Sidebar() {
           })}
         </nav>
 
-        {/* User info + logout */}
+        {/* User info + logout — the sign-out button only appears expanded;
+            collapsed just shows the avatar, centered. */}
         <div style={{
           padding: collapsed ? "0.875rem 0.5rem" : "0.875rem 1rem",
           borderTop:"1px solid rgba(255,255,255,0.07)",
-          display:"flex", alignItems:"center",
-          gap:10, flexShrink:0,
+          display:"flex",
+          alignItems:"center",
+          justifyContent: collapsed ? "center" : "flex-start",
+          gap: collapsed ? 0 : 10, flexShrink:0,
           transition: "padding 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
         }}>
           <Avatar
@@ -183,7 +196,7 @@ export default function Sidebar() {
           />
           <div style={{
             flex: collapsed ? "0 0 0px" : 1, minWidth:0, overflow:"hidden",
-            maxWidth: collapsed ? 0 : 200, opacity: collapsed ? 0 : 1,
+            maxWidth: collapsed ? 0 : 200, maxHeight: collapsed ? 0 : "none", opacity: collapsed ? 0 : 1,
             transition: "max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease, flex-basis 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
           }}>
             <p style={{ color:"#fff", fontWeight:600, fontSize:"0.82rem", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
@@ -193,15 +206,17 @@ export default function Sidebar() {
               {ROLE_LABELS[user?.role ?? ""] ?? ""}
             </p>
           </div>
-          <button
-            onClick={() => setShowConfirm(true)}
-            title="Sign out"
-            style={{ background:"none", border:"none", cursor:"pointer", color:"#6b7280", padding:4, flexShrink:0, display:"flex", alignItems:"center" }}
-            onMouseEnter={e => (e.currentTarget.style.color = "#f97316")}
-            onMouseLeave={e => (e.currentTarget.style.color = "#6b7280")}
-          >
-            <LogOut style={{ width:17, height:17 }} />
-          </button>
+          {!collapsed && (
+            <button
+              onClick={() => setShowConfirm(true)}
+              title="Sign out"
+              style={{ background:"none", border:"none", cursor:"pointer", color:"#6b7280", padding:4, flexShrink:0, display:"flex", alignItems:"center" }}
+              onMouseEnter={e => (e.currentTarget.style.color = "#f97316")}
+              onMouseLeave={e => (e.currentTarget.style.color = "#6b7280")}
+            >
+              <LogOut style={{ width:17, height:17 }} />
+            </button>
+          )}
         </div>
       </aside>
     </>

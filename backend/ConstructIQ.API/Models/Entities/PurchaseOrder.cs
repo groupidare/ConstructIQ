@@ -6,7 +6,17 @@ namespace ConstructIQ.API.Models.Entities;
 // DELAYED is deliberately not a stored value here — it's derived on read
 // (Status != Delivered && ExpectedDate has passed) so it can never be set
 // by hand and can never drift out of sync with the actual clock.
-public enum PurchaseOrderStatus { Pending, Approved, Delivered }
+// Explicit values: DeliveryInProgress was added after Delivered already
+// shipped as ordinal 2 — giving it 3 instead of inserting it before Delivered
+// keeps every already-stored "Delivered" row (int 2) meaning what it always
+// meant.
+public enum PurchaseOrderStatus
+{
+    Pending = 0,
+    Approved = 1,
+    Delivered = 2,
+    DeliveryInProgress = 3,
+}
 
 public class PurchaseOrder
 {
@@ -38,6 +48,7 @@ public class PurchaseOrder
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     public ICollection<PurchaseOrderMaterial> Materials { get; set; } = [];
+    public ICollection<DeliveryBatch> DeliveryBatches { get; set; } = [];
     public DeliveryEvaluation? Evaluation { get; set; }
 }
 

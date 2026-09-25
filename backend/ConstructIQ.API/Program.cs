@@ -50,7 +50,7 @@ builder.Services.AddScoped<IExcessWasteService, ExcessWasteService>();
 builder.Services.AddScoped<IForecastService, ForecastService>();
 builder.Services.AddScoped<IProcurementService, ProcurementService>();
 builder.Services.AddScoped<IRedistributionService, RedistributionService>();
-builder.Services.AddScoped<IMaterialRequestService, MaterialRequestService>();
+builder.Services.AddScoped<IWarehouseRequestService, WarehouseRequestService>();
 builder.Services.AddScoped<IDocumentService, DocumentService>();
 builder.Services.AddScoped<IMeasurementService, MeasurementService>();
 builder.Services.AddScoped<IBOQService, BOQService>();

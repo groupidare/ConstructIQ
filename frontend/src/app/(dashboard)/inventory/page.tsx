@@ -6,9 +6,9 @@ import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
 import { useAuthStore } from "@/store/authStore";
 import { useWarehouseStock } from "@/hooks/useWarehouseStock";
-import { useMaterialRequests } from "@/hooks/useMaterialRequests";
+import { useWarehouseRequests } from "@/hooks/useWarehouseRequests";
 import { formatDate } from "@/lib/utils";
-import type { MaterialRequest } from "@/types/materialRequest";
+import type { WarehouseRequest } from "@/types/warehouseRequest";
 import {
   Package, AlertCircle, RefreshCw, Search, Download, Clock, ArrowDownAZ,
   ClipboardList, ChevronDown, ChevronRight, CheckSquare,
@@ -46,7 +46,7 @@ type Tab = "stock" | "requests";
 function InventoryPageInner() {
   const searchParams = useSearchParams();
   const { items, loading, syncing, fetchItems, sync } = useWarehouseStock();
-  const { requests, loading: requestsLoading, fetchAll: fetchRequests, approveRequest } = useMaterialRequests();
+  const { requests, loading: requestsLoading, fetchAll: fetchRequests, approveRequest } = useWarehouseRequests();
 
   const [search, setSearch] = useState("");
   const [sortAZ, setSortAZ] = useState(false);
@@ -76,7 +76,7 @@ function InventoryPageInner() {
   const pendingCount = useMemo(() => requests.filter(r => r.status === "Pending").length, [requests]);
 
   const groupedRequestsByProject = useMemo(() => {
-    const map = new Map<number, { projectId: number; projectName: string; records: MaterialRequest[] }>();
+    const map = new Map<number, { projectId: number; projectName: string; records: WarehouseRequest[] }>();
     for (const r of requests) {
       if (!map.has(r.projectId)) map.set(r.projectId, { projectId: r.projectId, projectName: r.projectName, records: [] });
       map.get(r.projectId)!.records.push(r);
@@ -91,8 +91,9 @@ function InventoryPageInner() {
     try {
       const result = await sync();
       toast.success(`Synced ${result.itemCount} material(s) from the warehouse sheet.`);
-    } catch {
-      toast.error("Failed to sync — check the Google Sheets API key and sheet sharing settings.");
+    } catch (error) {
+      const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message || "Failed to sync — check the Google Sheets API key and sheet sharing settings.");
     }
   }
 

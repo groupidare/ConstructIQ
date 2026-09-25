@@ -1,15 +1,15 @@
 using System.ComponentModel.DataAnnotations;
 
-namespace ConstructIQ.API.Models.DTOs.MaterialRequest;
+namespace ConstructIQ.API.Models.DTOs.WarehouseRequests;
 
-public class MaterialRequestCreateDto
+public class WarehouseRequestCreateDto
 {
     [Required] public int ProjectId { get; set; }
     [Required] public int MaterialId { get; set; }
     [Range(0.0001, double.MaxValue)] public decimal RequestedQuantity { get; set; }
 }
 
-public class MaterialRequestResponseDto
+public class WarehouseRequestResponseDto
 {
     public int      Id                { get; set; }
     public int      ProjectId         { get; set; }

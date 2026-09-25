@@ -4,6 +4,7 @@ using ConstructIQ.API.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ConstructIQ.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260924130053_AddWarehouseRequestsAndHistoricalSupply")]
+    partial class AddWarehouseRequestsAndHistoricalSupply
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -82,13 +85,6 @@ namespace ConstructIQ.API.Migrations
                     b.Property<int>("CreatedByUserId")
                         .HasColumnType("int");
 
-                    b.Property<decimal?>("EstimatedPurchaseQuantity")
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<string>("EstimatedPurchaseUnit")
-                        .HasMaxLength(20)
-                        .HasColumnType("varchar(20)");
-
                     b.Property<decimal>("EstimatedQuantity")
                         .HasColumnType("decimal(18,4)");
 
@@ -127,58 +123,6 @@ namespace ConstructIQ.API.Migrations
                     b.HasIndex("ProjectId");
 
                     b.ToTable("BOQItems");
-                });
-
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.DeliveryBatch", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("BatchNumber")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<int>("PurchaseOrderId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("UploadedByUserId")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("PurchaseOrderId");
-
-                    b.HasIndex("UploadedByUserId");
-
-                    b.ToTable("DeliveryBatches");
-                });
-
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.DeliveryBatchPhoto", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("DeliveryBatchId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Url")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("varchar(255)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("DeliveryBatchId");
-
-                    b.ToTable("DeliveryBatchPhotos");
                 });
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.DeliveryEvaluation", b =>
@@ -1482,36 +1426,6 @@ namespace ConstructIQ.API.Migrations
                     b.Navigation("Project");
                 });
 
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.DeliveryBatch", b =>
-                {
-                    b.HasOne("ConstructIQ.API.Models.Entities.PurchaseOrder", "PurchaseOrder")
-                        .WithMany("DeliveryBatches")
-                        .HasForeignKey("PurchaseOrderId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("ConstructIQ.API.Models.Entities.User", "UploadedBy")
-                        .WithMany()
-                        .HasForeignKey("UploadedByUserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("PurchaseOrder");
-
-                    b.Navigation("UploadedBy");
-                });
-
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.DeliveryBatchPhoto", b =>
-                {
-                    b.HasOne("ConstructIQ.API.Models.Entities.DeliveryBatch", "DeliveryBatch")
-                        .WithMany("Photos")
-                        .HasForeignKey("DeliveryBatchId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("DeliveryBatch");
-                });
-
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.DeliveryEvaluation", b =>
                 {
                     b.HasOne("ConstructIQ.API.Models.Entities.PurchaseOrder", "PurchaseOrder")
@@ -2039,11 +1953,6 @@ namespace ConstructIQ.API.Migrations
                     b.Navigation("HistoricalSupplies");
                 });
 
-            modelBuilder.Entity("ConstructIQ.API.Models.Entities.DeliveryBatch", b =>
-                {
-                    b.Navigation("Photos");
-                });
-
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.DeliveryEvaluation", b =>
                 {
                     b.Navigation("Photos");
@@ -2104,8 +2013,6 @@ namespace ConstructIQ.API.Migrations
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.PurchaseOrder", b =>
                 {
-                    b.Navigation("DeliveryBatches");
-
                     b.Navigation("Evaluation");
 
                     b.Navigation("Materials");

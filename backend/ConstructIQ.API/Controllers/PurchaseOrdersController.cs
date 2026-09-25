@@ -18,9 +18,12 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
     // deliveries, so they can't create POs or move one back to Pending/Approved.
     private const string ManageRoles = "Admin,ProjectManager,ProcurementOfficer";
 
-    // Roles allowed to mark a PO Delivered — everyone who manages POs, plus
-    // WarehousePersonnel, whose only allowed action this is.
-    private const string DeliverRoles = "Admin,ProjectManager,ProcurementOfficer,WarehousePersonnel";
+    // Only warehouse personnel physically receive the delivery, so they're the
+    // only ones who can progress one (save a batch, then complete it) or rate
+    // the supplier on it — Admin/ProjectManager/ProcurementOfficer manage the
+    // lifecycle up through Approved and then watch delivery read-only.
+    private const string DeliverRoles = "WarehousePersonnel";
+    private const string RateRoles = "WarehousePersonnel";
 
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
@@ -33,6 +36,9 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
             .Include(po => po.Project)
             .Include(po => po.Supplier)
             .Include(po => po.Materials)
+            .Include(po => po.Evaluation)
+            .Include(po => po.DeliveryBatches).ThenInclude(b => b.Photos)
+            .Include(po => po.DeliveryBatches).ThenInclude(b => b.UploadedBy)
             .AsQueryable();
 
         if (projectId.HasValue)
@@ -131,8 +137,8 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
 
         if (!Enum.TryParse<PurchaseOrderStatus>(dto.Status, true, out var status))
             return BadRequest(new { message = "Invalid status." });
-        if (status == PurchaseOrderStatus.Delivered)
-            return BadRequest(new { message = "Use the deliver endpoint to mark a PO delivered — it requires proof of delivery and a rating." });
+        if (status is PurchaseOrderStatus.DeliveryInProgress or PurchaseOrderStatus.Delivered)
+            return BadRequest(new { message = "Upload a proof-of-delivery batch to move a PO into delivery — it can't be set by hand." });
 
         po.Status = status;
         po.UpdatedAt = DateTime.UtcNow;
@@ -149,31 +155,31 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
     };
     private const long MaxPhotoBytes = 5 * 1024 * 1024; // 5 MB
 
-    // Marking a PO delivered always requires proof-of-delivery photos plus a
-    // full category rating, submitted together as one multipart request.
-    [HttpPost("{id:int}/deliver")]
+    // Saves one batch of proof-of-delivery photos. Can be called repeatedly —
+    // each partial shipment gets its own batch — and moves an Approved PO
+    // into DeliveryInProgress the first time it's called. Rating happens
+    // separately (see Rate below), so this never touches the Evaluation.
+    [HttpPost("{id:int}/delivery-batches")]
     [Authorize(Roles = DeliverRoles)]
-    public async Task<IActionResult> Deliver(int id, [FromForm] SubmitDeliveryDto dto)
+    public async Task<IActionResult> AddDeliveryBatch(int id, [FromForm] SubmitDeliveryBatchDto dto)
     {
         var po = await db.PurchaseOrders
-            .Include(p => p.Project).Include(p => p.Supplier).Include(p => p.Materials).Include(p => p.Evaluation)
+            .Include(p => p.Project).Include(p => p.Supplier).Include(p => p.Materials)
+            .Include(p => p.DeliveryBatches).ThenInclude(b => b.Photos)
+            .Include(p => p.DeliveryBatches).ThenInclude(b => b.UploadedBy)
             .FirstOrDefaultAsync(p => p.Id == id);
         if (po is null) return NotFound();
-        if (po.Evaluation is not null)
-            return BadRequest(new { message = "This PO has already been delivered and rated." });
+        if (po.Status == PurchaseOrderStatus.Delivered)
+            return BadRequest(new { message = "This PO has already been delivered." });
+        if (po.Status == PurchaseOrderStatus.Pending)
+            return BadRequest(new { message = "Approve this PO before recording a delivery." });
         if (dto.Photos.Count == 0)
             return BadRequest(new { message = "At least one proof-of-delivery photo is required." });
-
-        foreach (var rating in new[] { dto.PriceRating, dto.DeliveryRating, dto.QualityRating, dto.AccuracyRating, dto.ResponsivenessRating })
-        {
-            if (rating is < 1 or > 5)
-                return BadRequest(new { message = "All category ratings must be between 1 and 5." });
-        }
 
         var uploadsDir = Path.Combine(env.WebRootPath, "uploads", "deliveries");
         Directory.CreateDirectory(uploadsDir);
 
-        var photos = new List<DeliveryPhoto>();
+        var photos = new List<DeliveryBatchPhoto>();
         foreach (var file in dto.Photos)
         {
             if (file.Length == 0) continue;
@@ -185,7 +191,78 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
             var fileName = $"{id}_{Guid.NewGuid():N}{ext}";
             await using (var stream = System.IO.File.Create(Path.Combine(uploadsDir, fileName)))
                 await file.CopyToAsync(stream);
-            photos.Add(new DeliveryPhoto { Url = $"/uploads/deliveries/{fileName}" });
+            photos.Add(new DeliveryBatchPhoto { Url = $"/uploads/deliveries/{fileName}" });
+        }
+
+        var nextBatchNumber = po.DeliveryBatches.Count == 0 ? 1 : po.DeliveryBatches.Max(b => b.BatchNumber) + 1;
+        po.DeliveryBatches.Add(new DeliveryBatch
+        {
+            BatchNumber = nextBatchNumber,
+            UploadedByUserId = CurrentUserId,
+            Photos = photos,
+        });
+
+        po.Status = PurchaseOrderStatus.DeliveryInProgress;
+        po.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+
+        // UploadedBy on the newly-added batch isn't populated until reloaded —
+        // ToDto needs it for DeliveryBatchDto.UploadedByName.
+        await db.Entry(po.DeliveryBatches.Last()).Reference(b => b.UploadedBy).LoadAsync();
+
+        return Ok(ToDto(po));
+    }
+
+    // Finalizes a delivery once every batch has arrived — requires at least
+    // one photo across all batches, but not a rating (that's a separate,
+    // WarehousePersonnel-only step; see Rate below).
+    [HttpPost("{id:int}/complete-delivery")]
+    [Authorize(Roles = DeliverRoles)]
+    public async Task<IActionResult> CompleteDelivery(int id)
+    {
+        var po = await db.PurchaseOrders
+            .Include(p => p.Project).Include(p => p.Supplier).Include(p => p.Materials)
+            .Include(p => p.DeliveryBatches).ThenInclude(b => b.Photos)
+            .Include(p => p.DeliveryBatches).ThenInclude(b => b.UploadedBy)
+            .FirstOrDefaultAsync(p => p.Id == id);
+        if (po is null) return NotFound();
+        if (po.Status != PurchaseOrderStatus.DeliveryInProgress)
+            return BadRequest(new { message = "Save at least one delivery batch before completing delivery." });
+        if (!po.DeliveryBatches.Any(b => b.Photos.Count > 0))
+            return BadRequest(new { message = "At least one proof-of-delivery photo is required." });
+
+        po.Status = PurchaseOrderStatus.Delivered;
+        po.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+
+        return Ok(ToDto(po));
+    }
+
+    // Rating is independent of how the delivery got here — it's submitted
+    // once, only by WarehousePersonnel, only after the PO is Delivered. The
+    // photos already sit on the PO's DeliveryBatches; this just copies their
+    // URLs onto the evaluation so existing supplier-history rendering (which
+    // reads Evaluation.Photos) doesn't need to know batches exist.
+    [HttpPost("{id:int}/rate")]
+    [Authorize(Roles = RateRoles)]
+    public async Task<IActionResult> Rate(int id, [FromBody] SubmitRatingDto dto)
+    {
+        var po = await db.PurchaseOrders
+            .Include(p => p.Project).Include(p => p.Supplier).Include(p => p.Materials)
+            .Include(p => p.DeliveryBatches).ThenInclude(b => b.Photos)
+            .Include(p => p.DeliveryBatches).ThenInclude(b => b.UploadedBy)
+            .Include(p => p.Evaluation)
+            .FirstOrDefaultAsync(p => p.Id == id);
+        if (po is null) return NotFound();
+        if (po.Status != PurchaseOrderStatus.Delivered)
+            return BadRequest(new { message = "This PO hasn't been delivered yet." });
+        if (po.Evaluation is not null)
+            return BadRequest(new { message = "This PO has already been rated." });
+
+        foreach (var rating in new[] { dto.PriceRating, dto.DeliveryRating, dto.QualityRating, dto.AccuracyRating, dto.ResponsivenessRating })
+        {
+            if (rating is < 1 or > 5)
+                return BadRequest(new { message = "All category ratings must be between 1 and 5." });
         }
 
         db.DeliveryEvaluations.Add(new DeliveryEvaluation
@@ -200,11 +277,9 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
             ActualLeadDays = dto.ActualLeadDays,
             Comments = string.IsNullOrWhiteSpace(dto.Comments) ? null : dto.Comments.Trim(),
             RatedByUserId = CurrentUserId,
-            Photos = photos,
+            Photos = po.DeliveryBatches.SelectMany(b => b.Photos).Select(p => new DeliveryPhoto { Url = p.Url }).ToList(),
         });
 
-        po.Status = PurchaseOrderStatus.Delivered;
-        po.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
         return Ok(ToDto(po));
@@ -227,5 +302,16 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
             MaterialId = m.MaterialId, BOQItemId = m.BOQItemId, PhaseId = m.PhaseId,
             PrimarySection = m.PrimarySection, SubCategory = m.SubCategory,
         }).ToList(),
+        DeliveryBatches = po.DeliveryBatches
+            .OrderBy(b => b.BatchNumber)
+            .Select(b => new DeliveryBatchDto
+            {
+                Id = b.Id,
+                BatchNumber = b.BatchNumber,
+                UploadedByName = $"{b.UploadedBy.FirstName} {b.UploadedBy.LastName}",
+                CreatedAt = b.CreatedAt,
+                PhotoUrls = b.Photos.Select(p => p.Url).ToList(),
+            }).ToList(),
+        HasEvaluation = po.Evaluation is not null,
     };
 }

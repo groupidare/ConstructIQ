@@ -1,16 +1,16 @@
 using ConstructIQ.API.Data;
-using ConstructIQ.API.Models.DTOs.MaterialRequest;
+using ConstructIQ.API.Models.DTOs.WarehouseRequests;
 using ConstructIQ.API.Models.Entities;
 using ConstructIQ.API.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class MaterialRequestService(AppDbContext db) : IMaterialRequestService
+public class WarehouseRequestService(AppDbContext db) : IWarehouseRequestService
 {
-    public async Task<IEnumerable<MaterialRequestResponseDto>> GetAllAsync()
+    public async Task<IEnumerable<WarehouseRequestResponseDto>> GetAllAsync()
     {
-        var rows = await db.MaterialRequests
+        var rows = await db.WarehouseRequests
             .Include(m => m.Project)
             .Include(m => m.Material)
             .Include(m => m.RequestedBy)
@@ -21,9 +21,9 @@ public class MaterialRequestService(AppDbContext db) : IMaterialRequestService
         return rows.Select(ToDto);
     }
 
-    public async Task<MaterialRequestResponseDto> CreateAsync(MaterialRequestCreateDto dto, int userId)
+    public async Task<WarehouseRequestResponseDto> CreateAsync(WarehouseRequestCreateDto dto, int userId)
     {
-        var request = new MaterialRequest
+        var request = new WarehouseRequest
         {
             ProjectId         = dto.ProjectId,
             MaterialId        = dto.MaterialId,
@@ -31,10 +31,10 @@ public class MaterialRequestService(AppDbContext db) : IMaterialRequestService
             RequestedByUserId = userId,
         };
 
-        db.MaterialRequests.Add(request);
+        db.WarehouseRequests.Add(request);
         await db.SaveChangesAsync();
 
-        var saved = await db.MaterialRequests
+        var saved = await db.WarehouseRequests
             .Include(m => m.Project)
             .Include(m => m.Material)
             .Include(m => m.RequestedBy)
@@ -46,10 +46,10 @@ public class MaterialRequestService(AppDbContext db) : IMaterialRequestService
 
     public async Task<bool> ApproveAsync(int id, int userId)
     {
-        var request = await db.MaterialRequests.FindAsync(id);
-        if (request is null || request.Status != MaterialRequestStatus.Pending) return false;
+        var request = await db.WarehouseRequests.FindAsync(id);
+        if (request is null || request.Status != WarehouseRequestStatus.Pending) return false;
 
-        request.Status           = MaterialRequestStatus.Approved;
+        request.Status           = WarehouseRequestStatus.Approved;
         request.ApprovedByUserId = userId;
         request.ApprovedAt       = DateTime.UtcNow;
 
@@ -57,7 +57,7 @@ public class MaterialRequestService(AppDbContext db) : IMaterialRequestService
         return true;
     }
 
-    private static MaterialRequestResponseDto ToDto(MaterialRequest m) => new()
+    private static WarehouseRequestResponseDto ToDto(WarehouseRequest m) => new()
     {
         Id                = m.Id,
         ProjectId         = m.ProjectId,

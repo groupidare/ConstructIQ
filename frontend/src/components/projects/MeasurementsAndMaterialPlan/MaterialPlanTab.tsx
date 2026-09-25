@@ -34,8 +34,7 @@ interface Props {
   onRowsChange: (rows: BOQItemRow[] | ((prev: BOQItemRow[]) => BOQItemRow[])) => void;
   onSave: () => void;
   saving: boolean;
-  onRequestPurchase: (materialId: number | undefined, materialName: string, quantity: number) => void;
-  onRequestFromWarehouse: (materialId: number | undefined, materialName: string, quantity: number) => void;
+  onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string) => void;
   getHistoricalEstimate: (primarySection: string, materialDescription: string, projectType?: string) => Promise<HistoricalEstimate>;
   onRemoveDocument: (documentId: number) => void;
   onRunForecast: () => void;
@@ -62,7 +61,7 @@ interface Props {
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
-  rows, boqItems, onRowsChange, onSave, saving, onRequestPurchase, onRequestFromWarehouse, getHistoricalEstimate, onRemoveDocument, onRunForecast, forecasting,
+  rows, boqItems, onRowsChange, onSave, saving, onNotify, getHistoricalEstimate, onRemoveDocument, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
@@ -512,15 +511,15 @@ export default function MaterialPlanTab({
                     {canRequest && (
                       <>
                         <button
-                          onClick={() => onRequestPurchase(r.materialId, materialLabel(r), toOrder)}
-                          title={`Request purchase — order ${toOrder}`}
+                          onClick={() => onNotify('ProcurementOrder', r.materialId, materialLabel(r), toOrder, r.unit ?? '')}
+                          title={`Notify procurement — order ${toOrder}`}
                           style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert ? '#fee2e2' : '#f3f4f6' }}
                         >
                           <ShoppingCart style={{ width: 12, height: 12, color: needsAlert ? '#ef4444' : '#9ca3af' }} />
                         </button>
                         <button
-                          onClick={() => onRequestFromWarehouse(r.materialId, materialLabel(r), r.estimatedQuantity)}
-                          title="Request from warehouse"
+                          onClick={() => onNotify('WarehouseCheck', r.materialId, materialLabel(r), r.estimatedQuantity, r.unit ?? '')}
+                          title="Notify warehouse to check material"
                           style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}
                         >
                           <Package style={{ width: 12, height: 12, color: '#9ca3af' }} />
