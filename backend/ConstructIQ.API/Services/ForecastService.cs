@@ -9,7 +9,7 @@ namespace ConstructIQ.API.Services;
 
 public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, ILogger<ForecastService> logger) : IForecastService
 {
-    public async Task<ForecastResponseDto> GenerateForecastAsync(ForecastRequestDto request)
+    public async Task<ForecastResponseDto> GenerateForecastAsync(ForecastRequestDto request, int userId)
     {
         var client = httpFactory.CreateClient("MLService");
 
@@ -39,39 +39,84 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
             throw new InvalidOperationException("Couldn't generate a forecast for this project right now. It usually means the model needs to be (re)trained, or this project doesn't have enough BOQ data yet.");
         }
 
-        var mlResult = await response.Content.ReadFromJsonAsync<ForecastResponseDto>();
-        return mlResult!;
+        var mlResult = await response.Content.ReadFromJsonAsync<MlForecastResponseDto>();
+        if (mlResult is null)
+            throw new InvalidOperationException("The forecasting service returned an empty response.");
+
+        // The ML service is stateless — it computes and returns a result but never
+        // persists it. Without saving here, GetByProjectAsync (which is what the
+        // project card and a reopened Material Plan both read from) would always
+        // see an empty history, even though a forecast was just "successfully" run.
+        if (!Enum.TryParse<ForecastPeriod>(request.Period, true, out var period))
+            period = ForecastPeriod.Monthly;
+
+        var entity = new ForecastResult
+        {
+            ProjectId         = request.ProjectId,
+            PhaseId           = request.PhaseId,
+            Period            = period,
+            PlanningWeeks     = request.PlanningWeeks,
+            ModelAccuracy     = mlResult.ModelAccuracy,
+            GeneratedByUserId = userId,
+        };
+        foreach (var fm in mlResult.ForecastedMaterials)
+        {
+            if (!Enum.TryParse<RiskLevel>(fm.RiskLevel, true, out var risk))
+                risk = RiskLevel.Low;
+
+            entity.ForecastedMaterials.Add(new ForecastedMaterial
+            {
+                MaterialId         = fm.MaterialId,
+                ForecastedQuantity = fm.ForecastedQuantity,
+                CurrentStock       = fm.CurrentStock,
+                Shortage           = fm.Shortage,
+                ReorderSuggestion  = fm.ReorderSuggestion,
+                RiskLevel          = risk,
+            });
+        }
+
+        db.ForecastResults.Add(entity);
+        await db.SaveChangesAsync();
+
+        var saved = await db.ForecastResults
+            .Include(f => f.ForecastedMaterials).ThenInclude(fm => fm.Material)
+            .FirstAsync(f => f.Id == entity.Id);
+
+        return ToDto(saved);
     }
 
     public async Task<IEnumerable<ForecastResponseDto>> GetByProjectAsync(int projectId)
     {
-        return await db.ForecastResults
+        var results = await db.ForecastResults
             .Include(f => f.ForecastedMaterials)
                 .ThenInclude(fm => fm.Material)
             .Where(f => f.ProjectId == projectId)
             .OrderByDescending(f => f.GeneratedAt)
-            .Select(f => new ForecastResponseDto
-            {
-                Id            = f.Id,
-                ProjectId     = f.ProjectId,
-                PhaseId       = f.PhaseId,
-                Period        = f.Period.ToString(),
-                GeneratedAt   = f.GeneratedAt,
-                ModelAccuracy = f.ModelAccuracy,
-                ForecastedMaterials = f.ForecastedMaterials.Select(fm => new ForecastedMaterialDto
-                {
-                    MaterialId         = fm.MaterialId,
-                    MaterialName       = fm.Material.Name,
-                    Unit               = fm.Material.Unit,
-                    ForecastedQuantity = fm.ForecastedQuantity,
-                    CurrentStock       = fm.CurrentStock,
-                    Shortage           = fm.Shortage,
-                    ReorderSuggestion  = fm.ReorderSuggestion,
-                    RiskLevel          = fm.RiskLevel.ToString(),
-                }).ToList(),
-            })
             .ToListAsync();
+
+        return results.Select(ToDto);
     }
+
+    private static ForecastResponseDto ToDto(ForecastResult f) => new()
+    {
+        Id            = f.Id,
+        ProjectId     = f.ProjectId,
+        PhaseId       = f.PhaseId,
+        Period        = f.Period.ToString(),
+        GeneratedAt   = f.GeneratedAt,
+        ModelAccuracy = f.ModelAccuracy,
+        ForecastedMaterials = f.ForecastedMaterials.Select(fm => new ForecastedMaterialDto
+        {
+            MaterialId         = fm.MaterialId,
+            MaterialName       = fm.Material.Name,
+            Unit               = fm.Material.Unit,
+            ForecastedQuantity = fm.ForecastedQuantity,
+            CurrentStock       = fm.CurrentStock,
+            Shortage           = fm.Shortage,
+            ReorderSuggestion  = fm.ReorderSuggestion,
+            RiskLevel          = fm.RiskLevel.ToString(),
+        }).ToList(),
+    };
 
     public async Task<TrainModelsResponseDto> TrainModelsAsync()
     {
@@ -84,8 +129,16 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
             throw new InvalidOperationException($"Training failed: {body}");
         }
 
-        var result = await response.Content.ReadFromJsonAsync<TrainModelsResponseDto>();
-        return result!;
+        var result = await response.Content.ReadFromJsonAsync<MlTrainModelsResponseDto>();
+        if (result is null)
+            throw new InvalidOperationException("The training service returned an empty response.");
+
+        return new TrainModelsResponseDto
+        {
+            SampleCount  = result.SampleCount,
+            RandomForest = result.RandomForest,
+            Xgboost      = result.Xgboost,
+        };
     }
 
     public async Task<ForecastAccuracyReportDto> GetAccuracyReportAsync(int projectId)

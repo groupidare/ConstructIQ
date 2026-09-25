@@ -15,7 +15,7 @@ import { useAlertStore } from '@/store/alertStore';
 import { useProjects } from '@/hooks/useProjects';
 import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
 import type { Project, ProjectType } from '@/types/project';
-import type { BOQItemRow } from '@/types/boq';
+import type { BOQItem, BOQItemRow } from '@/types/boq';
 import type { PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import MeasurementsTab from './MeasurementsTab';
 import MaterialPlanTab from './MaterialPlanTab';
@@ -71,6 +71,25 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
 
   const seededBoq = useRef(false);
 
+  // Shared by the initial-load seed effect below and by every save — reused
+  // so the draft rows always carry the server-assigned Id afterward. Without
+  // that, BOQService.BulkSaveAsync (Id.HasValue decides update-vs-insert) has
+  // no way to tell "this row already exists" on the *next* save, and creates
+  // a full duplicate set of BOQItems every single time Save/Run Forecast is
+  // clicked again — exactly what silently happened before this was added.
+  function boqItemToRow(b: BOQItem): BOQItemRow {
+    return {
+      id: b.id, phaseId: b.phaseId, primarySection: b.primarySection, subCategory: b.subCategory,
+      specification: b.specification, materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, notes: b.notes,
+      historicalSupply: b.historicalSupply,
+      estimatedPurchaseQuantity: b.estimatedPurchaseQuantity, estimatedPurchaseUnit: b.estimatedPurchaseUnit,
+      // A value already saved server-side was either a prior suggestion the
+      // user accepted or one they typed themselves — either way, don't let
+      // the auto-suggest effect silently overwrite it on this fresh load.
+      estimatePurchaseManuallySet: b.estimatedPurchaseQuantity != null,
+    };
+  }
+
   useEffect(() => {
     fetchDocuments();
     fetchBoqItems();
@@ -83,16 +102,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   useEffect(() => {
     if (seededBoq.current || boqItems.length === 0) return;
     seededBoq.current = true;
-    setBoqRows(boqItems.map(b => ({
-      id: b.id, phaseId: b.phaseId, primarySection: b.primarySection, subCategory: b.subCategory,
-      specification: b.specification, materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, notes: b.notes,
-      historicalSupply: b.historicalSupply,
-      estimatedPurchaseQuantity: b.estimatedPurchaseQuantity, estimatedPurchaseUnit: b.estimatedPurchaseUnit,
-      // A value already saved server-side was either a prior suggestion the
-      // user accepted or one they typed themselves — either way, don't let
-      // the auto-suggest effect silently overwrite it on this fresh load.
-      estimatePurchaseManuallySet: b.estimatedPurchaseQuantity != null,
-    })));
+    setBoqRows(boqItems.map(boqItemToRow));
   }, [boqItems]);
 
   const blueprints = documents.filter(d => d.category === 'Blueprint');
@@ -283,7 +293,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   async function handleSaveBoq() {
     setSavingBoq(true);
     try {
-      await saveBoqItems(boqRows);
+      const saved = await saveBoqItems(boqRows);
+      setBoqRows(saved.map(boqItemToRow));
       toast.success('Material plan saved.');
     } catch (error) {
       toast.error(apiErrorMessage(error, 'Failed to save material plan.'));
@@ -300,7 +311,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       // against stale (or missing) data just because "Save Material Plan"
       // wasn't clicked separately first.
       if (boqRows.length > 0) {
-        await saveBoqItems(boqRows);
+        const saved = await saveBoqItems(boqRows);
+        setBoqRows(saved.map(boqItemToRow));
       }
       await generateForecast({ projectId: project.id, period: 'Monthly', planningWeeks: 4 });
       toast.success('Material plan saved and forecast generated.');

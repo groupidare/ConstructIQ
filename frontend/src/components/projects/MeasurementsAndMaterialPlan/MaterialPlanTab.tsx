@@ -242,7 +242,7 @@ export default function MaterialPlanTab({
   // purchase-order data on similar historical/completed projects. Debounced
   // per row so it doesn't fire on every keystroke, and never overwrites a
   // value the user has directly edited (estimatePurchaseManuallySet).
-  const suggestKey = rows.map(r => `${r.primarySection}||${r.specification ?? r.newMaterialName ?? ''}||${r.estimatePurchaseManuallySet ? '1' : '0'}`).join('\u0001');
+  const suggestKey = rows.map(r => `${r.primarySection}||${r.specification || r.newMaterialName || ''}||${r.estimatePurchaseManuallySet ? '1' : '0'}`).join('\u0001');
   useEffect(() => {
     if (isHistorical) return;
     const timers = rows.map((r, i) => {
@@ -475,7 +475,7 @@ export default function MaterialPlanTab({
                   {r.materialId && !r.specification && !r.newMaterialName ? (
                     <span style={{ fontSize: '0.78rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{materialLabel(r)}</span>
                   ) : (
-                    <input disabled={!editable} value={r.specification ?? r.newMaterialName ?? ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material specification" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                    <input disabled={!editable} value={r.specification || r.newMaterialName || ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material specification" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   )}
                   <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />

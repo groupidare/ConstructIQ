@@ -10,11 +10,12 @@ export const PRIMARY_SECTIONS = [
 
 export type PrimarySection = (typeof PRIMARY_SECTIONS)[number];
 
-// Purchasable container units — offered for the Est. Qty column's Unit
-// dropdown (new/non-historical projects). Deliberately excludes measurement
-// units (sq.m, l.m, cu.m...) already used for Total Area/Qty above, since
-// those aren't real order quantities.
-export const PURCHASE_UNITS = ['pc', 'bag', 'sheet', 'pail', 'gal', 'roll', 'set', 'box'] as const;
+// Offered for the Est. Qty column's Unit dropdown (new/non-historical
+// projects) — mirrors BOQService's PurchaseUnits allowlist. Originally just
+// container units, but real historical PO data legitimately orders some
+// materials (roofing sheets, gutters, pipe) by sq.m/l.m/cu.m too, so those
+// are included as well rather than silently blocking a real match.
+export const PURCHASE_UNITS = ['pc', 'bag', 'sheet', 'pail', 'gal', 'roll', 'set', 'box', 'sq.m', 'l.m', 'cu.m', 'lot', 'kg', 'pack'] as const;
 
 export interface BOQItemRow {
   id?: number; // undefined = not yet saved
