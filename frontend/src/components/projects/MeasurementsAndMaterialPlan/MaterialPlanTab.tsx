@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X } from 'lucide-react';
 import { getApiOrigin } from '@/lib/api';
@@ -9,8 +9,8 @@ import type { Project, ProjectType } from '@/types/project';
 import type { ProjectDocument } from '@/types/document';
 import type { InventoryRecord } from '@/types/inventory';
 import type { ForecastedMaterial } from '@/types/forecast';
-import type { BOQItem, BOQItemRow } from '@/types/boq';
-import { PRIMARY_SECTIONS } from '@/types/boq';
+import type { BOQItem, BOQItemRow, HistoricalEstimate } from '@/types/boq';
+import { PRIMARY_SECTIONS, PURCHASE_UNITS } from '@/types/boq';
 import type { PurchaseOrder, PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import { inp, sel, lbl } from './styles';
 
@@ -27,11 +27,16 @@ interface Props {
   onParseBoq: (documentId: number) => Promise<void>;
   rows: BOQItemRow[];
   boqItems: BOQItem[];
-  onRowsChange: (rows: BOQItemRow[]) => void;
+  // Also accepts a React-style updater fn — needed by the historical-estimate
+  // auto-suggest effect below, which resolves after a delay and must apply
+  // its patch to whatever the rows array is *then*, not the stale snapshot
+  // it closed over when the lookup started.
+  onRowsChange: (rows: BOQItemRow[] | ((prev: BOQItemRow[]) => BOQItemRow[])) => void;
   onSave: () => void;
   saving: boolean;
   onRequestPurchase: (materialId: number | undefined, materialName: string, quantity: number) => void;
   onRequestFromWarehouse: (materialId: number | undefined, materialName: string, quantity: number) => void;
+  getHistoricalEstimate: (primarySection: string, materialDescription: string, projectType?: string) => Promise<HistoricalEstimate>;
   onRemoveDocument: (documentId: number) => void;
   onRunForecast: () => void;
   forecasting: boolean;
@@ -57,7 +62,7 @@ interface Props {
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
-  rows, boqItems, onRowsChange, onSave, saving, onRequestPurchase, onRequestFromWarehouse, onRemoveDocument, onRunForecast, forecasting,
+  rows, boqItems, onRowsChange, onSave, saving, onRequestPurchase, onRequestFromWarehouse, getHistoricalEstimate, onRemoveDocument, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
@@ -65,44 +70,21 @@ export default function MaterialPlanTab({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const poFileInputRef = useRef<HTMLInputElement>(null);
   const [parsingPoId, setParsingPoId] = useState<number | null>(null);
-  const [phaseChoice, setPhaseChoice] = useState<Record<number, number | ''>>({});
   const isCompleted = project.status === 'Completed';
   const isHistorical = project.isHistorical;
+  // Flat structure — same Primary/Sub Primary Section + Material Specification
+  // + Unit + Total Qty columns as the historical BOQ table, plus Actual Qty
+  // (completed projects), a purchase-unit + Est. Qty pair (procurement
+  // prediction, auto-suggested from historical BOQ+PO data), and Alerts
+  // (purchase/warehouse request actions, not applicable to historical data).
+  // No Phase column.
   const columnsTemplate = isCompleted
-    ? 'minmax(0,2fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.7fr)'
-    : 'minmax(0,2.2fr) minmax(0,0.8fr) minmax(0,0.5fr) minmax(0,0.8fr) minmax(0,0.7fr)';
+    ? 'minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.9fr)'
+    : 'minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.6fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.9fr)';
   const [parsingId, setParsingId] = useState<number | null>(null);
 
   const timeRange = `${formatDate(project.startDate)} – ${formatDate(project.targetEndDate)}`;
   const typeLabel = projectType === 'Others' && otherTypeSpecify ? `Others — ${otherTypeSpecify}` : projectType;
-
-  const forecastByMaterial = useMemo(() => {
-    const map = new Map<number, ForecastedMaterial>();
-    forecastedMaterials.forEach(f => map.set(f.materialId, f));
-    return map;
-  }, [forecastedMaterials]);
-
-  function addRow(materialId: number, materialName: string, unit: string) {
-    const phaseId = phaseChoice[materialId];
-    if (!phaseId) { toast.error('Choose a phase first.'); return; }
-    if (rows.some(r => r.materialId === materialId && r.phaseId === phaseId)) {
-      toast.error(`${materialName} is already added to that phase.`);
-      return;
-    }
-    const forecast = forecastByMaterial.get(materialId);
-    onRowsChange([
-      ...rows,
-      {
-        phaseId: Number(phaseId),
-        primarySection: 'Others',
-        materialId,
-        unit,
-        estimatedQuantity: forecast?.forecastedQuantity ?? 0,
-        notes: forecast ? 'Forecasted' : undefined,
-      },
-    ]);
-    toast.success(`${materialName} added.`);
-  }
 
   function updateRow(idx: number, patch: Partial<BOQItemRow>) {
     onRowsChange(rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
@@ -182,20 +164,6 @@ export default function MaterialPlanTab({
     return { actualByBoqItemId, unlinked };
   }, [purchaseOrders]);
 
-  // Group rows by Primary Section → Sub-category for display.
-  const grouped = useMemo(() => {
-    const bySection = new Map<string, Map<string, { r: BOQItemRow; i: number }[]>>();
-    rows.forEach((r, i) => {
-      const section = r.primarySection || 'Others';
-      const sub = r.subCategory || '—';
-      if (!bySection.has(section)) bySection.set(section, new Map());
-      const subMap = bySection.get(section)!;
-      if (!subMap.has(sub)) subMap.set(sub, []);
-      subMap.get(sub)!.push({ r, i });
-    });
-    return bySection;
-  }, [rows]);
-
   const historicalPurchaseRows = useMemo(
     () => rows.flatMap(row => row.historicalSupply ?? []),
     [rows],
@@ -270,6 +238,37 @@ export default function MaterialPlanTab({
     return inventory.find(i => i.materialId === r.materialId)?.availableQuantity ?? 0;
   }
 
+  // Auto-suggest Est. Qty/Unit for new (non-historical) rows once they have
+  // enough to look up (Primary Section + a material name), from real
+  // purchase-order data on similar historical/completed projects. Debounced
+  // per row so it doesn't fire on every keystroke, and never overwrites a
+  // value the user has directly edited (estimatePurchaseManuallySet).
+  const suggestKey = rows.map(r => `${r.primarySection}||${r.specification ?? r.newMaterialName ?? ''}||${r.estimatePurchaseManuallySet ? '1' : '0'}`).join('\u0001');
+  useEffect(() => {
+    if (isHistorical) return;
+    const timers = rows.map((r, i) => {
+      if (r.estimatePurchaseManuallySet) return undefined;
+      const section = (r.primarySection || '').trim();
+      const spec = (r.specification || r.newMaterialName || (r.materialId ? materialLabel(r) : '')).trim();
+      if (!section || !spec) return undefined;
+      return setTimeout(async () => {
+        try {
+          const result = await getHistoricalEstimate(section, spec, projectType);
+          if (result.estimatedQuantity == null || !result.unit) return;
+          onRowsChange(prev => prev.map((row, idx) =>
+            idx === i && !row.estimatePurchaseManuallySet
+              ? { ...row, estimatedPurchaseQuantity: result.estimatedQuantity!, estimatedPurchaseUnit: result.unit! }
+              : row
+          ));
+        } catch {
+          // Background suggestion — failing silently is fine, the field just stays blank.
+        }
+      }, 700);
+    });
+    return () => timers.forEach(t => { if (t) clearTimeout(t); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestKey, isHistorical, projectType]);
+
   return (
     <div>
       <datalist id="primary-section-options">
@@ -341,48 +340,6 @@ export default function MaterialPlanTab({
         </div>
       )}
 
-      {/* Add from Inventory — not applicable to historical projects: there's no
-          real inventory stock to add from, since they're backfilled training
-          data rather than a real project tracked through the app. */}
-      {!isHistorical && (
-        <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: '1rem', marginBottom: '1rem' }}>
-          <p style={{ fontWeight: 700, fontSize: '0.875rem', marginBottom: '0.25rem' }}>Add from Inventory</p>
-          <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginBottom: '0.75rem' }}>Only materials currently in stock — forecasted quantities shown when a forecast has been run.</p>
-          <div style={{ maxHeight: 220, overflowY: 'auto', overflowX: 'hidden' }}>
-            {inventory.length === 0 ? (
-              <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '0.5rem 0' }}>No in-stock materials available for this project.</p>
-            ) : (
-              inventory.map(inv => {
-                const forecast = forecastByMaterial.get(inv.materialId);
-                return (
-                  <div key={inv.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 4px', borderBottom: '1px solid #f9fafb', gap: 8 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <p style={{ fontSize: '0.82rem', fontWeight: 500, color: '#111827' }}>{inv.materialName}</p>
-                      <p style={{ fontSize: '0.68rem', color: '#9ca3af' }}>
-                        Stock: {inv.availableQuantity.toLocaleString()} {inv.unit}
-                        {forecast && <span style={{ color: '#f97316', fontWeight: 600 }}> · Forecasted: {forecast.forecastedQuantity.toLocaleString()} {inv.unit} ({forecast.riskLevel} risk)</span>}
-                      </p>
-                    </div>
-                    {editable && (
-                      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                        <select
-                          value={phaseChoice[inv.materialId] ?? ''}
-                          onChange={e => setPhaseChoice(prev => ({ ...prev, [inv.materialId]: e.target.value ? Number(e.target.value) : '' }))}
-                          style={{ ...sel, width: 110, padding: '5px 6px', fontSize: '0.72rem' }}
-                        >
-                          <option value="">Phase…</option>
-                          {project.phases.map(ph => <option key={ph.id} value={ph.id}>{ph.name}</option>)}
-                        </select>
-                        <button onClick={() => addRow(inv.materialId, inv.materialName, inv.unit)} style={{ width: 26, height: 26, borderRadius: '50%', border: 'none', background: 'transparent', cursor: 'pointer', color: '#f97316', fontSize: '1.1rem', fontWeight: 700 }}>+</button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Bill of Quantities */}
       <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
@@ -467,100 +424,121 @@ export default function MaterialPlanTab({
           </div>
         )}
 
-        <div style={{ display: isHistorical ? 'none' : 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-          {(isCompleted ? ['MATERIAL', 'UNIT', 'PHASE', 'EST. QTY', 'ACTUAL QTY', 'ALERTS'] : ['MATERIAL', 'UNIT', 'PHASE', 'EST. QTY', 'ALERTS']).map(h => (
-            <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
+        <div style={{ display: isHistorical ? 'none' : 'block', overflowX: 'auto' }}>
+        <div style={{ minWidth: 980 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+          {(isCompleted
+            ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'ACTUAL QTY', 'UNIT', 'EST. QTY', 'ALERTS']
+            : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'UNIT', 'EST. QTY', 'ALERTS']
+          ).map((h, idx) => (
+            <span key={`${h}-${idx}`} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
           ))}
         </div>
 
-        <div style={{ display: isHistorical ? 'none' : 'block', maxHeight: 320, overflowY: 'auto', overflowX: 'hidden' }}>
+        <div style={{ maxHeight: 320, overflowY: 'auto' }}>
           {rows.length === 0 ? (
             <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No materials added yet.</p>
           ) : (
-            Array.from(grouped.entries()).map(([section, subMap]) => (
-              <div key={section}>
-                <div style={{ padding: '8px 1rem', background: '#eff6ff', borderBottom: '1px solid #dbeafe' }}>
-                  <span style={{ fontWeight: 700, fontSize: '0.8rem', color: '#2563eb' }}>{section}</span>
-                </div>
-                {Array.from(subMap.entries()).map(([sub, entries]) => (
-                  <div key={sub}>
-                    {sub !== '—' && (
-                      <div style={{ padding: '4px 1rem 4px 1.5rem' }}>
-                        <span style={{ fontSize: '0.68rem', color: '#9ca3af', fontWeight: 600 }}>{sub}</span>
-                      </div>
+            rows.map((r, i) => {
+              const stock = currentStock(r);
+              const toOrder = Math.max(0, r.estimatedQuantity - stock);
+              const needsAlert = toOrder > 0;
+              const canRequest = editable && !isCompleted && !!r.materialId;
+              return (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40 }}>
+                  {editable ? (
+                    <input
+                      list="primary-section-options"
+                      title="Primary section"
+                      value={r.primarySection}
+                      onChange={e => updateRow(i, { primarySection: e.target.value })}
+                      style={{ ...inp, padding: '4px 6px', fontSize: '0.72rem' }}
+                    />
+                  ) : (
+                    <span style={{ fontSize: '0.76rem', color: '#374151' }}>{r.primarySection || '—'}</span>
+                  )}
+                  {editable ? (
+                    <input
+                      title="Sub primary section"
+                      value={r.subCategory ?? ''}
+                      onChange={e => updateRow(i, { subCategory: e.target.value })}
+                      style={{ ...inp, padding: '4px 6px', fontSize: '0.72rem' }}
+                    />
+                  ) : (
+                    <span style={{ fontSize: '0.76rem', color: '#374151' }}>{r.subCategory || '—'}</span>
+                  )}
+                  {/* A scanned row keeps its own specification/newMaterialName text
+                      even once it resolves to a real catalog MaterialId behind the
+                      scenes (fuzzy-matched server-side) — show the original BOQ
+                      wording, not the catalog's own (possibly differently-worded)
+                      name. Only fall back to the catalog name for rows with no
+                      scanned text at all (added directly from Stock on Hand). */}
+                  {r.materialId && !r.specification && !r.newMaterialName ? (
+                    <span style={{ fontSize: '0.78rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{materialLabel(r)}</span>
+                  ) : (
+                    <input disabled={!editable} value={r.specification ?? r.newMaterialName ?? ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material specification" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                  )}
+                  <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                  <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                  {isCompleted && (
+                    <input
+                      disabled={!editable}
+                      type="number"
+                      value={r.actualQuantity || ''}
+                      onChange={e => updateRow(i, { actualQuantity: parseFloat(e.target.value) || 0 })}
+                      placeholder="Actual used"
+                      style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', background: '#fff7ed', borderColor: '#fed7aa' }}
+                    />
+                  )}
+                  <select
+                    disabled={!editable}
+                    value={r.estimatedPurchaseUnit ?? ''}
+                    onChange={e => updateRow(i, { estimatedPurchaseUnit: e.target.value || undefined, estimatePurchaseManuallySet: true })}
+                    style={{ ...sel, padding: '4px 4px', fontSize: '0.7rem' }}
+                  >
+                    <option value="">—</option>
+                    {PURCHASE_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                  <input
+                    disabled={!editable}
+                    type="number"
+                    title="Estimated/predicted procurement quantity — auto-suggested from historical data, editable"
+                    value={r.estimatedPurchaseQuantity ?? ''}
+                    onChange={e => updateRow(i, { estimatedPurchaseQuantity: e.target.value === '' ? undefined : parseFloat(e.target.value) || 0, estimatePurchaseManuallySet: true })}
+                    placeholder="Est. qty"
+                    style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }}
+                  />
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    {canRequest && (
+                      <>
+                        <button
+                          onClick={() => onRequestPurchase(r.materialId, materialLabel(r), toOrder)}
+                          title={`Request purchase — order ${toOrder}`}
+                          style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert ? '#fee2e2' : '#f3f4f6' }}
+                        >
+                          <ShoppingCart style={{ width: 12, height: 12, color: needsAlert ? '#ef4444' : '#9ca3af' }} />
+                        </button>
+                        <button
+                          onClick={() => onRequestFromWarehouse(r.materialId, materialLabel(r), r.estimatedQuantity)}
+                          title="Request from warehouse"
+                          style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}
+                        >
+                          <Package style={{ width: 12, height: 12, color: '#9ca3af' }} />
+                        </button>
+                      </>
                     )}
-                    {entries.map(({ r, i }) => {
-                      const stock = currentStock(r);
-                      const toOrder = Math.max(0, r.estimatedQuantity - stock);
-                      const needsAlert = toOrder > 0;
-                      const canRequest = editable && !isCompleted && !!r.materialId;
-                      return (
-                        <div key={i} style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
-                            {r.materialId ? (
-                              <span style={{ fontSize: '0.78rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{materialLabel(r)}</span>
-                            ) : (
-                              <input disabled={!editable} value={r.newMaterialName ?? ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material name" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', flex: 1, minWidth: 0 }} />
-                            )}
-                            {editable && (
-                              <input
-                                list="primary-section-options"
-                                title="Primary section"
-                                value={r.primarySection}
-                                onChange={e => updateRow(i, { primarySection: e.target.value })}
-                                style={{ ...inp, padding: '3px 5px', fontSize: '0.64rem', width: 130, flexShrink: 0 }}
-                              />
-                            )}
-                          </div>
-                          <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
-                          <select disabled={!editable} value={r.phaseId ?? ''} onChange={e => updateRow(i, { phaseId: e.target.value ? Number(e.target.value) : undefined })} style={{ ...sel, padding: '4px 6px', fontSize: '0.72rem' }}>
-                            <option value="">—</option>
-                            {project.phases.map(ph => <option key={ph.id} value={ph.id}>{ph.name}</option>)}
-                          </select>
-                          <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
-                          {isCompleted && (
-                            <input
-                              disabled={!editable}
-                              type="number"
-                              value={r.actualQuantity || ''}
-                              onChange={e => updateRow(i, { actualQuantity: parseFloat(e.target.value) || 0 })}
-                              placeholder="Actual used"
-                              style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', background: '#fff7ed', borderColor: '#fed7aa' }}
-                            />
-                          )}
-                          <div style={{ display: 'flex', gap: 4 }}>
-                            {canRequest && (
-                              <>
-                                <button
-                                  onClick={() => onRequestPurchase(r.materialId, materialLabel(r), toOrder)}
-                                  title={`Request purchase — order ${toOrder}`}
-                                  style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert ? '#fee2e2' : '#f3f4f6' }}
-                                >
-                                  <ShoppingCart style={{ width: 12, height: 12, color: needsAlert ? '#ef4444' : '#9ca3af' }} />
-                                </button>
-                                <button
-                                  onClick={() => onRequestFromWarehouse(r.materialId, materialLabel(r), r.estimatedQuantity)}
-                                  title="Request from warehouse"
-                                  style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}
-                                >
-                                  <Package style={{ width: 12, height: 12, color: '#9ca3af' }} />
-                                </button>
-                              </>
-                            )}
-                            {editable && (
-                              <button onClick={() => removeRow(i)} style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent' }}>
-                                <Trash2 style={{ width: 12, height: 12, color: '#d1d5db' }} />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
+                    {editable && (
+                      <button onClick={() => removeRow(i)} style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent' }}>
+                        <Trash2 style={{ width: 12, height: 12, color: '#d1d5db' }} />
+                      </button>
+                    )}
                   </div>
-                ))}
-              </div>
-            ))
+                </div>
+              );
+            })
           )}
+        </div>
+        </div>
         </div>
 
         {editable && !isHistorical && (

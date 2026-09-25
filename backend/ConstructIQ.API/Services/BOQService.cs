@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Models.DTOs.BOQ;
 using ConstructIQ.API.Models.Entities;
@@ -72,6 +73,8 @@ public class BOQService(AppDbContext db) : IBOQService
             entity.CoverageArea      = BOQUnitRules.IsAreaUnit(unitForRow) ? item.EstimatedQuantity : null;
             entity.ActualQuantity    = item.ActualQuantity ?? 0;
             entity.Notes             = item.Notes;
+            entity.EstimatedPurchaseQuantity = item.EstimatedPurchaseQuantity;
+            entity.EstimatedPurchaseUnit     = item.EstimatedPurchaseUnit;
             entity.UpdatedAt         = DateTime.UtcNow;
 
             saved.Add(entity);
@@ -128,11 +131,29 @@ public class BOQService(AppDbContext db) : IBOQService
     // BOQ rows always need a real MaterialId. Scanned/manually-typed names that
     // don't match the catalog yet get a lightweight new Material under a
     // catch-all "Uncategorized" category rather than blocking the save.
+    //
+    // Exact-name match is tried first, then a fuzzy (word-overlap) match
+    // against the whole catalog before giving up and creating a new entry —
+    // a scanned BOQ description ("CHB (150mm) + Plaster (25mm) + Paint
+    // Finish") essentially never matches a catalog material's own short name
+    // ("CHB 150mm") verbatim, but they're the same material. Resolving to a
+    // brand-new near-duplicate Material instead would carry zero real
+    // Inventory stock, silently breaking Stock on Hand/shortage/alerts for
+    // every scanned row that isn't an exact string match.
     private async Task<int> FindOrCreateMaterialAsync(string name, string? unit)
     {
         var trimmed = name.Trim();
         var existing = await db.Materials.FirstOrDefaultAsync(m => m.Name.ToLower() == trimmed.ToLower());
         if (existing is not null) return existing.Id;
+
+        var candidates = await db.Materials.Select(m => new { m.Id, m.Name }).ToListAsync();
+        var fuzzyMatch = candidates
+            .Select(m => new { m.Id, Overlap = TokenOverlap(m.Name, trimmed) })
+            .Where(m => m.Overlap.Shared >= 2 && m.Overlap.Ratio >= 0.5)
+            .OrderByDescending(m => m.Overlap.Ratio)
+            .ThenByDescending(m => m.Overlap.Shared)
+            .FirstOrDefault();
+        if (fuzzyMatch is not null) return fuzzyMatch.Id;
 
         var uncategorized = await db.MaterialCategories.FirstOrDefaultAsync(c => c.Name == "Uncategorized");
         if (uncategorized is null)
@@ -200,5 +221,89 @@ public class BOQService(AppDbContext db) : IBOQService
             Unit         = h.Unit,
             Quantity     = h.Quantity,
         }).ToList(),
+        EstimatedPurchaseQuantity = b.EstimatedPurchaseQuantity,
+        EstimatedPurchaseUnit     = b.EstimatedPurchaseUnit,
     };
+
+    // Purchasable container units only — the ones offered in the frontend's
+    // Est. Qty unit dropdown. Measurement units (sq.m, l.m, cu.m...) from the
+    // BOQ's own EstimatedQuantity/Unit aren't real order quantities, so a
+    // suggestion is only ever built from real PO lines (HistoricalMaterialSupply)
+    // that already carry one of these.
+    private static readonly HashSet<string> PurchaseUnits = new(StringComparer.OrdinalIgnoreCase)
+    { "pc", "bag", "sheet", "pail", "gal", "roll", "set", "box" };
+
+    private static string NormalizeSection(string? s) =>
+        Regex.Replace((s ?? string.Empty).Trim(), @"^\d+[\.\)]?\s*", string.Empty).ToLowerInvariant();
+
+    // Word-set overlap, not substring containment — a scanned BOQ's wording
+    // ("150mm CHB + 25mm plaster + paint") and a real PO line's own wording
+    // for the same material ("CHB, 150mm thick, Class A") share key tokens
+    // (chb, 150mm) but neither text is a substring of the other, so a plain
+    // Contains check (the original approach here) never matched real data at
+    // all — this only surfaced once tested against actual historical rows.
+    private static HashSet<string> Tokenize(string? s) =>
+        Regex.Matches((s ?? string.Empty).ToLowerInvariant(), @"[a-z0-9]+")
+            .Select(m => m.Value)
+            .Where(t => t.Length >= 2)
+            .ToHashSet();
+
+    private static (int Shared, double Ratio) TokenOverlap(string? a, string? b)
+    {
+        var tokensA = Tokenize(a);
+        var tokensB = Tokenize(b);
+        if (tokensA.Count == 0 || tokensB.Count == 0) return (0, 0);
+        var shared = tokensA.Intersect(tokensB).Count();
+        return (shared, (double)shared / Math.Min(tokensA.Count, tokensB.Count));
+    }
+
+    private static bool FuzzyMatch(string? a, string? b, double minRatio, int minShared)
+    {
+        var (shared, ratio) = TokenOverlap(a, b);
+        return shared >= minShared && ratio >= minRatio;
+    }
+
+    // Suggests a procurement Est. Qty/Unit for a new-project BOQ row by looking
+    // at real purchase-order lines (HistoricalMaterialSupply, extracted from
+    // completed/historical projects' combined BOQ+PO reports) whose parent BOQ
+    // line has a matching Primary Section and whose own material name fuzzy-
+    // matches the row's Material Specification. Same Project Type is a soft
+    // preference — used to narrow the pool when available, never a hard filter.
+    public async Task<HistoricalEstimateResponseDto> GetHistoricalEstimateAsync(string primarySection, string materialDescription, string? projectType)
+    {
+        var normSection = NormalizeSection(primarySection);
+        if (normSection.Length == 0 || string.IsNullOrWhiteSpace(materialDescription))
+            return new HistoricalEstimateResponseDto();
+
+        var supplies = await db.HistoricalMaterialSupplies
+            .Include(s => s.BOQItem).ThenInclude(b => b.Project)
+            .Where(s => s.BOQItem.Project.IsHistorical)
+            .ToListAsync();
+
+        bool SectionMatches(string? section) => FuzzyMatch(NormalizeSection(section), normSection, 0.5, 1);
+        bool DescMatches(string name) => FuzzyMatch(name, materialDescription, 0.5, 2);
+
+        var matches = supplies
+            .Where(s => PurchaseUnits.Contains(s.Unit.Trim()) && SectionMatches(s.BOQItem.PrimarySection) && DescMatches(s.MaterialName))
+            .ToList();
+
+        if (matches.Count == 0) return new HistoricalEstimateResponseDto { MatchCount = 0 };
+
+        var sameType = Enum.TryParse<ProjectType>(projectType, true, out var parsedType)
+            ? matches.Where(s => s.BOQItem.Project.Type == parsedType).ToList()
+            : [];
+
+        var pool = sameType.Count > 0 ? sameType : matches;
+        var avgQty = pool.Average(s => s.Quantity);
+        var unit = pool.GroupBy(s => s.Unit.Trim().ToLowerInvariant())
+            .OrderByDescending(g => g.Count())
+            .First().Key;
+
+        return new HistoricalEstimateResponseDto
+        {
+            EstimatedQuantity = Math.Round(avgQty, 2),
+            Unit = unit,
+            MatchCount = matches.Count,
+        };
+    }
 }

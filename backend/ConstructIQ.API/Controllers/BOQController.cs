@@ -38,4 +38,8 @@ public class BOQController(IBOQService boqService) : ControllerBase
         var deleted = await boqService.DeleteAsync(id);
         return deleted ? NoContent() : NotFound();
     }
+
+    [HttpGet("historical-estimate")]
+    public async Task<IActionResult> GetHistoricalEstimate([FromQuery] string primarySection, [FromQuery] string materialDescription, [FromQuery] string? projectType) =>
+        Ok(await boqService.GetHistoricalEstimateAsync(primarySection, materialDescription, projectType));
 }

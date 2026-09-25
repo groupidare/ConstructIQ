@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import api from '@/lib/api';
-import type { BOQItem, BOQItemRow } from '@/types/boq';
+import type { BOQItem, BOQItemRow, HistoricalEstimate } from '@/types/boq';
 
 export function useBOQ(projectId: number) {
   const [items, setItems]     = useState<BOQItem[]>([]);
@@ -30,5 +30,12 @@ export function useBOQ(projectId: number) {
     setItems(prev => prev.filter(i => i.id !== id));
   }
 
-  return { items, loading, error, fetchItems, saveItems, deleteItem };
+  async function getHistoricalEstimate(primarySection: string, materialDescription: string, projectType?: string): Promise<HistoricalEstimate> {
+    const { data } = await api.get<HistoricalEstimate>('/boq/historical-estimate', {
+      params: { primarySection, materialDescription, projectType },
+    });
+    return data;
+  }
+
+  return { items, loading, error, fetchItems, saveItems, deleteItem, getHistoricalEstimate };
 }
