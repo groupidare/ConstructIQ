@@ -32,6 +32,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<DeliveryPhoto>            DeliveryPhotos            => Set<DeliveryPhoto>();
     public DbSet<DeliveryBatch>            DeliveryBatches           => Set<DeliveryBatch>();
     public DbSet<DeliveryBatchPhoto>       DeliveryBatchPhotos       => Set<DeliveryBatchPhoto>();
+    public DbSet<ProjectProgressUpdate>    ProjectProgressUpdates    => Set<ProjectProgressUpdate>();
+    public DbSet<ProjectProgressPhoto>     ProjectProgressPhotos     => Set<ProjectProgressPhoto>();
     public DbSet<TrustedDevice>            TrustedDevices            => Set<TrustedDevice>();
     public DbSet<WarehouseStockItem>       WarehouseStockItems       => Set<WarehouseStockItem>();
     public DbSet<MaterialRequest>          MaterialRequests          => Set<MaterialRequest>();
@@ -219,6 +221,24 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .WithMany()
             .HasForeignKey(b => b.UploadedByUserId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<ProjectProgressUpdate>()
+            .HasOne(u => u.Project)
+            .WithMany(p => p.ProgressUpdates)
+            .HasForeignKey(u => u.ProjectId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<ProjectProgressUpdate>()
+            .HasOne(u => u.UpdatedBy)
+            .WithMany()
+            .HasForeignKey(u => u.UpdatedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<ProjectProgressPhoto>()
+            .HasOne(ph => ph.ProjectProgressUpdate)
+            .WithMany(u => u.Photos)
+            .HasForeignKey(ph => ph.ProjectProgressUpdateId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         mb.Entity<Supplier>()
             .HasIndex(s => s.Name)

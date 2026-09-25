@@ -11,6 +11,10 @@ dist/
 # .NET
 backend/ConstructIQ.API/bin/
 backend/ConstructIQ.API/obj/
+backend/ConstructIQ.API/appsettings.json
+backend/ConstructIQ.API/appsettings.Development.json
+backend/ConstructIQ.API/appsettings.json.backup
+backend/ConstructIQ.API/appsettings.Development.json.backup
 *.user
 *.suo
 .vs/

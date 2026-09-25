@@ -52,4 +52,26 @@ public class ProjectsController(IProjectService projectService) : ControllerBase
         var deleted = await projectService.DeleteAsync(id);
         return deleted ? NoContent() : NotFound();
     }
+
+    [HttpGet("{id:int}/progress-updates")]
+    public async Task<IActionResult> GetProgressUpdates(int id) =>
+        Ok(await projectService.GetProgressUpdatesAsync(id));
+
+    // Same roles as create/update — whoever can manage a project's details
+    // can also log its on-site progress. WarehousePersonnel/ProcurementOfficer
+    // don't touch construction progress at all.
+    [HttpPost("{id:int}/progress-updates")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> LogProgress(int id, [FromForm] SubmitProgressUpdateDto dto)
+    {
+        try
+        {
+            var result = await projectService.LogProgressAsync(id, dto, CurrentUserId);
+            return result is null ? NotFound() : Ok(result);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
 }

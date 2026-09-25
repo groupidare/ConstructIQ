@@ -9,4 +9,6 @@ public interface IProjectService
     Task<ProjectResponseDto> CreateAsync(ProjectCreateDto dto, int createdByUserId);
     Task<ProjectResponseDto?> UpdateAsync(int id, ProjectCreateDto dto);
     Task<bool> DeleteAsync(int id);
+    Task<IEnumerable<ProjectProgressUpdateDto>> GetProgressUpdatesAsync(int projectId);
+    Task<LogProgressResultDto?> LogProgressAsync(int projectId, SubmitProgressUpdateDto dto, int userId);
 }
