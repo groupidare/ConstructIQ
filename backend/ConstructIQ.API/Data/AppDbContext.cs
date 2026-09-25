@@ -80,6 +80,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasForeignKey(e => e.RecordedByUserId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        mb.Entity<ExcessWasteRecord>()
+            .HasOne(e => e.BOQItem)
+            .WithMany()
+            .HasForeignKey(e => e.BOQItemId)
+            .OnDelete(DeleteBehavior.SetNull);
+
         mb.Entity<ActivityLog>()
             .HasOne(a => a.User)
             .WithMany(u => u.ActivityLogs)

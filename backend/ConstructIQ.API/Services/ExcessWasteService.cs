@@ -40,12 +40,19 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         else
             throw new InvalidOperationException("Each excess entry needs either an existing MaterialId or a NewMaterialName.");
 
-        // No phase given (e.g. a project-level excess log entry) — match against
-        // any BOQ line for that material in the project instead of requiring a phase.
-        var boqQuery = db.BOQItems.Where(b => b.ProjectId == dto.ProjectId && b.MaterialId == materialId);
-        var boqItem = dto.PhaseId.HasValue
-            ? await boqQuery.FirstOrDefaultAsync(b => b.PhaseId == dto.PhaseId.Value) ?? await boqQuery.FirstOrDefaultAsync()
-            : await boqQuery.FirstOrDefaultAsync();
+        // A specific BOQ line (the new picker-driven flow) takes priority; the
+        // old best-effort match-by-material stays as a fallback for the
+        // free-text path so nothing regresses for callers that don't send one.
+        var boqItem = dto.BOQItemId.HasValue
+            ? await db.BOQItems.FirstOrDefaultAsync(b => b.Id == dto.BOQItemId.Value && b.ProjectId == dto.ProjectId)
+            : null;
+        if (boqItem is null)
+        {
+            var boqQuery = db.BOQItems.Where(b => b.ProjectId == dto.ProjectId && b.MaterialId == materialId);
+            boqItem = dto.PhaseId.HasValue
+                ? await boqQuery.FirstOrDefaultAsync(b => b.PhaseId == dto.PhaseId.Value) ?? await boqQuery.FirstOrDefaultAsync()
+                : await boqQuery.FirstOrDefaultAsync();
+        }
 
         var excessPercent = boqItem is not null && boqItem.EstimatedQuantity > 0
             ? dto.Quantity / boqItem.EstimatedQuantity * 100
@@ -55,6 +62,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         {
             ProjectId       = dto.ProjectId,
             PhaseId         = dto.PhaseId,
+            BOQItemId       = boqItem?.Id,
             MaterialId      = materialId,
             ExcessType      = Enum.Parse<ExcessType>(dto.ExcessType),
             Quantity        = dto.Quantity,
@@ -82,12 +90,54 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
 
         await db.SaveChangesAsync();
 
+        // Actual usage = what was estimated minus everything logged as
+        // waste/excess against this exact BOQ line so far (across however
+        // many entries) — the whole point of tying this to a real BOQItemId
+        // instead of just a material name. Clamped at 0: logging more excess
+        // than was ever estimated doesn't make sense as a negative "used".
+        if (boqItem is not null)
+        {
+            var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
+            var totalLogged = await db.ExcessWasteRecords
+                .Where(e => e.BOQItemId == boqItem.Id)
+                .SumAsync(e => e.Quantity);
+            boqItem.ActualQuantity = Math.Max(0, baseline - totalLogged);
+            boqItem.UpdatedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync();
+        }
+
         var saved = await db.ExcessWasteRecords
             .Include(e => e.Project).Include(e => e.Phase)
             .Include(e => e.Material).Include(e => e.RecordedBy)
             .FirstAsync(e => e.Id == record.Id);
 
         return ToDto(saved);
+    }
+
+    // Every BOQ line for a project that has no ExcessWasteRecord linked to it
+    // yet — this is exactly what the Record Material Excess modal's material
+    // picker shows, so a material logged once stops appearing next time.
+    public async Task<IEnumerable<PendingBOQItemDto>> GetPendingBOQItemsAsync(int projectId)
+    {
+        var loggedBoqItemIds = await db.ExcessWasteRecords
+            .Where(e => e.ProjectId == projectId && e.BOQItemId != null)
+            .Select(e => e.BOQItemId!.Value)
+            .Distinct()
+            .ToListAsync();
+
+        var items = await db.BOQItems
+            .Include(b => b.Material)
+            .Where(b => b.ProjectId == projectId && !loggedBoqItemIds.Contains(b.Id))
+            .ToListAsync();
+
+        return items.Select(b => new PendingBOQItemDto
+        {
+            BOQItemId         = b.Id,
+            MaterialId        = b.MaterialId,
+            MaterialName      = b.Material.Name,
+            Unit              = b.EstimatedPurchaseUnit ?? b.Material.Unit,
+            EstimatedQuantity = b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity,
+        });
     }
 
     public async Task<ExcessWasteResponseDto> UpdateAsync(int id, ExcessWasteUpdateDto dto)
@@ -194,6 +244,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         ProjectName  = e.Project?.Name ?? string.Empty,
         PhaseId      = e.PhaseId,
         PhaseName    = e.Phase?.Name ?? string.Empty,
+        BOQItemId    = e.BOQItemId,
         MaterialId   = e.MaterialId,
         MaterialName = e.Material?.Name ?? string.Empty,
         Unit         = e.Material?.Unit ?? string.Empty,

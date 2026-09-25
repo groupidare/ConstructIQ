@@ -6,6 +6,7 @@ export interface ExcessWasteRecord {
   projectName: string;
   phaseId: number | null;
   phaseName: string;
+  boqItemId?: number | null;
   materialId: number;
   materialName: string;
   unit: string;
@@ -25,6 +26,7 @@ export interface ExcessWasteRecord {
 export interface ExcessWasteCreateRequest {
   projectId: number;
   phaseId?: number;
+  boqItemId?: number;
   materialId?: number;
   newMaterialName?: string;
   unit?: string;
@@ -33,6 +35,16 @@ export interface ExcessWasteCreateRequest {
   unitCost: number;
   isReusable: boolean;
   notes?: string;
+}
+
+// A BOQ line from the project's real Material Plan that has no excess/waste
+// logged against it yet — see ExcessWasteController.GetPendingBOQItems.
+export interface PendingBOQItem {
+  boqItemId: number;
+  materialId: number;
+  materialName: string;
+  unit: string;
+  estimatedQuantity: number;
 }
 
 export interface ExcessAnalyticsSummary {

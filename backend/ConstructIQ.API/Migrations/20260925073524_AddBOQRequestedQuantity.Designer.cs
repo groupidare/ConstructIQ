@@ -4,6 +4,7 @@ using ConstructIQ.API.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ConstructIQ.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260925073524_AddBOQRequestedQuantity")]
+    partial class AddBOQRequestedQuantity
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -266,9 +269,6 @@ namespace ConstructIQ.API.Migrations
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<int?>("BOQItemId")
-                        .HasColumnType("int");
-
                     b.Property<decimal>("ExcessPercent")
                         .HasColumnType("decimal(5,2)");
 
@@ -306,8 +306,6 @@ namespace ConstructIQ.API.Migrations
                         .HasColumnType("decimal(18,4)");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("BOQItemId");
 
                     b.HasIndex("MaterialId");
 
@@ -1611,11 +1609,6 @@ namespace ConstructIQ.API.Migrations
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.ExcessWasteRecord", b =>
                 {
-                    b.HasOne("ConstructIQ.API.Models.Entities.BOQItem", "BOQItem")
-                        .WithMany()
-                        .HasForeignKey("BOQItemId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
                     b.HasOne("ConstructIQ.API.Models.Entities.Material", "Material")
                         .WithMany()
                         .HasForeignKey("MaterialId")
@@ -1637,8 +1630,6 @@ namespace ConstructIQ.API.Migrations
                         .HasForeignKey("RecordedByUserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-
-                    b.Navigation("BOQItem");
 
                     b.Navigation("Material");
 

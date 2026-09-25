@@ -25,6 +25,9 @@ public class BOQItemUpsertDto
     // from historical data, user-editable. See BOQItem.EstimatedPurchaseQuantity.
     public decimal? EstimatedPurchaseQuantity { get; set; }
     public string?  EstimatedPurchaseUnit     { get; set; }
+    // How much of EstimatedPurchaseQuantity has been requested so far — see
+    // BOQItem.RequestedQuantity.
+    public decimal? RequestedQuantity { get; set; }
 }
 
 public class HistoricalSupplyLineDto
@@ -63,6 +66,7 @@ public class BOQItemResponseDto
     public List<HistoricalSupplyResponseDto> HistoricalSupply { get; set; } = [];
     public decimal? EstimatedPurchaseQuantity { get; set; }
     public string?  EstimatedPurchaseUnit     { get; set; }
+    public decimal? RequestedQuantity { get; set; }
 }
 
 public class HistoricalEstimateResponseDto
@@ -70,6 +74,21 @@ public class HistoricalEstimateResponseDto
     public decimal? EstimatedQuantity { get; set; }
     public string?  Unit              { get; set; }
     public int      MatchCount        { get; set; }
+}
+
+// One point on the Forecasting page's chart — a calendar month (bucketed by
+// each project's own StartDate), averaging every BOQItem's EstimatedPurchase-
+// Quantity ("AI Predicted") and ActualQuantity ("Actual Usage", only rows
+// where it's actually been backfilled) across every project whose start
+// falls in that month. Either side is null when nothing in that month has
+// that particular figure, so the chart can show a real gap instead of a
+// fabricated zero.
+public class MonthlyDemandSummaryDto
+{
+    public string   Month       { get; set; } = string.Empty; // e.g. "2026-01"
+    public string   MonthLabel  { get; set; } = string.Empty;  // e.g. "Jan 2026"
+    public decimal? AiPredicted { get; set; }
+    public decimal? ActualUsage { get; set; }
 }
 
 public class HistoricalSupplyResponseDto

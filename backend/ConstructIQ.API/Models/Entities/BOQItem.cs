@@ -42,6 +42,14 @@ public class BOQItem
     public decimal? EstimatedPurchaseQuantity { get; set; }
     [MaxLength(20)] public string? EstimatedPurchaseUnit { get; set; }
 
+    // How much of EstimatedPurchaseQuantity has actually been requested so far
+    // (summed across every partial Notify Procurement/Warehouse click for this
+    // row) — lets the UI show a "Done" badge once fully covered, and is what a
+    // partial request shrinks this row down to (the leftover becomes a new
+    // sibling BOQItem row with its own fresh RequestedQuantity of 0).
+    [Column(TypeName = "decimal(18,4)")]
+    public decimal? RequestedQuantity { get; set; }
+
     [Column(TypeName = "decimal(18,2)")]
     public decimal EstimatedUnitCost { get; set; }
 

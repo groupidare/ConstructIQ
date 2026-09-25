@@ -32,9 +32,12 @@ interface Props {
   // its patch to whatever the rows array is *then*, not the stale snapshot
   // it closed over when the lookup started.
   onRowsChange: (rows: BOQItemRow[] | ((prev: BOQItemRow[]) => BOQItemRow[])) => void;
-  onSave: () => void;
+  // Accepts an explicit rows array so a partial-request split (which computes
+  // a freshly-updated array in the same tick) can save it immediately without
+  // depending on this row state having propagated up first.
+  onSave: (overrideRows?: BOQItemRow[], opts?: { silent?: boolean }) => Promise<void>;
   saving: boolean;
-  onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string) => void;
+  onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string) => Promise<boolean>;
   getHistoricalEstimate: (primarySection: string, materialDescription: string, projectType?: string) => Promise<HistoricalEstimate>;
   onRemoveDocument: (documentId: number) => void;
   onRunForecast: () => void;
@@ -69,6 +72,15 @@ export default function MaterialPlanTab({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const poFileInputRef = useRef<HTMLInputElement>(null);
   const [parsingPoId, setParsingPoId] = useState<number | null>(null);
+  // Partial-quantity request dialog — clicking a row's Notify Procurement/
+  // Warehouse button opens this instead of firing the request immediately,
+  // so the user can request less than the full Est. Qty (e.g. only what's
+  // actually in stock) and have the leftover spun off into its own row.
+  const [requestPrompt, setRequestPrompt] = useState<{
+    index: number; kind: 'ProcurementOrder' | 'WarehouseCheck'; max: number; unit: string; materialName: string;
+  } | null>(null);
+  const [requestPromptQty, setRequestPromptQty] = useState('');
+  const [submittingRequest, setSubmittingRequest] = useState(false);
   const isCompleted = project.status === 'Completed';
   const isHistorical = project.isHistorical;
   // Flat structure — same Primary/Sub Primary Section + Material Specification
@@ -91,6 +103,50 @@ export default function MaterialPlanTab({
 
   function removeRow(idx: number) {
     onRowsChange(rows.filter((_, i) => i !== idx));
+  }
+
+  // Confirms the partial-quantity dialog: sends the real request for exactly
+  // what the user typed, then ADDS it to this row's running requestedQuantity
+  // (never overwrites — several partial clicks across Procurement/Warehouse
+  // all accumulate against the same original Est. Qty). The row itself is
+  // never split or shrunk: its Est. Qty stays the fixed original ask, and it
+  // only flips to "Done" once the running total actually reaches it. Saved
+  // immediately (not left as a local draft) — the real request behind it
+  // already happened for real, so leaving this un-persisted would silently
+  // lose the running total the moment this modal is reopened before a
+  // manual Save.
+  async function handleConfirmRequest() {
+    if (!requestPrompt) return;
+    const { index, max, unit } = requestPrompt;
+    const qty = parseFloat(requestPromptQty);
+    if (!qty || qty <= 0) { toast.error('Enter a quantity greater than zero.'); return; }
+    if (qty > max) { toast.error(`Cannot request more than ${max.toLocaleString()} ${unit} — that's all this row still needs.`); return; }
+
+    const row = rows[index];
+    setSubmittingRequest(true);
+    try {
+      const ok = await onNotify(requestPrompt.kind, row.materialId, requestPrompt.materialName, qty, unit);
+      if (!ok) return;
+
+      const totalRequested = (row.requestedQuantity ?? 0) + qty;
+      const newRows = rows.slice();
+      newRows[index] = { ...row, requestedQuantity: totalRequested };
+
+      onRowsChange(newRows);
+      try {
+        await onSave(newRows, { silent: true });
+        const remainder = (row.estimatedPurchaseQuantity ?? 0) - totalRequested;
+        toast.success(remainder > 0
+          ? `Requested ${qty.toLocaleString()} ${unit}. ${remainder.toLocaleString()} ${unit} still remaining.`
+          : `Requested ${qty.toLocaleString()} ${unit}. Fully covered.`);
+      } catch {
+        toast.error('Request sent, but saving the updated Bill of Quantities failed — click Save Material Plan to retry.');
+      }
+      setRequestPrompt(null);
+      setRequestPromptQty('');
+    } finally {
+      setSubmittingRequest(false);
+    }
   }
 
   function addBlankRow() {
@@ -274,6 +330,39 @@ export default function MaterialPlanTab({
         {PRIMARY_SECTIONS.map(s => <option key={s} value={s} />)}
       </datalist>
 
+      {requestPrompt && (
+        <div onClick={() => !submittingRequest && setRequestPrompt(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, padding: '1.5rem', width: 380, boxShadow: '0 20px 50px rgba(0,0,0,0.2)' }}>
+            <p style={{ fontWeight: 700, fontSize: '0.95rem', marginBottom: 4 }}>
+              {requestPrompt.kind === 'ProcurementOrder' ? 'Notify Procurement' : 'Notify Warehouse'}
+            </p>
+            <p style={{ fontSize: '0.78rem', color: '#6b7280', marginBottom: '1rem' }}>{requestPrompt.materialName}</p>
+            <label style={{ ...lbl, fontSize: '0.68rem' }}>Quantity to request (up to {requestPrompt.max.toLocaleString()} {requestPrompt.unit})</label>
+            <div style={{ display: 'flex', gap: 8, marginTop: 4, marginBottom: '1.25rem' }}>
+              <input
+                type="number"
+                autoFocus
+                value={requestPromptQty}
+                onChange={e => setRequestPromptQty(e.target.value)}
+                style={{ ...inp, flex: 1 }}
+              />
+              <span style={{ ...inp, flex: '0 0 auto', width: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9fafb', color: '#6b7280' }}>{requestPrompt.unit}</span>
+            </div>
+            <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginBottom: '1rem' }}>
+              Requesting less than the full amount splits the remainder into a new row below, ready for its own request.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button onClick={() => setRequestPrompt(null)} disabled={submittingRequest} style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button onClick={handleConfirmRequest} disabled={submittingRequest} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#f97316', color: '#fff', fontSize: '0.78rem', fontWeight: 700, cursor: 'pointer', opacity: submittingRequest ? 0.7 : 1 }}>
+                {submittingRequest ? 'Sending…' : 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Controls */}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '0.75rem', marginBottom: '1rem' }}>
         <div>
@@ -440,9 +529,24 @@ export default function MaterialPlanTab({
           ) : (
             rows.map((r, i) => {
               const stock = currentStock(r);
-              const toOrder = Math.max(0, r.estimatedQuantity - stock);
+              // Alerts/requests operate on the purchase-container Est. Qty/Unit
+              // (the columns actually meant for procurement/inventory action),
+              // not the raw BOQ Total Area/Qty measurement (sq.m/l.m/...) —
+              // matches what the receiving Inventory/Procurement pages show.
+              const purchaseQty = r.estimatedPurchaseQuantity ?? r.estimatedQuantity;
+              const purchaseUnit = r.estimatedPurchaseUnit ?? r.unit ?? '';
+              // Remaining = the row's own Est. Qty minus whatever's already
+              // been requested so far (accumulates across however many
+              // partial Procurement/Warehouse clicks) — never resets, and
+              // the row itself is never split or shrunk to match a single
+              // request; only this remaining figure shrinks.
+              const remaining = Math.max(0, purchaseQty - (r.requestedQuantity ?? 0));
+              const toOrder = Math.max(0, remaining - stock);
               const needsAlert = toOrder > 0;
               const canRequest = editable && !isCompleted && !!r.materialId;
+              // Done only once the running total actually reaches this row's
+              // own (fixed, never-changed) Est. Qty.
+              const isRequestDone = purchaseQty > 0 && remaining <= 0;
               return (
                 <div key={i} style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40 }}>
                   {editable ? (
@@ -498,28 +602,37 @@ export default function MaterialPlanTab({
                     <option value="">—</option>
                     {PURCHASE_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
                   </select>
-                  <input
-                    disabled={!editable}
-                    type="number"
-                    title="Estimated/predicted procurement quantity — auto-suggested from historical data, editable"
-                    value={r.estimatedPurchaseQuantity ?? ''}
-                    onChange={e => updateRow(i, { estimatedPurchaseQuantity: e.target.value === '' ? undefined : parseFloat(e.target.value) || 0, estimatePurchaseManuallySet: true })}
-                    placeholder="Est. qty"
-                    style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }}
-                  />
-                  <div style={{ display: 'flex', gap: 4 }}>
-                    {canRequest && (
+                  <div>
+                    <input
+                      disabled={!editable}
+                      type="number"
+                      title="Estimated/predicted procurement quantity — auto-suggested from historical data, editable"
+                      value={r.estimatedPurchaseQuantity ?? ''}
+                      onChange={e => updateRow(i, { estimatedPurchaseQuantity: e.target.value === '' ? undefined : parseFloat(e.target.value) || 0, estimatePurchaseManuallySet: true })}
+                      placeholder="Est. qty"
+                      style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }}
+                    />
+                    {(r.requestedQuantity ?? 0) > 0 && (
+                      <p style={{ fontSize: '0.6rem', color: isRequestDone ? '#15803d' : '#f97316', marginTop: 2, fontWeight: 600 }}>
+                        {r.requestedQuantity!.toLocaleString()} of {purchaseQty.toLocaleString()} requested
+                      </p>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    {isRequestDone ? (
+                      <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#dcfce7', color: '#15803d' }}>Done</span>
+                    ) : canRequest && (
                       <>
                         <button
-                          onClick={() => onNotify('ProcurementOrder', r.materialId, materialLabel(r), toOrder, r.unit ?? '')}
-                          title={`Notify procurement — order ${toOrder}`}
+                          onClick={() => { setRequestPrompt({ index: i, kind: 'ProcurementOrder', max: toOrder, unit: purchaseUnit, materialName: materialLabel(r) }); setRequestPromptQty(toOrder ? String(toOrder) : ''); }}
+                          title={`Notify procurement — order up to ${toOrder} ${purchaseUnit}`}
                           style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert ? '#fee2e2' : '#f3f4f6' }}
                         >
                           <ShoppingCart style={{ width: 12, height: 12, color: needsAlert ? '#ef4444' : '#9ca3af' }} />
                         </button>
                         <button
-                          onClick={() => onNotify('WarehouseCheck', r.materialId, materialLabel(r), r.estimatedQuantity, r.unit ?? '')}
-                          title="Notify warehouse to check material"
+                          onClick={() => { setRequestPrompt({ index: i, kind: 'WarehouseCheck', max: remaining, unit: purchaseUnit, materialName: materialLabel(r) }); setRequestPromptQty(remaining ? String(remaining) : ''); }}
+                          title={`Notify warehouse to check material — up to ${remaining} ${purchaseUnit}`}
                           style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}
                         >
                           <Package style={{ width: 12, height: 12, color: '#9ca3af' }} />
@@ -566,7 +679,7 @@ export default function MaterialPlanTab({
 
       {editable && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: '1rem' }}>
-          <button onClick={onSave} disabled={saving} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
+          <button onClick={() => onSave()} disabled={saving} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
             {saving ? 'Saving…' : 'Save Material Plan'}
           </button>
           <button
