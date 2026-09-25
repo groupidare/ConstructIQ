@@ -15,6 +15,7 @@ import { useAuthStore } from "@/store/authStore";
 import { RISK_VISUALS, RISK_VISUALS_DARK } from "@/lib/weather";
 import { computeWeatherAtRiskOrders } from "@/lib/deliveryRisk";
 import api from "@/lib/api";
+import { resolveUploadUrl } from "@/lib/avatar";
 
 // Formats an ISO date string as a short calendar date (e.g. "Sep 18").
 function formatShortDate(dateStr: string): string {
@@ -667,7 +668,7 @@ function HistoryModal({ supplier, onClose }: { supplier: Supplier; onClose: () =
                       <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                         {h.evaluation.photoUrls.map((url, pi) => (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img key={pi} src={url} alt="Proof of delivery" style={{ width: 36, height: 36, borderRadius: 6, objectFit: "cover" }} />
+                          <img key={pi} src={resolveUploadUrl(url) ?? url} alt="Proof of delivery" style={{ width: 36, height: 36, borderRadius: 6, objectFit: "cover" }} />
                         ))}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -968,7 +969,7 @@ function DeliveryBatchModal({ po, onClose, onSaveBatch, onComplete }: {
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
                   {b.photoUrls.map((url, i) => (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img key={i} src={url} alt={`Batch ${b.batchNumber} photo ${i + 1}`} style={{ width: "100%", height: 56, borderRadius: 6, objectFit: "cover" }} />
+                    <img key={i} src={resolveUploadUrl(url) ?? url} alt={`Batch ${b.batchNumber} photo ${i + 1}`} style={{ width: "100%", height: 56, borderRadius: 6, objectFit: "cover" }} />
                   ))}
                 </div>
               </div>
@@ -1178,8 +1179,8 @@ export default function ProcurementPage() {
   // and the only ones who can rate the supplier afterward. SiteEngineer is
   // view-only. The backend enforces both restrictions independently of this.
   const canManagePOs = role === "Admin" || role === "ProjectManager" || role === "ProcurementOfficer";
-  const canMarkDelivered = role === "WarehousePersonnel";
-  const canRate = role === "WarehousePersonnel";
+  const canMarkDelivered = role === "WarehousePersonnel" || role === "Admin";
+  const canRate = role === "WarehousePersonnel" || role === "Admin";
   const canEditContact = role === "ProcurementOfficer" || role === "Admin";
 
   async function refetch() {
@@ -1593,11 +1594,15 @@ export default function ProcurementPage() {
                               </button>
                             )}
                           </div>
-                        ) : canManagePOs ? (
+                        ) : (canManagePOs || canMarkDelivered) ? (
+                          // Admin has both flags and gets a merged dropdown: PENDING/APPROVED
+                          // (set directly) plus DELIVERED (opens the proof-of-delivery overlay
+                          // rather than setting the status directly — the backend rejects a
+                          // direct PATCH to DeliveryInProgress/Delivered either way).
                           <select
-                            value={status === "DELAYED" ? "DELAYED" : po.status}
+                            value={status === "DELAYED" ? "DELAYED" : canManagePOs ? po.status : status}
                             onChange={e => handleStatusSelect(po, e.target.value as POStatus)}
-                            title={status === "DELAYED" ? "Past its expected delivery date" : undefined}
+                            title={status === "DELAYED" ? "Past its expected delivery date" : !canManagePOs ? "You can only mark this purchase order as delivered" : undefined}
                             style={{
                               fontSize: "0.7rem", fontWeight: 700, padding: "3px 8px", borderRadius: 999,
                               background: st.bg, color: st.color, border: "none", cursor: "pointer", outline: "none",
@@ -1605,25 +1610,10 @@ export default function ProcurementPage() {
                             }}
                           >
                             {status === "DELAYED" && <option value="DELAYED" disabled hidden>DELAYED</option>}
-                            {PO_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
-                          </select>
-                        ) : canMarkDelivered ? (
-                          // Warehouse personnel: the only action available is marking a PO
-                          // Delivered, which opens the proof-of-delivery overlay rather than
-                          // setting the status directly — Pending/Approved are never
-                          // selectable, and the backend rejects them too if attempted directly.
-                          <select
-                            value={status}
-                            onChange={e => handleStatusSelect(po, e.target.value as POStatus)}
-                            title="You can only mark this purchase order as delivered"
-                            style={{
-                              fontSize: "0.7rem", fontWeight: 700, padding: "3px 8px", borderRadius: 999,
-                              background: st.bg, color: st.color, border: "none", cursor: "pointer", outline: "none",
-                              appearance: "none" as const,
-                            }}
-                          >
-                            <option value={status} disabled hidden>{statusLabel(status)}</option>
-                            <option value="DELIVERED">DELIVERED</option>
+                            {canManagePOs
+                              ? PO_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)
+                              : <option value={status} disabled hidden>{statusLabel(status)}</option>}
+                            {canMarkDelivered && <option value="DELIVERED">DELIVERED</option>}
                           </select>
                         ) : (
                           <span style={{ fontSize: "0.7rem", fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: st.bg, color: st.color, whiteSpace: "nowrap" }}>

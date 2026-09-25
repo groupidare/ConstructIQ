@@ -22,8 +22,8 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
     // only ones who can progress one (save a batch, then complete it) or rate
     // the supplier on it — Admin/ProjectManager/ProcurementOfficer manage the
     // lifecycle up through Approved and then watch delivery read-only.
-    private const string DeliverRoles = "WarehousePersonnel";
-    private const string RateRoles = "WarehousePersonnel";
+    private const string DeliverRoles = "WarehousePersonnel,Admin";
+    private const string RateRoles = "WarehousePersonnel,Admin";
 
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
