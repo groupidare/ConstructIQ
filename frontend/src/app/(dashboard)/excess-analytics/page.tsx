@@ -10,7 +10,7 @@ import RedistributeModal from "@/components/excess/RedistributeModal";
 import RecordExcessModal from "@/components/excess/RecordExcessModal";
 import EditExcessModal from "@/components/excess/EditExcessModal";
 import {
-  Trash2, Monitor, Package,
+  Trash2, Package,
   TrendingUp, FileText, Plus, Search, Recycle, ChevronDown, ChevronRight, Pencil,
 } from "lucide-react";
 
@@ -155,26 +155,6 @@ export default function ExcessAnalyticsPage() {
       <Header title="Excess Analytics" />
 
       <div style={{ padding:"1.25rem 1.5rem" }}>
-
-        {/* ── 3 stat cards — computed from real recorded entries ──────────────── */}
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:"1rem", marginBottom:"1.5rem" }}>
-          {[
-            { icon:Trash2,     iconBg:"#fee2e2", iconColor:"#dc2626", value:`${overview.totalWasteRate.toFixed(1)}%`,  label:"Total Waste Rate" },
-            { icon:TrendingUp, iconBg:"#fffbeb", iconColor:"#d97706", value:`${overview.totalExcessRate.toFixed(1)}%`, label:"Total Excess Rate" },
-            { icon:Monitor,    iconBg:"#ccfbf1", iconColor:"#0d9488", value:`${overview.reusableMaterialsCount}`,      label:"Reusable Materials" },
-          ].map(s => {
-            const Icon = s.icon;
-            return (
-              <div key={s.label} style={{ background:"#fff", borderRadius:14, padding:"1.25rem", boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
-                <div style={{ width:40, height:40, borderRadius:10, background:s.iconBg, display:"flex", alignItems:"center", justifyContent:"center", marginBottom:"0.875rem" }}>
-                  <Icon style={{ width:20, height:20, color:s.iconColor }} />
-                </div>
-                <p style={{ fontSize:"1.9rem", fontWeight:800, color:"#111827", lineHeight:1 }}>{s.value}</p>
-                <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:4 }}>{s.label}</p>
-              </div>
-            );
-          })}
-        </div>
 
         {/* ── Tabs ──────────────────────────────────────────────────────────── */}
         <div style={{ display:"flex", gap:4, background:"#e5e7eb", borderRadius:8, padding:4, width:"fit-content", marginBottom:"1.25rem" }}>
