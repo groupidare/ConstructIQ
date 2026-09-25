@@ -20,12 +20,12 @@ namespace ConstructIQ.API.Migrations
                         .Annotation("MySql:ValueGenerationStrategy", MySqlValueGenerationStrategy.IdentityColumn),
                     ProjectId = table.Column<int>(type: "int", nullable: false),
                     MaterialId = table.Column<int>(type: "int", nullable: false),
-                    RequestedQuantity = table.Column<decimal>(type: "decimal(18,4)", nullable: false),
-                    Status = table.Column<int>(type: "int", nullable: false),
+                    Quantity = table.Column<decimal>(type: "decimal(18,4)", nullable: false),
+                    Unit = table.Column<string>(type: "varchar(20)", maxLength: 20, nullable: false)
+                        .Annotation("MySql:CharSet", "utf8mb4"),
                     RequestedByUserId = table.Column<int>(type: "int", nullable: false),
-                    RequestedAt = table.Column<DateTime>(type: "datetime(6)", nullable: false),
-                    ApprovedByUserId = table.Column<int>(type: "int", nullable: true),
-                    ApprovedAt = table.Column<DateTime>(type: "datetime(6)", nullable: true)
+                    CreatedAt = table.Column<DateTime>(type: "datetime(6)", nullable: false),
+                    FulfilledByPurchaseOrderId = table.Column<int>(type: "int", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -43,9 +43,9 @@ namespace ConstructIQ.API.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
-                        name: "FK_MaterialRequests_Users_ApprovedByUserId",
-                        column: x => x.ApprovedByUserId,
-                        principalTable: "Users",
+                        name: "FK_MaterialRequests_PurchaseOrders_FulfilledByPurchaseOrderId",
+                        column: x => x.FulfilledByPurchaseOrderId,
+                        principalTable: "PurchaseOrders",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.SetNull);
                     table.ForeignKey(
@@ -58,9 +58,9 @@ namespace ConstructIQ.API.Migrations
                 .Annotation("MySql:CharSet", "utf8mb4");
 
             migrationBuilder.CreateIndex(
-                name: "IX_MaterialRequests_ApprovedByUserId",
+                name: "IX_MaterialRequests_FulfilledByPurchaseOrderId",
                 table: "MaterialRequests",
-                column: "ApprovedByUserId");
+                column: "FulfilledByPurchaseOrderId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_MaterialRequests_MaterialId",

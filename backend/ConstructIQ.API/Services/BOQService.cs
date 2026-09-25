@@ -225,13 +225,15 @@ public class BOQService(AppDbContext db) : IBOQService
         EstimatedPurchaseUnit     = b.EstimatedPurchaseUnit,
     };
 
-    // Purchasable container units only — the ones offered in the frontend's
-    // Est. Qty unit dropdown. Measurement units (sq.m, l.m, cu.m...) from the
-    // BOQ's own EstimatedQuantity/Unit aren't real order quantities, so a
-    // suggestion is only ever built from real PO lines (HistoricalMaterialSupply)
-    // that already carry one of these.
+    // Units a real historical PO line can carry — mirrors the frontend's Est.
+    // Qty unit dropdown. Originally restricted to purchasable containers only
+    // (pc/bag/sheet/...), on the assumption measurement units (sq.m, l.m,
+    // cu.m) weren't real order quantities — but real extracted PO data proved
+    // that wrong (roofing sheets, gutters, and pipe are genuinely ordered by
+    // sq.m/l.m in the actual historical reports), which was silently blocking
+    // a real, available match for those rows.
     private static readonly HashSet<string> PurchaseUnits = new(StringComparer.OrdinalIgnoreCase)
-    { "pc", "bag", "sheet", "pail", "gal", "roll", "set", "box" };
+    { "pc", "bag", "sheet", "pail", "gal", "roll", "set", "box", "sq.m", "l.m", "cu.m", "lot", "kg", "pack" };
 
     private static string NormalizeSection(string? s) =>
         Regex.Replace((s ?? string.Empty).Trim(), @"^\d+[\.\)]?\s*", string.Empty).ToLowerInvariant();
@@ -281,7 +283,11 @@ public class BOQService(AppDbContext db) : IBOQService
             .ToListAsync();
 
         bool SectionMatches(string? section) => FuzzyMatch(NormalizeSection(section), normSection, 0.5, 1);
-        bool DescMatches(string name) => FuzzyMatch(name, materialDescription, 0.5, 2);
+        // 0.4, not 0.5 — real near-misses (e.g. "PPR 25mm diameter, pressure-rated"
+        // vs. an actual PO line "PPR Pipe, 20mm dia. x 4m") only share ~40% of
+        // their tokens once a differing dimension knocks out one shared word,
+        // but they're still clearly the same material family.
+        bool DescMatches(string name) => FuzzyMatch(name, materialDescription, 0.4, 2);
 
         var matches = supplies
             .Where(s => PurchaseUnits.Contains(s.Unit.Trim()) && SectionMatches(s.BOQItem.PrimarySection) && DescMatches(s.MaterialName))

@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using ConstructIQ.API.Models.DTOs.Forecast;
 using ConstructIQ.API.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -10,13 +11,17 @@ namespace ConstructIQ.API.Controllers;
 [Authorize]
 public class ForecastController(IForecastService forecastService) : ControllerBase
 {
+    private int CurrentUserId =>
+        int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+            ?? User.FindFirst("sub")?.Value ?? "0");
+
     [HttpPost("generate")]
     [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> Generate([FromBody] ForecastRequestDto request)
     {
         try
         {
-            return Ok(await forecastService.GenerateForecastAsync(request));
+            return Ok(await forecastService.GenerateForecastAsync(request, CurrentUserId));
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }

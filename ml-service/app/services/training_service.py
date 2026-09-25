@@ -10,8 +10,15 @@ from app.ml import random_forest, xgboost_model
 # "add a completed project" flow), not individual completed phases — a project can
 # have real actual-usage figures entered without every phase being marked Completed.
 # LEFT JOIN phases: a BOQ row without a phase assigned still has a usable target.
-# ActualQuantity > 0 excludes rows that were never backfilled (default 0, not a
-# real "zero used" reading).
+#
+# Target quantity: ActualQuantity when it's been explicitly backfilled (> 0), else
+# — only for IsHistorical projects — EstimatedQuantity. Historical/backfilled
+# projects have no separate "actual usage" entry step in the UI (the Material Plan
+# shows their BOQ+PO data read-only); for that workflow, EstimatedQuantity already
+# *is* the real record of what a completed project used, not a forward-looking
+# plan, so it's a legitimate training target. For a genuine (non-historical)
+# completed project, EstimatedQuantity is still just the original plan, so it's
+# deliberately excluded there — only a real ActualQuantity entry counts.
 #
 # supplier_lead_time_days is a correlated scalar subquery, not a JOIN+GROUP BY —
 # a BOQ row can match several PurchaseOrderMaterial rows (multiple deliveries of
@@ -25,7 +32,7 @@ _TRAINING_SQL = text("""
         m.Unit       AS unit,
         m.UnitCost   AS unit_cost,
         bi.EstimatedQuantity AS boq_quantity,
-        bi.ActualQuantity   AS actual_used,
+        CASE WHEN bi.ActualQuantity > 0 THEN bi.ActualQuantity ELSE bi.EstimatedQuantity END AS actual_used,
         COALESCE(ir.AvailableQuantity, 0) AS current_stock,
         COALESCE(ir.ExcessQuantity, 0)    AS excess_quantity,
         COALESCE(ir.WastedQuantity, 0)    AS wasted_quantity,
@@ -49,7 +56,7 @@ _TRAINING_SQL = text("""
     JOIN projects p  ON p.Id = bi.ProjectId AND p.Status = 3
     LEFT JOIN phases ph ON ph.Id = bi.PhaseId
     LEFT JOIN inventoryrecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
-    WHERE bi.ActualQuantity > 0
+    WHERE bi.ActualQuantity > 0 OR (p.IsHistorical = 1 AND bi.EstimatedQuantity > 0)
 """)
 
 

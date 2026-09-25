@@ -16,7 +16,6 @@ import { formatDate } from "@/lib/utils";
 import type { Project as RealProject, ProjectType } from "@/types/project";
 import { PROJECT_TYPES, PROJECT_STATUSES } from "@/types/project";
 import type { ProjectDocument } from "@/types/document";
-import type { ForecastResult } from "@/types/forecast";
 import type { BOQItem } from "@/types/boq";
 import type { ExcessAnalyticsSummary } from "@/types/excess";
 import type { RedistributionRecommendation } from "@/types/procurement";
@@ -790,7 +789,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
   const st = STATUS_STYLE[project.status];
   const btn: React.CSSProperties = { flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"10px 0", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.8rem", fontWeight:600, cursor:"pointer" };
 
-  const [aiPredicted, setAiPredicted] = useState<{ material:string; qty:number; unit:string } | null>(null);
+  const [aiPredicted, setAiPredicted] = useState<{ material:string; qty:number; unit:string }[]>([]);
   const [actualUsage, setActualUsage] = useState<{ material:string; qty:number; unit:string } | null>(null);
   const [topDemand, setTopDemand]     = useState<{ material:string; qty:number; unit:string }[]>([]);
   const [excessStock, setExcessStock]     = useState(0);
@@ -842,28 +841,25 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
             }
           });
           setTopDemand(entries.sort((a, b) => b.qty - a.qty).slice(0, 5));
+          return;
         }
-      })
-      .catch(() => {});
 
-    if (project.isHistorical) return () => { cancelled = true; };
+        // AI Predicted — ranked by the row's own Est. Qty/Unit (BOQItem.
+        // estimatedPurchaseQuantity/estimatedPurchaseUnit, auto-suggested
+        // from historical PO data), a real purchasable-container quantity
+        // (pc/roll/bag/...). Deliberately NOT the raw ML ForecastResult's
+        // forecastedQuantity/unit, which is expressed in the material
+        // catalog's own measurement unit (sq.m/l.m/...) — not what's
+        // actionable for procurement at a glance on this card.
+        const withEstimate = boqItems.filter(b => b.estimatedPurchaseQuantity != null && b.estimatedPurchaseUnit);
+        const ranked = withEstimate.slice().sort((a, b) => (b.estimatedPurchaseQuantity ?? 0) - (a.estimatedPurchaseQuantity ?? 0));
+        setAiPredicted(ranked.slice(0, 5).map(b => ({ material: b.materialName, qty: b.estimatedPurchaseQuantity!, unit: b.estimatedPurchaseUnit! })));
 
-    api.get<ForecastResult[]>(`/forecast/project/${project.id}`)
-      .then(({ data }) => {
-        if (cancelled) return;
-        const top = data[0]?.forecastedMaterials
-          ?.slice()
-          .sort((a, b) => b.forecastedQuantity - a.forecastedQuantity)[0];
-        setAiPredicted(top ? { material: top.materialName, qty: top.forecastedQuantity, unit: top.unit } : null);
-
-        if (project.status !== "COMPLETED" || !top) return;
-        api.get<BOQItem[]>(`/boq/project/${project.id}`)
-          .then(({ data: boqItems }) => {
-            if (cancelled) return;
-            const match = boqItems.find(b => b.materialId === top.materialId && b.actualQuantity > 0);
-            setActualUsage(match ? { material: match.materialName, qty: match.actualQuantity, unit: match.unit } : null);
-          })
-          .catch(() => {});
+        if (project.status !== "COMPLETED") return;
+        const top = ranked[0];
+        if (!top) return;
+        const match = boqItems.find(b => b.materialId === top.materialId && b.actualQuantity > 0);
+        setActualUsage(match ? { material: match.materialName, qty: match.actualQuantity, unit: match.unit } : null);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -926,10 +922,19 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
           )
         ) : (
           <>
-            <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#7c3aed" }}>
-              AI Predicted: {aiPredicted ? `${aiPredicted.qty.toLocaleString()} ${aiPredicted.unit} · ${aiPredicted.material}` : "—"}
-            </span>
-            <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#6b7280" }}>
+            {aiPredicted.length === 0 ? (
+              <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#7c3aed" }}>AI Predicted: —</span>
+            ) : (
+              <>
+                <span style={{ fontSize:"0.65rem", fontWeight:700, color:"#7c3aed", marginBottom: 1 }}>Top 5 AI Predicted</span>
+                {aiPredicted.map((m, i) => (
+                  <span key={i} style={{ fontSize:"0.68rem", fontWeight:500, color:"#7c3aed" }}>
+                    {i + 1}. {m.material}, {m.qty.toLocaleString()} {m.unit}
+                  </span>
+                ))}
+              </>
+            )}
+            <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#6b7280", marginTop: 2 }}>
               Actual Usage: {project.status === "COMPLETED" ? (actualUsage ? `${actualUsage.qty.toLocaleString()} ${actualUsage.unit} · ${actualUsage.material}` : "—") : "—"}
             </span>
           </>
