@@ -75,6 +75,7 @@ public class BOQService(AppDbContext db) : IBOQService
             entity.Notes             = item.Notes;
             entity.EstimatedPurchaseQuantity = item.EstimatedPurchaseQuantity;
             entity.EstimatedPurchaseUnit     = item.EstimatedPurchaseUnit;
+            entity.RequestedQuantity         = item.RequestedQuantity;
             entity.UpdatedAt         = DateTime.UtcNow;
 
             saved.Add(entity);
@@ -223,6 +224,7 @@ public class BOQService(AppDbContext db) : IBOQService
         }).ToList(),
         EstimatedPurchaseQuantity = b.EstimatedPurchaseQuantity,
         EstimatedPurchaseUnit     = b.EstimatedPurchaseUnit,
+        RequestedQuantity         = b.RequestedQuantity,
     };
 
     // Units a real historical PO line can carry — mirrors the frontend's Est.
@@ -311,5 +313,43 @@ public class BOQService(AppDbContext db) : IBOQService
             Unit = unit,
             MatchCount = matches.Count,
         };
+    }
+
+    // Drives the Forecasting page's chart — real project data, not a trained
+    // model's own output. Buckets every BOQItem by its project's StartDate
+    // month, averaging EstimatedPurchaseQuantity ("AI Predicted") and
+    // ActualQuantity ("Actual Usage") separately per month.
+    public async Task<IEnumerable<MonthlyDemandSummaryDto>> GetMonthlyDemandSummaryAsync()
+    {
+        var rows = await db.BOQItems
+            .Include(b => b.Project)
+            .Select(b => new
+            {
+                b.Project.StartDate,
+                b.EstimatedPurchaseQuantity,
+                b.ActualQuantity,
+            })
+            .ToListAsync();
+
+        var months = rows
+            .GroupBy(r => new DateTime(r.StartDate.Year, r.StartDate.Month, 1))
+            .OrderBy(g => g.Key)
+            .Select(g =>
+            {
+                var predicted = g.Where(r => r.EstimatedPurchaseQuantity.HasValue)
+                    .Select(r => r.EstimatedPurchaseQuantity!.Value).ToList();
+                var actual = g.Where(r => r.ActualQuantity > 0)
+                    .Select(r => r.ActualQuantity).ToList();
+
+                return new MonthlyDemandSummaryDto
+                {
+                    Month       = g.Key.ToString("yyyy-MM"),
+                    MonthLabel  = g.Key.ToString("MMM yyyy"),
+                    AiPredicted = predicted.Count > 0 ? Math.Round(predicted.Average(), 2) : null,
+                    ActualUsage = actual.Count > 0 ? Math.Round(actual.Average(), 2) : null,
+                };
+            });
+
+        return months;
     }
 }

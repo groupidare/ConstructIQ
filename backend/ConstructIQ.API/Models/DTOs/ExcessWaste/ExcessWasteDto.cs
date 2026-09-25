@@ -9,6 +9,11 @@ public class ExcessWasteCreateDto
     public int?    MaterialId      { get; set; }
     public string? NewMaterialName { get; set; }
     public string? Unit            { get; set; }
+    // The specific BOQ line this is logged against — when present, drives
+    // BOQItem.ActualQuantity (Est. Qty minus everything logged against it)
+    // and is what makes a material stop appearing in the "still needs
+    // logging" picker. Optional so the older free-text flow keeps working.
+    public int?    BOQItemId  { get; set; }
     [Required] public string  ExcessType  { get; set; } = string.Empty;
     [Range(0.0001, double.MaxValue)] public decimal Quantity { get; set; }
     [Range(0, double.MaxValue)]      public decimal UnitCost { get; set; }
@@ -32,6 +37,7 @@ public class ExcessWasteResponseDto
     public string   ProjectName  { get; set; } = string.Empty;
     public int?     PhaseId      { get; set; }
     public string   PhaseName    { get; set; } = string.Empty;
+    public int?     BOQItemId    { get; set; }
     public int      MaterialId   { get; set; }
     public string   MaterialName { get; set; } = string.Empty;
     public string   Unit         { get; set; } = string.Empty;
@@ -76,4 +82,20 @@ public class MonthlyExcessTrendDto
     public string  Month         { get; set; } = string.Empty;
     public decimal TotalCost     { get; set; }
     public decimal TotalQuantity { get; set; }
+}
+
+// A BOQ line from the project's real Material Plan that has no
+// ExcessWasteRecord linked to it yet — what the Record Material Excess
+// modal's material picker is actually built from, so a material logged
+// once (in any earlier session) drops out of the list for next time.
+public class PendingBOQItemDto
+{
+    public int     BOQItemId          { get; set; }
+    public int      MaterialId        { get; set; }
+    public string   MaterialName      { get; set; } = string.Empty;
+    public string   Unit              { get; set; } = string.Empty;
+    // The "initial/Est. Qty" baseline the modal subtracts the logged excess
+    // from to preview Actual Usage — prefers the purchase-unit estimate
+    // (Est. Qty column) and falls back to the raw BOQ EstimatedQuantity.
+    public decimal  EstimatedQuantity { get; set; }
 }

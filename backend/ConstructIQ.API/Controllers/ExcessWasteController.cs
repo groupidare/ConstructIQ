@@ -23,6 +23,10 @@ public class ExcessWasteController(IExcessWasteService excessWasteService) : Con
     public async Task<IActionResult> GetSummary(int projectId) =>
         Ok(await excessWasteService.GetSummaryAsync(projectId));
 
+    [HttpGet("pending-boq-items/{projectId:int}")]
+    public async Task<IActionResult> GetPendingBOQItems(int projectId) =>
+        Ok(await excessWasteService.GetPendingBOQItemsAsync(projectId));
+
     [HttpPost]
     [Authorize(Roles = "Admin,SiteEngineer,WarehousePersonnel")]
     public async Task<IActionResult> Create([FromBody] ExcessWasteCreateDto dto)

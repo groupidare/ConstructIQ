@@ -920,6 +920,10 @@ function DeliveryBatchModal({ po, onClose, onSaveBatch, onComplete }: {
     try {
       await onSaveBatch(photos.map(p => p.file));
       clearPending();
+    } catch {
+      // Already toasted inside onSaveBatch (which rethrows only so
+      // clearPending() above is skipped on failure) — swallow here so it
+      // doesn't also surface as an unhandled rejection.
     } finally {
       setSaving(false);
     }
@@ -933,6 +937,8 @@ function DeliveryBatchModal({ po, onClose, onSaveBatch, onComplete }: {
         clearPending();
       }
       await onComplete();
+    } catch {
+      // Same reasoning as handleSave above.
     } finally {
       setCompleting(false);
     }

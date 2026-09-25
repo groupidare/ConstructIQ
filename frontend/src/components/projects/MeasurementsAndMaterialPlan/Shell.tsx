@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import { Pencil, Eye, FileText, Folder } from 'lucide-react';
 import { useDocuments } from '@/hooks/useDocuments';
@@ -56,8 +55,6 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [poOrderDate, setPoOrderDate] = useState('');
   const [poExpectedDate, setPoExpectedDate] = useState('');
 
-  const router = useRouter();
-
   const { documents, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument } = useDocuments(project.id);
   const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems, getHistoricalEstimate } = useBOQ(project.id);
   const { inventory, fetchInventory } = useInventory(project.id);
@@ -83,6 +80,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       specification: b.specification, materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, notes: b.notes,
       historicalSupply: b.historicalSupply,
       estimatedPurchaseQuantity: b.estimatedPurchaseQuantity, estimatedPurchaseUnit: b.estimatedPurchaseUnit,
+      requestedQuantity: b.requestedQuantity,
       // A value already saved server-side was either a prior suggestion the
       // user accepted or one they typed themselves — either way, don't let
       // the auto-suggest effect silently overwrite it on this fresh load.
@@ -298,14 +296,20 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     if (projectType === 'Others') persistProjectType(projectType, otherTypeSpecify);
   }
 
-  async function handleSaveBoq() {
+  // overrideRows lets a caller (the partial-request split in MaterialPlanTab)
+  // save an exact freshly-computed rows array immediately, instead of
+  // relying on boqRows from this closure — which, called any other way,
+  // wouldn't yet reflect a split that just happened in the same tick.
+  async function handleSaveBoq(overrideRows?: BOQItemRow[], opts?: { silent?: boolean }) {
+    const rowsToSave = overrideRows ?? boqRows;
     setSavingBoq(true);
     try {
-      const saved = await saveBoqItems(boqRows);
+      const saved = await saveBoqItems(rowsToSave);
       setBoqRows(saved.map(boqItemToRow));
-      toast.success('Material plan saved.');
+      if (!opts?.silent) toast.success('Material plan saved.');
     } catch (error) {
       toast.error(apiErrorMessage(error, 'Failed to save material plan.'));
+      throw error;
     } finally {
       setSavingBoq(false);
     }
@@ -332,7 +336,11 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     }
   }
 
-  async function handleNotify(kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string) {
+  // Returns whether the request actually went through — MaterialPlanTab's
+  // partial-quantity dialog needs this to know whether it's safe to shrink
+  // the row to what was requested and spin the leftover into a new row, vs.
+  // leaving the row untouched on failure/validation.
+  async function handleNotify(kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string): Promise<boolean> {
     const isProcurement = kind === 'ProcurementOrder';
 
     // Both flows raise a real, trackable request now — that needs a resolved
@@ -343,11 +351,11 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       toast.error(isProcurement
         ? 'Link this row to a catalog material before requesting it from Procurement.'
         : 'Link this row to a catalog material before requesting it from the warehouse.');
-      return;
+      return false;
     }
     if (quantity <= 0) {
       toast.error('Nothing to request — current stock already covers the estimated quantity.');
-      return;
+      return false;
     }
 
     const message = isProcurement
@@ -368,10 +376,14 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
         await createWarehouseRequest({ projectId: project.id, materialId, requestedQuantity: quantity });
         addAlert({ kind: 'overstock', title: 'Warehouse Alert', body: message });
         toast.success(`Material request sent for ${materialName}.`);
-        router.push('/inventory?tab=requests');
+        // Deliberately no longer navigates away to /inventory — a partial
+        // request needs the user to stay right here to act on the leftover
+        // (e.g. notify Procurement next for what the warehouse couldn't cover).
       }
+      return true;
     } catch (error) {
       toast.error(apiErrorMessage(error, isProcurement ? 'Failed to send the material request.' : 'Failed to create warehouse request.'));
+      return false;
     }
   }
 

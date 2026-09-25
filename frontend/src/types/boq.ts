@@ -39,6 +39,10 @@ export interface BOQItemRow {
   // fields for this row, so the auto-suggest effect stops overwriting it.
   // Never sent to the backend (BOQItemUpsertDto has no matching field).
   estimatePurchaseManuallySet?: boolean;
+  // How much of estimatedPurchaseQuantity has been requested so far (a
+  // partial request shrinks this row to what was actually requested and
+  // spins the leftover off into a new sibling row) — see BOQService.
+  requestedQuantity?: number;
 }
 
 export interface HistoricalSupplyLine {
@@ -66,6 +70,7 @@ export interface BOQItem {
   historicalSupply?: HistoricalSupplyLine[];
   estimatedPurchaseQuantity?: number;
   estimatedPurchaseUnit?: string;
+  requestedQuantity?: number;
   createdAt: string;
 }
 
@@ -73,6 +78,15 @@ export interface HistoricalEstimate {
   estimatedQuantity: number | null;
   unit: string | null;
   matchCount: number;
+}
+
+// One point on the Forecasting page's chart — real project data (not a
+// trained model's own output), see BOQController.GetMonthlyDemandSummary.
+export interface MonthlyDemandSummary {
+  month: string;
+  monthLabel: string;
+  aiPredicted: number | null;
+  actualUsage: number | null;
 }
 
 export interface BOQBulkSaveRequest {

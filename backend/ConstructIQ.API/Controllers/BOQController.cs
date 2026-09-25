@@ -42,4 +42,8 @@ public class BOQController(IBOQService boqService) : ControllerBase
     [HttpGet("historical-estimate")]
     public async Task<IActionResult> GetHistoricalEstimate([FromQuery] string primarySection, [FromQuery] string materialDescription, [FromQuery] string? projectType) =>
         Ok(await boqService.GetHistoricalEstimateAsync(primarySection, materialDescription, projectType));
+
+    [HttpGet("monthly-demand-summary")]
+    public async Task<IActionResult> GetMonthlyDemandSummary() =>
+        Ok(await boqService.GetMonthlyDemandSummaryAsync());
 }
