@@ -6,8 +6,20 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class ProjectService(AppDbContext db) : IProjectService
+public class ProjectService(AppDbContext db, IWebHostEnvironment env) : IProjectService
 {
+    private static readonly Dictionary<string, string> AllowedPhotoTypes = new()
+    {
+        ["image/jpeg"] = ".jpg",
+        ["image/png"]  = ".png",
+        ["image/webp"] = ".webp",
+    };
+    private const long MaxPhotoBytes = 5 * 1024 * 1024; // 5 MB
+
+    // Below this, a project is still being set up (materials/suppliers/POs
+    // lined up) rather than actually under construction on site.
+    private const int ActiveThreshold = 10;
+
     public async Task<IEnumerable<ProjectResponseDto>> GetAllAsync(int userId, string role)
     {
         var query = db.Projects
@@ -101,6 +113,96 @@ public class ProjectService(AppDbContext db) : IProjectService
         return true;
     }
 
+    public async Task<IEnumerable<ProjectProgressUpdateDto>> GetProgressUpdatesAsync(int projectId)
+    {
+        return await db.ProjectProgressUpdates
+            .Where(u => u.ProjectId == projectId)
+            .Include(u => u.UpdatedBy)
+            .Include(u => u.Photos)
+            .OrderByDescending(u => u.CreatedAt)
+            .Select(u => ToUpdateDto(u))
+            .ToListAsync();
+    }
+
+    public async Task<LogProgressResultDto?> LogProgressAsync(int projectId, SubmitProgressUpdateDto dto, int userId)
+    {
+        var project = await db.Projects.Include(p => p.Phases).FirstOrDefaultAsync(p => p.Id == projectId);
+        if (project is null) return null;
+
+        var uploadsDir = Path.Combine(env.WebRootPath, "uploads", "progress");
+        Directory.CreateDirectory(uploadsDir);
+
+        var photos = new List<ProjectProgressPhoto>();
+        foreach (var file in dto.Photos)
+        {
+            if (file.Length == 0) continue;
+            if (file.Length > MaxPhotoBytes)
+                throw new InvalidOperationException("Each photo must be 5MB or smaller.");
+            if (!AllowedPhotoTypes.TryGetValue(file.ContentType, out var ext))
+                throw new InvalidOperationException("Only JPEG, PNG, or WebP images are allowed.");
+
+            var fileName = $"{projectId}_{Guid.NewGuid():N}{ext}";
+            await using (var stream = File.Create(Path.Combine(uploadsDir, fileName)))
+                await file.CopyToAsync(stream);
+            photos.Add(new ProjectProgressPhoto { Url = $"/uploads/progress/{fileName}" });
+        }
+
+        var update = new ProjectProgressUpdate
+        {
+            ProjectId       = projectId,
+            Progress        = dto.Progress,
+            Notes           = dto.Notes.Trim(),
+            UpdatedByUserId = userId,
+            Photos          = photos,
+        };
+        db.ProjectProgressUpdates.Add(update);
+
+        project.Progress = dto.Progress;
+        // A project reaching 100% is done — same finished-project bucket as
+        // one backfilled via "Add Completed Project" (see Project.IsHistorical),
+        // so its real BOQ/PO data becomes forecast training data too. Below
+        // that, crossing the "actually started" threshold moves it out of
+        // Planning on its own — no one has to remember to flip it by hand.
+        if (dto.Progress >= 100)
+        {
+            project.Status = ProjectStatus.Completed;
+            project.IsHistorical = true;
+        }
+        else if (project.Status == ProjectStatus.Planning && dto.Progress > ActiveThreshold)
+        {
+            project.Status = ProjectStatus.Active;
+        }
+        project.UpdatedAt = DateTime.UtcNow;
+
+        await db.SaveChangesAsync();
+
+        var updatedProject = await GetByIdAsync(projectId);
+        var updatedByUser = await db.Users.FindAsync(userId);
+        return new LogProgressResultDto
+        {
+            Project = updatedProject!,
+            Update = new ProjectProgressUpdateDto
+            {
+                Id            = update.Id,
+                Progress      = update.Progress,
+                Notes         = update.Notes,
+                PhotoUrls     = photos.Select(ph => ph.Url).ToList(),
+                UpdatedByName = updatedByUser is null ? "Unknown" : $"{updatedByUser.FirstName} {updatedByUser.LastName}",
+                CreatedAt     = update.CreatedAt,
+            },
+        };
+    }
+
+    private static ProjectProgressUpdateDto ToUpdateDto(ProjectProgressUpdate u) => new()
+    {
+        Id            = u.Id,
+        Progress      = u.Progress,
+        Notes         = u.Notes,
+        PhotoUrls     = u.Photos.Select(ph => ph.Url).ToList(),
+        UpdatedByName = $"{u.UpdatedBy.FirstName} {u.UpdatedBy.LastName}",
+        CreatedAt     = u.CreatedAt,
+    };
+
     private static ProjectResponseDto ToDto(Project p) => new()
     {
         Id                 = p.Id,
@@ -113,6 +215,7 @@ public class ProjectService(AppDbContext db) : IProjectService
         StartDate          = p.StartDate,
         TargetEndDate      = p.TargetEndDate,
         Status             = p.Status.ToString(),
+        Progress           = p.Progress,
         IsHistorical       = p.IsHistorical,
         AssignedContractor = p.AssignedContractor,
         ProjectManagerId   = p.ProjectManagerId,

@@ -158,7 +158,15 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
             : undefined,
           primarySection: item.primarySection || 'Others',
           subCategory: item.subCategory,
-          specification: item.specification,
+          // The parser can only split spec text into its own column when the
+          // source sheet has one distinct from the material/description
+          // column — most BOQ templates (like this one) put the whole spec
+          // string ("150mm CHB + 25mm plaster + paint") in the description
+          // cell itself, so this comes back "" and newMaterialName carries
+          // it instead. Store undefined, not "", so every fallback below
+          // (which reads specification || newMaterialName) actually falls
+          // through to it instead of "" winning as an already-defined value.
+          specification: item.specification || undefined,
           materialId: item.matchedMaterialId,
           // Keep the scanned name even when a catalog match was found — it's
           // the only display text available until this row is saved and the

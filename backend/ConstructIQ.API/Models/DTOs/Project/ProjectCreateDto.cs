@@ -29,3 +29,10 @@ public class PhaseCreateDto
     public DateTime StartDate { get; set; }
     public DateTime EndDate   { get; set; }
 }
+
+public class SubmitProgressUpdateDto
+{
+    [Range(0, 100)] public int Progress { get; set; }
+    [Required] public string Notes { get; set; } = string.Empty;
+    public List<Microsoft.AspNetCore.Http.IFormFile> Photos { get; set; } = [];
+}

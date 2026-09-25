@@ -70,8 +70,8 @@ function toProject(dto: ProjectResponseDto): Project {
   return {
     id: dto.id, name: dto.name, location: dto.location, type: dto.type,
     startDate: dto.startDate.split("T")[0], endDate: dto.targetEndDate.split("T")[0],
-    status, progress: demo?.progress ?? (status==="COMPLETED"?100:status==="ACTIVE"?50:10),
-    progressColor: demo?.progressColor ?? PROGRESS_COLOR[status] ?? "#374151",
+    status, progress: dto.progress,
+    progressColor: PROGRESS_COLOR[status] ?? "#374151",
     manager: demo?.manager ?? dto.projectManagerName,
     engineers: demo?.engineers ?? (dto.siteEngineerName ? [dto.siteEngineerName] : []),
     isHistorical: dto.isHistorical,
@@ -455,45 +455,65 @@ function ForecastModal({ project, onClose }: { project:Project; onClose:()=>void
 
 // ── Progress Tracker Modal ────────────────────────────────────────────────────
 
-interface ProgressUpdate {
-  id: number; date: string; progress: number;
-  notes: string; updatedBy: string;
+interface ProgressUpdateDto {
+  id: number; progress: number; notes: string;
+  photoUrls: string[]; updatedByName: string; createdAt: string;
 }
 
-function ProgressTrackerModal({ project, onClose, onSave }: {
+function ProgressTrackerModal({ project, onClose, onSaved }: {
   project: Project;
   onClose: ()=>void;
-  onSave: (progress: number) => void;
+  onSaved: (updated: RealProject) => void;
 }) {
-  const { user } = useAuthStore();
   const [progress, setProgress] = useState(project.progress);
   const [notes, setNotes]       = useState("");
   const [photos, setPhotos]     = useState<File[]>([]);
-  const [updates, setUpdates]   = useState<ProgressUpdate[]>(() => {
-    const base = project.progress;
-    return [
-      { id:1, date:"2026-09-10", progress:Math.max(base-8,0),  notes:"Completed column pour for Grid A1-A5. Forms removed and inspected by QC.",            updatedBy:"Carlo Reyes" },
-      { id:2, date:"2026-09-05", progress:Math.max(base-15,0), notes:"Rebar installation completed. Steel bar placement inspected and cleared.",              updatedBy:"Carlo Reyes" },
-      { id:3, date:"2026-08-28", progress:Math.max(base-22,0), notes:"Foundation excavation and sub-base compaction done. Ready for footing formwork.",       updatedBy:"Maria Tan"   },
-    ].filter(u => u.progress > 0);
-  });
+  const [saving, setSaving]     = useState(false);
+  const [updates, setUpdates]   = useState<ProgressUpdateDto[]>([]);
+  // Primary Sections from the project's own BOQ — replaces the old hardcoded
+  // 4-phase list so "section status" actually reflects what's being built.
+  const [sections, setSections] = useState<string[]>([]);
 
-  const PHASES = ["Foundation","Structural Framing","Finishing","MEP"];
+  useEffect(() => {
+    let cancelled = false;
+    api.get<BOQItem[]>(`/boq/project/${project.id}`).then(({ data }) => {
+      if (cancelled) return;
+      const seen: string[] = [];
+      data.forEach(item => { if (item.primarySection && !seen.includes(item.primarySection)) seen.push(item.primarySection); });
+      setSections(seen);
+    }).catch(() => {});
+    api.get<ProgressUpdateDto[]>(`/projects/${project.id}/progress-updates`)
+      .then(({ data }) => { if (!cancelled) setUpdates(data); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [project.id]);
 
-  function handleSave() {
+  async function handleSave() {
     if (!notes.trim()) { toast.error("Please add progress notes before saving."); return; }
-    const newUpdate: ProgressUpdate = {
-      id: Date.now(), date: new Date().toISOString().split("T")[0],
-      progress, notes,
-      updatedBy: user ? `${user.firstName} ${user.lastName}` : "Current User",
-    };
-    setUpdates(prev => [newUpdate, ...prev]);
-    onSave(progress);
-    toast.success("Progress updated successfully!");
-    setNotes(""); setPhotos([]);
+    setSaving(true);
+    try {
+      const form = new FormData();
+      form.append("Progress", String(progress));
+      form.append("Notes", notes);
+      photos.forEach(f => form.append("Photos", f));
+      const { data } = await api.post<{ project: RealProject; update: ProgressUpdateDto }>(
+        `/projects/${project.id}/progress-updates`, form, { headers: { "Content-Type": undefined } },
+      );
+      setUpdates(prev => [data.update, ...prev]);
+      if (data.project.isHistorical && !project.isHistorical) {
+        toast.success("Progress updated — project completed and moved to Historical Data!");
+      } else if (data.project.status === "Active" && project.status !== "ACTIVE") {
+        toast.success("Progress updated — project is now Active!");
+      } else {
+        toast.success("Progress updated successfully!");
+      }
+      onSaved(data.project);
+    } catch {
+      toast.error("Failed to save progress update.");
+    } finally {
+      setSaving(false);
+    }
   }
-
-  const phaseThresholds = [25, 50, 75, 100];
 
   return (
     <Overlay onClose={onClose}>
@@ -535,33 +555,42 @@ function ProgressTrackerModal({ project, onClose, onSave }: {
           </div>
         </div>
 
-        {/* Phase status */}
+        {/* Section status — every Primary Section from this project's own BOQ,
+            not a generic hardcoded phase list. Done/in-progress/pending is
+            derived by splitting 0-100 evenly across however many sections
+            the BOQ actually has. */}
         <div style={{ marginBottom:"1.25rem" }}>
-          <p style={{ fontSize:"0.78rem", fontWeight:700, color:"#374151", marginBottom:8 }}>Phase Status</p>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-            {PHASES.map((phase, i) => {
-              const threshold = phaseThresholds[i];
-              const prevThreshold = i === 0 ? 0 : phaseThresholds[i-1];
-              const done   = progress >= threshold;
-              const inProg = !done && progress >= prevThreshold;
-              return (
-                <div key={phase} style={{
-                  display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
-                  background: done ? "#dcfce7" : inProg ? "#fff7ed" : "#f9fafb",
-                  borderRadius:8,
-                  border: `1px solid ${done ? "#86efac" : inProg ? "#fed7aa" : "#e5e7eb"}`,
-                }}>
-                  <div style={{ width:8, height:8, borderRadius:"50%", flexShrink:0,
-                    background: done ? "#22c55e" : inProg ? "#f97316" : "#d1d5db" }} />
-                  <span style={{ fontSize:"0.75rem", fontWeight:600,
-                    color: done ? "#15803d" : inProg ? "#c2410c" : "#9ca3af" }}>{phase}</span>
-                  <span style={{ fontSize:"0.65rem", color:"#9ca3af", marginLeft:"auto" }}>
-                    {done ? "Done" : inProg ? "In Progress" : "Pending"}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+          <p style={{ fontSize:"0.78rem", fontWeight:700, color:"#374151", marginBottom:8 }}>Section Status</p>
+          {sections.length === 0 ? (
+            <p style={{ fontSize:"0.75rem", color:"#9ca3af", padding:"0.5rem 0" }}>
+              No BOQ sections yet — add materials in the Material Plan tab first.
+            </p>
+          ) : (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              {sections.map((section, i) => {
+                const threshold     = ((i + 1) / sections.length) * 100;
+                const prevThreshold = (i / sections.length) * 100;
+                const done   = progress >= threshold;
+                const inProg = !done && progress >= prevThreshold;
+                return (
+                  <div key={section} style={{
+                    display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
+                    background: done ? "#dcfce7" : inProg ? "#fff7ed" : "#f9fafb",
+                    borderRadius:8,
+                    border: `1px solid ${done ? "#86efac" : inProg ? "#fed7aa" : "#e5e7eb"}`,
+                  }}>
+                    <div style={{ width:8, height:8, borderRadius:"50%", flexShrink:0,
+                      background: done ? "#22c55e" : inProg ? "#f97316" : "#d1d5db" }} />
+                    <span style={{ fontSize:"0.75rem", fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
+                      color: done ? "#15803d" : inProg ? "#c2410c" : "#9ca3af" }}>{section}</span>
+                    <span style={{ fontSize:"0.65rem", color:"#9ca3af", marginLeft:"auto", flexShrink:0 }}>
+                      {done ? "Done" : inProg ? "In Progress" : "Pending"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Update form */}
@@ -591,10 +620,12 @@ function ProgressTrackerModal({ project, onClose, onSave }: {
                 <div key={u.id} style={{ padding:"10px 12px", background:"#f9fafb", borderRadius:8, borderLeft:"3px solid #f97316" }}>
                   <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
                     <span style={{ fontSize:"0.7rem", fontWeight:700, color:"#f97316" }}>{u.progress}% progress</span>
-                    <span style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{u.date}</span>
+                    <span style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{formatDate(u.createdAt)}</span>
                   </div>
                   <p style={{ fontSize:"0.75rem", color:"#374151", lineHeight:1.4 }}>{u.notes}</p>
-                  <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginTop:3 }}>Updated by {u.updatedBy}</p>
+                  <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginTop:3 }}>
+                    Updated by {u.updatedByName}{u.photoUrls.length > 0 ? ` · ${u.photoUrls.length} photo(s)` : ""}
+                  </p>
                 </div>
               ))}
             </div>
@@ -605,8 +636,10 @@ function ProgressTrackerModal({ project, onClose, onSave }: {
 
         {/* Footer */}
         <div style={{ display:"flex", gap:8, justifyContent:"flex-end", padding:"1.25rem 2rem", flexShrink:0, borderTop:"1px solid #f3f4f6" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleSave} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Save Update</button>
+          <button onClick={onClose} disabled={saving} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:saving?"default":"pointer" }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:saving?"default":"pointer", opacity:saving?0.7:1 }}>
+            {saving ? "Saving…" : "Save Update"}
+          </button>
         </div>
       </div>
     </Overlay>
@@ -1057,8 +1090,9 @@ export default function ProjectsPage() {
         <ProgressTrackerModal
           project={proj}
           onClose={()=>setModal(null)}
-          onSave={(progress) => {
-            setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, progress } : p));
+          onSaved={(updated) => {
+            setFullProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
+            setProjects(prev => prev.map(p => p.id === updated.id ? toProject(updated) : p));
             setModal(null);
           }}
         />

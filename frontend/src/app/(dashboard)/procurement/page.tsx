@@ -15,6 +15,7 @@ import { useAuthStore } from "@/store/authStore";
 import { RISK_VISUALS, RISK_VISUALS_DARK } from "@/lib/weather";
 import { computeWeatherAtRiskOrders } from "@/lib/deliveryRisk";
 import api from "@/lib/api";
+import { resolveUploadUrl } from "@/lib/avatar";
 
 // Formats an ISO date string as a short calendar date (e.g. "Sep 18").
 function formatShortDate(dateStr: string): string {
@@ -667,7 +668,7 @@ function HistoryModal({ supplier, onClose }: { supplier: Supplier; onClose: () =
                       <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                         {h.evaluation.photoUrls.map((url, pi) => (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img key={pi} src={url} alt="Proof of delivery" style={{ width: 36, height: 36, borderRadius: 6, objectFit: "cover" }} />
+                          <img key={pi} src={resolveUploadUrl(url) ?? url} alt="Proof of delivery" style={{ width: 36, height: 36, borderRadius: 6, objectFit: "cover" }} />
                         ))}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -968,7 +969,7 @@ function DeliveryBatchModal({ po, onClose, onSaveBatch, onComplete }: {
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
                   {b.photoUrls.map((url, i) => (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img key={i} src={url} alt={`Batch ${b.batchNumber} photo ${i + 1}`} style={{ width: "100%", height: 56, borderRadius: 6, objectFit: "cover" }} />
+                    <img key={i} src={resolveUploadUrl(url) ?? url} alt={`Batch ${b.batchNumber} photo ${i + 1}`} style={{ width: "100%", height: 56, borderRadius: 6, objectFit: "cover" }} />
                   ))}
                 </div>
               </div>
@@ -1178,8 +1179,8 @@ export default function ProcurementPage() {
   // and the only ones who can rate the supplier afterward. SiteEngineer is
   // view-only. The backend enforces both restrictions independently of this.
   const canManagePOs = role === "Admin" || role === "ProjectManager" || role === "ProcurementOfficer";
-  const canMarkDelivered = role === "WarehousePersonnel";
-  const canRate = role === "WarehousePersonnel";
+  const canMarkDelivered = role === "WarehousePersonnel" || role === "Admin";
+  const canRate = role === "WarehousePersonnel" || role === "Admin";
   const canEditContact = role === "ProcurementOfficer" || role === "Admin";
 
   async function refetch() {
@@ -1395,9 +1396,8 @@ export default function ProcurementPage() {
 
         {/* ── Weather & Delivery Risk (R4) — visible above both tabs ─────────── */}
         {snapshot && risk && (
-          <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem", marginBottom: "1.5rem" }}>
             <div style={{
-              flex: 1, minWidth: 0,
               background: RISK_VISUALS[risk.level].bg,
               border: `1px solid ${RISK_VISUALS[risk.level].border}`,
               borderRadius: 14, padding: "1rem 1.25rem",
@@ -1436,27 +1436,27 @@ export default function ProcurementPage() {
               )}
             </div>
 
-            {/* Weather Impact — same live source as the Dashboard's card */}
-            <div style={{ width: 300, flexShrink: 0, background: "#1a2235", borderRadius: 14, padding: "1.25rem", color: "#fff" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.875rem" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span>{snapshot.emoji}</span>
-                  <span style={{ fontWeight: 700, fontSize: "0.875rem" }}>Weather Impact</span>
+            {/* Weather Impact — same live source as the Dashboard's card, laid out
+                landscape (one wide row) instead of a narrow stacked panel. */}
+            <div style={{ background: "#1a2235", borderRadius: 14, padding: "1rem 1.25rem", color: "#fff", display: "flex", alignItems: "center", gap: "1.25rem", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                <span style={{ fontSize: "1.8rem" }}>{snapshot.emoji}</span>
+                <div>
+                  <p style={{ fontWeight: 700, fontSize: "0.78rem", color: "#9ca3af" }}>Weather Impact</p>
+                  <p style={{ fontSize: "1.5rem", fontWeight: 800, lineHeight: 1.15 }}>{snapshot.tempC}°C <span style={{ fontSize: "0.75rem", fontWeight: 500, color: "#9ca3af" }}>{snapshot.conditionLabel}</span></p>
                 </div>
-                <span style={{ color: "#6b7280", fontSize: "0.65rem" }}>{snapshot.locationName}, Today</span>
               </div>
 
-              <div style={{ fontSize: "2.4rem", fontWeight: 800, lineHeight: 1 }}>{snapshot.tempC}°C</div>
-              <p style={{ color: "#9ca3af", fontSize: "0.78rem", marginTop: 4, marginBottom: "0.875rem" }}>{snapshot.conditionLabel}</p>
+              <div style={{ width: 1, alignSelf: "stretch", background: "rgba(255,255,255,0.1)", flexShrink: 0 }} />
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem", marginBottom: "0.875rem" }}>
+              <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
                 {[
                   { label: "WIND",          val: `${snapshot.windKph} km/h`,             Icon: Wind },
                   { label: "HUMIDITY",      val: `${snapshot.humidityPct}%`,             Icon: Droplets },
                   { label: "PRECIPITATION", val: `${snapshot.precipitationMm} mm`,       Icon: CloudRain },
                   { label: "RISK LEVEL",    val: risk.level.toUpperCase(),               Icon: AlertTriangle },
                 ].map(w => (
-                  <div key={w.label} style={{ background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: "0.5rem 0.6rem" }}>
+                  <div key={w.label} style={{ background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: "0.4rem 0.6rem", minWidth: 92 }}>
                     <p style={{ color: "#6b7280", fontSize: "0.58rem", fontWeight: 700, letterSpacing: "0.06em" }}>{w.label}</p>
                     <p style={{ color: "#fff", fontSize: "0.76rem", fontWeight: 600, marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
                       <w.Icon style={{ width: 11, height: 11 }} /> {w.val}
@@ -1465,7 +1465,9 @@ export default function ProcurementPage() {
                 ))}
               </div>
 
-              <div style={{ background: RISK_VISUALS_DARK[risk.level].bg, border: `1px solid ${RISK_VISUALS_DARK[risk.level].border}`, borderRadius: 8, padding: "0.5rem 0.7rem", marginBottom: "0.875rem" }}>
+              <div style={{ width: 1, alignSelf: "stretch", background: "rgba(255,255,255,0.1)", flexShrink: 0 }} />
+
+              <div style={{ flex: "1 1 200px", background: RISK_VISUALS_DARK[risk.level].bg, border: `1px solid ${RISK_VISUALS_DARK[risk.level].border}`, borderRadius: 8, padding: "0.5rem 0.7rem" }}>
                 <p style={{ color: RISK_VISUALS_DARK[risk.level].text, fontSize: "0.7rem", lineHeight: 1.4 }}>
                   {risk.level === "low" ? "✓ " : "⚠ "}{risk.advisory}
                 </p>
@@ -1473,15 +1475,18 @@ export default function ProcurementPage() {
 
               {daily.length > 0 && (
                 <>
-                  <p style={{ color: "#6b7280", fontSize: "0.65rem", fontWeight: 700, letterSpacing: "0.05em", marginBottom: "0.5rem" }}>5-Day Forecast</p>
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    {daily.map(d => (
-                      <div key={d.date} style={{ textAlign: "center" }}>
-                        <p style={{ color: "#6b7280", fontSize: "0.62rem" }}>{formatShortDate(d.date)}</p>
-                        <p style={{ fontSize: "1rem", margin: "2px 0" }}>{d.emoji}</p>
-                        <p style={{ color: "#fff", fontSize: "0.72rem", fontWeight: 600 }}>{d.maxTempC}°</p>
-                      </div>
-                    ))}
+                  <div style={{ width: 1, alignSelf: "stretch", background: "rgba(255,255,255,0.1)", flexShrink: 0 }} />
+                  <div style={{ flexShrink: 0 }}>
+                    <p style={{ color: "#6b7280", fontSize: "0.6rem", fontWeight: 700, letterSpacing: "0.05em", marginBottom: "0.4rem" }}>5-DAY FORECAST</p>
+                    <div style={{ display: "flex", gap: "0.6rem" }}>
+                      {daily.map(d => (
+                        <div key={d.date} style={{ textAlign: "center" }}>
+                          <p style={{ color: "#6b7280", fontSize: "0.6rem" }}>{formatShortDate(d.date)}</p>
+                          <p style={{ fontSize: "0.9rem", margin: "2px 0" }}>{d.emoji}</p>
+                          <p style={{ color: "#fff", fontSize: "0.7rem", fontWeight: 600 }}>{d.maxTempC}°</p>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </>
               )}
@@ -1593,11 +1598,15 @@ export default function ProcurementPage() {
                               </button>
                             )}
                           </div>
-                        ) : canManagePOs ? (
+                        ) : (canManagePOs || canMarkDelivered) ? (
+                          // Admin has both flags and gets a merged dropdown: PENDING/APPROVED
+                          // (set directly) plus DELIVERED (opens the proof-of-delivery overlay
+                          // rather than setting the status directly — the backend rejects a
+                          // direct PATCH to DeliveryInProgress/Delivered either way).
                           <select
-                            value={status === "DELAYED" ? "DELAYED" : po.status}
+                            value={status === "DELAYED" ? "DELAYED" : canManagePOs ? po.status : status}
                             onChange={e => handleStatusSelect(po, e.target.value as POStatus)}
-                            title={status === "DELAYED" ? "Past its expected delivery date" : undefined}
+                            title={status === "DELAYED" ? "Past its expected delivery date" : !canManagePOs ? "You can only mark this purchase order as delivered" : undefined}
                             style={{
                               fontSize: "0.7rem", fontWeight: 700, padding: "3px 8px", borderRadius: 999,
                               background: st.bg, color: st.color, border: "none", cursor: "pointer", outline: "none",
@@ -1605,25 +1614,10 @@ export default function ProcurementPage() {
                             }}
                           >
                             {status === "DELAYED" && <option value="DELAYED" disabled hidden>DELAYED</option>}
-                            {PO_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
-                          </select>
-                        ) : canMarkDelivered ? (
-                          // Warehouse personnel: the only action available is marking a PO
-                          // Delivered, which opens the proof-of-delivery overlay rather than
-                          // setting the status directly — Pending/Approved are never
-                          // selectable, and the backend rejects them too if attempted directly.
-                          <select
-                            value={status}
-                            onChange={e => handleStatusSelect(po, e.target.value as POStatus)}
-                            title="You can only mark this purchase order as delivered"
-                            style={{
-                              fontSize: "0.7rem", fontWeight: 700, padding: "3px 8px", borderRadius: 999,
-                              background: st.bg, color: st.color, border: "none", cursor: "pointer", outline: "none",
-                              appearance: "none" as const,
-                            }}
-                          >
-                            <option value={status} disabled hidden>{statusLabel(status)}</option>
-                            <option value="DELIVERED">DELIVERED</option>
+                            {canManagePOs
+                              ? PO_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)
+                              : <option value={status} disabled hidden>{statusLabel(status)}</option>}
+                            {canMarkDelivered && <option value="DELIVERED">DELIVERED</option>}
                           </select>
                         ) : (
                           <span style={{ fontSize: "0.7rem", fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: st.bg, color: st.color, whiteSpace: "nowrap" }}>
