@@ -32,6 +32,16 @@ public class BOQItem
     [Column(TypeName = "decimal(18,4)")]
     public decimal ActualQuantity { get; set; } = 0;
 
+    // Predicted procurement quantity for new (non-historical) projects — in a
+    // real purchasable container unit (pc/bag/sheet/...), distinct from
+    // EstimatedQuantity/Unit above which are often an area/length measure
+    // (sq.m, l.m) that can't be ordered directly. Auto-suggested from
+    // historical HistoricalMaterialSupply data (see BOQService) but always
+    // user-editable afterward.
+    [Column(TypeName = "decimal(18,4)")]
+    public decimal? EstimatedPurchaseQuantity { get; set; }
+    [MaxLength(20)] public string? EstimatedPurchaseUnit { get; set; }
+
     [Column(TypeName = "decimal(18,2)")]
     public decimal EstimatedUnitCost { get; set; }
 

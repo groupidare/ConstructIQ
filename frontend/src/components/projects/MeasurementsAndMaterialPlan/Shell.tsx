@@ -59,7 +59,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const router = useRouter();
 
   const { documents, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument } = useDocuments(project.id);
-  const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems } = useBOQ(project.id);
+  const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems, getHistoricalEstimate } = useBOQ(project.id);
   const { inventory, fetchInventory } = useInventory(project.id);
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
   const { sendNotification } = useNotifications();
@@ -87,6 +87,11 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       id: b.id, phaseId: b.phaseId, primarySection: b.primarySection, subCategory: b.subCategory,
       specification: b.specification, materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, notes: b.notes,
       historicalSupply: b.historicalSupply,
+      estimatedPurchaseQuantity: b.estimatedPurchaseQuantity, estimatedPurchaseUnit: b.estimatedPurchaseUnit,
+      // A value already saved server-side was either a prior suggestion the
+      // user accepted or one they typed themselves — either way, don't let
+      // the auto-suggest effect silently overwrite it on this fresh load.
+      estimatePurchaseManuallySet: b.estimatedPurchaseQuantity != null,
     })));
   }, [boqItems]);
 
@@ -358,7 +363,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     blueprints, boqDocs, poDocs, inventory, forecastedMaterials,
     savingBoq, forecasting, uploadingBlueprint, parsingBlueprintId, uploadingBoq, uploadingPo, savingPo,
     handleUploadBlueprint, handleParseBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
-    handleSaveBoq, handleRunForecast, handleNotify,
+    handleSaveBoq, handleRunForecast, handleNotify, getHistoricalEstimate,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
     poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
     poOrderDate, setPoOrderDate, poExpectedDate, setPoExpectedDate,
@@ -433,6 +438,7 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onSave={state.handleSaveBoq}
       saving={state.savingBoq}
       onNotify={state.handleNotify}
+      getHistoricalEstimate={state.getHistoricalEstimate}
       onRunForecast={state.handleRunForecast}
       forecasting={state.forecasting}
       purchaseOrders={state.purchaseOrders}

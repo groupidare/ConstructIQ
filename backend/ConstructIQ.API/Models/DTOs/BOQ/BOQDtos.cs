@@ -21,6 +21,10 @@ public class BOQItemUpsertDto
     // Real purchase lines extracted from a historical project's combined
     // BOQ+PO report — full-replace on every save, see BOQService.BulkSaveAsync.
     public List<HistoricalSupplyLineDto>? HistoricalSupply { get; set; }
+    // Predicted procurement quantity/unit for new projects — auto-suggested
+    // from historical data, user-editable. See BOQItem.EstimatedPurchaseQuantity.
+    public decimal? EstimatedPurchaseQuantity { get; set; }
+    public string?  EstimatedPurchaseUnit     { get; set; }
 }
 
 public class HistoricalSupplyLineDto
@@ -57,6 +61,15 @@ public class BOQItemResponseDto
     public string?  Notes             { get; set; }
     public DateTime CreatedAt         { get; set; }
     public List<HistoricalSupplyResponseDto> HistoricalSupply { get; set; } = [];
+    public decimal? EstimatedPurchaseQuantity { get; set; }
+    public string?  EstimatedPurchaseUnit     { get; set; }
+}
+
+public class HistoricalEstimateResponseDto
+{
+    public decimal? EstimatedQuantity { get; set; }
+    public string?  Unit              { get; set; }
+    public int      MatchCount        { get; set; }
 }
 
 public class HistoricalSupplyResponseDto

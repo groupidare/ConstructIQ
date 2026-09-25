@@ -759,7 +759,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
 
   const [aiPredicted, setAiPredicted] = useState<{ material:string; qty:number; unit:string } | null>(null);
   const [actualUsage, setActualUsage] = useState<{ material:string; qty:number; unit:string } | null>(null);
-  const [mostUsed, setMostUsed]       = useState<{ material:string; qty:number; unit:string } | null>(null);
+  const [topDemand, setTopDemand]     = useState<{ material:string; qty:number; unit:string }[]>([]);
   const [excessStock, setExcessStock]     = useState(0);
   const [redistributed, setRedistributed] = useState(0);
   const [materialsCount, setMaterialsCount] = useState(0);
@@ -793,15 +793,22 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
         setMaterialsCount(boqItems.length);
 
         // Historical (backfilled) records aren't forecast targets themselves —
-        // they're the training data forecasts are built from. Just show what
-        // was used most, straight from the real BOQ record. Actual Qty is
-        // what's meant to be filled in for these, but until someone does,
-        // estimated qty is still real, useful information — better than
-        // showing nothing.
+        // they're the training data forecasts are built from. Rank by demand
+        // straight from the real record. Prefer the actual purchased-order
+        // lines (historicalSupply — genuine supplier quantities from the
+        // combined BOQ+PO extraction) over the BOQ's own estimate/actual qty,
+        // since real PO data is truer usage than a planning estimate; fall
+        // back to the BOQ line itself only when it has no PO data at all.
         if (project.isHistorical) {
-          const effectiveQty = (b: BOQItem) => b.actualQuantity > 0 ? b.actualQuantity : b.estimatedQuantity;
-          const top = boqItems.slice().sort((a, b) => effectiveQty(b) - effectiveQty(a))[0];
-          setMostUsed(top ? { material: top.materialName, qty: effectiveQty(top), unit: top.unit } : null);
+          const entries: { material: string; qty: number; unit: string }[] = [];
+          boqItems.forEach(b => {
+            if (b.historicalSupply && b.historicalSupply.length > 0) {
+              b.historicalSupply.forEach(s => entries.push({ material: s.materialName, qty: s.quantity, unit: s.unit }));
+            } else {
+              entries.push({ material: b.materialName, qty: b.actualQuantity > 0 ? b.actualQuantity : b.estimatedQuantity, unit: b.unit });
+            }
+          });
+          setTopDemand(entries.sort((a, b) => b.qty - a.qty).slice(0, 5));
         }
       })
       .catch(() => {});
@@ -872,9 +879,18 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
       {/* AI forecast summary */}
       <div style={{ display:"flex", flexDirection:"column", gap:2, marginBottom:"0.75rem" }}>
         {project.isHistorical ? (
-          <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#6d28d9" }}>
-            Most Material Demand/Usage: {mostUsed ? `${mostUsed.qty.toLocaleString()} ${mostUsed.unit} · ${mostUsed.material}` : "—"}
-          </span>
+          topDemand.length === 0 ? (
+            <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#6d28d9" }}>Most Material Demand/Usage: —</span>
+          ) : (
+            <>
+              <span style={{ fontSize:"0.65rem", fontWeight:700, color:"#6d28d9", marginBottom: 1 }}>Top 5 Material Demand/Usage</span>
+              {topDemand.map((m, i) => (
+                <span key={i} style={{ fontSize:"0.68rem", fontWeight:500, color:"#6d28d9" }}>
+                  {i + 1}. {m.qty.toLocaleString()} {m.unit} · {m.material}
+                </span>
+              ))}
+            </>
+          )
         ) : (
           <>
             <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#7c3aed" }}>
