@@ -64,6 +64,10 @@ public class RedistributionController(IRedistributionService redistributionServi
         }
     }
 
+    [HttpGet("received/{projectId:int}")]
+    public async Task<IActionResult> GetReceived(int projectId) =>
+        Ok(await redistributionService.GetReceivedQuantitiesAsync(projectId));
+
     [HttpPost("from-excess")]
     [Authorize(Roles = "Admin,ProjectManager,SiteEngineer,WarehousePersonnel")]
     public async Task<IActionResult> CreateFromExcess([FromBody] RedistributeFromExcessDto dto)

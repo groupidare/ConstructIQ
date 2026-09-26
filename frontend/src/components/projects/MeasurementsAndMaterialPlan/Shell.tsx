@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Pencil, Eye, FileText, Folder } from 'lucide-react';
 import { useDocuments } from '@/hooks/useDocuments';
@@ -10,12 +10,14 @@ import { useForecasting } from '@/hooks/useForecasting';
 import { useNotifications } from '@/hooks/useNotifications';
 import { useMaterialRequests } from '@/hooks/useMaterialRequests';
 import { useWarehouseRequests } from '@/hooks/useWarehouseRequests';
+import { useRedistributionReceived } from '@/hooks/useRedistributionReceived';
 import { useAlertStore } from '@/store/alertStore';
 import { useProjects } from '@/hooks/useProjects';
 import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
 import type { Project, ProjectType } from '@/types/project';
 import type { BOQItem, BOQItemRow } from '@/types/boq';
 import type { PurchaseOrderMaterial } from '@/types/purchaseOrder';
+import type { WarehouseRequest } from '@/types/warehouseRequest';
 import MeasurementsTab from './MeasurementsTab';
 import MaterialPlanTab from './MaterialPlanTab';
 
@@ -60,11 +62,55 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const { inventory, fetchInventory } = useInventory(project.id);
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
   const { sendNotification } = useNotifications();
-  const { createRequest: createMaterialRequest } = useMaterialRequests();
-  const { createRequest: createWarehouseRequest } = useWarehouseRequests();
+  const { createRequest: createMaterialRequest, fetchRemaining } = useMaterialRequests();
+  const { createRequest: createWarehouseRequest, fetchByProject: fetchWarehouseRequestsByProject } = useWarehouseRequests();
+  const [warehouseRequests, setWarehouseRequests] = useState<WarehouseRequest[]>([]);
+  const [remainingByMaterial, setRemainingByMaterial] = useState<Record<number, number>>({});
   const addAlert = useAlertStore(s => s.addAlert);
   const { editProject } = useProjects();
   const { items: purchaseOrders, fetchItems: fetchPurchaseOrders, createOrder, linkMaterial } = usePurchaseOrders(project.id);
+  const { receivedByMaterial, fetchReceived } = useRedistributionReceived(project.id);
+
+  async function fetchWarehouseRequests() {
+    setWarehouseRequests(await fetchWarehouseRequestsByProject(project.id));
+  }
+
+  async function fetchRemainingByMaterial() {
+    const data = await fetchRemaining(project.id);
+    setRemainingByMaterial(Object.fromEntries(data.map(d => [d.materialId, d.remaining])));
+  }
+
+  // A material can only be sent to Notify Procurement once the warehouse has
+  // actually answered a check on it — not while one's still pending. This is
+  // a project-wide gate: it's not tied to which specific BOQ row triggered
+  // the original warehouse check.
+  const warehouseResolvedMaterialIds = useMemo(
+    () => new Set(warehouseRequests.filter(r => r.status !== 'Pending').map(r => r.materialId)),
+    [warehouseRequests],
+  );
+
+  // A material with a still-Pending warehouse check can't be notified again —
+  // nothing is released until it's actually approved (see
+  // warehouseFulfilledByMaterial below), so the button is disabled while one
+  // is outstanding instead of letting the user fire off duplicates.
+  const warehousePendingMaterialIds = useMemo(
+    () => new Set(warehouseRequests.filter(r => r.status === 'Pending').map(r => r.materialId)),
+    [warehouseRequests],
+  );
+
+  // Display-only — how much of each material has actually been released
+  // from the warehouse. Only Approved counts: clicking Notify Warehouse
+  // creates a Pending request, not a release — it must wait for approval
+  // before it reduces what's left to request or shows as "released" here.
+  const warehouseFulfilledByMaterial = useMemo(() => {
+    const map: Record<number, number> = {};
+    for (const r of warehouseRequests) {
+      if (r.status !== 'Approved') continue;
+      const qty = r.approvedQuantity ?? r.requestedQuantity;
+      map[r.materialId] = (map[r.materialId] ?? 0) + qty;
+    }
+    return map;
+  }, [warehouseRequests]);
 
   const seededBoq = useRef(false);
 
@@ -94,6 +140,24 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     fetchInventory(true);
     fetchForecasts();
     fetchPurchaseOrders();
+    fetchReceived();
+    fetchWarehouseRequests();
+    fetchRemainingByMaterial();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
+
+  // Warehouse approvals happen on a different page (Inventory's Requests
+  // tab) — there's no polling anywhere in this app, so a lightweight
+  // focus/visibility refetch is the minimal way for this authoritative
+  // "remaining" figure to catch up without a manual reload.
+  useEffect(() => {
+    function onFocus() { fetchRemainingByMaterial(); fetchWarehouseRequests(); }
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
 
@@ -357,6 +421,19 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       toast.error('Nothing to request — current stock already covers the estimated quantity.');
       return false;
     }
+    // Procurement is a last resort — the warehouse gets first look at every
+    // material, and Procurement only unlocks once that check has actually
+    // been answered (approved or rejected), not while it's still pending.
+    if (isProcurement && !warehouseResolvedMaterialIds.has(materialId)) {
+      toast.error('Alert the warehouse first — Procurement unlocks once their check on this material is approved or rejected.');
+      return false;
+    }
+    // A material can't be asked twice while a warehouse check is still
+    // outstanding — nothing is released until it's actually approved.
+    if (!isProcurement && warehousePendingMaterialIds.has(materialId)) {
+      toast.error('A warehouse check for this material is already pending — wait for it to be approved or rejected first.');
+      return false;
+    }
 
     const message = isProcurement
       ? `${materialName}: order ${quantity.toLocaleString()} more for "${project.name}".`
@@ -374,12 +451,14 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
         toast.success('Procurement notified — request added to their queue.');
       } else {
         await createWarehouseRequest({ projectId: project.id, materialId, requestedQuantity: quantity });
+        await fetchWarehouseRequests();
         addAlert({ kind: 'overstock', title: 'Warehouse Alert', body: message });
         toast.success(`Material request sent for ${materialName}.`);
         // Deliberately no longer navigates away to /inventory — a partial
         // request needs the user to stay right here to act on the leftover
         // (e.g. notify Procurement next for what the warehouse couldn't cover).
       }
+      await fetchRemainingByMaterial();
       return true;
     } catch (error) {
       toast.error(apiErrorMessage(error, isProcurement ? 'Failed to send the material request.' : 'Failed to create warehouse request.'));
@@ -392,7 +471,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     projectType, otherTypeSpecify,
     onProjectTypeChange: handleProjectTypeChange, onOtherTypeSpecifyBlur: handleOtherTypeSpecifyBlur, savingProjectType,
     boqRows, setBoqRows, boqItems,
-    blueprints, boqDocs, poDocs, inventory, forecastedMaterials,
+    blueprints, boqDocs, poDocs, inventory, forecastedMaterials, receivedByMaterial, warehouseResolvedMaterialIds,
+    remainingByMaterial, warehouseFulfilledByMaterial, warehousePendingMaterialIds,
     savingBoq, forecasting, uploadingBlueprint, parsingBlueprintId, uploadingBoq, uploadingPo, savingPo,
     handleUploadBlueprint, handleParseBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
     handleSaveBoq, handleRunForecast, handleNotify, getHistoricalEstimate,
@@ -459,6 +539,11 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       otherTypeSpecify={state.otherTypeSpecify}
       inventory={state.inventory}
       forecastedMaterials={state.forecastedMaterials}
+      redistributedByMaterial={state.receivedByMaterial}
+      warehouseResolvedMaterialIds={state.warehouseResolvedMaterialIds}
+      remainingByMaterial={state.remainingByMaterial}
+      warehouseFulfilledByMaterial={state.warehouseFulfilledByMaterial}
+      warehousePendingMaterialIds={state.warehousePendingMaterialIds}
       boqDocs={state.boqDocs}
       uploading={state.uploadingBoq}
       onUploadBoq={state.handleUploadBoq}

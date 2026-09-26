@@ -125,9 +125,23 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
             .Distinct()
             .ToListAsync();
 
+        // A material with an undecided redistribution request out of this
+        // project can't be re-logged as fresh excess until that request is
+        // settled (approved or rejected) — avoids double-bookkeeping while a
+        // decision is pending. Once approved (a terminal state), the material
+        // is fair game again — e.g. redistributing only part of a batch
+        // shouldn't permanently block logging more of it later.
+        var pendingSourceMaterialIds = await db.RedistributionRequests
+            .Where(r => r.SourceProjectId == projectId && RedistributionStatuses.Pending.Contains(r.Status))
+            .Select(r => r.MaterialId)
+            .Distinct()
+            .ToListAsync();
+
         var items = await db.BOQItems
             .Include(b => b.Material)
-            .Where(b => b.ProjectId == projectId && !loggedBoqItemIds.Contains(b.Id))
+            .Where(b => b.ProjectId == projectId
+                && !loggedBoqItemIds.Contains(b.Id)
+                && !pendingSourceMaterialIds.Contains(b.MaterialId))
             .ToListAsync();
 
         return items.Select(b => new PendingBOQItemDto
@@ -146,6 +160,11 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
             .Include(e => e.Material)
             .FirstOrDefaultAsync(e => e.Id == id)
             ?? throw new KeyNotFoundException("Excess record not found.");
+
+        var alreadyRedistributed = await db.RedistributionRequests
+            .AnyAsync(r => r.SourceExcessWasteRecordId == id && r.Status == RedistributionStatus.Approved);
+        if (alreadyRedistributed)
+            throw new InvalidOperationException("This entry has already been redistributed and can no longer be edited.");
 
         if (!string.IsNullOrWhiteSpace(dto.NewMaterialName) &&
             !string.Equals(dto.NewMaterialName.Trim(), record.Material.Name, StringComparison.OrdinalIgnoreCase))

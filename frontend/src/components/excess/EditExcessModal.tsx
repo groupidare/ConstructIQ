@@ -44,8 +44,9 @@ export default function EditExcessModal({ record, onClose, onSuccess }: EditExce
       toast.success("Entry updated.");
       onSuccess?.();
       onClose();
-    } catch {
-      toast.error("Failed to update entry.");
+    } catch (error) {
+      const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message || "Failed to update entry.");
     } finally {
       setSubmitting(false);
     }

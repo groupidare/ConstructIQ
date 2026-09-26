@@ -11,4 +11,5 @@ public interface IRedistributionService
     Task<bool> CancelApprovalAsync(int recommendationId);
     Task<RedistributionRecommendationDto> CreateFromExcessRecordAsync(RedistributeFromExcessDto dto, int userId);
     Task<IEnumerable<RedistributionTargetSuggestionDto>> SuggestTargetsAsync(int excessWasteRecordId);
+    Task<IEnumerable<ReceivedRedistributionDto>> GetReceivedQuantitiesAsync(int projectId);
 }

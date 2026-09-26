@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using ConstructIQ.API.Algorithms;
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Models.DTOs.BOQ;
 using ConstructIQ.API.Models.Entities;
@@ -75,6 +76,21 @@ public class BOQService(AppDbContext db) : IBOQService
             entity.Notes             = item.Notes;
             entity.EstimatedPurchaseQuantity = item.EstimatedPurchaseQuantity;
             entity.EstimatedPurchaseUnit     = item.EstimatedPurchaseUnit;
+
+            // RequestedQuantity is now a display-only running total (Notify
+            // Procurement/Warehouse enforce the real cap at the point of
+            // request, against MaterialRequests/WarehouseRequests directly —
+            // not against this counter). Still a basic sanity bound: it
+            // shouldn't be able to claim more was ever asked for than the
+            // row's own estimate. Only gated on increases: a legitimate
+            // decrease (e.g. correcting a typo) should never be blocked.
+            var previousRequested = entity.RequestedQuantity ?? 0;
+            if (item.RequestedQuantity.HasValue && item.RequestedQuantity.Value > previousRequested)
+            {
+                var estimatedTotal = item.EstimatedPurchaseQuantity ?? item.EstimatedQuantity;
+                if (item.RequestedQuantity.Value > estimatedTotal)
+                    throw new InvalidOperationException($"Requested quantity for this row can't exceed its own estimate of {estimatedTotal}.");
+            }
             entity.RequestedQuantity         = item.RequestedQuantity;
             entity.UpdatedAt         = DateTime.UtcNow;
 

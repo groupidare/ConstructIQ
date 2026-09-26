@@ -10,7 +10,6 @@ import type { ExcessWasteRecord } from "@/types/excess";
 import RedistributeModal from "@/components/excess/RedistributeModal";
 import RecordExcessModal from "@/components/excess/RecordExcessModal";
 import EditExcessModal from "@/components/excess/EditExcessModal";
-import EditProjectExcessModal from "@/components/excess/EditProjectExcessModal";
 import {
   Trash2, Package,
   TrendingUp, FileText, Plus, Search, Recycle, ChevronDown, ChevronRight, Pencil,
@@ -35,6 +34,12 @@ const REDISTRIBUTION_STATUS_STYLE: Record<string, { bg: string; color: string }>
 // approved — a still-pending AI suggestion isn't a real destination yet.
 const APPROVED_REDISTRIBUTION_STATUSES = new Set(["Approved", "InTransit", "Completed"]);
 
+// The "Redistribute" action itself is blocked earlier, while a request is
+// still pending too — not just once it's approved — so a material can't be
+// sent to two places at once. Approved is the terminal state in this app
+// (no InTransit/Completed step).
+const ACTIVE_REDISTRIBUTION_STATUSES = new Set(["AiSuggested", "PendingApproval", "Approved"]);
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 type Tab = "overview" | "log";
@@ -55,7 +60,6 @@ export default function ExcessAnalyticsPage() {
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [redistributeTarget, setRedistributeTarget] = useState<ExcessWasteRecord | null>(null);
   const [editTarget, setEditTarget] = useState<ExcessWasteRecord | null>(null);
-  const [editProjectTarget, setEditProjectTarget] = useState<{ projectId: number; projectName: string; records: ExcessWasteRecord[] } | null>(null);
   const [showRecordModal, setShowRecordModal] = useState(false);
   const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
 
@@ -73,6 +77,21 @@ export default function ExcessAnalyticsPage() {
   }
 
   useEffect(() => { loadRecords(); }, [projects]);
+
+  // Approve/Reject on the Redistribution page updates that page's own list
+  // immediately, but this page has no way to know about it otherwise — no
+  // polling exists anywhere in this app, so a lightweight focus/visibility
+  // refetch is the minimal way to reflect it here without a manual reload.
+  useEffect(() => {
+    function onFocus() { loadRecords(); }
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects]);
 
   const filteredLog = records.filter(e =>
     e.materialName.toLowerCase().includes(logSearch.toLowerCase()) ||
@@ -158,16 +177,6 @@ export default function ExcessAnalyticsPage() {
         <EditExcessModal
           record={editTarget}
           onClose={() => setEditTarget(null)}
-          onSuccess={loadRecords}
-        />
-      )}
-
-      {editProjectTarget && (
-        <EditProjectExcessModal
-          projectId={editProjectTarget.projectId}
-          projectName={editProjectTarget.projectName}
-          records={editProjectTarget.records}
-          onClose={() => setEditProjectTarget(null)}
           onSuccess={loadRecords}
         />
       )}
@@ -343,14 +352,6 @@ export default function ExcessAnalyticsPage() {
                                 >
                                   {expanded ? <ChevronDown style={{ width:12, height:12 }} /> : <ChevronRight style={{ width:12, height:12 }} />} View
                                 </button>
-                                {canManageExcess && (
-                                  <button
-                                    onClick={() => setEditProjectTarget({ projectId: g.projectId, projectName: g.projectName, records: g.records })}
-                                    style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 12px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.72rem", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
-                                  >
-                                    <Pencil style={{ width:12, height:12 }} /> Edit
-                                  </button>
-                                )}
                               </div>
                             </td>
                           </tr>
@@ -397,22 +398,33 @@ export default function ExcessAnalyticsPage() {
                                           </td>
                                           <td style={{ padding:"10px" }}>
                                             <div style={{ display:"flex", gap:6 }}>
-                                              {canManageExcess && (
-                                                <button
-                                                  onClick={() => setEditTarget(e)}
-                                                  style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.7rem", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
-                                                >
-                                                  <Pencil style={{ width:11, height:11 }} /> Edit
-                                                </button>
-                                              )}
-                                              {e.isReusable && (() => {
+                                              {canManageExcess && (() => {
                                                 const alreadyRedistributed = APPROVED_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "");
                                                 return (
                                                   <button
-                                                    onClick={() => !alreadyRedistributed && setRedistributeTarget(e)}
+                                                    onClick={() => !alreadyRedistributed && setEditTarget(e)}
                                                     disabled={alreadyRedistributed}
-                                                    title={alreadyRedistributed ? `Already redistributed to ${e.redistributionTargetProjectName}` : undefined}
+                                                    title={alreadyRedistributed ? `Already redistributed to ${e.redistributionTargetProjectName} — can't be edited.` : undefined}
                                                     style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb", background: alreadyRedistributed ? "#f3f4f6" : "#fff", color: alreadyRedistributed ? "#9ca3af" : "#374151", fontSize:"0.7rem", fontWeight:600, cursor: alreadyRedistributed ? "not-allowed" : "pointer", whiteSpace:"nowrap" }}
+                                                  >
+                                                    <Pencil style={{ width:11, height:11 }} /> Edit
+                                                  </button>
+                                                );
+                                              })()}
+                                              {e.isReusable && (() => {
+                                                const isActive = ACTIVE_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "");
+                                                const isBlocked = isActive || e.quantity <= 0;
+                                                const title = isActive
+                                                  ? `Already redistributed to ${e.redistributionTargetProjectName}`
+                                                  : e.quantity <= 0
+                                                    ? "Nothing left to redistribute — fully allocated already."
+                                                    : undefined;
+                                                return (
+                                                  <button
+                                                    onClick={() => !isBlocked && setRedistributeTarget(e)}
+                                                    disabled={isBlocked}
+                                                    title={title}
+                                                    style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb", background: isBlocked ? "#f3f4f6" : "#fff", color: isBlocked ? "#9ca3af" : "#374151", fontSize:"0.7rem", fontWeight:600, cursor: isBlocked ? "not-allowed" : "pointer", whiteSpace:"nowrap" }}
                                                   >
                                                     <Recycle style={{ width:11, height:11 }} /> Redistribute
                                                   </button>

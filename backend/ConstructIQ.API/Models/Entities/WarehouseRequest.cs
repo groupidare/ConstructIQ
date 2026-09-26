@@ -2,7 +2,7 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace ConstructIQ.API.Models.Entities;
 
-public enum WarehouseRequestStatus { Pending, Approved }
+public enum WarehouseRequestStatus { Pending, Approved, Rejected }
 
 // A site engineer's request to the warehouse to release/check materials for
 // their project — distinct from MaterialRequest (the Procurement-facing "buy
@@ -22,6 +22,13 @@ public class WarehouseRequest
     [Column(TypeName = "decimal(18,4)")] public decimal RequestedQuantity { get; set; }
 
     public WarehouseRequestStatus Status { get; set; } = WarehouseRequestStatus.Pending;
+
+    // The quantity actually released from warehouse stock — set at approval
+    // time, and can be LESS than RequestedQuantity when the warehouse simply
+    // doesn't have the full amount on hand (e.g. 12 requested, only 3
+    // available). This, not RequestedQuantity, is what reduces how much a
+    // project still needs from Procurement — see ProcurementCapCalculator.
+    [Column(TypeName = "decimal(18,4)")] public decimal? ApprovedQuantity { get; set; }
 
     public int RequestedByUserId { get; set; }
     public User RequestedBy { get; set; } = null!;

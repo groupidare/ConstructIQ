@@ -39,7 +39,18 @@ public class ExcessWasteController(IExcessWasteService excessWasteService) : Con
     [Authorize(Roles = "Admin,SiteEngineer,WarehousePersonnel")]
     public async Task<IActionResult> Update(int id, [FromBody] ExcessWasteUpdateDto dto)
     {
-        var updated = await excessWasteService.UpdateAsync(id, dto);
-        return Ok(updated);
+        try
+        {
+            var updated = await excessWasteService.UpdateAsync(id, dto);
+            return Ok(updated);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 }

@@ -56,12 +56,22 @@ public class RedistributionTargetSuggestionDto
 {
     public int      ProjectId                 { get; set; }
     public string   ProjectName               { get; set; } = string.Empty;
-    public bool     HasForecastedShortage     { get; set; }
-    public decimal? ForecastedNeededQuantity  { get; set; }
-    public bool     UsesThisMaterialCategory  { get; set; }
+    // True when the candidate project already uses this exact material
+    // (appears in its BOQ or current inventory) — the sole real matching
+    // signal; no shortage/forecast math involved.
+    public bool     UsesThisMaterial          { get; set; }
     public bool     SameProjectType           { get; set; }
     public int      MatchScore                { get; set; }
     public string   MatchReason               { get; set; } = string.Empty;
+}
+
+// A material's total quantity received by a project via approved
+// redistribution — subtracted from Estimated Qty when capping how much more
+// can be requested via Notify Procurement/Warehouse.
+public class ReceivedRedistributionDto
+{
+    public int     MaterialId    { get; set; }
+    public decimal TotalQuantity { get; set; }
 }
 
 public class RedistributeFromExcessDto

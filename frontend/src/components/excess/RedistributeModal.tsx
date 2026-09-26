@@ -96,7 +96,7 @@ export default function RedistributeModal({ record, onClose, onSuccess }: Redist
         </p>
 
         {loadingSuggestions ? (
-          <p style={{ fontSize: "0.8rem", color: "#9ca3af", marginBottom: "1rem" }}>Checking forecasts and project needs…</p>
+          <p style={{ fontSize: "0.8rem", color: "#9ca3af", marginBottom: "1rem" }}>Checking which projects use this material…</p>
         ) : topSuggestions.length === 0 ? (
           <p style={{ fontSize: "0.8rem", color: "#9ca3af", marginBottom: "1rem" }}>No active projects to suggest — choose one manually below.</p>
         ) : (
@@ -114,8 +114,8 @@ export default function RedistributeModal({ record, onClose, onSuccess }: Redist
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontWeight: 700, fontSize: "0.85rem", color: "#111827" }}>{s.projectName}</span>
-                  {s.hasForecastedShortage && (
-                    <span style={{ fontSize: "0.62rem", fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#fee2e2", color: "#dc2626", whiteSpace: "nowrap" }}>FORECASTED SHORTAGE</span>
+                  {s.usesThisMaterial && (
+                    <span style={{ fontSize: "0.62rem", fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#dcfce7", color: "#15803d", whiteSpace: "nowrap" }}>ALREADY USES THIS MATERIAL</span>
                   )}
                 </div>
                 <p style={{ fontSize: "0.7rem", color: "#6b7280", marginTop: 2 }}>{s.matchReason}</p>

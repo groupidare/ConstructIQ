@@ -3,6 +3,7 @@ import api from '@/lib/api';
 import type {
   MaterialRequest, ProjectWithRequests, SuggestedSupplier,
   CreateMaterialRequestPayload, GeneratePOsFromRequestsPayload, GeneratedPOsResult,
+  RemainingRequestable,
 } from '@/types/materialRequest';
 
 export function useMaterialRequests() {
@@ -28,6 +29,16 @@ export function useMaterialRequests() {
     return data;
   }
 
+  // Authoritative "how much more can be requested" per material — accounts
+  // for the BOQ estimate minus redistribution, warehouse-approved quantity,
+  // and Procurement asks already made. The Material Plan tab uses this
+  // directly instead of re-deriving it, so its cap always matches what
+  // createRequest above will actually accept.
+  async function fetchRemaining(projectId: number): Promise<RemainingRequestable[]> {
+    const { data } = await api.get<RemainingRequestable[]>(`/material-requests/remaining/${projectId}`);
+    return data;
+  }
+
   async function fetchSuggestedSuppliers(materialId: number): Promise<SuggestedSupplier[]> {
     const { data } = await api.get<SuggestedSupplier[]>(`/material-requests/suggested-suppliers/${materialId}`);
     return data;
@@ -40,6 +51,6 @@ export function useMaterialRequests() {
 
   return {
     projectsWithPending, loading,
-    createRequest, fetchProjectsWithPending, fetchForProject, fetchSuggestedSuppliers, generatePOs,
+    createRequest, fetchProjectsWithPending, fetchForProject, fetchSuggestedSuppliers, generatePOs, fetchRemaining,
   };
 }

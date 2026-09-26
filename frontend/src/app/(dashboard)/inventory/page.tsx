@@ -11,7 +11,7 @@ import { formatDate } from "@/lib/utils";
 import type { WarehouseRequest } from "@/types/warehouseRequest";
 import {
   Package, AlertCircle, RefreshCw, Search, Download, Clock, ArrowDownAZ,
-  ClipboardList, ChevronDown, ChevronRight, CheckSquare,
+  ClipboardList, ChevronDown, ChevronRight, CheckSquare, XCircle,
 } from "lucide-react";
 
 // ── Export CSV helper ─────────────────────────────────────────────────────────
@@ -37,6 +37,7 @@ function formatSyncedAt(iso: string | null): string {
 const REQUEST_STATUS_STYLE: Record<string, { bg: string; color: string }> = {
   Pending:  { bg: "#fef3c7", color: "#b45309" },
   Approved: { bg: "#dcfce7", color: "#15803d" },
+  Rejected: { bg: "#fee2e2", color: "#dc2626" },
 };
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -46,13 +47,17 @@ type Tab = "stock" | "requests";
 function InventoryPageInner() {
   const searchParams = useSearchParams();
   const { items, loading, syncing, fetchItems, sync } = useWarehouseStock();
-  const { requests, loading: requestsLoading, fetchAll: fetchRequests, approveRequest } = useWarehouseRequests();
+  const { requests, loading: requestsLoading, fetchAll: fetchRequests, approveRequest, rejectRequest } = useWarehouseRequests();
 
   const [search, setSearch] = useState("");
   const [sortAZ, setSortAZ] = useState(false);
   const [tab, setTab] = useState<Tab>(searchParams.get("tab") === "requests" ? "requests" : "stock");
   const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
   const [approvingId, setApprovingId] = useState<number | null>(null);
+  // Editable per-row — the warehouse can approve LESS than was requested
+  // (e.g. only 3 of 12, because that's all that's on hand). Keyed by request
+  // id; falls back to the full requested quantity until the approver edits it.
+  const [approveQty, setApproveQty] = useState<Record<number, string>>({});
 
   const { user } = useAuthStore();
   const role = user?.role ?? "SiteEngineer";
@@ -97,13 +102,33 @@ function InventoryPageInner() {
     }
   }
 
-  async function handleApprove(id: number) {
+  async function handleApprove(request: WarehouseRequest) {
+    const raw = approveQty[request.id] ?? String(request.requestedQuantity);
+    const qty = Number(raw);
+    if (!qty || qty <= 0) { toast.error("Enter a quantity greater than 0."); return; }
+    if (qty > request.requestedQuantity) { toast.error(`Can't approve more than the ${request.requestedQuantity} requested.`); return; }
+
+    setApprovingId(request.id);
+    try {
+      await approveRequest(request.id, qty);
+      toast.success(qty < request.requestedQuantity
+        ? `Approved ${qty} of ${request.requestedQuantity} ${request.unit} — the rest is now open to Procurement.`
+        : "Request approved.");
+    } catch (error) {
+      const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message || "Failed to approve request.");
+    } finally {
+      setApprovingId(null);
+    }
+  }
+
+  async function handleReject(id: number) {
     setApprovingId(id);
     try {
-      await approveRequest(id);
-      toast.success("Request approved.");
+      await rejectRequest(id);
+      toast.success("Request rejected.");
     } catch {
-      toast.error("Failed to approve request.");
+      toast.error("Failed to reject request.");
     } finally {
       setApprovingId(null);
     }
@@ -250,7 +275,7 @@ function InventoryPageInner() {
               </div>
               <div>
                 <p style={{ fontWeight: 800, fontSize: "1rem", color: "#111827" }}>Material Requests</p>
-                <p style={{ fontSize: "0.7rem", color: "#9ca3af" }}>Materials requested from the warehouse during a project's Material Plan — double-click a project to view</p>
+                <p style={{ fontSize: "0.7rem", color: "#9ca3af" }}>Materials requested from the warehouse during a project's Material Plan — click a project to view</p>
               </div>
             </div>
 
@@ -274,7 +299,7 @@ function InventoryPageInner() {
                     return (
                       <Fragment key={g.projectId}>
                         <tr
-                          onDoubleClick={() => setExpandedProjectId(expanded ? null : g.projectId)}
+                          onClick={() => setExpandedProjectId(expanded ? null : g.projectId)}
                           style={{ borderBottom: !expanded && gi < groupedRequestsByProject.length - 1 ? "1px solid #f3f4f6" : "none", cursor: "pointer" }}
                         >
                           <td style={{ padding: "14px 12px", fontSize: "0.85rem", fontWeight: 700, color: "#111827" }}>{g.projectName}</td>
@@ -301,7 +326,26 @@ function InventoryPageInner() {
                                     return (
                                       <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
                                         <td style={{ padding: "10px", fontSize: "0.8rem", fontWeight: 600, color: "#111827" }}>{r.materialName}</td>
-                                        <td style={{ padding: "10px", fontSize: "0.8rem", color: "#374151" }}>{r.requestedQuantity.toLocaleString()}</td>
+                                        <td style={{ padding: "10px", fontSize: "0.8rem", color: "#374151" }}>
+                                          {canApprove && r.status === "Pending" ? (
+                                            <input
+                                              type="number"
+                                              min={0.0001}
+                                              max={r.requestedQuantity}
+                                              value={approveQty[r.id] ?? String(r.requestedQuantity)}
+                                              onChange={e => setApproveQty(prev => ({ ...prev, [r.id]: e.target.value }))}
+                                              title={`Up to ${r.requestedQuantity} ${r.unit} requested — edit down if the warehouse doesn't have the full amount.`}
+                                              style={{ width: 64, padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e7eb", fontSize: "0.8rem", outline: "none", color: "#111827" }}
+                                            />
+                                          ) : r.status === "Approved" && r.approvedQuantity != null && r.approvedQuantity !== r.requestedQuantity ? (
+                                            <span title={`${r.requestedQuantity} ${r.unit} originally requested`}>
+                                              <strong style={{ color: "#111827" }}>{r.approvedQuantity.toLocaleString()}</strong>
+                                              <span style={{ color: "#9ca3af", fontSize: "0.7rem" }}> / {r.requestedQuantity.toLocaleString()} asked</span>
+                                            </span>
+                                          ) : (
+                                            r.requestedQuantity.toLocaleString()
+                                          )}
+                                        </td>
                                         <td style={{ padding: "10px", fontSize: "0.8rem", color: "#9ca3af" }}>{r.unit}</td>
                                         <td style={{ padding: "10px", fontSize: "0.8rem", color: "#374151", whiteSpace: "nowrap" }}>{formatDate(r.requestedAt)}</td>
                                         <td style={{ padding: "10px" }}>
@@ -311,13 +355,22 @@ function InventoryPageInner() {
                                         </td>
                                         <td style={{ padding: "10px" }}>
                                           {canApprove && r.status === "Pending" ? (
-                                            <button
-                                              onClick={() => handleApprove(r.id)}
-                                              disabled={approvingId === r.id}
-                                              style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.7rem", fontWeight: 600, cursor: approvingId === r.id ? "default" : "pointer", whiteSpace: "nowrap" }}
-                                            >
-                                              <CheckSquare style={{ width: 11, height: 11 }} /> {approvingId === r.id ? "Approving…" : "Approve"}
-                                            </button>
+                                            <div style={{ display: "flex", gap: 6 }}>
+                                              <button
+                                                onClick={() => handleApprove(r)}
+                                                disabled={approvingId === r.id}
+                                                style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.7rem", fontWeight: 600, cursor: approvingId === r.id ? "default" : "pointer", whiteSpace: "nowrap" }}
+                                              >
+                                                <CheckSquare style={{ width: 11, height: 11 }} /> {approvingId === r.id ? "Approving…" : "Approve"}
+                                              </button>
+                                              <button
+                                                onClick={() => handleReject(r.id)}
+                                                disabled={approvingId === r.id}
+                                                style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#dc2626", fontSize: "0.7rem", fontWeight: 600, cursor: approvingId === r.id ? "default" : "pointer", whiteSpace: "nowrap" }}
+                                              >
+                                                <XCircle style={{ width: 11, height: 11 }} /> Reject
+                                              </button>
+                                            </div>
                                           ) : (
                                             <span style={{ color: "#d1d5db", fontSize: "0.78rem" }}>—</span>
                                           )}

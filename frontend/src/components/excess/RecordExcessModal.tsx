@@ -35,7 +35,6 @@ interface RecordExcessModalProps {
 
 export default function RecordExcessModal({ projects, onClose, onSuccess }: RecordExcessModalProps) {
   const [projectId, setProjectId] = useState(0);
-  const [date, setDate]           = useState(() => new Date().toISOString().slice(0, 10));
   const [rows, setRows]           = useState<MaterialRow[]>([{ ...EMPTY_ROW }]);
   const [submitting, setSubmitting] = useState(false);
   const [pendingItems, setPendingItems] = useState<PendingBOQItem[]>([]);
@@ -114,33 +113,6 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
     })));
   }
 
-  async function refreshPending() {
-    if (!projectId) return;
-    try {
-      const { data } = await api.get<PendingBOQItem[]>(`/excess-waste/pending-boq-items/${projectId}`);
-      setPendingItems(data);
-    } catch {
-      // Non-fatal — the picker just won't be perfectly up to date until reopened.
-    }
-  }
-
-  async function handleSaveAndAddAnother() {
-    const error = validate();
-    if (error) { toast.error(error); return; }
-    setSubmitting(true);
-    try {
-      await submitRows();
-      toast.success("Entry saved.");
-      onSuccess?.();
-      await refreshPending();
-      setRows([{ ...EMPTY_ROW }]);
-    } catch {
-      toast.error("Failed to save entry.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   async function handleSaveEntry() {
     const error = validate();
     if (error) { toast.error(error); return; }
@@ -197,11 +169,6 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
             </div>
           </div>
         </div>
-        <div style={{ marginBottom: "1.25rem" }}>
-          <label style={labelStyle}>DATE *</label>
-          <input type="date" value={date} onChange={e => setDate(e.target.value)} style={{ ...inputStyle, maxWidth: 220 }} />
-        </div>
-
         {/* Material Details */}
         <p style={{ fontSize: "0.65rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", marginBottom: 8 }}>MATERIAL DETAILS</p>
 
@@ -291,10 +258,6 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
           <button onClick={onClose} disabled={submitting}
             style={{ padding: "10px 18px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 600, fontSize: "0.85rem", cursor: "pointer" }}>
             Cancel
-          </button>
-          <button onClick={handleSaveAndAddAnother} disabled={submitting || noMaterialsLeft}
-            style={{ padding: "10px 18px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontWeight: 600, fontSize: "0.85rem", cursor: submitting ? "default" : "pointer", opacity: submitting ? 0.7 : 1 }}>
-            Save as Draft
           </button>
           <button onClick={handleSaveEntry} disabled={submitting || noMaterialsLeft}
             style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.85rem", cursor: submitting ? "default" : "pointer", opacity: submitting ? 0.7 : 1 }}>

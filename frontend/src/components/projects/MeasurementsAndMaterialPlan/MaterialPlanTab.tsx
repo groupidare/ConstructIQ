@@ -21,6 +21,27 @@ interface Props {
   otherTypeSpecify: string;
   inventory: InventoryRecord[];
   forecastedMaterials: ForecastedMaterial[];
+  // Quantity per material already received via approved redistribution —
+  // reduces how much more can be requested via Notify Procurement/Warehouse.
+  redistributedByMaterial: Record<number, number>;
+  // Materials whose warehouse check has actually been resolved (approved or
+  // rejected) — Notify Procurement only unlocks for a material once it's in
+  // this set; the warehouse always gets first look.
+  warehouseResolvedMaterialIds: Set<number>;
+  // Authoritative "how much more can be requested," computed server-side
+  // from real BOQ estimate minus redistribution/warehouse/procurement — NOT
+  // derived from BOQItem.RequestedQuantity, which only reflects what was
+  // asked, not what was actually fulfilled (a warehouse request for 12
+  // approved for only 3 only frees up 3, not 12).
+  remainingByMaterial: Record<number, number>;
+  // Display-only — quantity actually released from the warehouse per
+  // material. Only an Approved request counts; a Pending ask hasn't been
+  // released yet.
+  warehouseFulfilledByMaterial: Record<number, number>;
+  // Materials with a still-Pending warehouse check — Notify Warehouse is
+  // disabled for these until that check is resolved, so the same material
+  // can't be asked for twice while awaiting a reply.
+  warehousePendingMaterialIds: Set<number>;
   boqDocs: ProjectDocument[];
   uploading: boolean;
   onUploadBoq: (file: File) => void;
@@ -63,7 +84,8 @@ interface Props {
 
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
-  inventory, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
+  inventory, forecastedMaterials, redistributedByMaterial, warehouseResolvedMaterialIds,
+  remainingByMaterial, warehouseFulfilledByMaterial, warehousePendingMaterialIds, boqDocs, uploading, onUploadBoq, onParseBoq,
   rows, boqItems, onRowsChange, onSave, saving, onNotify, getHistoricalEstimate, onRemoveDocument, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
@@ -349,7 +371,7 @@ export default function MaterialPlanTab({
               <span style={{ ...inp, flex: '0 0 auto', width: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9fafb', color: '#6b7280' }}>{requestPrompt.unit}</span>
             </div>
             <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginBottom: '1rem' }}>
-              Requesting less than the full amount splits the remainder into a new row below, ready for its own request.
+              This adds to the running total already requested for this row — it never splits into a separate row.
             </p>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <button onClick={() => setRequestPrompt(null)} disabled={submittingRequest} style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}>
@@ -535,17 +557,35 @@ export default function MaterialPlanTab({
               // matches what the receiving Inventory/Procurement pages show.
               const purchaseQty = r.estimatedPurchaseQuantity ?? r.estimatedQuantity;
               const purchaseUnit = r.estimatedPurchaseUnit ?? r.unit ?? '';
-              // Remaining = the row's own Est. Qty minus whatever's already
-              // been requested so far (accumulates across however many
-              // partial Procurement/Warehouse clicks) — never resets, and
-              // the row itself is never split or shrunk to match a single
-              // request; only this remaining figure shrinks.
-              const remaining = Math.max(0, purchaseQty - (r.requestedQuantity ?? 0));
+              // Material already received via approved redistribution — shown
+              // separately below even though it's folded into the
+              // authoritative `remaining` figure already.
+              const redistributedQty = r.materialId ? (redistributedByMaterial[r.materialId] ?? 0) : 0;
+              const warehouseFulfilledQty = r.materialId ? (warehouseFulfilledByMaterial[r.materialId] ?? 0) : 0;
+              // Authoritative remaining — computed server-side from the real
+              // BOQ estimate minus redistribution, warehouse-approved
+              // quantity, and Procurement asks already made (never from
+              // BOQItem.RequestedQuantity, which only reflects what was
+              // *asked*, not what was actually fulfilled). Falls back to a
+              // local approximation only for a brand-new row not yet
+              // reflected in that fetch.
+              const remaining = r.materialId && r.materialId in remainingByMaterial
+                ? remainingByMaterial[r.materialId]
+                : Math.max(0, purchaseQty - redistributedQty - warehouseFulfilledQty);
               const toOrder = Math.max(0, remaining - stock);
               const needsAlert = toOrder > 0;
               const canRequest = editable && !isCompleted && !!r.materialId;
-              // Done only once the running total actually reaches this row's
-              // own (fixed, never-changed) Est. Qty.
+              // The warehouse gets first look at every material — Notify
+              // Procurement only unlocks once that check has actually been
+              // resolved (approved or rejected), not while it's pending.
+              const canRequestProcurement = canRequest && !!r.materialId && warehouseResolvedMaterialIds.has(r.materialId);
+              // Nothing is released until a warehouse check is actually
+              // approved — block a second ask for the same material while
+              // one is still pending.
+              const canRequestWarehouse = canRequest && !!r.materialId && !warehousePendingMaterialIds.has(r.materialId);
+              // Done once the running total reaches this row's own (fixed,
+              // never-changed) Est. Qty, OR redistribution alone already
+              // covers it (remaining accounts for both — see above).
               const isRequestDone = purchaseQty > 0 && remaining <= 0;
               return (
                 <div key={i} style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40 }}>
@@ -617,6 +657,16 @@ export default function MaterialPlanTab({
                         {r.requestedQuantity!.toLocaleString()} of {purchaseQty.toLocaleString()} requested
                       </p>
                     )}
+                    {redistributedQty > 0 && (
+                      <p style={{ fontSize: '0.6rem', color: '#0d9488', marginTop: 2, fontWeight: 600 }}>
+                        {redistributedQty.toLocaleString()} already received via redistribution — reduces what's left to request.
+                      </p>
+                    )}
+                    {warehouseFulfilledQty > 0 && (
+                      <p style={{ fontSize: '0.6rem', color: '#7c3aed', marginTop: 2, fontWeight: 600 }}>
+                        {warehouseFulfilledQty.toLocaleString()} released from the warehouse — reduces what's left to request.
+                      </p>
+                    )}
                   </div>
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                     {isRequestDone ? (
@@ -624,16 +674,22 @@ export default function MaterialPlanTab({
                     ) : canRequest && (
                       <>
                         <button
-                          onClick={() => { setRequestPrompt({ index: i, kind: 'ProcurementOrder', max: toOrder, unit: purchaseUnit, materialName: materialLabel(r) }); setRequestPromptQty(toOrder ? String(toOrder) : ''); }}
-                          title={`Notify procurement — order up to ${toOrder} ${purchaseUnit}`}
-                          style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert ? '#fee2e2' : '#f3f4f6' }}
+                          onClick={() => canRequestProcurement && (() => { setRequestPrompt({ index: i, kind: 'ProcurementOrder', max: toOrder, unit: purchaseUnit, materialName: materialLabel(r) }); setRequestPromptQty(toOrder ? String(toOrder) : ''); })()}
+                          disabled={!canRequestProcurement}
+                          title={canRequestProcurement
+                            ? `Notify procurement — order up to ${toOrder} ${purchaseUnit}`
+                            : 'Alert the warehouse first — Procurement unlocks once their check on this material is approved or rejected.'}
+                          style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: canRequestProcurement ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert && canRequestProcurement ? '#fee2e2' : '#f3f4f6', opacity: canRequestProcurement ? 1 : 0.45 }}
                         >
-                          <ShoppingCart style={{ width: 12, height: 12, color: needsAlert ? '#ef4444' : '#9ca3af' }} />
+                          <ShoppingCart style={{ width: 12, height: 12, color: needsAlert && canRequestProcurement ? '#ef4444' : '#9ca3af' }} />
                         </button>
                         <button
-                          onClick={() => { setRequestPrompt({ index: i, kind: 'WarehouseCheck', max: remaining, unit: purchaseUnit, materialName: materialLabel(r) }); setRequestPromptQty(remaining ? String(remaining) : ''); }}
-                          title={`Notify warehouse to check material — up to ${remaining} ${purchaseUnit}`}
-                          style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}
+                          onClick={() => canRequestWarehouse && (() => { setRequestPrompt({ index: i, kind: 'WarehouseCheck', max: remaining, unit: purchaseUnit, materialName: materialLabel(r) }); setRequestPromptQty(remaining ? String(remaining) : ''); })()}
+                          disabled={!canRequestWarehouse}
+                          title={canRequestWarehouse
+                            ? `Notify warehouse to check material — up to ${remaining} ${purchaseUnit}`
+                            : 'Already awaiting a warehouse response for this material.'}
+                          style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: canRequestWarehouse ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6', opacity: canRequestWarehouse ? 1 : 0.45 }}
                         >
                           <Package style={{ width: 12, height: 12, color: '#9ca3af' }} />
                         </button>

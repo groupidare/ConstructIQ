@@ -22,10 +22,20 @@ export function useWarehouseRequests() {
     return data;
   }
 
-  async function approveRequest(id: number) {
-    await api.post(`/warehouse-requests/${id}/approve`, {});
+  async function approveRequest(id: number, approvedQuantity: number) {
+    await api.post(`/warehouse-requests/${id}/approve`, { approvedQuantity });
     await fetchAll();
   }
 
-  return { requests, loading, fetchAll, createRequest, approveRequest };
+  async function rejectRequest(id: number) {
+    await api.post(`/warehouse-requests/${id}/reject`, {});
+    await fetchAll();
+  }
+
+  async function fetchByProject(projectId: number): Promise<WarehouseRequest[]> {
+    const { data } = await api.get<WarehouseRequest[]>(`/warehouse-requests/project/${projectId}`);
+    return data;
+  }
+
+  return { requests, loading, fetchAll, createRequest, approveRequest, rejectRequest, fetchByProject };
 }

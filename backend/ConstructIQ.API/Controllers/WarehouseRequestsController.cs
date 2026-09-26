@@ -19,19 +19,45 @@ public class WarehouseRequestsController(IWarehouseRequestService warehouseReque
     public async Task<IActionResult> GetAll() =>
         Ok(await warehouseRequestService.GetAllAsync());
 
+    [HttpGet("project/{projectId:int}")]
+    public async Task<IActionResult> GetByProject(int projectId) =>
+        Ok(await warehouseRequestService.GetByProjectAsync(projectId));
+
     [HttpPost]
     [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> Create([FromBody] WarehouseRequestCreateDto dto)
     {
-        var created = await warehouseRequestService.CreateAsync(dto, CurrentUserId);
-        return Ok(created);
+        try
+        {
+            var created = await warehouseRequestService.CreateAsync(dto, CurrentUserId);
+            return Ok(created);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
     [HttpPost("{id:int}/approve")]
     [Authorize(Roles = "Admin,WarehousePersonnel")]
-    public async Task<IActionResult> Approve(int id)
+    public async Task<IActionResult> Approve(int id, [FromBody] WarehouseRequestApproveDto dto)
     {
-        var success = await warehouseRequestService.ApproveAsync(id, CurrentUserId);
-        return success ? Ok(new { message = "Request approved." }) : NotFound();
+        try
+        {
+            var success = await warehouseRequestService.ApproveAsync(id, dto.ApprovedQuantity, CurrentUserId);
+            return success ? Ok(new { message = "Request approved." }) : NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("{id:int}/reject")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
+    public async Task<IActionResult> Reject(int id)
+    {
+        var success = await warehouseRequestService.RejectAsync(id, CurrentUserId);
+        return success ? Ok(new { message = "Request rejected." }) : NotFound();
     }
 }

@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using ConstructIQ.API.Algorithms;
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Models.DTOs.MaterialRequests;
 using ConstructIQ.API.Models.DTOs.PurchaseOrders;
@@ -37,6 +38,10 @@ public class MaterialRequestsController(AppDbContext db) : ControllerBase
         var material = await db.Materials.FindAsync(dto.MaterialId);
         if (material is null) return BadRequest(new { message = "Material not found." });
 
+        var remaining = await ProcurementCapCalculator.GetRemainingRequestableAsync(db, dto.ProjectId, dto.MaterialId);
+        if (dto.Quantity > remaining)
+            return BadRequest(new { message = $"Cannot request more than {remaining} {material.Unit} — that exceeds the estimated need minus what's already been redistributed in and requested." });
+
         var request = new MaterialRequest
         {
             ProjectId = dto.ProjectId,
@@ -50,6 +55,17 @@ public class MaterialRequestsController(AppDbContext db) : ControllerBase
         await db.SaveChangesAsync();
 
         return Ok(new { id = request.Id });
+    }
+
+    // Authoritative "how much more can still be requested" per material in
+    // this project's BOQ — the Material Plan tab uses this directly instead
+    // of re-deriving it client-side, so its displayed cap always matches
+    // exactly what Create above will actually accept.
+    [HttpGet("remaining/{projectId:int}")]
+    public async Task<IActionResult> GetRemaining(int projectId)
+    {
+        var remaining = await ProcurementCapCalculator.GetRemainingRequestableForProjectAsync(db, projectId);
+        return Ok(remaining.Select(kv => new { materialId = kv.Key, remaining = kv.Value }));
     }
 
     // Only projects with at least one unfulfilled request show up — the

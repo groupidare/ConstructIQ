@@ -9,6 +9,13 @@ public class WarehouseRequestCreateDto
     [Range(0.0001, double.MaxValue)] public decimal RequestedQuantity { get; set; }
 }
 
+public class WarehouseRequestApproveDto
+{
+    // Defaults to the full RequestedQuantity when omitted, but should be
+    // sent explicitly whenever the warehouse can't release the full amount.
+    [Range(0.0001, double.MaxValue)] public decimal ApprovedQuantity { get; set; }
+}
+
 public class WarehouseRequestResponseDto
 {
     public int      Id                { get; set; }
@@ -18,6 +25,7 @@ public class WarehouseRequestResponseDto
     public string   MaterialName      { get; set; } = string.Empty;
     public string   Unit              { get; set; } = string.Empty;
     public decimal  RequestedQuantity { get; set; }
+    public decimal? ApprovedQuantity  { get; set; }
     public string   Status            { get; set; } = string.Empty;
     public string   RequestedBy       { get; set; } = string.Empty;
     public DateTime RequestedAt       { get; set; }

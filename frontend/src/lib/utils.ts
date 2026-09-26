@@ -12,8 +12,21 @@ export function formatCurrency(amount: number): string {
   }).format(amount);
 }
 
+// The backend serializes DateTime values (always UTC — DateTime.UtcNow) with
+// no "Z"/offset suffix, which the Date constructor otherwise treats as LOCAL
+// time — silently showing the wrong calendar day for anything created
+// between local midnight and however many hours ahead of UTC the viewer's
+// timezone is (e.g. up to 8am in Manila/UTC+8). A bare "YYYY-MM-DD" (no time
+// component) is already unambiguous — the spec always treats that form as
+// UTC — so it's left alone.
+function parseServerDate(dateStr: string): Date {
+  const hasTime = dateStr.includes("T");
+  const hasZone = /Z$|[+-]\d{2}:\d{2}$/.test(dateStr);
+  return new Date(hasTime && !hasZone ? `${dateStr}Z` : dateStr);
+}
+
 export function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString("en-PH", {
+  return parseServerDate(dateStr).toLocaleDateString("en-PH", {
     year: "numeric",
     month: "short",
     day: "numeric",

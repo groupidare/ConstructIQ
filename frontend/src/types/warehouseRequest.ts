@@ -1,4 +1,4 @@
-export type WarehouseRequestStatus = "Pending" | "Approved";
+export type WarehouseRequestStatus = "Pending" | "Approved" | "Rejected";
 
 export interface WarehouseRequest {
   id: number;
@@ -8,6 +8,7 @@ export interface WarehouseRequest {
   materialName: string;
   unit: string;
   requestedQuantity: number;
+  approvedQuantity?: number;
   status: WarehouseRequestStatus;
   requestedBy: string;
   requestedAt: string;

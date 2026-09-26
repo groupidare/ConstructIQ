@@ -45,3 +45,8 @@ export interface GeneratedPOsResult {
   purchaseOrders: unknown[]; // not consumed directly by the Requests overlay
   requestPoNumbers: Record<number, string>;
 }
+
+export interface RemainingRequestable {
+  materialId: number;
+  remaining: number;
+}

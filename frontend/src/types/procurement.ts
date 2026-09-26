@@ -50,12 +50,18 @@ export interface PurchaseRequestCreateRequest {
 export interface RedistributionTargetSuggestion {
   projectId: number;
   projectName: string;
-  hasForecastedShortage: boolean;
-  forecastedNeededQuantity?: number;
-  usesThisMaterialCategory: boolean;
+  // Sole real matching signal — does this project already use the exact
+  // material being redistributed (BOQ or current inventory)? No shortage or
+  // forecast math involved.
+  usesThisMaterial: boolean;
   sameProjectType: boolean;
   matchScore: number;
   matchReason: string;
+}
+
+export interface ReceivedRedistribution {
+  materialId: number;
+  totalQuantity: number;
 }
 
 export interface RedistributeFromExcessRequest {
