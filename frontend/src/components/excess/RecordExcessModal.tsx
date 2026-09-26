@@ -294,7 +294,7 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
           </button>
           <button onClick={handleSaveAndAddAnother} disabled={submitting || noMaterialsLeft}
             style={{ padding: "10px 18px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontWeight: 600, fontSize: "0.85rem", cursor: submitting ? "default" : "pointer", opacity: submitting ? 0.7 : 1 }}>
-            Save &amp; Add Another
+            Save as Draft
           </button>
           <button onClick={handleSaveEntry} disabled={submitting || noMaterialsLeft}
             style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.85rem", cursor: submitting ? "default" : "pointer", opacity: submitting ? 0.7 : 1 }}>

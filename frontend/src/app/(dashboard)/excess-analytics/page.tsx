@@ -2,6 +2,7 @@
 
 import { Fragment, useMemo, useState, useEffect } from "react";
 import Header from "@/components/layout/Header";
+import { useAuthStore } from "@/store/authStore";
 import { useProjects } from "@/hooks/useProjects";
 import api from "@/lib/api";
 import { formatDate } from "@/lib/utils";
@@ -9,6 +10,7 @@ import type { ExcessWasteRecord } from "@/types/excess";
 import RedistributeModal from "@/components/excess/RedistributeModal";
 import RecordExcessModal from "@/components/excess/RecordExcessModal";
 import EditExcessModal from "@/components/excess/EditExcessModal";
+import EditProjectExcessModal from "@/components/excess/EditProjectExcessModal";
 import {
   Trash2, Package,
   TrendingUp, FileText, Plus, Search, Recycle, ChevronDown, ChevronRight, Pencil,
@@ -41,11 +43,19 @@ export default function ExcessAnalyticsPage() {
   const [tab, setTab] = useState<Tab>("overview");
   const [logSearch, setLogSearch] = useState("");
 
+  // Mirrors the backend's own restriction on POST/PUT /excess-waste (Admin,
+  // SiteEngineer, WarehousePersonnel) — without this, anyone could see and
+  // click "+ Excess Log"/"Edit" and only find out they lack permission after
+  // a confusing generic failure from the server's 403.
+  const { user } = useAuthStore();
+  const canManageExcess = user?.role === "Admin" || user?.role === "SiteEngineer" || user?.role === "WarehousePersonnel";
+
   const { projects } = useProjects();
   const [records, setRecords] = useState<ExcessWasteRecord[]>([]);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [redistributeTarget, setRedistributeTarget] = useState<ExcessWasteRecord | null>(null);
   const [editTarget, setEditTarget] = useState<ExcessWasteRecord | null>(null);
+  const [editProjectTarget, setEditProjectTarget] = useState<{ projectId: number; projectName: string; records: ExcessWasteRecord[] } | null>(null);
   const [showRecordModal, setShowRecordModal] = useState(false);
   const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
 
@@ -148,6 +158,16 @@ export default function ExcessAnalyticsPage() {
         <EditExcessModal
           record={editTarget}
           onClose={() => setEditTarget(null)}
+          onSuccess={loadRecords}
+        />
+      )}
+
+      {editProjectTarget && (
+        <EditProjectExcessModal
+          projectId={editProjectTarget.projectId}
+          projectName={editProjectTarget.projectName}
+          records={editProjectTarget.records}
+          onClose={() => setEditProjectTarget(null)}
           onSuccess={loadRecords}
         />
       )}
@@ -285,9 +305,11 @@ export default function ExcessAnalyticsPage() {
                     style={{ paddingLeft:32, paddingRight:12, paddingTop:8, paddingBottom:8, borderRadius:8, border:"1px solid #e5e7eb", background:"#f9fafb", fontSize:"0.8rem", outline:"none", width:220, color:"#111827" }}
                   />
                 </div>
-                <button onClick={() => setShowRecordModal(true)} style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 16px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.8rem", fontWeight:700, cursor:"pointer" }}>
-                  <Plus style={{ width:14, height:14 }} /> Excess Log
-                </button>
+                {canManageExcess && (
+                  <button onClick={() => setShowRecordModal(true)} style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 16px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.8rem", fontWeight:700, cursor:"pointer" }}>
+                    <Plus style={{ width:14, height:14 }} /> Excess Log
+                  </button>
+                )}
               </div>
             </div>
 
@@ -314,12 +336,22 @@ export default function ExcessAnalyticsPage() {
                             <td style={{ padding:"14px 12px", fontSize:"0.82rem", color:"#374151" }}>{g.records.length}</td>
                             <td style={{ padding:"14px 12px", fontSize:"0.82rem", color:"#374151", whiteSpace:"nowrap" }}>{formatDate(new Date(lastRecorded).toISOString())}</td>
                             <td style={{ padding:"14px 12px" }}>
-                              <button
-                                onClick={() => setExpandedProjectId(expanded ? null : g.projectId)}
-                                style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 12px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.72rem", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
-                              >
-                                {expanded ? <ChevronDown style={{ width:12, height:12 }} /> : <ChevronRight style={{ width:12, height:12 }} />} View
-                              </button>
+                              <div style={{ display:"flex", gap:6 }}>
+                                <button
+                                  onClick={() => setExpandedProjectId(expanded ? null : g.projectId)}
+                                  style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 12px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.72rem", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
+                                >
+                                  {expanded ? <ChevronDown style={{ width:12, height:12 }} /> : <ChevronRight style={{ width:12, height:12 }} />} View
+                                </button>
+                                {canManageExcess && (
+                                  <button
+                                    onClick={() => setEditProjectTarget({ projectId: g.projectId, projectName: g.projectName, records: g.records })}
+                                    style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 12px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.72rem", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
+                                  >
+                                    <Pencil style={{ width:12, height:12 }} /> Edit
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                           {expanded && (
@@ -365,12 +397,14 @@ export default function ExcessAnalyticsPage() {
                                           </td>
                                           <td style={{ padding:"10px" }}>
                                             <div style={{ display:"flex", gap:6 }}>
-                                              <button
-                                                onClick={() => setEditTarget(e)}
-                                                style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.7rem", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
-                                              >
-                                                <Pencil style={{ width:11, height:11 }} /> Edit
-                                              </button>
+                                              {canManageExcess && (
+                                                <button
+                                                  onClick={() => setEditTarget(e)}
+                                                  style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.7rem", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
+                                                >
+                                                  <Pencil style={{ width:11, height:11 }} /> Edit
+                                                </button>
+                                              )}
                                               {e.isReusable && (() => {
                                                 const alreadyRedistributed = APPROVED_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "");
                                                 return (
