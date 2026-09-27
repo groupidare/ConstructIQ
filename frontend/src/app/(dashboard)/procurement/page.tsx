@@ -1746,12 +1746,13 @@ export default function ProcurementPage() {
               </div>
             )}
 
-            {/* Supplier Performance — ranked most to least preferred */}
+            {/* Supplier Performance — top 5, ranked most to least preferred */}
             {suppliers.length > 0 && (
               <div style={{ background: "#fff", borderRadius: 14, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
                 <p style={{ fontWeight: 700, fontSize: "0.95rem", color: "#111827", marginBottom: "1rem" }}>Supplier Performance</p>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem" }}>
                   {sortSuppliersByPreference(suppliers)
+                    .slice(0, 5)
                     .map((s, i) => {
                       const badgeName = getSupplierBadge(s);
                       const badge = BADGE_STYLE[badgeName];

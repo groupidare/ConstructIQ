@@ -48,6 +48,7 @@ public class ProjectService(AppDbContext db, IWebHostEnvironment env) : IProject
 
     public async Task<ProjectResponseDto> CreateAsync(ProjectCreateDto dto, int createdByUserId)
     {
+        var status = string.IsNullOrWhiteSpace(dto.Status) ? ProjectStatus.Planning : Enum.Parse<ProjectStatus>(dto.Status);
         var project = new Project
         {
             Name               = dto.Name,
@@ -61,8 +62,13 @@ public class ProjectService(AppDbContext db, IWebHostEnvironment env) : IProject
             AssignedContractor = dto.AssignedContractor,
             ProjectManagerId   = createdByUserId,
             SiteEngineerId     = dto.SiteEngineerId,
-            Status             = string.IsNullOrWhiteSpace(dto.Status) ? ProjectStatus.Planning : Enum.Parse<ProjectStatus>(dto.Status),
+            Status             = status,
             IsHistorical       = dto.IsHistorical,
+            // Backfilled via "Add Completed Project" (IsHistorical) or created
+            // directly as Completed — either way it's done, and Progress
+            // otherwise only ever advances through LogProgressAsync's
+            // Progress Tracker, which a backfilled project never goes through.
+            Progress           = dto.IsHistorical || status == ProjectStatus.Completed ? 100 : 0,
         };
 
         foreach (var phaseDto in dto.Phases)
@@ -97,7 +103,14 @@ public class ProjectService(AppDbContext db, IWebHostEnvironment env) : IProject
         project.AssignedContractor = dto.AssignedContractor;
         project.SiteEngineerId     = dto.SiteEngineerId;
         if (!string.IsNullOrWhiteSpace(dto.Status))
+        {
             project.Status = Enum.Parse<ProjectStatus>(dto.Status);
+            // Same rule as CreateAsync — a project marked Completed here
+            // (e.g. via Edit Project Details) is done, regardless of what
+            // its Progress Tracker value happened to be.
+            if (project.Status == ProjectStatus.Completed)
+                project.Progress = 100;
+        }
         project.UpdatedAt          = DateTime.UtcNow;
 
         await db.SaveChangesAsync();

@@ -231,13 +231,11 @@ export default function RedistributionPage() {
 
           <div>
             {activeOpportunities.map((r, i) => {
-              const compat = compatibilityOf(r);
               const canApprove = APPROVABLE_STATUSES.includes(r.status);
               return (
                 <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "1rem 0", borderTop: i > 0 ? "1px solid #f3f4f6" : "none", flexWrap: "wrap" }}>
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: "0.68rem", fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: compat.bg, color: compat.color, whiteSpace: "nowrap" }}>· {compat.label}</span>
                       <span style={{ fontWeight: 700, fontSize: "0.95rem", color: "#111827" }}>{r.materialName}</span>
                       {r.status !== "AiSuggested" && (
                         <span style={{ fontSize: "0.65rem", fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#f3f4f6", color: "#6b7280" }}>{r.status}</span>

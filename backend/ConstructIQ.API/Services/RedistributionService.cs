@@ -19,10 +19,17 @@ public class RedistributionService(AppDbContext db) : IRedistributionService
             .Include(r => r.SourceProject)
             .Include(r => r.TargetProject)
             .Where(r => RedistributionStatuses.Active.Contains(r.Status))
-            .OrderByDescending(r => r.RequestedAt)
             .ToListAsync();
 
-        return requests.Select(ToDto);
+        // Still-undecided requests always float to the top (newest first);
+        // once one is Approved it sinks to the bottom, most-recently-approved
+        // first. Sorted in-memory (not in the query) since the tie-break key
+        // itself differs per group (RequestedAt vs. ApprovedAt).
+        var ordered = requests
+            .OrderBy(r => RedistributionStatuses.Pending.Contains(r.Status) ? 0 : 1)
+            .ThenByDescending(r => RedistributionStatuses.Pending.Contains(r.Status) ? r.RequestedAt : (r.ApprovedAt ?? r.RequestedAt));
+
+        return ordered.Select(ToDto);
     }
 
     public async Task GenerateRecommendationsAsync()
