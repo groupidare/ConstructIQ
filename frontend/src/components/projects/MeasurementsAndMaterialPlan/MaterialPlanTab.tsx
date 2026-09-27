@@ -557,11 +557,17 @@ export default function MaterialPlanTab({
               // matches what the receiving Inventory/Procurement pages show.
               const purchaseQty = r.estimatedPurchaseQuantity ?? r.estimatedQuantity;
               const purchaseUnit = r.estimatedPurchaseUnit ?? r.unit ?? '';
-              // Material already received via approved redistribution — shown
-              // separately below even though it's folded into the
-              // authoritative `remaining` figure already.
+              // Folded into the authoritative `remaining` figure below — kept
+              // as its own value both for the local-fallback calculation and
+              // for the EST. QTY subtext (netLeftToOrder), which deliberately
+              // only reflects these two channels, not Procurement asks.
               const redistributedQty = r.materialId ? (redistributedByMaterial[r.materialId] ?? 0) : 0;
               const warehouseFulfilledQty = r.materialId ? (warehouseFulfilledByMaterial[r.materialId] ?? 0) : 0;
+              // EST. QTY subtext value — Estimated Qty minus only what's
+              // actually been received in-kind (redistribution + warehouse
+              // release), separate from `remaining` below (which also nets
+              // out Procurement asks for the button-enable/cap logic).
+              const netLeftToOrder = Math.max(0, purchaseQty - redistributedQty - warehouseFulfilledQty);
               // Authoritative remaining — computed server-side from the real
               // BOQ estimate minus redistribution, warehouse-approved
               // quantity, and Procurement asks already made (never from
@@ -642,7 +648,15 @@ export default function MaterialPlanTab({
                     <option value="">—</option>
                     {PURCHASE_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
                   </select>
-                  <div>
+                  {/* position:relative + an absolutely-positioned caption
+                      keeps this cell's own box the same height as every
+                      plain single-input cell in the row (UNIT, the input
+                      itself) — the caption renders as an overlay below the
+                      input instead of adding to normal flow, so its
+                      presence/absence never shifts this row's height or
+                      pushes other cells (UNIT, the Done badge in ALERTS)
+                      out of their shared top baseline. */}
+                  <div style={{ position: 'relative' }}>
                     <input
                       disabled={!editable}
                       type="number"
@@ -652,19 +666,16 @@ export default function MaterialPlanTab({
                       placeholder="Est. qty"
                       style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }}
                     />
-                    {(r.requestedQuantity ?? 0) > 0 && (
-                      <p style={{ fontSize: '0.6rem', color: isRequestDone ? '#15803d' : '#f97316', marginTop: 2, fontWeight: 600 }}>
-                        {r.requestedQuantity!.toLocaleString()} of {purchaseQty.toLocaleString()} requested
-                      </p>
-                    )}
-                    {redistributedQty > 0 && (
-                      <p style={{ fontSize: '0.6rem', color: '#0d9488', marginTop: 2, fontWeight: 600 }}>
-                        {redistributedQty.toLocaleString()} already received via redistribution — reduces what's left to request.
-                      </p>
-                    )}
-                    {warehouseFulfilledQty > 0 && (
-                      <p style={{ fontSize: '0.6rem', color: '#7c3aed', marginTop: 2, fontWeight: 600 }}>
-                        {warehouseFulfilledQty.toLocaleString()} released from the warehouse — reduces what's left to request.
+                    {/* Hidden entirely until something's actually been
+                        received via redistribution or warehouse release —
+                        no text at all otherwise. */}
+                    {(redistributedQty > 0 || warehouseFulfilledQty > 0) && (
+                      <p style={{
+                        position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 2,
+                        fontSize: '0.6rem', color: netLeftToOrder <= 0 ? '#15803d' : '#f97316', fontWeight: 600,
+                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', pointerEvents: 'none',
+                      }}>
+                        {netLeftToOrder.toLocaleString()} left to order
                       </p>
                     )}
                   </div>

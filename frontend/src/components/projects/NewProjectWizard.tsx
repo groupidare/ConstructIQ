@@ -10,6 +10,7 @@ import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import { Card, CardHeader, CardBody } from '@/components/ui/Card';
 import { useProjects } from '@/hooks/useProjects';
+import { useSiteEngineers } from '@/hooks/useSiteEngineers';
 import MeasurementsAndMaterialPlanInline from '@/components/projects/MeasurementsAndMaterialPlan/Inline';
 import type { Project } from '@/types/project';
 import { PROJECT_TYPES } from '@/types/project';
@@ -22,8 +23,7 @@ const schema = z.object({
   description:        z.string().optional(),
   startDate:          z.string().min(1),
   targetEndDate:      z.string().min(1),
-  assignedContractor: z.string().optional(),
-  siteEngineerId:     z.number().optional(),
+  siteEngineerId:     z.union([z.number(), z.nan()]).optional(),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -36,6 +36,7 @@ interface Props {
 
 export default function NewProjectWizard({ onCancel, onSkip, onFinish }: Props) {
   const { createProject } = useProjects();
+  const { siteEngineers } = useSiteEngineers();
   const [step, setStep] = useState<1 | 2>(1);
   const [project, setProject] = useState<Project | null>(null);
 
@@ -51,6 +52,7 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish }: Props) 
       const created = await createProject({
         ...data,
         otherTypeSpecify: data.type === 'Others' ? data.otherTypeSpecify : undefined,
+        siteEngineerId: data.siteEngineerId != null && !Number.isNaN(data.siteEngineerId) ? data.siteEngineerId : undefined,
         budget: 0,
         phases: [],
       });
@@ -107,7 +109,15 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish }: Props) 
             <Input label="Location *" {...register('location')} error={errors.location?.message} />
             <Input label="Start Date *" type="date" {...register('startDate')} />
             <Input label="Target End Date *" type="date" {...register('targetEndDate')} />
-            <Input label="Assigned Contractor" {...register('assignedContractor')} />
+            <div>
+              <label className="label">Assign Engineer/PIC</label>
+              <select className="input" {...register('siteEngineerId', { valueAsNumber: true })} defaultValue="">
+                <option value="">— Unassigned —</option>
+                {siteEngineers.map(e => (
+                  <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>
+                ))}
+              </select>
+            </div>
             <div className="md:col-span-2">
               <label className="label">Description</label>
               <textarea className="input min-h-20" {...register('description')} />

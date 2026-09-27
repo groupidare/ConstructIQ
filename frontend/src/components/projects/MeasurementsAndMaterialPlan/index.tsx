@@ -15,9 +15,14 @@ interface Props {
 export default function MeasurementsAndMaterialPlan({ project, onClose, initialEditable = true, initialTab = 'measurements', onProjectSaved }: Props) {
   const state = useMeasurementsAndMaterialPlan({ project, initialEditable, initialTab, onProjectSaved });
 
+  // Files only has a narrow single-column layout — a fixed wide modal leaves
+  // a large empty gap on the right. Material Plan's BOQ table needs the
+  // extra width to show every column without horizontal scrolling.
+  const modalWidth = state.tab === 'measurements' ? 640 : 1200;
+
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, width: 980, maxWidth: '95vw', boxShadow: '0 20px 60px rgba(0,0,0,0.18)', overflow: 'hidden', maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, width: modalWidth, maxWidth: '95vw', transition: 'width 0.2s ease', boxShadow: '0 20px 60px rgba(0,0,0,0.18)', overflow: 'hidden', maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}>
         {/* Header */}
         <div style={{ padding: '1.5rem 1.5rem 0', flexShrink: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.25rem' }}>

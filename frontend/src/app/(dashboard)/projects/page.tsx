@@ -11,6 +11,7 @@ import MeasurementsAndMaterialPlan from "@/components/projects/MeasurementsAndMa
 import NewProjectWizardModal from "@/components/projects/NewProjectWizardModal";
 import AddCompletedProjectWizardModal from "@/components/projects/AddCompletedProjectWizardModal";
 import { useDocumentRepository } from "@/hooks/useDocumentRepository";
+import { useSiteEngineers } from "@/hooks/useSiteEngineers";
 import { getApiOrigin } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import type { Project as RealProject, ProjectType } from "@/types/project";
@@ -42,16 +43,6 @@ interface Project {
 }
 
 
-// ── Static Data ────────────────────────────────────────────────────────────────
-
-const INIT_PROJECTS: Project[] = [
-  { id:1, name:"Metro Station Phase 3",   location:"EDSA, QC",     startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",    progress:62,  progressColor:"#f97316", manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],   type:"Infrastructure", isHistorical:false },
-  { id:2, name:"BGC Tower Complex",        location:"BGC, Taguig",  startDate:"2025-01-15", endDate:"2027-06-30", status:"ACTIVE",    progress:38,  progressColor:"#1e3154", manager:"Remy Santos",  engineers:["Jose Lim"],                  type:"Commercial", isHistorical:false },
-  { id:3, name:"Harbor Bridge Renovation", location:"Manila Harbor", startDate:"2024-03-01", endDate:"2025-12-31", status:"ACTIVE",    progress:81,  progressColor:"#22c55e", manager:"Remy Santos",  engineers:["Carlos Reyes"],              type:"Infrastructure", isHistorical:false },
-  { id:4, name:"Southgate Mall Expansion", location:"BGC, Taguig",  startDate:"2025-06-01", endDate:"2027-09-30", status:"PLANNING",  progress:12,  progressColor:"#374151", manager:"Remy Santos",  engineers:["Ana Cruz","Ben Torres"],     type:"Commercial", isHistorical:false },
-  { id:5, name:"PUP ICTC Building",        location:"Sta. Mesa",    startDate:"2023-01-10", endDate:"2025-01-15", status:"COMPLETED", progress:100, progressColor:"#22c55e", manager:"Remy Santos",  engineers:["Ana Cruz"],                  type:"Infrastructure", isHistorical:false },
-];
-
 // ── API ────────────────────────────────────────────────────────────────────────
 
 type ProjectResponseDto = RealProject;
@@ -66,14 +57,13 @@ const PROGRESS_COLOR: Record<string, string> = {
 
 function toProject(dto: ProjectResponseDto): Project {
   const status = (STATUS_MAP[dto.status] ?? "PLANNING") as ProjectStatus;
-  const demo = INIT_PROJECTS.find(p => p.name === dto.name);
   return {
     id: dto.id, name: dto.name, location: dto.location, type: dto.type,
     startDate: dto.startDate.split("T")[0], endDate: dto.targetEndDate.split("T")[0],
     status, progress: dto.progress,
     progressColor: PROGRESS_COLOR[status] ?? "#374151",
-    manager: demo?.manager ?? dto.projectManagerName,
-    engineers: demo?.engineers ?? (dto.siteEngineerName ? [dto.siteEngineerName] : []),
+    manager: dto.projectManagerName,
+    engineers: dto.siteEngineerName ? [dto.siteEngineerName] : [],
     isHistorical: dto.isHistorical,
   };
 }
@@ -689,8 +679,9 @@ function EditProjectModal({ project, onClose, onSaved }: {
   const [startDate, setStartDate]     = useState(new Date(project.startDate));
   const [endDate, setEndDate]         = useState(new Date(project.targetEndDate));
   const [status, setStatus]           = useState(project.status);
-  const [contractor, setContractor]   = useState(project.assignedContractor ?? "");
+  const [siteEngineerId, setSiteEngineerId] = useState<number | "">(project.siteEngineerId ?? "");
   const [saving, setSaving]           = useState(false);
+  const { siteEngineers } = useSiteEngineers();
 
   const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
 
@@ -708,7 +699,7 @@ function EditProjectModal({ project, onClose, onSaved }: {
         startDate: startDate.toISOString(),
         targetEndDate: endDate.toISOString(),
         status,
-        assignedContractor: contractor.trim() || undefined,
+        siteEngineerId: siteEngineerId === "" ? undefined : siteEngineerId,
         phases: [],
       });
       toast.success("Project details updated.");
@@ -754,7 +745,20 @@ function EditProjectModal({ project, onClose, onSaved }: {
                 {PROJECT_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
-            <div><label style={lbl}>Assigned Contractor</label><input value={contractor} onChange={e=>setContractor(e.target.value)} style={inp} /></div>
+            <div>
+              <label style={lbl}>Assign Engineer/PIC</label>
+              <select value={siteEngineerId} onChange={e=>setSiteEngineerId(e.target.value === "" ? "" : Number(e.target.value))} style={sel}>
+                <option value="">— Unassigned —</option>
+                {/* The currently-assigned engineer might have since been
+                    deactivated (dropped from the active list below) — keep
+                    them selectable so re-saving this form without touching
+                    the field doesn't silently unassign them. */}
+                {project.siteEngineerId != null && !siteEngineers.some(e => e.id === project.siteEngineerId) && (
+                  <option value={project.siteEngineerId}>{project.siteEngineerName} (inactive)</option>
+                )}
+                {siteEngineers.map(e => <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>)}
+              </select>
+            </div>
           </div>
         </div>
         <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:"1.25rem" }}>
@@ -804,8 +808,10 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
     api.get<RedistributionRecommendation[]>("/redistribution")
       .then(({ data }) => {
         if (cancelled) return;
+        // Approved is the sole terminal state for a redistribution transfer —
+        // InTransit/Completed are never set by any code (see RedistributionStatuses).
         const total = data
-          .filter(r => r.status === "Completed" && (r.sourceProjectId === project.id || r.targetProjectId === project.id))
+          .filter(r => r.status === "Approved" && (r.sourceProjectId === project.id || r.targetProjectId === project.id))
           .reduce((sum, r) => sum + r.transferQuantity, 0);
         setRedistributed(total);
       })
@@ -997,9 +1003,10 @@ type ModalState =
   | null;
 
 export default function ProjectsPage() {
-  const [projects,     setProjects]     = useState<Project[]>(INIT_PROJECTS);
+  const [projects,     setProjects]     = useState<Project[]>([]);
   const [fullProjects, setFullProjects] = useState<RealProject[]>([]);
   const [loading,  setLoading]  = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [modal,    setModal]    = useState<ModalState>(null);
   const [deleting, setDeleting] = useState(false);
   // "Projects" = every real project tracked through the app (any status,
@@ -1040,8 +1047,15 @@ export default function ProjectsPage() {
       .then(r => {
         setProjects(r.data.map(toProject));
         setFullProjects(r.data);
+        setLoadError(false);
       })
-      .catch(() => {})
+      .catch(() => {
+        // Leave whatever was last successfully loaded on screen (if
+        // anything) rather than silently swallowing the failure — a stale
+        // or empty list looks identical to "no projects yet" otherwise.
+        setLoadError(true);
+        toast.error("Failed to load projects — check that the server is reachable.");
+      })
       .finally(() => setLoading(false));
   }
 
@@ -1163,6 +1177,10 @@ export default function ProjectsPage() {
         {/* Project grid */}
         {loading ? (
           <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>Loading projects…</div>
+        ) : loadError && visibleProjects.length === 0 ? (
+          <div style={{ padding:"3rem", textAlign:"center", color:"#ef4444" }}>
+            Couldn&apos;t reach the server — projects failed to load. Check your connection and try refreshing.
+          </div>
         ) : visibleProjects.length === 0 ? (
           <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>
             {view === "historical" ? "No historical records yet. Click \"Add Completed Project\" to backfill one." : "No projects yet. Click \"+ New Project\" to get started."}
