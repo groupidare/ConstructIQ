@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -12,6 +12,7 @@ import { Card, CardHeader, CardBody } from '@/components/ui/Card';
 import { useProjects } from '@/hooks/useProjects';
 import { useSiteEngineers } from '@/hooks/useSiteEngineers';
 import MeasurementsAndMaterialPlanInline from '@/components/projects/MeasurementsAndMaterialPlan/Inline';
+import type { Tab } from '@/components/projects/MeasurementsAndMaterialPlan/Shell';
 import type { Project } from '@/types/project';
 import { PROJECT_TYPES } from '@/types/project';
 
@@ -32,13 +33,19 @@ interface Props {
   onCancel: () => void;
   onSkip: (project: Project) => void;
   onFinish: (project: Project) => void;
+  // Lets a modal host size itself around the current step/tab, matching the
+  // standalone Material Plan modal's own dynamic-width behavior.
+  onStepChange?: (step: 1 | 2) => void;
+  onMaterialPlanTabChange?: (tab: Tab) => void;
 }
 
-export default function NewProjectWizard({ onCancel, onSkip, onFinish }: Props) {
+export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepChange, onMaterialPlanTabChange }: Props) {
   const { createProject } = useProjects();
   const { siteEngineers } = useSiteEngineers();
   const [step, setStep] = useState<1 | 2>(1);
   const [project, setProject] = useState<Project | null>(null);
+
+  useEffect(() => { onStepChange?.(step); }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { register, handleSubmit, watch, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -71,8 +78,11 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish }: Props) 
           <h1 className="text-2xl font-bold text-gray-900">{project.name}</h1>
           <p className="text-sm text-gray-500">Step 2 of 2 — Material Plan</p>
         </div>
-        <MeasurementsAndMaterialPlanInline project={project} onProjectSaved={setProject} />
-        <div className="flex justify-end gap-3">
+        <MeasurementsAndMaterialPlanInline project={project} onProjectSaved={setProject} bare onTabChange={onMaterialPlanTabChange} />
+        {/* Sticky, not part of normal scroll flow — the Material Plan tab's
+            BOQ table can run much longer than the modal's visible height, and
+            these buttons need to stay reachable without scrolling past it. */}
+        <div className="flex justify-end gap-3 sticky bottom-0 bg-white pt-3 pb-1">
           <Button variant="secondary" onClick={() => onSkip(project)}>Skip for now</Button>
           <Button onClick={() => onFinish(project)}>
             <Check size={16} /> Finish

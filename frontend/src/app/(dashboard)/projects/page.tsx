@@ -1186,7 +1186,11 @@ export default function ProjectsPage() {
             {view === "historical" ? "No historical records yet. Click \"Add Completed Project\" to backfill one." : "No projects yet. Click \"+ New Project\" to get started."}
           </div>
         ) : (
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
+          // minmax(0, 1fr), not bare 1fr — a plain 1fr column has an implicit
+          // min size of "auto" (its content's min-content width), so a long
+          // project name/location could still force this grid wider than the
+          // viewport even with the flex-container fix in the dashboard layout.
+          <div style={{ display:"grid", gridTemplateColumns:"minmax(0, 1fr) minmax(0, 1fr)", gap:"1rem" }}>
             {visibleProjects.map(p => (
               <ProjectCard
                 key={p.id}

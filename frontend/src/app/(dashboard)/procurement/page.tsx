@@ -8,6 +8,7 @@ import {
   ShoppingCart, Download, Plus, Eye,
   Send, History, X, Mail, Phone, Pencil, Camera, Upload, Check,
   Wind, Droplets, CloudRain, ClipboardList, ChevronRight, ArrowRight,
+  Search, ArrowUpDown,
 } from "lucide-react";
 import { useWeatherStore } from "@/store/weatherStore";
 import { useAlertStore } from "@/store/alertStore";
@@ -1167,6 +1168,12 @@ export default function ProcurementPage() {
   const [requestsProjects, setRequestsProjects] = useState<ProjectWithRequests[]>([]);
   const [openRequestsProjectId, setOpenRequestsProjectId] = useState<number | null>(null);
 
+  // Suppliers tab search/sort — scoped to that tab only, doesn't touch the
+  // separate "Supplier Performance" top-5 ranking below it.
+  const [supplierSearch, setSupplierSearch] = useState("");
+  const [supplierSort, setSupplierSort] = useState<"name" | "rating">("name");
+  const [supplierSortOpen, setSupplierSortOpen] = useState(false);
+
   const viewingPO       = orders.find(o => o.id === viewingPOId) ?? null;
   const contactSupplier = suppliers.find(s => s.id === contactSupplierId) ?? null;
   const historySupplier = suppliers.find(s => s.id === historySupplierId) ?? null;
@@ -1234,6 +1241,16 @@ export default function ProcurementPage() {
     () => [...orders].sort((a, b) => STATUS_SORT_ORDER[getEffectiveStatus(a)] - STATUS_SORT_ORDER[getEffectiveStatus(b)]),
     [orders]
   );
+
+  const filteredSuppliers = useMemo(() => {
+    const q = supplierSearch.trim().toLowerCase();
+    const matches = suppliers.filter(s =>
+      !q || s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q)
+    );
+    return [...matches].sort((a, b) =>
+      supplierSort === "rating" ? b.rating - a.rating : a.name.localeCompare(b.name)
+    );
+  }, [suppliers, supplierSearch, supplierSort]);
 
   const counts = {
     pending:   countByStatus("PENDING"),
@@ -1500,37 +1517,89 @@ export default function ProcurementPage() {
           </div>
         )}
 
-        {/* ── Tabs ─────────────────────────────────────────────────────────── */}
-        <div style={{ display: "flex", gap: 4, background: "#e5e7eb", borderRadius: 8, padding: 4, width: "fit-content", marginBottom: "1.25rem" }}>
-          {([
-            { id: "po", label: "Purchase Orders" },
-            ...(canManagePOs ? [{ id: "requests", label: "Requests" }] as const : []),
-            { id: "suppliers", label: "Suppliers" },
-          ] as const).map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)} style={{
-              position: "relative",
-              padding: "6px 20px", borderRadius: 6, fontSize: "0.875rem",
-              fontWeight: tab === t.id ? 600 : 400, border: "none", cursor: "pointer",
-              background: tab === t.id ? "#fff" : "transparent",
-              color: tab === t.id ? "#111827" : "#6b7280",
-              boxShadow: tab === t.id ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
-              transition: "all 0.15s",
-            }}>
-              {t.label}
-              {t.id === "requests" && totalPendingRequests > 0 && (
-                <span style={{
-                  position: "absolute", top: -6, right: -6,
-                  background: "#ef4444", color: "#fff", borderRadius: 999,
-                  minWidth: 18, height: 18, padding: "0 4px",
-                  fontSize: "0.65rem", fontWeight: 700, lineHeight: 1,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  boxShadow: "0 0 0 2px #e5e7eb",
-                }}>
-                  {totalPendingRequests}
-                </span>
-              )}
-            </button>
-          ))}
+        {/* ── Tabs (+ Suppliers-only search/filter, floated right) ───────────── */}
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: "0.75rem", marginBottom: "1.25rem" }}>
+          <div style={{ display: "flex", gap: 4, background: "#e5e7eb", borderRadius: 8, padding: 4, width: "fit-content" }}>
+            {([
+              { id: "po", label: "Purchase Orders" },
+              ...(canManagePOs ? [{ id: "requests", label: "Requests" }] as const : []),
+              { id: "suppliers", label: "Suppliers" },
+            ] as const).map(t => (
+              <button key={t.id} onClick={() => setTab(t.id)} style={{
+                position: "relative",
+                padding: "6px 20px", borderRadius: 6, fontSize: "0.875rem",
+                fontWeight: tab === t.id ? 600 : 400, border: "none", cursor: "pointer",
+                background: tab === t.id ? "#fff" : "transparent",
+                color: tab === t.id ? "#111827" : "#6b7280",
+                boxShadow: tab === t.id ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                transition: "all 0.15s",
+              }}>
+                {t.label}
+                {t.id === "requests" && totalPendingRequests > 0 && (
+                  <span style={{
+                    position: "absolute", top: -6, right: -6,
+                    background: "#ef4444", color: "#fff", borderRadius: 999,
+                    minWidth: 18, height: 18, padding: "0 4px",
+                    fontSize: "0.65rem", fontWeight: 700, lineHeight: 1,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    boxShadow: "0 0 0 2px #e5e7eb",
+                  }}>
+                    {totalPendingRequests}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          {tab === "suppliers" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <div style={{ position: "relative", width: 220, maxWidth: "100%" }}>
+                <Search style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "#9ca3af", pointerEvents: "none" }} />
+                <input
+                  value={supplierSearch}
+                  onChange={e => setSupplierSearch(e.target.value)}
+                  placeholder="Search suppliers..."
+                  style={{ width: "100%", boxSizing: "border-box", paddingLeft: 32, paddingRight: 10, paddingTop: 8, paddingBottom: 8, borderRadius: 8, background: "#fff", border: "1px solid #e5e7eb", fontSize: "0.82rem", outline: "none", color: "#111827" }}
+                />
+              </div>
+              <div style={{ position: "relative" }}>
+                <button
+                  onClick={() => setSupplierSortOpen(o => !o)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8,
+                    border: "1px solid #e5e7eb", background: "#fff", color: "#374151",
+                    fontSize: "0.82rem", fontWeight: 500, cursor: "pointer", whiteSpace: "nowrap",
+                  }}
+                >
+                  <ArrowUpDown style={{ width: 14, height: 14 }} /> Sort: {supplierSort === "name" ? "Name" : "Rating"}
+                </button>
+                {supplierSortOpen && (
+                  <>
+                    <div onClick={() => setSupplierSortOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                    <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50, width: 180, background: "#fff", borderRadius: 10, border: "1px solid #e5e7eb", boxShadow: "0 12px 30px rgba(0,0,0,0.12)", padding: "0.4rem" }}>
+                      {([
+                        { id: "name",   label: "Name (A–Z)" },
+                        { id: "rating", label: "Rating (highest first)" },
+                      ] as const).map(opt => (
+                        <button
+                          key={opt.id}
+                          onClick={() => { setSupplierSort(opt.id); setSupplierSortOpen(false); }}
+                          style={{
+                            display: "block", width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 6, border: "none",
+                            background: supplierSort === opt.id ? "#fff7ed" : "transparent",
+                            color: supplierSort === opt.id ? "#f97316" : "#374151",
+                            fontSize: "0.8rem", fontWeight: supplierSort === opt.id ? 600 : 500, cursor: "pointer",
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ────────────────────────────────────────────────────────────────── */}
@@ -1692,15 +1761,22 @@ export default function ProcurementPage() {
         {tab === "suppliers" && (
           <div>
 
-            {/* Supplier cards */}
+            {/* Supplier cards — fluid 1/2/3-column grid (min 300px per card,
+                naturally reflows with available width, including as the
+                sidebar collapses/expands, not just at fixed viewport
+                breakpoints) */}
             {suppliers.length === 0 ? (
               <div style={{ background: "#fff", borderRadius: 14, padding: "2rem", textAlign: "center", color: "#9ca3af", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
                 No suppliers yet — they&apos;re added automatically the first time you create a PO for them.
               </div>
+            ) : filteredSuppliers.length === 0 ? (
+              <div style={{ background: "#fff", borderRadius: 14, padding: "2rem", textAlign: "center", color: "#9ca3af", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
+                No suppliers match your search/filter.
+              </div>
             ) : (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1.25rem" }}>
-                {suppliers.map(s => (
-                  <div key={s.id} style={{ background: "#fff", borderRadius: 14, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "1rem", marginBottom: "1.25rem" }}>
+                {filteredSuppliers.map(s => (
+                  <div key={s.id} style={{ background: "#fff", borderRadius: 14, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)", minWidth: 0 }}>
                     {/* Header */}
                     <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: "1rem" }}>
                       <div style={{ width: 48, height: 48, borderRadius: 10, background: s.avatarBg, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: "0.875rem", flexShrink: 0 }}>
