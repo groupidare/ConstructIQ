@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X } from 'lucide-react';
 import { getApiOrigin } from '@/lib/api';
@@ -9,7 +9,7 @@ import type { Project, ProjectType } from '@/types/project';
 import type { ProjectDocument } from '@/types/document';
 import type { InventoryRecord } from '@/types/inventory';
 import type { ForecastedMaterial } from '@/types/forecast';
-import type { BOQItem, BOQItemRow, HistoricalEstimate } from '@/types/boq';
+import type { BOQItem, BOQItemRow } from '@/types/boq';
 import { PRIMARY_SECTIONS, PURCHASE_UNITS } from '@/types/boq';
 import type { PurchaseOrder, PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import { inp, sel, lbl } from './styles';
@@ -59,7 +59,6 @@ interface Props {
   onSave: (overrideRows?: BOQItemRow[], opts?: { silent?: boolean }) => Promise<void>;
   saving: boolean;
   onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string) => Promise<boolean>;
-  getHistoricalEstimate: (primarySection: string, materialDescription: string, projectType?: string) => Promise<HistoricalEstimate>;
   onRemoveDocument: (documentId: number) => void;
   onRunForecast: () => void;
   forecasting: boolean;
@@ -86,7 +85,7 @@ export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, forecastedMaterials, redistributedByMaterial, warehouseResolvedMaterialIds,
   remainingByMaterial, warehouseFulfilledByMaterial, warehousePendingMaterialIds, boqDocs, uploading, onUploadBoq, onParseBoq,
-  rows, boqItems, onRowsChange, onSave, saving, onNotify, getHistoricalEstimate, onRemoveDocument, onRunForecast, forecasting,
+  rows, boqItems, onRowsChange, onSave, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
@@ -319,36 +318,11 @@ export default function MaterialPlanTab({
     return inventory.find(i => i.materialId === r.materialId)?.availableQuantity ?? 0;
   }
 
-  // Auto-suggest Est. Qty/Unit for new (non-historical) rows once they have
-  // enough to look up (Primary Section + a material name), from real
-  // purchase-order data on similar historical/completed projects. Debounced
-  // per row so it doesn't fire on every keystroke, and never overwrites a
-  // value the user has directly edited (estimatePurchaseManuallySet).
-  const suggestKey = rows.map(r => `${r.primarySection}||${r.specification || r.newMaterialName || ''}||${r.estimatePurchaseManuallySet ? '1' : '0'}`).join('\u0001');
-  useEffect(() => {
-    if (isHistorical) return;
-    const timers = rows.map((r, i) => {
-      if (r.estimatePurchaseManuallySet) return undefined;
-      const section = (r.primarySection || '').trim();
-      const spec = (r.specification || r.newMaterialName || (r.materialId ? materialLabel(r) : '')).trim();
-      if (!section || !spec) return undefined;
-      return setTimeout(async () => {
-        try {
-          const result = await getHistoricalEstimate(section, spec, projectType);
-          if (result.estimatedQuantity == null || !result.unit) return;
-          onRowsChange(prev => prev.map((row, idx) =>
-            idx === i && !row.estimatePurchaseManuallySet
-              ? { ...row, estimatedPurchaseQuantity: result.estimatedQuantity!, estimatedPurchaseUnit: result.unit! }
-              : row
-          ));
-        } catch {
-          // Background suggestion — failing silently is fine, the field just stays blank.
-        }
-      }, 700);
-    });
-    return () => timers.forEach(t => { if (t) clearTimeout(t); });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [suggestKey, isHistorical, projectType]);
+  // Est. Qty/Unit are deliberately NOT auto-suggested in the background as
+  // rows are typed or scanned in — they're computed in one batch when Run
+  // Forecast is clicked (see Shell.tsx's handleRunForecast), so the field
+  // stays visibly blank until then instead of filling in unevenly per row
+  // (some matching historical data, some not) ahead of that action.
 
   return (
     <div>
@@ -588,15 +562,23 @@ export default function MaterialPlanTab({
                 : Math.max(0, purchaseQty - redistributedQty - warehouseFulfilledQty);
               const toOrder = Math.max(0, remaining - stock);
               const needsAlert = toOrder > 0;
-              const canRequest = editable && !isCompleted && !!r.materialId;
+              // Actions are always shown once a row is editable — including a
+              // freshly-scanned row that hasn't been saved yet. But they only
+              // become CLICKABLE once Run Forecast has actually computed a
+              // real Est. Qty for this row (not the raw Total Area/Qty
+              // fallback purchaseQty uses for its own math) — Run Forecast is
+              // also what saves the row and resolves its catalog material.
+              const canRequest = editable && !isCompleted;
+              const hasMaterial = !!r.materialId;
+              const hasForecastedEstimate = r.estimatedPurchaseQuantity != null;
               // The warehouse gets first look at every material — Notify
               // Procurement only unlocks once that check has actually been
               // resolved (approved or rejected), not while it's pending.
-              const canRequestProcurement = canRequest && !!r.materialId && warehouseResolvedMaterialIds.has(r.materialId);
+              const canRequestProcurement = canRequest && hasMaterial && hasForecastedEstimate && warehouseResolvedMaterialIds.has(r.materialId!);
               // Nothing is released until a warehouse check is actually
               // approved — block a second ask for the same material while
               // one is still pending.
-              const canRequestWarehouse = canRequest && !!r.materialId && !warehousePendingMaterialIds.has(r.materialId);
+              const canRequestWarehouse = canRequest && hasMaterial && hasForecastedEstimate && !warehousePendingMaterialIds.has(r.materialId!);
               // Done once the running total reaches this row's own (fixed,
               // never-changed) Est. Qty, OR redistribution alone already
               // covers it (remaining accounts for both — see above).
@@ -631,9 +613,9 @@ export default function MaterialPlanTab({
                       name. Only fall back to the catalog name for rows with no
                       scanned text at all (added directly from Stock on Hand). */}
                   {r.materialId && !r.specification && !r.newMaterialName ? (
-                    <span style={{ fontSize: '0.78rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{materialLabel(r)}</span>
+                    <span title={materialLabel(r)} style={{ fontSize: '0.78rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{materialLabel(r)}</span>
                   ) : (
-                    <input disabled={!editable} value={r.specification || r.newMaterialName || ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material specification" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                    <input disabled={!editable} title={r.specification || r.newMaterialName || ''} value={r.specification || r.newMaterialName || ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material specification" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   )}
                   <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
@@ -698,6 +680,10 @@ export default function MaterialPlanTab({
                           disabled={!canRequestProcurement}
                           title={canRequestProcurement
                             ? `Notify procurement — order up to ${toOrder} ${purchaseUnit}`
+                            : !hasForecastedEstimate
+                            ? 'Click Run Forecast first — Est. Qty needs to be calculated before this row can be requested.'
+                            : !hasMaterial
+                            ? 'Click Save Material Plan first — this row needs to be linked to a catalog material before it can be requested.'
                             : 'Alert the warehouse first — Procurement unlocks once their check on this material is approved or rejected.'}
                           style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: canRequestProcurement ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert && canRequestProcurement ? '#fee2e2' : '#f3f4f6', opacity: canRequestProcurement ? 1 : 0.45 }}
                         >
@@ -708,6 +694,10 @@ export default function MaterialPlanTab({
                           disabled={!canRequestWarehouse}
                           title={canRequestWarehouse
                             ? `Notify warehouse to check material — up to ${remaining} ${purchaseUnit}`
+                            : !hasForecastedEstimate
+                            ? 'Click Run Forecast first — Est. Qty needs to be calculated before this row can be requested.'
+                            : !hasMaterial
+                            ? 'Click Save Material Plan first — this row needs to be linked to a catalog material before it can be requested.'
                             : 'Already awaiting a warehouse response for this material.'}
                           style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: canRequestWarehouse ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6', opacity: canRequestWarehouse ? 1 : 0.45 }}
                         >

@@ -634,17 +634,24 @@ function ContactModal({ supplier, canEdit, onClose, onSave }: {
 
 // ── History Modal ────────────────────────────────────────────────────────────
 
-function HistoryModal({ supplier, onClose }: { supplier: Supplier; onClose: () => void }) {
+function HistoryModal({ supplier, onClose, onViewRatings }: { supplier: Supplier; onClose: () => void; onViewRatings: () => void }) {
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
       <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 460, maxHeight: "80vh", overflowY: "auto", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
           <div>
             <p style={{ fontWeight: 800, fontSize: "1rem", color: "#111827" }}>{supplier.name}</p>
             <p style={{ fontSize: "0.75rem", color: "#9ca3af" }}>Purchase order history</p>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
         </div>
+
+        <button
+          onClick={onViewRatings}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.78rem", fontWeight: 600, cursor: "pointer", marginBottom: "1.25rem" }}
+        >
+          <Stars rating={supplier.rating} /> View rating summary &amp; feedback
+        </button>
 
         {supplier.history.length === 0 ? (
           <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "1.5rem 0" }}>No purchase orders yet.</p>
@@ -1171,7 +1178,9 @@ export default function ProcurementPage() {
   // Suppliers tab search/sort — scoped to that tab only, doesn't touch the
   // separate "Supplier Performance" top-5 ranking below it.
   const [supplierSearch, setSupplierSearch] = useState("");
-  const [supplierSort, setSupplierSort] = useState<"name" | "rating">("name");
+  // Defaults to "preferred" — who the company actually orders from and
+  // trusts most, front and center, rather than an arbitrary alphabetical list.
+  const [supplierSort, setSupplierSort] = useState<"name" | "rating" | "preferred">("preferred");
   const [supplierSortOpen, setSupplierSortOpen] = useState(false);
 
   const viewingPO       = orders.find(o => o.id === viewingPOId) ?? null;
@@ -1247,9 +1256,18 @@ export default function ProcurementPage() {
     const matches = suppliers.filter(s =>
       !q || s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q)
     );
-    return [...matches].sort((a, b) =>
-      supplierSort === "rating" ? b.rating - a.rating : a.name.localeCompare(b.name)
-    );
+    return [...matches].sort((a, b) => {
+      if (supplierSort === "rating") return b.rating - a.rating;
+      if (supplierSort === "preferred") {
+        // Who the company actually orders from, preferred ones first: real
+        // order volume (deliveries) leads, the formal PREFERRED badge (rating
+        // + on-time track record) breaks ties, rating itself after that.
+        const aPreferred = getSupplierBadge(a) === "PREFERRED" ? 1 : 0;
+        const bPreferred = getSupplierBadge(b) === "PREFERRED" ? 1 : 0;
+        return b.deliveries - a.deliveries || bPreferred - aPreferred || b.rating - a.rating;
+      }
+      return a.name.localeCompare(b.name);
+    });
   }, [suppliers, supplierSearch, supplierSort]);
 
   const counts = {
@@ -1366,7 +1384,13 @@ export default function ProcurementPage() {
           onSave={contact => handleSaveContact(contactSupplier.id, contact)}
         />
       )}
-      {historySupplier && <HistoryModal supplier={historySupplier} onClose={() => setHistorySupplierId(null)} />}
+      {historySupplier && (
+        <HistoryModal
+          supplier={historySupplier}
+          onClose={() => setHistorySupplierId(null)}
+          onViewRatings={() => { setHistorySupplierId(null); setRatingSupplierId(historySupplier.id); }}
+        />
+      )}
       {ratingSupplier && <SupplierRatingModal supplier={ratingSupplier} onClose={() => setRatingSupplierId(null)} />}
       {deliveryPO && (
         <DeliveryBatchModal
@@ -1571,15 +1595,16 @@ export default function ProcurementPage() {
                     fontSize: "0.82rem", fontWeight: 500, cursor: "pointer", whiteSpace: "nowrap",
                   }}
                 >
-                  <ArrowUpDown style={{ width: 14, height: 14 }} /> Sort: {supplierSort === "name" ? "Name" : "Rating"}
+                  <ArrowUpDown style={{ width: 14, height: 14 }} /> Sort: {supplierSort === "name" ? "Name" : supplierSort === "rating" ? "Rating" : "Preferred"}
                 </button>
                 {supplierSortOpen && (
                   <>
                     <div onClick={() => setSupplierSortOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
-                    <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50, width: 180, background: "#fff", borderRadius: 10, border: "1px solid #e5e7eb", boxShadow: "0 12px 30px rgba(0,0,0,0.12)", padding: "0.4rem" }}>
+                    <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50, width: 210, background: "#fff", borderRadius: 10, border: "1px solid #e5e7eb", boxShadow: "0 12px 30px rgba(0,0,0,0.12)", padding: "0.4rem" }}>
                       {([
-                        { id: "name",   label: "Name (A–Z)" },
-                        { id: "rating", label: "Rating (highest first)" },
+                        { id: "preferred", label: "Preferred / Most Ordered" },
+                        { id: "name",      label: "Name (A–Z)" },
+                        { id: "rating",    label: "Rating (highest first)" },
                       ] as const).map(opt => (
                         <button
                           key={opt.id}

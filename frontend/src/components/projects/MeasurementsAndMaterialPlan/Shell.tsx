@@ -382,12 +382,38 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   async function handleRunForecast() {
     setForecasting(true);
     try {
-      // Run Forecast should reflect exactly what's on screen — save any
-      // reviewed/edited BOQ rows first so a forecast never silently runs
-      // against stale (or missing) data just because "Save Material Plan"
-      // wasn't clicked separately first.
-      if (boqRows.length > 0) {
-        const saved = await saveBoqItems(boqRows);
+      // Est. Qty is only ever computed here, on a deliberate Run Forecast
+      // click — not passively in the background as rows are typed or
+      // scanned in. A row the user has edited directly
+      // (estimatePurchaseManuallySet) is left alone; every other row is
+      // looked up fresh each time against historical PO data for the same
+      // Primary Section + material, so re-running after later edits keeps
+      // estimates current.
+      const materialNameById = new Map<number, string>();
+      boqItems.forEach(b => materialNameById.set(b.materialId, b.materialName));
+      inventory.forEach(i => { if (!materialNameById.has(i.materialId)) materialNameById.set(i.materialId, i.materialName); });
+
+      const estimatedRows = await Promise.all(boqRows.map(async row => {
+        if (row.estimatePurchaseManuallySet) return row;
+        const section = (row.primarySection || '').trim();
+        const spec = (row.specification || row.newMaterialName || (row.materialId ? materialNameById.get(row.materialId) : undefined) || '').trim();
+        if (!section || !spec) return row;
+        try {
+          const result = await getHistoricalEstimate(section, spec, projectType);
+          if (result.estimatedQuantity == null || !result.unit) return row;
+          return { ...row, estimatedPurchaseQuantity: result.estimatedQuantity, estimatedPurchaseUnit: result.unit };
+        } catch {
+          return row;
+        }
+      }));
+      setBoqRows(estimatedRows);
+
+      // Run Forecast should reflect exactly what's on screen — save the
+      // (now estimate-filled) rows so a forecast never silently runs against
+      // stale (or missing) data just because "Save Material Plan" wasn't
+      // clicked separately first.
+      if (estimatedRows.length > 0) {
+        const saved = await saveBoqItems(estimatedRows);
         setBoqRows(saved.map(boqItemToRow));
       }
       await generateForecast({ projectId: project.id, period: 'Monthly', planningWeeks: 4 });
@@ -475,7 +501,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     remainingByMaterial, warehouseFulfilledByMaterial, warehousePendingMaterialIds,
     savingBoq, forecasting, uploadingBlueprint, parsingBlueprintId, uploadingBoq, uploadingPo, savingPo,
     handleUploadBlueprint, handleParseBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
-    handleSaveBoq, handleRunForecast, handleNotify, getHistoricalEstimate,
+    handleSaveBoq, handleRunForecast, handleNotify,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
     poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
     poOrderDate, setPoOrderDate, poExpectedDate, setPoExpectedDate,
@@ -555,7 +581,6 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onSave={state.handleSaveBoq}
       saving={state.savingBoq}
       onNotify={state.handleNotify}
-      getHistoricalEstimate={state.getHistoricalEstimate}
       onRunForecast={state.handleRunForecast}
       forecasting={state.forecasting}
       purchaseOrders={state.purchaseOrders}

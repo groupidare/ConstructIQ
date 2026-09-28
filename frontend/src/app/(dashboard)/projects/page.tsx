@@ -563,12 +563,20 @@ function ProgressTrackerModal({ project, onClose, onSaved }: {
                 const done   = progress >= threshold;
                 const inProg = !done && progress >= prevThreshold;
                 return (
-                  <div key={section} style={{
-                    display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
-                    background: done ? "#dcfce7" : inProg ? "#fff7ed" : "#f9fafb",
-                    borderRadius:8,
-                    border: `1px solid ${done ? "#86efac" : inProg ? "#fed7aa" : "#e5e7eb"}`,
-                  }}>
+                  <div
+                    key={section}
+                    // Math.ceil, not round — rounding down could land a hair
+                    // under the exact (unrounded) threshold this same section
+                    // checks against below, showing "In Progress" instead of
+                    // "Done" right after clicking to mark it done.
+                    onClick={() => setProgress(Math.ceil(threshold))}
+                    title={`Mark "${section}" as done — sets Overall Progress to ${Math.ceil(threshold)}%`}
+                    style={{
+                      display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
+                      background: done ? "#dcfce7" : inProg ? "#fff7ed" : "#f9fafb",
+                      borderRadius:8, cursor:"pointer",
+                      border: `1px solid ${done ? "#86efac" : inProg ? "#fed7aa" : "#e5e7eb"}`,
+                    }}>
                     <div style={{ width:8, height:8, borderRadius:"50%", flexShrink:0,
                       background: done ? "#22c55e" : inProg ? "#f97316" : "#d1d5db" }} />
                     <span style={{ fontSize:"0.75rem", fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
@@ -1013,6 +1021,7 @@ export default function ProjectsPage() {
   // reached via the Progress Tracker). "Historical Data" = pure backfilled
   // records entered only to train the forecasting model — not real projects.
   const [view, setView] = useState<"projects" | "historical">("projects");
+  const [projectSearch, setProjectSearch] = useState("");
   // Bumped whenever a Material Plan session closes, so cards refetch their
   // forecast/BOQ-derived summaries (see ProjectCard's refreshKey prop).
   const [refreshKey, setRefreshKey] = useState(0);
@@ -1065,7 +1074,11 @@ export default function ProjectsPage() {
   const workspaceProject = modal?.type === "workspace" ? fullProjects.find(p => p.id === modal.projectId) : undefined;
   const realProjects       = projects.filter(p => !p.isHistorical);
   const historicalProjects = projects.filter(p => p.isHistorical);
-  const visibleProjects    = view === "historical" ? historicalProjects : realProjects;
+  const searchQuery        = projectSearch.trim().toLowerCase();
+  // Tab badges/summary text above still reflect the full, unfiltered counts —
+  // only the grid itself narrows down to what matches the search.
+  const visibleProjects    = (view === "historical" ? historicalProjects : realProjects)
+    .filter(p => !searchQuery || p.name.toLowerCase().includes(searchQuery));
 
   return (
     <div style={{ background:"#f5f4f0", minHeight:"100vh" }}>
@@ -1154,24 +1167,35 @@ export default function ProjectsPage() {
           </div>
         </div>
 
-        {/* Projects vs. Historical Data tabs */}
-        <div style={{ display:"flex", borderBottom:"1px solid #e5e7eb", marginBottom:"1.25rem" }}>
-          <button
-            onClick={()=>setView("projects")}
-            style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem", background:"transparent",
-              fontWeight: view==="projects" ? 700 : 400, color: view==="projects" ? "#f97316" : "#9ca3af",
-              borderBottom: view==="projects" ? "2px solid #f97316" : "2px solid transparent" }}
-          >
-            Projects ({realProjects.length})
-          </button>
-          <button
-            onClick={()=>setView("historical")}
-            style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem", background:"transparent",
-              fontWeight: view==="historical" ? 700 : 400, color: view==="historical" ? "#f97316" : "#9ca3af",
-              borderBottom: view==="historical" ? "2px solid #f97316" : "2px solid transparent" }}
-          >
-            Historical Data ({historicalProjects.length})
-          </button>
+        {/* Projects vs. Historical Data tabs — search applies to whichever is active */}
+        <div style={{ display:"flex", flexWrap:"wrap", justifyContent:"space-between", alignItems:"center", gap:"0.75rem", borderBottom:"1px solid #e5e7eb", marginBottom:"1.25rem" }}>
+          <div style={{ display:"flex" }}>
+            <button
+              onClick={()=>setView("projects")}
+              style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem", background:"transparent",
+                fontWeight: view==="projects" ? 700 : 400, color: view==="projects" ? "#f97316" : "#9ca3af",
+                borderBottom: view==="projects" ? "2px solid #f97316" : "2px solid transparent" }}
+            >
+              Projects ({realProjects.length})
+            </button>
+            <button
+              onClick={()=>setView("historical")}
+              style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem", background:"transparent",
+                fontWeight: view==="historical" ? 700 : 400, color: view==="historical" ? "#f97316" : "#9ca3af",
+                borderBottom: view==="historical" ? "2px solid #f97316" : "2px solid transparent" }}
+            >
+              Historical Data ({historicalProjects.length})
+            </button>
+          </div>
+          <div style={{ position:"relative", width:260, maxWidth:"100%", marginBottom:8 }}>
+            <Search style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", width:14, height:14, color:"#9ca3af", pointerEvents:"none" }} />
+            <input
+              value={projectSearch}
+              onChange={e=>setProjectSearch(e.target.value)}
+              placeholder="Search project name..."
+              style={{ width:"100%", boxSizing:"border-box", paddingLeft:32, paddingRight:10, paddingTop:8, paddingBottom:8, borderRadius:8, background:"#fff", border:"1px solid #e5e7eb", fontSize:"0.82rem", outline:"none", color:"#111827" }}
+            />
+          </div>
         </div>
 
         {/* Project grid */}
@@ -1183,7 +1207,9 @@ export default function ProjectsPage() {
           </div>
         ) : visibleProjects.length === 0 ? (
           <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>
-            {view === "historical" ? "No historical records yet. Click \"Add Completed Project\" to backfill one." : "No projects yet. Click \"+ New Project\" to get started."}
+            {searchQuery
+              ? `No ${view === "historical" ? "historical records" : "projects"} match "${projectSearch.trim()}".`
+              : view === "historical" ? "No historical records yet. Click \"Add Completed Project\" to backfill one." : "No projects yet. Click \"+ New Project\" to get started."}
           </div>
         ) : (
           // minmax(0, 1fr), not bare 1fr — a plain 1fr column has an implicit
