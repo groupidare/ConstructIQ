@@ -111,9 +111,13 @@ export default function MaterialPlanTab({
   // prediction, auto-suggested from historical BOQ+PO data), and Alerts
   // (purchase/warehouse request actions, not applicable to historical data).
   // No Phase column.
+  // Dropping the trailing ALERTS track (rather than keeping it and leaving it
+  // blank) is enough on its own to fill the freed width — fr tracks share
+  // whatever space actually exists in the row, so the remaining columns grow
+  // to fill it with no explicit redistribution needed.
   const columnsTemplate = isCompleted
-    ? 'minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.9fr)'
-    : 'minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.6fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.9fr)';
+    ? `minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr)${editable ? ' minmax(0,0.9fr)' : ''}`
+    : `minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.6fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr)${editable ? ' minmax(0,0.9fr)' : ''}`;
   const [parsingId, setParsingId] = useState<number | null>(null);
 
   const timeRange = `${formatDate(project.startDate)} – ${formatDate(project.targetEndDate)}`;
@@ -535,12 +539,16 @@ export default function MaterialPlanTab({
         )}
 
         <div style={{ display: isHistorical ? 'none' : 'block', overflowX: 'auto' }}>
-        <div style={{ minWidth: 980 }}>
+        {/* Only forces a minimum (and therefore only ever scrolls instead of
+            filling the container) while editing — the ALERTS column is what
+            actually needs that width; view-only mode fits comfortably at any
+            container width without it. */}
+        <div style={{ minWidth: editable ? 980 : 0 }}>
         <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
           {(isCompleted
-            ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'ACTUAL QTY', 'UNIT', 'EST. QTY', 'ALERTS']
-            : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'UNIT', 'EST. QTY', 'ALERTS']
-          ).map((h, idx) => (
+            ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'ACTUAL QTY', 'UNIT', 'EST. QTY']
+            : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'UNIT', 'EST. QTY']
+          ).concat(editable ? ['ALERTS'] : []).map((h, idx) => (
             <span key={`${h}-${idx}`} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
           ))}
         </div>
@@ -679,6 +687,7 @@ export default function MaterialPlanTab({
                       </p>
                     )}
                   </div>
+                  {editable && (
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                     {isRequestDone ? (
                       <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#dcfce7', color: '#15803d' }}>Done</span>
@@ -712,6 +721,7 @@ export default function MaterialPlanTab({
                       </button>
                     )}
                   </div>
+                  )}
                 </div>
               );
             })

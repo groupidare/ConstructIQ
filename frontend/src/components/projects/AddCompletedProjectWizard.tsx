@@ -36,6 +36,7 @@ interface Props {
   // standalone Material Plan modal's own dynamic-width behavior.
   onStepChange?: (step: 1 | 2) => void;
   onMaterialPlanTabChange?: (tab: Tab) => void;
+  onMaterialPlanEditableChange?: (editable: boolean) => void;
 }
 
 // A completed/historical project is entered directly with its actual dates
@@ -43,7 +44,7 @@ interface Props {
 // date or phased rollout to plan for. This is what makes it usable as ML
 // training data: BOQ (planned) + Purchase Orders (actual) paired against a
 // project whose real timeline and outcome are already settled.
-export default function AddCompletedProjectWizard({ onCancel, onSkip, onFinish, onStepChange, onMaterialPlanTabChange }: Props) {
+export default function AddCompletedProjectWizard({ onCancel, onSkip, onFinish, onStepChange, onMaterialPlanTabChange, onMaterialPlanEditableChange }: Props) {
   const { createProject } = useProjects();
   const [step, setStep] = useState<1 | 2>(1);
   const [project, setProject] = useState<Project | null>(null);
@@ -83,7 +84,7 @@ export default function AddCompletedProjectWizard({ onCancel, onSkip, onFinish, 
           <h1 className="text-2xl font-bold text-gray-900">{project.name}</h1>
           <p className="text-sm text-gray-500">Step 2 of 2 — Files, Bill of Quantities &amp; Purchase Orders (historical data)</p>
         </div>
-        <MeasurementsAndMaterialPlanInline project={project} onProjectSaved={setProject} initialTab="measurements" bare onTabChange={onMaterialPlanTabChange} />
+        <MeasurementsAndMaterialPlanInline project={project} onProjectSaved={setProject} initialTab="measurements" bare onTabChange={onMaterialPlanTabChange} onEditableChange={onMaterialPlanEditableChange} />
         {/* Sticky, not part of normal scroll flow — the Material Plan tab's
             BOQ table can run much longer than the modal's visible height, and
             these buttons need to stay reachable without scrolling past it. */}

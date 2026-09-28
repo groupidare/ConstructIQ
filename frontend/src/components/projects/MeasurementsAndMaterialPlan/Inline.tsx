@@ -14,12 +14,14 @@ interface Props {
   // nested inside a card.
   bare?: boolean;
   onTabChange?: (tab: Tab) => void;
+  onEditableChange?: (editable: boolean) => void;
 }
 
-export default function MeasurementsAndMaterialPlanInline({ project, onProjectSaved, initialTab = 'measurements', bare = false, onTabChange }: Props) {
+export default function MeasurementsAndMaterialPlanInline({ project, onProjectSaved, initialTab = 'measurements', bare = false, onTabChange, onEditableChange }: Props) {
   const state = useMeasurementsAndMaterialPlan({ project, initialEditable: true, initialTab, onProjectSaved });
 
   useEffect(() => { onTabChange?.(state.tab); }, [state.tab]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { onEditableChange?.(state.editable); }, [state.editable]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={bare ? undefined : { background: '#fff', borderRadius: 16, boxShadow: '0 1px 4px rgba(0,0,0,0.08)', overflow: 'hidden' }}>

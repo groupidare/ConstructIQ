@@ -14,11 +14,12 @@ interface Props {
 export default function AddCompletedProjectWizardModal({ onClose, onDone }: Props) {
   const [step, setStep] = useState<1 | 2>(1);
   const [materialPlanTab, setMaterialPlanTab] = useState<Tab>('measurements');
+  const [materialPlanEditable, setMaterialPlanEditable] = useState(true);
 
   // Same sizing rule as the standalone Material Plan modal: step 1's form
   // keeps its own (narrower) width, but step 2 mirrors Files (compact) vs.
-  // Material Plan (full BOQ table) exactly.
-  const width = step === 1 ? 560 : materialPlanTab === 'measurements' ? 640 : 1200;
+  // Material Plan (full BOQ table, or the narrower View Only layout) exactly.
+  const width = step === 1 ? 560 : materialPlanTab === 'measurements' ? 640 : materialPlanEditable ? 1200 : 900;
 
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}>
@@ -38,6 +39,7 @@ export default function AddCompletedProjectWizardModal({ onClose, onDone }: Prop
             onFinish={onDone}
             onStepChange={setStep}
             onMaterialPlanTabChange={setMaterialPlanTab}
+            onMaterialPlanEditableChange={setMaterialPlanEditable}
           />
         </div>
       </div>

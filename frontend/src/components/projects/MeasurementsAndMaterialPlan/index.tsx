@@ -17,8 +17,11 @@ export default function MeasurementsAndMaterialPlan({ project, onClose, initialE
 
   // Files only has a narrow single-column layout — a fixed wide modal leaves
   // a large empty gap on the right. Material Plan's BOQ table needs the
-  // extra width to show every column without horizontal scrolling.
-  const modalWidth = state.tab === 'measurements' ? 640 : 1200;
+  // extra width to show every column without horizontal scrolling — except
+  // in View Only mode, where the ALERTS column and its action buttons don't
+  // render at all (see MaterialPlanTab), so the same wide width would just
+  // leave that same empty gap again.
+  const modalWidth = state.tab === 'measurements' ? 640 : state.editable ? 1200 : 900;
 
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}>

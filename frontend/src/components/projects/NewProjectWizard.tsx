@@ -37,9 +37,10 @@ interface Props {
   // standalone Material Plan modal's own dynamic-width behavior.
   onStepChange?: (step: 1 | 2) => void;
   onMaterialPlanTabChange?: (tab: Tab) => void;
+  onMaterialPlanEditableChange?: (editable: boolean) => void;
 }
 
-export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepChange, onMaterialPlanTabChange }: Props) {
+export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepChange, onMaterialPlanTabChange, onMaterialPlanEditableChange }: Props) {
   const { createProject } = useProjects();
   const { siteEngineers } = useSiteEngineers();
   const [step, setStep] = useState<1 | 2>(1);
@@ -78,7 +79,7 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepCha
           <h1 className="text-2xl font-bold text-gray-900">{project.name}</h1>
           <p className="text-sm text-gray-500">Step 2 of 2 — Material Plan</p>
         </div>
-        <MeasurementsAndMaterialPlanInline project={project} onProjectSaved={setProject} bare onTabChange={onMaterialPlanTabChange} />
+        <MeasurementsAndMaterialPlanInline project={project} onProjectSaved={setProject} bare onTabChange={onMaterialPlanTabChange} onEditableChange={onMaterialPlanEditableChange} />
         {/* Sticky, not part of normal scroll flow — the Material Plan tab's
             BOQ table can run much longer than the modal's visible height, and
             these buttons need to stay reachable without scrolling past it. */}
