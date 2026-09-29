@@ -1,31 +1,22 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
 import { useAuthStore } from "@/store/authStore";
 import { Avatar } from "@/components/ui/Avatar";
 import api from "@/lib/api";
+import { ChangePasswordModal, MFAModal, BackupModal } from "@/components/auth/SecurityModals";
+import ActivityLogView from "@/components/auth/ActivityLogView";
+import Modal from "@/components/ui/Modal";
 import {
   Lock, Shield, CloudUpload, Database, ChevronRight,
-  LogOut, Pencil, X, Eye, EyeOff, Search, RefreshCw,
+  LogOut, Pencil, X,
   Camera, Trash2, Loader2,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-interface ActivityLog {
-  id: number;
-  userId?: number;
-  userDisplay: string;
-  action: string;
-  entityType?: string;
-  entityId?: number;
-  ipAddress?: string;
-  details?: string;
-  createdAt: string;
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -44,16 +35,6 @@ const DEPT_MAP: Record<string, string> = {
   WarehousePersonnel: "Warehouse & Logistics",
   ProcurementOfficer: "Procurement & Supply",
 };
-
-function relTime(iso: string) {
-  const diff = Date.now() - new Date(iso).getTime();
-  const m = Math.floor(diff / 60000);
-  if (m < 1)  return "Just now";
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return new Date(iso).toLocaleDateString("en-PH", { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" });
-}
 
 // ── Toggle ────────────────────────────────────────────────────────────────────
 
@@ -96,362 +77,6 @@ function SecRow({ icon: Icon, label, onClick }: { icon: React.ElementType; label
 }
 
 // ── Change Password modal ─────────────────────────────────────────────────────
-
-function ChangePasswordModal({ onClose }: { onClose: () => void }) {
-  const [current,  setCurrent]  = useState("");
-  const [next,     setNext]     = useState("");
-  const [confirm,  setConfirm]  = useState("");
-  const [showCur,  setShowCur]  = useState(false);
-  const [showNew,  setShowNew]  = useState(false);
-  const [saving,   setSaving]   = useState(false);
-
-  async function handleSave() {
-    if (!current || !next || !confirm) { toast.error("All fields required."); return; }
-    if (next !== confirm)              { toast.error("Passwords do not match."); return; }
-    if (next.length < 8)              { toast.error("Password must be at least 8 characters."); return; }
-    setSaving(true);
-    try {
-      await api.post("/auth/change-password", { currentPassword: current, newPassword: next });
-      toast.success("Password changed successfully.");
-      onClose();
-    } catch {
-      toast.error("Incorrect current password or server error.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const inp: React.CSSProperties = {
-    width: "100%", boxSizing: "border-box" as const, padding: "10px 42px 10px 12px",
-    background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 8,
-    fontSize: "0.875rem", outline: "none", color: "#111827",
-  };
-
-  return (
-    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }}>
-      <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:440, boxShadow:"0 20px 60px rgba(0,0,0,0.2)" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-            <Lock style={{ width:18, height:18, color:"#374151" }} />
-            <p style={{ fontWeight:800, fontSize:"1rem" }}>Change Password</p>
-          </div>
-          <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:18, height:18 }} /></button>
-        </div>
-        <div style={{ display:"flex", flexDirection:"column", gap:"0.875rem" }}>
-          {[
-            ["Current Password", current, setCurrent, showCur, setShowCur],
-            ["New Password",     next,    setNext,    showNew, setShowNew],
-            ["Confirm Password", confirm, setConfirm, showNew, setShowNew],
-          ].map(([label, val, setter, show], i) => (
-            <div key={String(label)}>
-              <p style={{ fontSize:"0.72rem", color:"#6b7280", fontWeight:600, marginBottom:6 }}>{String(label)}</p>
-              <div style={{ position:"relative" }}>
-                <input
-                  suppressHydrationWarning
-                  type={i === 0 ? (showCur ? "text" : "password") : (showNew ? "text" : "password")}
-                  value={val as string}
-                  onChange={e => (setter as any)(e.target.value)}
-                  placeholder="••••••••"
-                  style={inp}
-                />
-                <button
-                  type="button"
-                  onClick={() => i === 0 ? setShowCur((s:boolean)=>!s) : setShowNew((s:boolean)=>!s)}
-                  style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)", background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}
-                >
-                  {(i === 0 ? showCur : showNew) ? <EyeOff style={{ width:15, height:15 }} /> : <Eye style={{ width:15, height:15 }} />}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-        <p style={{ fontSize:"0.7rem", color:"#9ca3af", marginTop:"0.75rem" }}>Password must be at least 8 characters.</p>
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.25rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleSave} disabled={saving} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", opacity:saving?0.7:1 }}>
-            {saving ? "Saving…" : "Save Changes"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── MFA modal ─────────────────────────────────────────────────────────────────
-
-function MFAModal({ onClose }: { onClose: () => void }) {
-  const [enabled, setEnabled] = useState(false);
-  return (
-    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }}>
-      <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:440, boxShadow:"0 20px 60px rgba(0,0,0,0.2)" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-            <Shield style={{ width:18, height:18, color:"#374151" }} />
-            <p style={{ fontWeight:800, fontSize:"1rem" }}>Multi-Factor Authentication</p>
-          </div>
-          <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:18, height:18 }} /></button>
-        </div>
-        <div style={{ background:"#f9fafb", borderRadius:10, padding:"1rem", marginBottom:"1.25rem" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <div>
-              <p style={{ fontWeight:700, fontSize:"0.9rem" }}>Authenticator App</p>
-              <p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>Use Google Authenticator or similar app</p>
-            </div>
-            <Toggle on={enabled} onChange={v => { setEnabled(v); toast.success(v ? "MFA enabled." : "MFA disabled."); }} />
-          </div>
-        </div>
-        <p style={{ fontSize:"0.75rem", color:"#6b7280", lineHeight:1.6 }}>
-          Multi-Factor Authentication adds an extra layer of security to your account. When enabled, you'll need to enter a code from your authenticator app in addition to your password.
-        </p>
-        <div style={{ display:"flex", justifyContent:"flex-end", marginTop:"1.25rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>Close</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Backup modal ──────────────────────────────────────────────────────────────
-
-function BackupModal({ onClose }: { onClose: () => void }) {
-  const [backing, setBacking] = useState(false);
-  function doBackup() {
-    setBacking(true);
-    setTimeout(() => { setBacking(false); toast.success("Backup completed. File saved."); }, 1800);
-  }
-  return (
-    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }}>
-      <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:440, boxShadow:"0 20px 60px rgba(0,0,0,0.2)" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-            <CloudUpload style={{ width:18, height:18, color:"#374151" }} />
-            <p style={{ fontWeight:800, fontSize:"1rem" }}>Backup and Restore</p>
-          </div>
-          <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:18, height:18 }} /></button>
-        </div>
-        <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem", marginBottom:"1.25rem" }}>
-          <div style={{ background:"#f9fafb", borderRadius:10, padding:"1rem", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <div>
-              <p style={{ fontWeight:700, fontSize:"0.9rem" }}>Last Backup</p>
-              <p style={{ fontSize:"0.75rem", color:"#9ca3af" }}>June 19, 2026 · 11:42 PM</p>
-            </div>
-            <span style={{ fontSize:"0.68rem", fontWeight:700, padding:"3px 8px", borderRadius:999, background:"#dcfce7", color:"#15803d" }}>SUCCESS</span>
-          </div>
-          <button onClick={doBackup} disabled={backing} style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8, padding:"11px", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.875rem", fontWeight:600, cursor:"pointer", opacity:backing?0.7:1 }}>
-            {backing ? <><RefreshCw style={{ width:15, height:15, animation:"spin 1s linear infinite" }} /> Backing up…</> : <><CloudUpload style={{ width:15, height:15 }} /> Create Backup Now</>}
-          </button>
-        </div>
-        <div style={{ display:"flex", justifyContent:"flex-end" }}>
-          <button onClick={onClose} style={{ padding:"9px 24px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", fontSize:"0.875rem", cursor:"pointer" }}>Close</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Activity Log mock data ────────────────────────────────────────────────────
-
-function minsAgo(m: number) { return new Date(Date.now() - m * 60000).toISOString(); }
-
-const MOCK_LOGS: ActivityLog[] = [
-  { id:1,  userDisplay:"Ana Bonifacio",   action:"USER_LOGIN",           entityType:"User",         entityId:5,  ipAddress:"192.168.1.10", details:"Login from Chrome/Windows",                     createdAt: minsAgo(2)    },
-  { id:2,  userDisplay:"Remy Santos",     action:"USER_LOGIN",           entityType:"User",         entityId:1,  ipAddress:"192.168.1.14", details:"Login from Chrome/Windows",                     createdAt: minsAgo(8)    },
-  { id:3,  userDisplay:"Remy Santos",     action:"PROJECT_UPDATED",      entityType:"Project",      entityId:2,  ipAddress:"192.168.1.14", details:"Updated status: Planning → Active",             createdAt: minsAgo(14)   },
-  { id:4,  userDisplay:"Marco Dela Cruz", action:"PO_CREATED",           entityType:"PurchaseOrder",entityId:18, ipAddress:"192.168.1.22", details:"PO-2025-0844 · Steel Bars · ₱97,200",           createdAt: minsAgo(22)   },
-  { id:5,  userDisplay:"Carlo Reyes",     action:"EXCESS_RECORDED",      entityType:"ExcessWaste",  entityId:37, ipAddress:"192.168.1.31", details:"Sand excess — 4.2 m³ @ Metro Station Phase 3",  createdAt: minsAgo(35)   },
-  { id:6,  userDisplay:"Ana Bonifacio",   action:"USER_CREATED",         entityType:"User",         entityId:9,  ipAddress:"192.168.1.10", details:"New user: j.delacruz (Site Engineer)",          createdAt: minsAgo(48)   },
-  { id:7,  userDisplay:"Liza Domingo",    action:"INVENTORY_UPDATED",    entityType:"Inventory",    entityId:12, ipAddress:"192.168.1.28", details:"Portland Cement: 280 → 230 bags (Metro Stn.)",  createdAt: minsAgo(61)   },
-  { id:8,  userDisplay:"Marco Dela Cruz", action:"PO_APPROVED",          entityType:"PurchaseOrder",entityId:16, ipAddress:"192.168.1.22", details:"PO-2025-0839 approved by Ana Bonifacio",        createdAt: minsAgo(90)   },
-  { id:9,  userDisplay:"Carlo Reyes",     action:"USER_LOGIN",           entityType:"User",         entityId:2,  ipAddress:"192.168.1.31", details:"Login from Firefox/Windows",                    createdAt: minsAgo(110)  },
-  { id:10, userDisplay:"Liza Domingo",    action:"INVENTORY_CREATED",    entityType:"Inventory",    entityId:49, ipAddress:"192.168.1.28", details:"New item: Waterproofing Membrane — 150 rolls",  createdAt: minsAgo(145)  },
-  { id:11, userDisplay:"Remy Santos",     action:"PROJECT_CREATED",      entityType:"Project",      entityId:6,  ipAddress:"192.168.1.14", details:"New project: Southgate Mall Expansion Phase 2", createdAt: minsAgo(180)  },
-  { id:12, userDisplay:"Ana Bonifacio",   action:"ROLE_UPDATED",         entityType:"User",         entityId:7,  ipAddress:"192.168.1.10", details:"Changed role: SiteEngineer → ProjectManager",   createdAt: minsAgo(210)  },
-  { id:13, userDisplay:"Maria Tan",       action:"USER_LOGIN",           entityType:"User",         entityId:6,  ipAddress:"192.168.1.41", details:"Login from Safari/macOS",                       createdAt: minsAgo(245)  },
-  { id:14, userDisplay:"Marco Dela Cruz", action:"SUPPLIER_UPDATED",     entityType:"Supplier",     entityId:3,  ipAddress:"192.168.1.22", details:"PhilCon Aggregates — contact updated",          createdAt: minsAgo(280)  },
-  { id:15, userDisplay:"Carlo Reyes",     action:"MEASUREMENT_ADDED",    entityType:"Project",      entityId:1,  ipAddress:"192.168.1.31", details:"Floor slab Zone A: 12m × 8m × 0.15m",          createdAt: minsAgo(310)  },
-  { id:16, userDisplay:"System",          action:"FORECAST_GENERATED",   entityType:"Forecast",     entityId:22, ipAddress:"127.0.0.1",    details:"AI demand forecast updated — 30-day window",    createdAt: minsAgo(360)  },
-  { id:17, userDisplay:"Liza Domingo",    action:"INVENTORY_DELETED",    entityType:"Inventory",    entityId:11, ipAddress:"192.168.1.28", details:"Removed: Old Paint Stock (expired)",            createdAt: minsAgo(420)  },
-  { id:18, userDisplay:"Ana Bonifacio",   action:"SETTINGS_UPDATED",     entityType:"System",       ipAddress:"192.168.1.10", details:"Notification preferences saved",                createdAt: minsAgo(480)  },
-  { id:19, userDisplay:"Remy Santos",     action:"BOM_UPDATED",          entityType:"Project",      entityId:3,  ipAddress:"192.168.1.14", details:"Added 3 materials to Harbor Bridge BOM",        createdAt: minsAgo(540)  },
-  { id:20, userDisplay:"Marco Dela Cruz", action:"PO_CREATED",           entityType:"PurchaseOrder",entityId:17, ipAddress:"192.168.1.22", details:"PO-2025-0843 · Gravel · ₱44,800",              createdAt: minsAgo(600)  },
-  { id:21, userDisplay:"Ben Torres",      action:"USER_LOGIN",           entityType:"User",         entityId:7,  ipAddress:"192.168.1.55", details:"Login from Chrome/Android",                     createdAt: minsAgo(720)  },
-  { id:22, userDisplay:"System",          action:"BACKUP_COMPLETED",     entityType:"System",       ipAddress:"127.0.0.1",    details:"Automated nightly backup — 142 MB",             createdAt: minsAgo(780)  },
-  { id:23, userDisplay:"Carlo Reyes",     action:"EXCESS_RECORDED",      entityType:"ExcessWaste",  entityId:36, ipAddress:"192.168.1.31", details:"Steel offcuts — 38 pcs @ BGC Tower Complex",   createdAt: minsAgo(840)  },
-  { id:24, userDisplay:"Ana Bonifacio",   action:"USER_DEACTIVATED",     entityType:"User",         entityId:8,  ipAddress:"192.168.1.10", details:"Account deactivated: ben.torres",               createdAt: minsAgo(960)  },
-  { id:25, userDisplay:"Remy Santos",     action:"REPORT_GENERATED",     entityType:"Report",       entityId:14, ipAddress:"192.168.1.14", details:"Inventory Status Report · PDF exported",        createdAt: minsAgo(1080) },
-  { id:26, userDisplay:"Liza Domingo",    action:"INVENTORY_UPDATED",    entityType:"Inventory",    entityId:8,  ipAddress:"192.168.1.28", details:"Rebar: 600 → 540 pcs (Harbor Bridge)",          createdAt: minsAgo(1200) },
-  { id:27, userDisplay:"Maria Tan",       action:"MEASUREMENT_ADDED",    entityType:"Project",      entityId:4,  ipAddress:"192.168.1.41", details:"Column grid C2: 0.4m × 0.4m × 3.2m",          createdAt: minsAgo(1320) },
-  { id:28, userDisplay:"System",          action:"FORECAST_GENERATED",   entityType:"Forecast",     entityId:21, ipAddress:"127.0.0.1",    details:"Weekly AI forecast refresh completed",          createdAt: minsAgo(1440) },
-  { id:29, userDisplay:"Marco Dela Cruz", action:"PO_DELETED",           entityType:"PurchaseOrder",entityId:15, ipAddress:"192.168.1.22", details:"Cancelled PO-2025-0838 (duplicate entry)",      createdAt: minsAgo(1560) },
-  { id:30, userDisplay:"Ana Bonifacio",   action:"USER_LOGIN",           entityType:"User",         entityId:5,  ipAddress:"192.168.1.10", details:"Login from Edge/Windows",                       createdAt: minsAgo(1680) },
-];
-
-// ── Activity Log modal ────────────────────────────────────────────────────────
-
-function ActivityLogModal({ onClose }: { onClose: () => void }) {
-  const [logs,     setLogs]     = useState<ActivityLog[]>(MOCK_LOGS);
-  const [loading,  setLoading]  = useState(true);
-  const [search,   setSearch]   = useState("");
-  const [filter,   setFilter]   = useState("All");
-  const [page,     setPage]     = useState(1);
-  const PAGE_SIZE = 15;
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const { data } = await api.get<ActivityLog[]>(`/activity-logs?page=1&pageSize=100`);
-      if (data && data.length > 0) {
-        // Merge API data on top of mock data, deduplicate by id
-        const apiIds = new Set(data.map(d => d.id));
-        setLogs([...data, ...MOCK_LOGS.filter(m => !apiIds.has(m.id))]);
-      }
-    } catch {
-      // Keep mock data — no toast for silent fallback
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  const ACTION_TYPES = ["All", "LOGIN", "CREATED", "UPDATED", "DELETED", "FORECAST", "REPORT", "BACKUP"];
-
-  const filtered = logs.filter(l => {
-    const matchSearch = search === "" ||
-      l.action.toLowerCase().includes(search.toLowerCase()) ||
-      l.userDisplay.toLowerCase().includes(search.toLowerCase()) ||
-      (l.entityType ?? "").toLowerCase().includes(search.toLowerCase()) ||
-      (l.details ?? "").toLowerCase().includes(search.toLowerCase());
-    const matchFilter = filter === "All" || l.action.toUpperCase().includes(filter);
-    return matchSearch && matchFilter;
-  });
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const paginated  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-
-  function actionColor(action: string) {
-    if (/login/i.test(action))             return { bg:"#dbeafe", color:"#1d4ed8" };
-    if (/creat|add/i.test(action))         return { bg:"#dcfce7", color:"#15803d" };
-    if (/delet|cancel|remov/i.test(action))return { bg:"#fee2e2", color:"#b91c1c" };
-    if (/update|edit|patch|role/i.test(action)) return { bg:"#fef3c7", color:"#b45309" };
-    if (/forecast|backup/i.test(action))   return { bg:"#ede9fe", color:"#6d28d9" };
-    if (/report|export/i.test(action))     return { bg:"#f0fdf4", color:"#15803d" };
-    if (/deactiv/i.test(action))           return { bg:"#fee2e2", color:"#b91c1c" };
-    return { bg:"#f3f4f6", color:"#374151" };
-  }
-
-  return (
-    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:"1rem" }}>
-      <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, width:"min(760px,95vw)", maxHeight:"88vh", display:"flex", flexDirection:"column", boxShadow:"0 24px 64px rgba(0,0,0,0.22)" }}>
-        {/* Header */}
-        <div style={{ padding:"1.25rem 1.5rem", borderBottom:"1px solid #f3f4f6", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
-          <div>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <Database style={{ width:18, height:18, color:"#374151" }} />
-              <p style={{ fontWeight:800, fontSize:"1rem" }}>Activity Log</p>
-            </div>
-            <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:2 }}>System-wide audit trail of all user actions</p>
-          </div>
-          <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:18, height:18 }} /></button>
-        </div>
-
-        {/* Search + filter bar */}
-        <div style={{ padding:"0.875rem 1.5rem", borderBottom:"1px solid #f3f4f6", display:"flex", gap:"0.75rem", flexShrink:0, flexWrap:"wrap" }}>
-          <div style={{ position:"relative", flex:1, minWidth:200 }}>
-            <Search style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", width:14, height:14, color:"#9ca3af", pointerEvents:"none" }} />
-            <input
-              suppressHydrationWarning
-              value={search} onChange={e=>{ setSearch(e.target.value); setPage(1); }}
-              placeholder="Search user, action, details…"
-              style={{ width:"100%", boxSizing:"border-box" as const, paddingLeft:32, paddingRight:12, paddingTop:8, paddingBottom:8, borderRadius:8, background:"#f9fafb", border:"1px solid #e5e7eb", fontSize:"0.8rem", outline:"none" }}
-            />
-          </div>
-          <select value={filter} onChange={e=>{ setFilter(e.target.value); setPage(1); }} style={{ padding:"8px 12px", borderRadius:8, border:"1px solid #e5e7eb", background:"#f9fafb", fontSize:"0.8rem", outline:"none", cursor:"pointer", color:"#374151" }}>
-            {ACTION_TYPES.map(t => <option key={t}>{t}</option>)}
-          </select>
-          <button onClick={load} style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 14px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", fontSize:"0.8rem", cursor:"pointer", color:"#374151", whiteSpace:"nowrap" }}>
-            <RefreshCw style={{ width:13, height:13 }} /> Refresh
-          </button>
-        </div>
-
-        {/* Stats row */}
-        <div style={{ padding:"0.625rem 1.5rem", borderBottom:"1px solid #f3f4f6", display:"flex", gap:"1.25rem", flexShrink:0, background:"#fafafa" }}>
-          {[
-            ["Total Events", logs.length],
-            ["Logins",       logs.filter(l=>/login/i.test(l.action)).length],
-            ["Created",      logs.filter(l=>/creat/i.test(l.action)).length],
-            ["Updated",      logs.filter(l=>/updat/i.test(l.action)).length],
-            ["Deleted",      logs.filter(l=>/delet|cancel/i.test(l.action)).length],
-          ].map(([label, val]) => (
-            <div key={String(label)} style={{ display:"flex", alignItems:"center", gap:6 }}>
-              <span style={{ fontSize:"0.72rem", color:"#9ca3af" }}>{label}:</span>
-              <span style={{ fontSize:"0.78rem", fontWeight:700, color:"#374151" }}>{val}</span>
-            </div>
-          ))}
-        </div>
-
-        {/* Log table */}
-        <div style={{ flex:1, overflowY:"auto" }}>
-          {loading ? (
-            <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>
-              <RefreshCw style={{ width:22, height:22, margin:"0 auto 0.5rem", opacity:0.4 }} />
-              <p>Loading activity logs…</p>
-            </div>
-          ) : paginated.length === 0 ? (
-            <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>No matching activity logs.</div>
-          ) : (
-            <table style={{ width:"100%", borderCollapse:"collapse" }}>
-              <thead style={{ position:"sticky", top:0, background:"#fff", zIndex:1 }}>
-                <tr style={{ borderBottom:"1px solid #f3f4f6" }}>
-                  {["TIMESTAMP","USER","ACTION","DETAILS","ENTITY","IP"].map(h => (
-                    <th key={h} style={{ padding:"10px 14px", textAlign:"left", fontSize:"0.6rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.06em", whiteSpace:"nowrap" }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {paginated.map((log, i) => {
-                  const ac = actionColor(log.action);
-                  return (
-                    <tr key={log.id} style={{ borderBottom:"1px solid #f9fafb", background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
-                      <td style={{ padding:"10px 14px", fontSize:"0.7rem", color:"#9ca3af", whiteSpace:"nowrap" }}>{relTime(log.createdAt)}</td>
-                      <td style={{ padding:"10px 14px", fontSize:"0.78rem", fontWeight:600, color:"#111827", whiteSpace:"nowrap" }}>{log.userDisplay}</td>
-                      <td style={{ padding:"10px 14px" }}>
-                        <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 9px", borderRadius:999, background:ac.bg, color:ac.color, whiteSpace:"nowrap" }}>
-                          {log.action}
-                        </span>
-                      </td>
-                      <td style={{ padding:"10px 14px", fontSize:"0.75rem", color:"#6b7280", maxWidth:220, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={log.details ?? ""}>
-                        {log.details ?? "—"}
-                      </td>
-                      <td style={{ padding:"10px 14px", fontSize:"0.72rem", color:"#9ca3af", whiteSpace:"nowrap" }}>
-                        {log.entityType ? `${log.entityType}${log.entityId ? ` #${log.entityId}` : ""}` : "—"}
-                      </td>
-                      <td style={{ padding:"10px 14px", fontSize:"0.68rem", color:"#9ca3af", fontFamily:"monospace", whiteSpace:"nowrap" }}>{log.ipAddress ?? "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-
-        {/* Footer pagination */}
-        <div style={{ padding:"0.875rem 1.5rem", borderTop:"1px solid #f3f4f6", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
-          <p style={{ fontSize:"0.72rem", color:"#9ca3af" }}>
-            Showing {Math.min((page-1)*PAGE_SIZE+1, filtered.length)}–{Math.min(page*PAGE_SIZE, filtered.length)} of {filtered.length} records
-          </p>
-          <div style={{ display:"flex", gap:"0.5rem", alignItems:"center" }}>
-            <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={page<=1} style={{ padding:"6px 14px", borderRadius:7, border:"1px solid #e5e7eb", background:"#fff", fontSize:"0.78rem", cursor:"pointer", opacity:page<=1?0.4:1 }}>← Prev</button>
-            <span style={{ fontSize:"0.75rem", color:"#9ca3af", padding:"0 4px" }}>{page} / {totalPages}</span>
-            <button onClick={()=>setPage(p=>Math.min(totalPages,p+1))} disabled={page>=totalPages} style={{ padding:"6px 14px", borderRadius:7, border:"1px solid #e5e7eb", background:"#fff", fontSize:"0.78rem", cursor:"pointer", opacity:page>=totalPages?0.4:1 }}>Next →</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Edit Profile modal ────────────────────────────────────────────────────────
 
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
 const ALLOWED_AVATAR_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -723,8 +348,8 @@ export default function SettingsPage() {
       {modal === "editProfile"   && <EditProfileModal    onClose={()=>setModal(null)} />}
       {modal === "changePassword"&& <ChangePasswordModal onClose={()=>setModal(null)} />}
       {modal === "mfa"           && <MFAModal            onClose={()=>setModal(null)} />}
-      {modal === "backup"        && <BackupModal         onClose={()=>setModal(null)} />}
-      {modal === "activityLog"   && <ActivityLogModal    onClose={()=>setModal(null)} />}
+      {user?.role === "Admin" && modal === "backup" && <BackupModal         onClose={()=>setModal(null)} />}
+      {user?.role === "Admin" && modal === "activityLog" && <Modal open title="Activity Log" size="xl" onClose={()=>setModal(null)}><ActivityLogView /></Modal>}
       {modal === "signOutConfirm" && <SignOutConfirmModal onCancel={()=>setModal(null)} onConfirm={handleSignOut} />}
 
       <Header title="Settings" />
@@ -795,8 +420,8 @@ export default function SettingsPage() {
         <Card title="Privacy and Security">
           <SecRow icon={Lock}        label="Change Password"                onClick={()=>setModal("changePassword")} />
           <SecRow icon={Shield}      label="Multi-Factor Authentication (MFA)" onClick={()=>setModal("mfa")} />
-          <SecRow icon={CloudUpload} label="Backup and Restore"             onClick={()=>setModal("backup")} />
-          <SecRow icon={Database}    label="Activity Log"                   onClick={()=>setModal("activityLog")} />
+          {user?.role === "Admin" && <SecRow icon={CloudUpload} label="Backup and Restore" onClick={()=>setModal("backup")} />}
+          {user?.role === "Admin" && <SecRow icon={Database} label="Activity Log" onClick={()=>setModal("activityLog")} />}
         </Card>
 
         {/* ── Sign Out ── */}

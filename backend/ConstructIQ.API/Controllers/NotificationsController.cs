@@ -24,12 +24,12 @@ public class NotificationsController(INotificationService notificationService) :
 
     [HttpGet("mine")]
     public async Task<IActionResult> GetMine() =>
-        Ok(await notificationService.GetForRoleAsync(CurrentRole));
+        Ok(await notificationService.GetMineAsync(CurrentUserId, CurrentRole));
 
     [HttpPut("{id:int}/read")]
     public async Task<IActionResult> MarkRead(int id)
     {
-        var ok = await notificationService.MarkReadAsync(id);
+        var ok = await notificationService.MarkReadAsync(id, CurrentUserId);
         return ok ? NoContent() : NotFound();
     }
 }

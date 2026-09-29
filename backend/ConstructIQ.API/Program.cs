@@ -1,3 +1,4 @@
+using ConstructIQ.API.Helpers;
 using System.Text;
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Middleware;
@@ -20,30 +21,13 @@ builder.Services.AddDbContext<AppDbContext>(opts =>
     opts.UseMySql(connStr, new MySqlServerVersion(new Version(8, 0, 0))));
 
 // ── JWT Authentication ───────────────────────────────────────────────────────
-var jwtSecret = builder.Configuration["JWT_SECRET"]
-    ?? throw new InvalidOperationException("JWT_SECRET not configured.");
-
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(opts =>
-    {
-        opts.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer           = true,
-            ValidateAudience         = true,
-            ValidateLifetime         = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer              = builder.Configuration["JWT_ISSUER"],
-            ValidAudience            = builder.Configuration["JWT_AUDIENCE"],
-            IssuerSigningKey         = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
-        };
-    });
-
-builder.Services.AddAuthorization();
+builder.Services.AddConstructIqSecurity(builder.Configuration);
 
 // ── Services ─────────────────────────────────────────────────────────────────
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IEmailService, EmailService>();
+builder.Services.AddScoped<DatabaseBackupService>();
 builder.Services.AddScoped<IProjectService, ProjectService>();
 builder.Services.AddScoped<IInventoryService, InventoryService>();
 builder.Services.AddScoped<IExcessWasteService, ExcessWasteService>();
@@ -57,6 +41,8 @@ builder.Services.AddScoped<IBOQService, BOQService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IPhaseService, PhaseService>();
 builder.Services.AddScoped<IWarehouseStockService, WarehouseStockService>();
+builder.Services.AddScoped<IWeatherGeocodingService, WeatherGeocodingService>();
+builder.Services.AddHostedService<WeatherWatcherService>();
 builder.Services.AddHttpClient("MLService", client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["ML_SERVICE_URL"] ?? "http://localhost:8000");
@@ -64,6 +50,14 @@ builder.Services.AddHttpClient("MLService", client =>
 builder.Services.AddHttpClient("GoogleSheets", client =>
 {
     client.BaseAddress = new Uri("https://sheets.googleapis.com/");
+});
+builder.Services.AddHttpClient("OpenMeteoGeocoding", client =>
+{
+    client.BaseAddress = new Uri("https://geocoding-api.open-meteo.com/");
+});
+builder.Services.AddHttpClient("OpenMeteoWeather", client =>
+{
+    client.BaseAddress = new Uri("https://api.open-meteo.com/");
 });
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
@@ -86,26 +80,6 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
-
-// TEMP debug endpoints
-app.MapGet("/dev/hash", () => BCrypt.Net.BCrypt.HashPassword("Admin@123"));
-app.MapGet("/dev/debug", (AppDbContext db) =>
-{
-    try
-    {
-        var admin = db.Users.FirstOrDefault(u => u.Username == "admin");
-        if (admin is null) return Results.Ok("NO ADMIN USER IN DATABASE");
-        var hashOk = BCrypt.Net.BCrypt.Verify("Admin@123", admin.PasswordHash);
-        return Results.Ok(new {
-            Found      = true,
-            IsActive   = admin.IsActive,
-            Role       = admin.Role.ToString(),
-            HashOk     = hashOk,
-            HashStored = admin.PasswordHash
-        });
-    }
-    catch (Exception ex) { return Results.Ok($"DB ERROR: {ex.Message}"); }
-});
 
 app.UseStaticFiles(); // serves wwwroot/uploads/{projectId}/... for blueprint/BOQ previews
 app.UseCors("FrontendPolicy");
@@ -136,12 +110,7 @@ using (var scope = app.Services.CreateScope())
                 IsActive     = true,
             });
         }
-        else
-        {
-            admin.PasswordHash = ConstructIQ.API.Helpers.PasswordHasher.Hash("Admin@123");
-            admin.IsActive     = true;
-            admin.Role         = ConstructIQ.API.Models.Entities.UserRole.Admin;
-        }
+
         db.SaveChanges();
     }
     catch (Exception ex) { Console.WriteLine($"[SEEDER ERROR] {ex.Message}"); }

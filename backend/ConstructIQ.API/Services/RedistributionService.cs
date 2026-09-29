@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class RedistributionService(AppDbContext db) : IRedistributionService
+public class RedistributionService(AppDbContext db, INotificationService notifications) : IRedistributionService
 {
     // Damaged/expired stock isn't safe to redistribute — only unused/overordered excess is.
     private static readonly ExcessType[] ReusableExcessTypes = [ExcessType.Unused, ExcessType.Overordered];
@@ -176,6 +176,7 @@ public class RedistributionService(AppDbContext db) : IRedistributionService
         }
 
         await db.SaveChangesAsync();
+        await NotifyBothPMsAsync(request, userId, NotificationKind.RedistributionApproved, "was approved and has been transferred.");
         return true;
     }
 
@@ -196,13 +197,21 @@ public class RedistributionService(AppDbContext db) : IRedistributionService
 
     public async Task<bool> RejectTransferAsync(int recommendationId, int userId)
     {
-        var request = await db.RedistributionRequests.FindAsync(recommendationId);
+        var request = await db.RedistributionRequests
+            .Include(r => r.Material)
+            .FirstOrDefaultAsync(r => r.Id == recommendationId);
         if (request is null) return false;
         if (request.Status is RedistributionStatus.Completed or RedistributionStatus.Rejected) return false;
 
         request.Status = RedistributionStatus.Rejected;
 
         await db.SaveChangesAsync();
+
+        // ProjectId scopes this to exactly the source project's PM via GetMineAsync's join — no lookup needed.
+        await notifications.CreateForRoleAsync(UserRole.ProjectManager, NotificationKind.RedistributionRejected,
+            $"The redistribution request for {request.Material.Name} was rejected.", userId,
+            projectId: request.SourceProjectId, materialId: request.MaterialId, actionLink: "/redistribution");
+
         return true;
     }
 
@@ -268,7 +277,27 @@ public class RedistributionService(AppDbContext db) : IRedistributionService
             .Include(r => r.TargetProject)
             .FirstAsync(r => r.Id == request.Id);
 
+        await notifications.CreateForRoleAsync(UserRole.WarehousePersonnel, NotificationKind.RedistributionRequested,
+            $"{quantity} {record.Material.Unit} of {record.Material.Name} requested for transfer from {saved.SourceProject.Name} to {saved.TargetProject.Name} — awaiting your approval.",
+            userId, actionLink: "/redistribution");
+        await NotifyBothPMsAsync(saved, userId, NotificationKind.RedistributionRequested,
+            $"was submitted for transfer between {saved.SourceProject.Name} and {saved.TargetProject.Name}.");
+
         return ToDto(saved);
+    }
+
+    // A single Notification row can only carry one ProjectId (and so scopes to
+    // exactly one PM via GetMineAsync's ownership join) — reaching both the
+    // source and target project's PM means writing two rows, not one.
+    private async Task NotifyBothPMsAsync(RedistributionRequest request, int actorUserId, NotificationKind kind, string messageSuffix)
+    {
+        var materialName = request.Material?.Name ?? (await db.Materials.FindAsync(request.MaterialId))?.Name ?? "Material";
+        await notifications.CreateForRoleAsync(UserRole.ProjectManager, kind,
+            $"Your redistribution request for {materialName} {messageSuffix}", actorUserId,
+            projectId: request.SourceProjectId, materialId: request.MaterialId, actionLink: "/redistribution");
+        await notifications.CreateForRoleAsync(UserRole.ProjectManager, kind,
+            $"A redistribution transfer for {materialName} {messageSuffix}", actorUserId,
+            projectId: request.TargetProjectId, materialId: request.MaterialId, actionLink: "/redistribution");
     }
 
     public async Task<IEnumerable<RedistributionTargetSuggestionDto>> SuggestTargetsAsync(int excessWasteRecordId)

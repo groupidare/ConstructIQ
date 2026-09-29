@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class ProjectService(AppDbContext db, IWebHostEnvironment env) : IProjectService
+public class ProjectService(AppDbContext db, IWebHostEnvironment env, IWeatherGeocodingService geocoding) : IProjectService
 {
     private static readonly Dictionary<string, string> AllowedPhotoTypes = new()
     {
@@ -84,13 +84,28 @@ public class ProjectService(AppDbContext db, IWebHostEnvironment env) : IProject
 
         db.Projects.Add(project);
         await db.SaveChangesAsync();
+
+        await GeocodeAndSaveAsync(project);
         return (await GetByIdAsync(project.Id))!;
+    }
+
+    // Best-effort — a geocoding failure never blocks the project save that
+    // already happened above; the project just stays outside weather coverage.
+    private async Task GeocodeAndSaveAsync(Project project)
+    {
+        var coords = await geocoding.GeocodeAsync(project.Location);
+        if (coords is null) return;
+        project.Latitude  = coords.Value.Latitude;
+        project.Longitude = coords.Value.Longitude;
+        await db.SaveChangesAsync();
     }
 
     public async Task<ProjectResponseDto?> UpdateAsync(int id, ProjectCreateDto dto)
     {
         var project = await db.Projects.Include(p => p.Phases).FirstOrDefaultAsync(p => p.Id == id);
         if (project is null) return null;
+
+        var locationChanged = !string.Equals(project.Location, dto.Location, StringComparison.Ordinal);
 
         project.Name               = dto.Name;
         project.Type               = Enum.Parse<ProjectType>(dto.Type);
@@ -114,6 +129,7 @@ public class ProjectService(AppDbContext db, IWebHostEnvironment env) : IProject
         project.UpdatedAt          = DateTime.UtcNow;
 
         await db.SaveChangesAsync();
+        if (locationChanged) await GeocodeAndSaveAsync(project);
         return await GetByIdAsync(id);
     }
 

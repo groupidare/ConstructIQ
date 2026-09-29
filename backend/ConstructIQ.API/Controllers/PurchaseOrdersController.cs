@@ -11,7 +11,7 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/purchase-orders")]
 [Authorize]
-public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) : ControllerBase
+public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env, Services.Interfaces.INotificationService notifications) : ControllerBase
 {
     // Roles that manage the PO lifecycle (create + set Pending/Approved).
     // WarehousePersonnel is deliberately excluded — they only receive
@@ -106,6 +106,10 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
         db.PurchaseOrders.Add(po);
         await db.SaveChangesAsync();
 
+        await notifications.CreateForRoleAsync(UserRole.ProjectManager, NotificationKind.PurchaseOrderCreated,
+            $"{po.Number} was created for {project.Name} ({supplierName}).", CurrentUserId,
+            projectId: po.ProjectId, actionLink: "/procurement");
+
         return Ok(ToDto(po));
     }
 
@@ -143,6 +147,10 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
         po.Status = status;
         po.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
+
+        await notifications.CreateForRoleAsync(UserRole.ProjectManager, NotificationKind.PurchaseOrderStatusChanged,
+            $"{po.Number} ({po.Project.Name}) is now {status}.", CurrentUserId,
+            projectId: po.ProjectId, actionLink: "/procurement");
 
         return Ok(ToDto(po));
     }
@@ -210,6 +218,10 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
         // ToDto needs it for DeliveryBatchDto.UploadedByName.
         await db.Entry(po.DeliveryBatches.Last()).Reference(b => b.UploadedBy).LoadAsync();
 
+        await notifications.CreateForRoleAsync(UserRole.ProjectManager, NotificationKind.PurchaseOrderStatusChanged,
+            $"Delivery is in progress for {po.Number} ({po.Project.Name}).", CurrentUserId,
+            projectId: po.ProjectId, actionLink: "/procurement");
+
         return Ok(ToDto(po));
     }
 
@@ -234,6 +246,13 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
         po.Status = PurchaseOrderStatus.Delivered;
         po.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
+
+        var deliveredMessage = $"{po.Number} ({po.Materials.Count} material{(po.Materials.Count == 1 ? "" : "s")}) has been delivered to {po.Project.Name}.";
+        await notifications.CreateForRoleAsync(UserRole.ProjectManager, NotificationKind.MaterialDelivered,
+            deliveredMessage, CurrentUserId, projectId: po.ProjectId, actionLink: "/procurement");
+        if (po.Project.SiteEngineerId.HasValue)
+            await notifications.CreateForRoleAsync(UserRole.SiteEngineer, NotificationKind.MaterialDelivered,
+                deliveredMessage, CurrentUserId, projectId: po.ProjectId, actionLink: "/procurement");
 
         return Ok(ToDto(po));
     }
@@ -281,6 +300,14 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) 
         });
 
         await db.SaveChangesAsync();
+
+        var ratingMessage = $"{po.Supplier.Name} was rated for {po.Number} ({po.Project.Name}) — proof of delivery and evaluation submitted.";
+        await notifications.CreateForRoleAsync(UserRole.ProcurementOfficer, NotificationKind.PodRatingSubmitted,
+            ratingMessage, CurrentUserId, projectId: po.ProjectId, actionLink: "/procurement");
+        await notifications.CreateForRoleAsync(UserRole.ProjectManager, NotificationKind.PodRatingSubmitted,
+            ratingMessage, CurrentUserId, projectId: po.ProjectId, actionLink: "/procurement");
+        await notifications.CreateForRoleAsync(UserRole.Admin, NotificationKind.PodRatingSubmitted,
+            ratingMessage, CurrentUserId, projectId: po.ProjectId, actionLink: "/procurement");
 
         return Ok(ToDto(po));
     }

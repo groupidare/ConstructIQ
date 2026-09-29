@@ -22,6 +22,14 @@ public class Project
     [Required, MaxLength(300)]
     public string Location { get; set; } = string.Empty;
 
+    // Geocoded server-side from Location by WeatherGeocodingService — null until
+    // that succeeds (or if it never does), in which case this project is simply
+    // skipped by the weather watcher rather than blocking anything.
+    [Column(TypeName = "decimal(9,6)")]
+    public decimal? Latitude { get; set; }
+    [Column(TypeName = "decimal(9,6)")]
+    public decimal? Longitude { get; set; }
+
     public string? Description { get; set; }
 
     [Column(TypeName = "decimal(18,2)")]

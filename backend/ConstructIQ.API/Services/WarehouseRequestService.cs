@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class WarehouseRequestService(AppDbContext db) : IWarehouseRequestService
+public class WarehouseRequestService(AppDbContext db, INotificationService notifications) : IWarehouseRequestService
 {
     public async Task<IEnumerable<WarehouseRequestResponseDto>> GetAllAsync()
     {
@@ -57,6 +57,10 @@ public class WarehouseRequestService(AppDbContext db) : IWarehouseRequestService
             .Include(m => m.RequestedBy)
             .Include(m => m.ApprovedBy)
             .FirstAsync(m => m.Id == request.Id);
+
+        await notifications.CreateForRoleAsync(UserRole.WarehousePersonnel, NotificationKind.WarehouseCheck,
+            $"{saved.Project.Name} requested {dto.RequestedQuantity} {saved.Material.Unit} of {saved.Material.Name}.",
+            userId, actionLink: "/inventory");
 
         return ToDto(saved);
     }

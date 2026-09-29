@@ -5,9 +5,10 @@ import { useRouter } from "next/navigation";
 import { Bell, Sun, Moon, Menu, X } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useAuthStore } from "@/store/authStore";
-import { useAlertStore, ALERT_ICON_STYLES } from "@/store/alertStore";
 import { useTheme } from "@/store/themeStore";
 import { useSidebarStore } from "@/store/sidebarStore";
+import { useNotificationPolling } from "@/hooks/useNotificationPolling";
+import { NOTIFICATION_KIND_META } from "@/lib/notificationDisplay";
 import { Avatar } from "@/components/ui/Avatar";
 import WeatherChip from "./WeatherChip";
 
@@ -23,13 +24,11 @@ export default function Header({ title }: HeaderProps) {
   const toggleTheme   = useTheme((s) => s.toggleTheme);
   const toggleSidebar = useSidebarStore((s) => s.toggleCollapsed);
 
-  const alerts      = useAlertStore((s) => s.alerts);
-  const markRead    = useAlertStore((s) => s.markRead);
-  const markAllRead = useAlertStore((s) => s.markAllRead);
+  const { notifications, unreadCount, markRead, markAllRead } = useNotificationPolling();
 
   const [notifOpen, setNotifOpen] = useState(false);
   const bellRef = useRef<HTMLDivElement>(null);
-  const unread  = alerts.filter(n => !n.read).length;
+  const unread  = unreadCount;
 
   useEffect(() => {
     if (!notifOpen) return;
@@ -121,24 +120,31 @@ export default function Header({ title }: HeaderProps) {
                 </div>
               </div>
               <div style={{ maxHeight:360, overflowY:"auto" }}>
-                {alerts.map(n => {
-                  const { icon: Icon, color: iconColor, bg: iconBg } = ALERT_ICON_STYLES[n.kind];
+                {notifications.length === 0 && (
+                  <p style={{ padding:"20px 16px", fontSize:"0.78rem", color:"#9ca3af", textAlign:"center" }}>No notifications yet.</p>
+                )}
+                {notifications.map(n => {
+                  const meta = NOTIFICATION_KIND_META[n.kind];
+                  const Icon = meta?.icon ?? Bell;
                   return (
                     <div
                       key={n.id}
-                      onClick={() => markRead(n.id)}
-                      style={{ display:"flex", gap:12, padding:"12px 16px", borderBottom:"1px solid #f9fafb", cursor:"pointer", background:n.read?"#fff":"#fffbf5" }}
+                      onClick={() => {
+                        void markRead(n.id);
+                        if (n.actionLink) { router.push(n.actionLink); setNotifOpen(false); }
+                      }}
+                      style={{ display:"flex", gap:12, padding:"12px 16px", borderBottom:"1px solid #f9fafb", cursor:"pointer", background:n.isRead?"#fff":"#fffbf5" }}
                     >
-                      <div style={{ width:36, height:36, borderRadius:"50%", background:iconBg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginTop:2 }}>
-                        <Icon style={{ width:16, height:16, color:iconColor }} />
+                      <div style={{ width:36, height:36, borderRadius:"50%", background:meta?.bg ?? "#f3f4f6", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginTop:2 }}>
+                        <Icon style={{ width:16, height:16, color:meta?.color ?? "#6b7280" }} />
                       </div>
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
-                          <p style={{ fontWeight:n.read?500:700, fontSize:"0.8rem", color:"#111827", lineHeight:1.3 }}>{n.title}</p>
-                          {!n.read && <span style={{ width:7, height:7, borderRadius:"50%", background:"#f97316", flexShrink:0, marginTop:4 }} />}
+                          <p style={{ fontWeight:n.isRead?500:700, fontSize:"0.8rem", color:"#111827", lineHeight:1.3 }}>{n.title}</p>
+                          {!n.isRead && <span style={{ width:7, height:7, borderRadius:"50%", background:"#f97316", flexShrink:0, marginTop:4 }} />}
                         </div>
-                        <p style={{ fontSize:"0.72rem", color:"#6b7280", marginTop:2, lineHeight:1.4 }}>{n.body}</p>
-                        <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginTop:4 }}>{formatDistanceToNow(n.createdAt, { addSuffix: true })}</p>
+                        <p style={{ fontSize:"0.72rem", color:"#6b7280", marginTop:2, lineHeight:1.4 }}>{n.message}</p>
+                        <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginTop:4 }}>{formatDistanceToNow(new Date(n.createdAt), { addSuffix: true })}</p>
                       </div>
                     </div>
                   );

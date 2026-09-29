@@ -7,11 +7,9 @@ import { useDocuments } from '@/hooks/useDocuments';
 import { useBOQ } from '@/hooks/useBOQ';
 import { useInventory } from '@/hooks/useInventory';
 import { useForecasting } from '@/hooks/useForecasting';
-import { useNotifications } from '@/hooks/useNotifications';
 import { useMaterialRequests } from '@/hooks/useMaterialRequests';
 import { useWarehouseRequests } from '@/hooks/useWarehouseRequests';
 import { useRedistributionReceived } from '@/hooks/useRedistributionReceived';
-import { useAlertStore } from '@/store/alertStore';
 import { useProjects } from '@/hooks/useProjects';
 import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
 import type { Project, ProjectType } from '@/types/project';
@@ -60,12 +58,10 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems, deleteItem: deleteBoqItem, getHistoricalEstimate } = useBOQ(project.id);
   const { inventory, fetchInventory } = useInventory(project.id);
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
-  const { sendNotification } = useNotifications();
   const { createRequest: createMaterialRequest, fetchRemaining } = useMaterialRequests();
   const { createRequest: createWarehouseRequest, fetchByProject: fetchWarehouseRequestsByProject } = useWarehouseRequests();
   const [warehouseRequests, setWarehouseRequests] = useState<WarehouseRequest[]>([]);
   const [remainingByMaterial, setRemainingByMaterial] = useState<Record<number, number>>({});
-  const addAlert = useAlertStore(s => s.addAlert);
   const { editProject } = useProjects();
   const { items: purchaseOrders, fetchItems: fetchPurchaseOrders, createOrder, linkMaterial } = usePurchaseOrders(project.id);
   const { receivedByMaterial, fetchReceived } = useRedistributionReceived(project.id);
@@ -483,24 +479,17 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       return false;
     }
 
-    const message = isProcurement
-      ? `${materialName}: order ${quantity.toLocaleString()} more for "${project.name}".`
-      : `Please verify stock/quality of ${materialName} for "${project.name}".`;
-
     try {
       if (isProcurement) {
+        // Notifying ProcurementOfficer is now handled server-side by
+        // MaterialRequestsController.Create itself — no separate manual
+        // notification call needed here (avoids double-notifying).
         await createMaterialRequest({ projectId: project.id, materialId, quantity, unit });
-        await sendNotification({
-          projectId: project.id, materialId,
-          recipientRole: 'ProcurementOfficer',
-          kind, message, quantity,
-        });
-        addAlert({ kind: 'delay', title: 'Procurement Alert', body: message });
         toast.success('Procurement notified — request added to their queue.');
       } else {
+        // Same for WarehousePersonnel — WarehouseRequestService.CreateAsync notifies them.
         await createWarehouseRequest({ projectId: project.id, materialId, requestedQuantity: quantity });
         await fetchWarehouseRequests();
-        addAlert({ kind: 'overstock', title: 'Warehouse Alert', body: message });
         toast.success(`Material request sent for ${materialName}.`);
         // Deliberately no longer navigates away to /inventory — a partial
         // request needs the user to stay right here to act on the leftover

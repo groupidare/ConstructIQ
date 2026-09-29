@@ -25,6 +25,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Measurement>              Measurements              => Set<Measurement>();
     public DbSet<ProjectDocument>          ProjectDocuments          => Set<ProjectDocument>();
     public DbSet<Notification>             Notifications             => Set<Notification>();
+    public DbSet<NotificationRead>         NotificationReads         => Set<NotificationRead>();
     public DbSet<Supplier>                 Suppliers                 => Set<Supplier>();
     public DbSet<PurchaseOrder>            PurchaseOrders            => Set<PurchaseOrder>();
     public DbSet<PurchaseOrderMaterial>    PurchaseOrderMaterials    => Set<PurchaseOrderMaterial>();
@@ -178,6 +179,30 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .WithMany()
             .HasForeignKey(n => n.CreatedByUserId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // SetNull (not the default Cascade): ProjectId is nullable — Admin/system
+        // notifications already have no project, and a notification tied to a
+        // deleted project should simply lose that link, not vanish itself.
+        mb.Entity<Notification>()
+            .HasOne(n => n.Project)
+            .WithMany()
+            .HasForeignKey(n => n.ProjectId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<NotificationRead>()
+            .HasKey(r => new { r.NotificationId, r.UserId });
+
+        mb.Entity<NotificationRead>()
+            .HasOne(r => r.Notification)
+            .WithMany(n => n.Reads)
+            .HasForeignKey(r => r.NotificationId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<NotificationRead>()
+            .HasOne(r => r.User)
+            .WithMany()
+            .HasForeignKey(r => r.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         mb.Entity<PurchaseOrder>()
             .HasIndex(po => po.Number)
