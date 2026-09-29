@@ -48,7 +48,6 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [savingBoq, setSavingBoq] = useState(false);
   const [forecasting, setForecasting] = useState(false);
   const [uploadingBlueprint, setUploadingBlueprint] = useState(false);
-  const [parsingBlueprintId, setParsingBlueprintId] = useState<number | null>(null);
   const [uploadingBoq, setUploadingBoq] = useState(false);
   const [uploadingPo, setUploadingPo] = useState(false);
   const [savingPo, setSavingPo] = useState(false);
@@ -58,7 +57,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [poExpectedDate, setPoExpectedDate] = useState('');
 
   const { documents, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument } = useDocuments(project.id);
-  const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems, getHistoricalEstimate } = useBOQ(project.id);
+  const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems, deleteItem: deleteBoqItem, getHistoricalEstimate } = useBOQ(project.id);
   const { inventory, fetchInventory } = useInventory(project.id);
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
   const { sendNotification } = useNotifications();
@@ -113,6 +112,18 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   }, [warehouseRequests]);
 
   const seededBoq = useRef(false);
+  // `forecasting`/`parsingBoq` (useState) don't disable their buttons in
+  // time to block a rapid double-click or double-tap — the state update
+  // that sets disabled=true is applied on the next render, not
+  // synchronously, so a second click landing in that window still fires
+  // the handler. A ref updates immediately, so it can bail out a genuine
+  // re-entrant call inline instead of relying on the button's disabled
+  // attribute alone. Matters here specifically because both handlers
+  // upsert boqRows by BOQItem.Id, and a row scanned/computed in this same
+  // call has no Id yet — two concurrent calls each create their own full
+  // set of new rows server-side instead of one updating the other's.
+  const runForecastInFlight = useRef(false);
+  const parseBoqInFlight = useRef(false);
 
   // Shared by the initial-load seed effect below and by every save — reused
   // so the draft rows always carry the server-assigned Id afterward. Without
@@ -206,14 +217,29 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   }
 
   async function handleParseBoq(documentId: number) {
+    if (parseBoqInFlight.current) return;
+    parseBoqInFlight.current = true;
     try {
       const result = await parseDocument(documentId);
       if (result.items.length === 0) {
         toast.error(result.parseErrors[0] || 'No line items detected in that document.');
         return;
       }
+      // Tagged per-document so re-scanning the same file replaces its own
+      // previous output instead of piling a second copy on top of it every
+      // click — a row from a *different* document (or a manually-added row,
+      // whose notes never carry this tag) is left untouched either way.
+      // Previously-*saved* rows with this tag are also deleted server-side,
+      // not just dropped from local state — otherwise they'd silently
+      // survive as orphaned duplicates in the DB even though they vanish
+      // from view the moment this state update lands.
+      const sourceTag = `Auto-scanned:${documentId}`;
+      const stale = boqRows.filter(r => r.notes === sourceTag && r.id != null);
+      if (stale.length > 0) {
+        await Promise.all(stale.map(r => deleteBoqItem(r.id!)));
+      }
       setBoqRows(prev => [
-        ...prev,
+        ...prev.filter(r => r.notes !== sourceTag),
         ...result.items.map(item => ({
           phaseId: item.phaseHint
             ? project.phases.find(p => p.name.toLowerCase() === item.phaseHint!.toLowerCase())?.id
@@ -237,22 +263,15 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
           unit: item.unit,
           estimatedQuantity: item.estimatedQuantity,
           historicalSupply: item.historicalSupply,
-          notes: 'Auto-scanned',
+          notes: sourceTag,
         })),
       ]);
       toast.success(`${result.items.length} line item(s) scanned — review and edit as needed.`);
       if (result.parseErrors.length > 0) toast.error(result.parseErrors[0]);
     } catch (error) {
       toast.error(apiErrorMessage(error, 'Failed to scan document.'));
-    }
-  }
-
-  async function handleParseBlueprint(documentId: number) {
-    setParsingBlueprintId(documentId);
-    try {
-      await handleParseBoq(documentId);
     } finally {
-      setParsingBlueprintId(null);
+      parseBoqInFlight.current = false;
     }
   }
 
@@ -380,6 +399,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   }
 
   async function handleRunForecast() {
+    if (runForecastInFlight.current) return;
+    runForecastInFlight.current = true;
     setForecasting(true);
     try {
       // Est. Qty is only ever computed here, on a deliberate Run Forecast
@@ -422,6 +443,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     } catch (error) {
       toast.error(apiErrorMessage(error, 'Failed to generate forecast — no historical or BOQ data available yet.'));
     } finally {
+      runForecastInFlight.current = false;
       setForecasting(false);
     }
   }
@@ -499,8 +521,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     boqRows, setBoqRows, boqItems,
     blueprints, boqDocs, poDocs, inventory, forecastedMaterials, receivedByMaterial, warehouseResolvedMaterialIds,
     remainingByMaterial, warehouseFulfilledByMaterial, warehousePendingMaterialIds,
-    savingBoq, forecasting, uploadingBlueprint, parsingBlueprintId, uploadingBoq, uploadingPo, savingPo,
-    handleUploadBlueprint, handleParseBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
+    savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
+    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
     handleSaveBoq, handleRunForecast, handleNotify,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
     poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
@@ -553,8 +575,6 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       blueprints={state.blueprints}
       uploading={state.uploadingBlueprint}
       onUploadBlueprint={state.handleUploadBlueprint}
-      parsingBlueprintId={state.parsingBlueprintId}
-      onParseBlueprint={state.handleParseBlueprint}
       onRemoveDocument={state.handleRemoveDocument}
     />
   ) : (

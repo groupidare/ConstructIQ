@@ -70,6 +70,14 @@ public class BOQService(AppDbContext db) : IBOQService
             entity.MaterialId        = materialId;
             entity.PrimarySection    = item.PrimarySection;
             entity.SubCategory       = item.SubCategory;
+            entity.Unit              = unitForRow;
+            // Prefer the row's own dedicated spec-column text (when the source
+            // sheet had one); otherwise fall back to whatever description text
+            // brought it here at all (a scanned material/description column,
+            // or a manually-typed name) — mirrors the frontend's own display
+            // fallback (row.specification || row.newMaterialName) so what's
+            // shown before saving matches what survives a reload.
+            entity.Specification     = !string.IsNullOrWhiteSpace(item.Specification) ? item.Specification : item.NewMaterialName;
             entity.EstimatedQuantity = item.EstimatedQuantity;
             entity.CoverageArea      = BOQUnitRules.IsAreaUnit(unitForRow) ? item.EstimatedQuantity : null;
             entity.ActualQuantity    = item.ActualQuantity ?? 0;
@@ -222,7 +230,11 @@ public class BOQService(AppDbContext db) : IBOQService
         SubCategory       = b.SubCategory,
         MaterialId        = b.MaterialId,
         MaterialName      = b.Material.Name,
-        Unit              = b.Material.Unit,
+        // Fall back to the catalog Material's unit only for rows saved before
+        // BOQItem had its own Unit column (or added directly from Stock on
+        // Hand with no row-level unit of their own).
+        Unit              = !string.IsNullOrWhiteSpace(b.Unit) ? b.Unit : b.Material.Unit,
+        Specification     = b.Specification,
         EstimatedQuantity = b.EstimatedQuantity,
         CoverageArea      = b.CoverageArea,
         ActualQuantity    = b.ActualQuantity,

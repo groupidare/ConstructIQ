@@ -21,6 +21,15 @@ public class BOQItem
     [MaxLength(100)] public string? PrimarySection { get; set; }
     [MaxLength(100)] public string? SubCategory    { get; set; }
 
+    // This row's own unit/description as actually written in the source BOQ
+    // document — distinct from Material.Unit/Name, which are the catalog
+    // entry's canonical values and can legitimately differ (e.g. a scanned
+    // "kg" of adhesive fuzzy-matched to a catalog material priced by "bag").
+    // Falling back to the catalog's own fields (as this used to do
+    // exclusively) silently rewrote what the user's document actually said.
+    [MaxLength(20)]  public string? Unit          { get; set; }
+    [MaxLength(300)] public string? Specification { get; set; }
+
     [Column(TypeName = "decimal(18,4)")]
     public decimal EstimatedQuantity { get; set; }
 

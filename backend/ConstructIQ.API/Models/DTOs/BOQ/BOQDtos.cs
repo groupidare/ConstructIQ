@@ -13,6 +13,10 @@ public class BOQItemUpsertDto
     public int?    MaterialId        { get; set; }
     public string? NewMaterialName   { get; set; }
     public string? Unit              { get; set; }
+    // The row's own scanned/typed description — kept distinct from the
+    // catalog Material's name so a fuzzy-matched row still shows what the
+    // source document actually said. See BOQItem.Specification.
+    public string? Specification     { get; set; }
     public decimal EstimatedQuantity { get; set; }
     // Only meaningful for historical/completed projects backfilling training
     // data — live projects derive actual usage from inventory movements instead.
@@ -56,6 +60,9 @@ public class BOQItemResponseDto
     public int      MaterialId        { get; set; }
     public string   MaterialName      { get; set; } = string.Empty;
     public string   Unit              { get; set; } = string.Empty;
+    // The row's own scanned/typed description, distinct from MaterialName
+    // (the catalog entry's canonical name) — see BOQItem.Specification.
+    public string?  Specification     { get; set; }
     public decimal  EstimatedQuantity { get; set; }
     // Server-derived only (mirrors EstimatedQuantity when Unit is an area unit) —
     // never accepted from the client on save, see BOQItemUpsertDto.
