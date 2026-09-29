@@ -35,6 +35,10 @@ interface RecordExcessModalProps {
 
 export default function RecordExcessModal({ projects, onClose, onSuccess }: RecordExcessModalProps) {
   const [projectId, setProjectId] = useState(0);
+  // Free-typed search text, kept separate from projectId so the field can
+  // show whatever's been typed even before it resolves to a real project —
+  // a plain <select> forced scrolling through every project by name alone.
+  const [projectQuery, setProjectQuery] = useState("");
   const [rows, setRows]           = useState<MaterialRow[]>([{ ...EMPTY_ROW }]);
   const [submitting, setSubmitting] = useState(false);
   const [pendingItems, setPendingItems] = useState<PendingBOQItem[]>([]);
@@ -157,10 +161,21 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "0.75rem" }}>
           <div>
             <label style={labelStyle}>PROJECT *</label>
-            <select value={projectId} onChange={e => setProjectId(+e.target.value)} style={inputStyle}>
-              <option value={0} disabled>Select project…</option>
-              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
+            <input
+              list="record-excess-project-options"
+              value={projectQuery}
+              onChange={e => {
+                const val = e.target.value;
+                setProjectQuery(val);
+                const match = projects.find(p => p.name === val);
+                setProjectId(match ? match.id : 0);
+              }}
+              placeholder="Type to search project…"
+              style={inputStyle}
+            />
+            <datalist id="record-excess-project-options">
+              {projects.map(p => <option key={p.id} value={p.name} />)}
+            </datalist>
           </div>
           <div>
             <label style={labelStyle}>PROJECT TYPE</label>

@@ -88,22 +88,40 @@ def run_forecast(request: ForecastRequest) -> ForecastResponse:
     xgb_preds = xgboost_model.predict(records)
     preds     = ensemble_predict(rf_preds, xgb_preds)
 
-    forecasted_materials = []
+    # One prediction per BOQ line item (each carries its own section/phase/
+    # coverage-area features), but the same material commonly shows up on
+    # more than one line (e.g. CHB used for both "Exterior Wall" and
+    # "Interior Partition") — collapse those into one entry per material_id
+    # here so the API's contract (material_id/material_name, no line-item
+    # identifier at all) actually holds, instead of silently returning
+    # duplicate material_ids that predicted totals apart and duplicate rows
+    # downstream (React key collisions, doubled-looking numbers in the UI).
+    by_material: dict[int, ForecastedMaterial] = {}
     for i, record in enumerate(records):
-        qty     = float(max(preds[i], 0))
-        stock   = float(record["current_stock"])
-        shortage= max(qty - stock, 0)
+        qty      = float(max(preds[i], 0))
+        stock    = float(record["current_stock"])
+        material_id = record["material_id"]
 
-        forecasted_materials.append(ForecastedMaterial(
-            material_id         = record["material_id"],
-            material_name       = record["material_name"],
-            unit                = record["unit"],
-            forecasted_quantity = qty,
-            current_stock       = stock,
-            shortage            = shortage,
-            reorder_suggestion  = shortage * 1.1,
-            risk_level          = RiskLevel(classify_risk(shortage, stock)),
-        ))
+        existing = by_material.get(material_id)
+        if existing is not None:
+            existing.forecasted_quantity += qty
+        else:
+            by_material[material_id] = ForecastedMaterial(
+                material_id         = material_id,
+                material_name       = record["material_name"],
+                unit                = record["unit"],
+                forecasted_quantity = qty,
+                current_stock       = stock,   # per-material fact — identical across this material's rows
+                shortage            = 0,       # recomputed below, once the total is known
+                reorder_suggestion  = 0,
+                risk_level          = RiskLevel.low,
+            )
+
+    forecasted_materials = list(by_material.values())
+    for fm in forecasted_materials:
+        fm.shortage           = max(fm.forecasted_quantity - fm.current_stock, 0)
+        fm.reorder_suggestion = fm.shortage * 1.1
+        fm.risk_level         = RiskLevel(classify_risk(fm.shortage, fm.current_stock))
 
     return ForecastResponse(
         project_id=request.project_id,

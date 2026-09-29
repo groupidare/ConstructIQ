@@ -394,8 +394,17 @@ export default function MaterialPlanTab({
             <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>Forecasted Material Demand</p>
             <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>AI-predicted demand from the latest forecast run on this project.</p>
           </div>
-          {forecastedMaterials.length === 0 ? (
-            isHistorical && topDemandEntries.length > 0 ? (
+          {/* isHistorical is checked first and unconditionally — historical
+              projects are training data, not real forecast targets, and
+              always show the Top 5 fallback regardless of whether
+              forecastedMaterials happens to be non-empty (e.g. leftover
+              data from a forecast run against one during testing). Checking
+              forecastedMaterials.length first here previously let stray
+              data silently skip this branch for whichever historical
+              project happened to have it, making that one project's modal
+              look inconsistent with every other historical project's. */}
+          {isHistorical ? (
+            topDemandEntries.length > 0 ? (
               <div style={{ padding: '1rem' }}>
                 <p style={{ fontSize: '0.65rem', fontWeight: 700, color: '#9ca3af', letterSpacing: '0.05em', marginBottom: 6 }}>TOP 5 MATERIAL DEMAND/USAGE</p>
                 {topDemandEntries.map((m, i) => (
@@ -406,8 +415,10 @@ export default function MaterialPlanTab({
                 <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 6 }}>Extracted from the uploaded BOQ and PO data — historical projects aren&apos;t forecast targets themselves, they train the forecast for other projects.</p>
               </div>
             ) : (
-              <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No forecast has been run yet — click Run Forecast below.</p>
+              <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No material data extracted yet.</p>
             )
+          ) : forecastedMaterials.length === 0 ? (
+            <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No forecast has been run yet — click Run Forecast below.</p>
           ) : (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.7fr)', gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
