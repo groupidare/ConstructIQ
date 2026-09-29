@@ -114,9 +114,14 @@ export default function MaterialPlanTab({
   // blank) is enough on its own to fill the freed width — fr tracks share
   // whatever space actually exists in the row, so the remaining columns grow
   // to fill it with no explicit redistribution needed.
+  // ALERTS only ever holds up to three 24px icon buttons (or one "Done"
+  // badge) — 0.9fr left it visibly wider than that content needs, showing
+  // as dead space between the buttons and the column's own right edge.
+  // Trimmed down and the freed share handed to MATERIAL SPECIFICATION,
+  // the column that actually benefits from more room.
   const columnsTemplate = isCompleted
-    ? `minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr)${editable ? ' minmax(0,0.9fr)' : ''}`
-    : `minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.6fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr)${editable ? ' minmax(0,0.9fr)' : ''}`;
+    ? `minmax(0,1fr) minmax(0,1fr) minmax(0,1.8fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr)${editable ? ' minmax(0,0.6fr)' : ''}`
+    : `minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.9fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr)${editable ? ' minmax(0,0.6fr)' : ''}`;
   const [parsingId, setParsingId] = useState<number | null>(null);
 
   const timeRange = `${formatDate(project.startDate)} – ${formatDate(project.targetEndDate)}`;
@@ -518,16 +523,25 @@ export default function MaterialPlanTab({
             actually needs that width; view-only mode fits comfortably at any
             container width without it. */}
         <div style={{ minWidth: editable ? 980 : 0 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-          {(isCompleted
-            ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'ACTUAL QTY', 'UNIT', 'EST. QTY']
-            : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'UNIT', 'EST. QTY']
-          ).concat(editable ? ['ALERTS'] : []).map((h, idx) => (
-            <span key={`${h}-${idx}`} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
-          ))}
-        </div>
-
+        {/* The header used to sit as a sibling outside this scrolling div —
+            harmless until the row list actually grew tall enough to scroll,
+            at which point the vertical scrollbar ate into the rows' width
+            but not the header's (a sibling, never scrolled), leaving the
+            header's columns — ALERTS especially, at the far right — no
+            longer lined up with the row cells beneath them. Making the
+            header itself the first (sticky) child of the *same* scrolling
+            div guarantees both always share the exact same scrollbar
+            gutter, so columns stay aligned whether or not scrolling is
+            actually happening. */}
         <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb', position: 'sticky', top: 0, zIndex: 1 }}>
+            {(isCompleted
+              ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'ACTUAL QTY', 'UNIT', 'EST. QTY']
+              : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'UNIT', 'EST. QTY']
+            ).concat(editable ? ['ALERTS'] : []).map((h, idx) => (
+              <span key={`${h}-${idx}`} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700, ...(h === 'ALERTS' ? { textAlign: 'right' } : {}) }}>{h}</span>
+            ))}
+          </div>
           {rows.length === 0 ? (
             <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No materials added yet.</p>
           ) : (
@@ -670,7 +684,7 @@ export default function MaterialPlanTab({
                     )}
                   </div>
                   {editable && (
-                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'flex-end' }}>
                     {isRequestDone ? (
                       <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#dcfce7', color: '#15803d' }}>Done</span>
                     ) : canRequest && (
