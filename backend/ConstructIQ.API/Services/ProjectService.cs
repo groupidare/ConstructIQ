@@ -20,20 +20,17 @@ public class ProjectService(AppDbContext db, IWebHostEnvironment env) : IProject
     // lined up) rather than actually under construction on site.
     private const int ActiveThreshold = 10;
 
+    // Every role with access to the Projects page sees every project — only
+    // editing is restricted (Admin/ProjectManager freely, SiteEngineer only
+    // on the project they're assigned to; see IProjectAccessService).
     public async Task<IEnumerable<ProjectResponseDto>> GetAllAsync(int userId, string role)
     {
-        var query = db.Projects
+        return await db.Projects
             .Include(p => p.ProjectManager)
             .Include(p => p.SiteEngineer)
             .Include(p => p.Phases)
-            .AsQueryable();
-
-        if (role is "SiteEngineer")
-            query = query.Where(p => p.SiteEngineerId == userId);
-        else if (role is "ProjectManager")
-            query = query.Where(p => p.ProjectManagerId == userId);
-
-        return await query.Select(p => ToDto(p)).ToListAsync();
+            .Select(p => ToDto(p))
+            .ToListAsync();
     }
 
     public async Task<ProjectResponseDto?> GetByIdAsync(int id)
@@ -46,7 +43,7 @@ public class ProjectService(AppDbContext db, IWebHostEnvironment env) : IProject
         return p is null ? null : ToDto(p);
     }
 
-    public async Task<ProjectResponseDto> CreateAsync(ProjectCreateDto dto, int createdByUserId)
+    public async Task<ProjectResponseDto> CreateAsync(ProjectCreateDto dto, int createdByUserId, string createdByRole)
     {
         var status = string.IsNullOrWhiteSpace(dto.Status) ? ProjectStatus.Planning : Enum.Parse<ProjectStatus>(dto.Status);
         var project = new Project
@@ -60,8 +57,14 @@ public class ProjectService(AppDbContext db, IWebHostEnvironment env) : IProject
             StartDate          = dto.StartDate,
             TargetEndDate      = dto.TargetEndDate,
             AssignedContractor = dto.AssignedContractor,
+            // ProjectManagerId isn't nullable, so whoever creates the project
+            // always fills it — same as it's always been for Admin (who
+            // isn't a "real" ProjectManager either). A SiteEngineer creating
+            // their own project additionally becomes its SiteEngineerId,
+            // which is what IProjectAccessService's ownership check actually
+            // reads — that's what makes it "their" project to edit.
             ProjectManagerId   = createdByUserId,
-            SiteEngineerId     = dto.SiteEngineerId,
+            SiteEngineerId     = createdByRole == "SiteEngineer" ? createdByUserId : dto.SiteEngineerId,
             Status             = status,
             IsHistorical       = dto.IsHistorical,
             // Backfilled via "Add Completed Project" (IsHistorical) or created

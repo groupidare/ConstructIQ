@@ -9,11 +9,14 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/warehouse-requests")]
 [Authorize]
-public class WarehouseRequestsController(IWarehouseRequestService warehouseRequestService) : ControllerBase
+public class WarehouseRequestsController(IWarehouseRequestService warehouseRequestService, IProjectAccessService projectAccess) : ControllerBase
 {
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? User.FindFirst("sub")?.Value ?? "0");
+
+    private string CurrentRole =>
+        User.FindFirst(ClaimTypes.Role)?.Value ?? string.Empty;
 
     [HttpGet]
     public async Task<IActionResult> GetAll() =>
@@ -27,6 +30,8 @@ public class WarehouseRequestsController(IWarehouseRequestService warehouseReque
     [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> Create([FromBody] WarehouseRequestCreateDto dto)
     {
+        if (!await projectAccess.CanEditProjectAsync(dto.ProjectId, CurrentUserId, CurrentRole))
+            return Forbid();
         try
         {
             var created = await warehouseRequestService.CreateAsync(dto, CurrentUserId);

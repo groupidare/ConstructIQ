@@ -1194,13 +1194,14 @@ export default function ProcurementPage() {
 
   const { user } = useAuthStore();
   const role = user?.role ?? "SiteEngineer";
-  // Admin/ProjectManager/ProcurementOfficer manage the PO lifecycle up through
-  // Approved. WarehousePersonnel is the only role that ever touches delivery —
-  // they're the ones physically receiving the goods, so they're the only ones
-  // who can click Delivered (save proof-of-delivery batches, then complete it)
-  // and the only ones who can rate the supplier afterward. SiteEngineer is
-  // view-only. The backend enforces both restrictions independently of this.
-  const canManagePOs = role === "Admin" || role === "ProjectManager" || role === "ProcurementOfficer";
+  // Admin/ProcurementOfficer manage the PO lifecycle up through Approved —
+  // ProjectManager is view-only for Procurement. WarehousePersonnel is the
+  // only role that ever touches delivery — they're the ones physically
+  // receiving the goods, so they're the only ones who can click Delivered
+  // (save proof-of-delivery batches, then complete it) and the only ones who
+  // can rate the supplier afterward. The backend enforces both restrictions
+  // independently of this.
+  const canManagePOs = role === "Admin" || role === "ProcurementOfficer";
   const canMarkDelivered = role === "WarehousePersonnel" || role === "Admin";
   const canRate = role === "WarehousePersonnel" || role === "Admin";
   const canEditContact = role === "ProcurementOfficer" || role === "Admin";

@@ -27,8 +27,10 @@ public class ExcessWasteController(IExcessWasteService excessWasteService) : Con
     public async Task<IActionResult> GetPendingBOQItems(int projectId) =>
         Ok(await excessWasteService.GetPendingBOQItemsAsync(projectId));
 
+    // SiteEngineer's Excess Analytics access is view-only — only
+    // Warehouse (and Admin) actually log/edit entries.
     [HttpPost]
-    [Authorize(Roles = "Admin,SiteEngineer,WarehousePersonnel")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> Create([FromBody] ExcessWasteCreateDto dto)
     {
         var created = await excessWasteService.CreateAsync(dto, CurrentUserId);
@@ -36,7 +38,7 @@ public class ExcessWasteController(IExcessWasteService excessWasteService) : Con
     }
 
     [HttpPut("{id:int}")]
-    [Authorize(Roles = "Admin,SiteEngineer,WarehousePersonnel")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> Update(int id, [FromBody] ExcessWasteUpdateDto dto)
     {
         try

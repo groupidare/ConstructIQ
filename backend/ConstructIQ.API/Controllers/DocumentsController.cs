@@ -8,18 +8,24 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/documents")]
 [Authorize]
-public class DocumentsController(IDocumentService documentService) : ControllerBase
+public class DocumentsController(IDocumentService documentService, IProjectAccessService projectAccess) : ControllerBase
 {
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? User.FindFirst("sub")?.Value ?? "0");
 
+    private string CurrentRole =>
+        User.FindFirst(ClaimTypes.Role)?.Value ?? string.Empty;
+
     [HttpPost("upload")]
     [RequestSizeLimit(26_214_400)] // 25 MB
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> Upload(
         [FromForm] IFormFile file, [FromForm] int projectId, [FromForm] string category,
         [FromForm] string? categoryOther, [FromForm] string? description)
     {
+        if (!await projectAccess.CanEditProjectAsync(projectId, CurrentUserId, CurrentRole))
+            return Forbid();
         try
         {
             var result = await documentService.UploadAsync(file, projectId, category, CurrentUserId, categoryOther, description);
@@ -38,8 +44,11 @@ public class DocumentsController(IDocumentService documentService) : ControllerB
         Ok(await documentService.GetByProjectAsync(projectId));
 
     [HttpPost("{id:int}/parse")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> Parse(int id)
     {
+        if (!await projectAccess.CanEditDocumentAsync(id, CurrentUserId, CurrentRole))
+            return Forbid();
         try
         {
             return Ok(await documentService.ParseAsync(id));
@@ -49,8 +58,11 @@ public class DocumentsController(IDocumentService documentService) : ControllerB
     }
 
     [HttpPost("{id:int}/parse-po")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> ParsePO(int id)
     {
+        if (!await projectAccess.CanEditDocumentAsync(id, CurrentUserId, CurrentRole))
+            return Forbid();
         try
         {
             return Ok(await documentService.ParsePOAsync(id));
@@ -60,8 +72,11 @@ public class DocumentsController(IDocumentService documentService) : ControllerB
     }
 
     [HttpDelete("{id:int}")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> Delete(int id)
     {
+        if (!await projectAccess.CanEditDocumentAsync(id, CurrentUserId, CurrentRole))
+            return Forbid();
         var deleted = await documentService.DeleteAsync(id);
         return deleted ? NoContent() : NotFound();
     }

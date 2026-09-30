@@ -173,8 +173,14 @@ public class BOQService(AppDbContext db) : IBOQService
 
         var candidates = await db.Materials.Select(m => new { m.Id, m.Name }).ToListAsync();
         var fuzzyMatch = candidates
-            .Select(m => new { m.Id, Overlap = TokenOverlap(m.Name, trimmed) })
-            .Where(m => m.Overlap.Shared >= 2 && m.Overlap.Ratio >= 0.5)
+            .Select(m => new { m.Id, m.Name, Overlap = TokenOverlap(m.Name, trimmed) })
+            // A high word-overlap ratio alone isn't enough here — unlike
+            // GetHistoricalEstimateAsync's soft "same family" suggestion,
+            // this permanently links a BOQ row to a real Material's stock
+            // tracking. "Concrete Hollow Block, 150mm" and "..., 100mm" share
+            // every other word and would otherwise clear 0.5 easily, silently
+            // merging two different-sized materials into one stock entry.
+            .Where(m => m.Overlap.Shared >= 2 && m.Overlap.Ratio >= 0.5 && !HasConflictingDimension(m.Name, trimmed))
             .OrderByDescending(m => m.Overlap.Ratio)
             .ThenByDescending(m => m.Overlap.Shared)
             .FirstOrDefault();
@@ -287,6 +293,42 @@ public class BOQService(AppDbContext db) : IBOQService
         if (tokensA.Count == 0 || tokensB.Count == 0) return (0, 0);
         var shared = tokensA.Intersect(tokensB).Count();
         return (shared, (double)shared / Math.Min(tokensA.Count, tokensB.Count));
+    }
+
+    private static readonly Regex DimensionToken = new(@"^(\d+(?:\.\d+)?)([a-z]+)$", RegexOptions.Compiled);
+
+    // Buckets a token set's dimension-looking tokens ("150mm", "6m", "25kg")
+    // by unit suffix, so a rebar row's "16mm" diameter is only ever compared
+    // against another row's "mm" tokens — not against an unrelated but
+    // matching "6m" length token both rows also happen to share.
+    private static Dictionary<string, HashSet<string>> DimensionsByUnit(HashSet<string> tokens)
+    {
+        var map = new Dictionary<string, HashSet<string>>();
+        foreach (var t in tokens)
+        {
+            var m = DimensionToken.Match(t);
+            if (!m.Success) continue;
+            if (!map.TryGetValue(m.Groups[2].Value, out var values))
+                map[m.Groups[2].Value] = values = [];
+            values.Add(m.Groups[1].Value);
+        }
+        return map;
+    }
+
+    // True when both descriptions specify a same-unit dimension (150mm vs
+    // 100mm, 16mm vs 10mm, ...) but share none of the values under that
+    // unit — a hard signal they're different physical materials, regardless
+    // of how much of the surrounding wording overlaps.
+    private static bool HasConflictingDimension(string? a, string? b)
+    {
+        var dimsA = DimensionsByUnit(Tokenize(a));
+        var dimsB = DimensionsByUnit(Tokenize(b));
+        foreach (var (unit, valuesA) in dimsA)
+        {
+            if (dimsB.TryGetValue(unit, out var valuesB) && !valuesA.Overlaps(valuesB))
+                return true;
+        }
+        return false;
     }
 
     private static bool FuzzyMatch(string? a, string? b, double minRatio, int minShared)

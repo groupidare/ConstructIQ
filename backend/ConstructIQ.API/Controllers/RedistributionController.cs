@@ -19,8 +19,12 @@ public class RedistributionController(IRedistributionService redistributionServi
     public async Task<IActionResult> GetRecommendations() =>
         Ok(await redistributionService.GetRecommendationsAsync());
 
+    // Regenerating the suggestion list and acting on it (approve/reject/
+    // cancel/create) are all real "manage" actions — ProjectManager's
+    // Redistribution access is view-only, so only Admin/WarehousePersonnel
+    // get these.
     [HttpPost("generate")]
-    [Authorize(Roles = "Admin,ProjectManager")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> Generate()
     {
         await redistributionService.GenerateRecommendationsAsync();
@@ -28,7 +32,7 @@ public class RedistributionController(IRedistributionService redistributionServi
     }
 
     [HttpPost("{id:int}/approve")]
-    [Authorize(Roles = "Admin,ProjectManager,WarehousePersonnel")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> Approve(int id)
     {
         var success = await redistributionService.ApproveTransferAsync(id, CurrentUserId);
@@ -36,7 +40,7 @@ public class RedistributionController(IRedistributionService redistributionServi
     }
 
     [HttpPost("{id:int}/reject")]
-    [Authorize(Roles = "Admin,ProjectManager,WarehousePersonnel")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> Reject(int id)
     {
         var success = await redistributionService.RejectTransferAsync(id, CurrentUserId);
@@ -44,7 +48,7 @@ public class RedistributionController(IRedistributionService redistributionServi
     }
 
     [HttpPost("{id:int}/cancel-approval")]
-    [Authorize(Roles = "Admin,ProjectManager,WarehousePersonnel")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> CancelApproval(int id)
     {
         var success = await redistributionService.CancelApprovalAsync(id);
@@ -69,7 +73,7 @@ public class RedistributionController(IRedistributionService redistributionServi
         Ok(await redistributionService.GetReceivedQuantitiesAsync(projectId));
 
     [HttpPost("from-excess")]
-    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer,WarehousePersonnel")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> CreateFromExcess([FromBody] RedistributeFromExcessDto dto)
     {
         try

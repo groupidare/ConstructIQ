@@ -59,7 +59,7 @@ export default function Header({ title }: HeaderProps) {
 
       {/* ── Left: hamburger + title + breadcrumb ── */}
       <div style={{ display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
-        <button onClick={toggleSidebar} title="Toggle sidebar" style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:0, display:"flex", alignItems:"center" }}>
+        <button suppressHydrationWarning onClick={toggleSidebar} title="Toggle sidebar" style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:0, display:"flex", alignItems:"center" }}>
           <Menu style={{ width:20, height:20 }} />
         </button>
         <div>
@@ -79,6 +79,7 @@ export default function Header({ title }: HeaderProps) {
         {/* Bell + dropdown */}
         <div ref={bellRef} style={{ position:"relative" }}>
           <button
+            suppressHydrationWarning
             onClick={() => setNotifOpen(o => !o)}
             style={{ position:"relative", color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:4, display:"flex", alignItems:"center" }}
           >
@@ -111,11 +112,11 @@ export default function Header({ title }: HeaderProps) {
                 </div>
                 <div style={{ display:"flex", gap:8, alignItems:"center" }}>
                   {unread > 0 && (
-                    <button onClick={markAllRead} style={{ fontSize:"0.72rem", color:"#f97316", background:"none", border:"none", cursor:"pointer", fontWeight:600 }}>
+                    <button suppressHydrationWarning onClick={markAllRead} style={{ fontSize:"0.72rem", color:"#f97316", background:"none", border:"none", cursor:"pointer", fontWeight:600 }}>
                       Mark all read
                     </button>
                   )}
-                  <button onClick={() => setNotifOpen(false)} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer", padding:2 }}>
+                  <button suppressHydrationWarning onClick={() => setNotifOpen(false)} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer", padding:2 }}>
                     <X style={{ width:15, height:15 }} />
                   </button>
                 </div>
@@ -145,7 +146,7 @@ export default function Header({ title }: HeaderProps) {
                 })}
               </div>
               <div style={{ padding:"10px 16px", borderTop:"1px solid #f3f4f6", textAlign:"center" }}>
-                <button onClick={() => setNotifOpen(false)} style={{ fontSize:"0.78rem", color:"#f97316", background:"none", border:"none", cursor:"pointer", fontWeight:600 }}>
+                <button suppressHydrationWarning onClick={() => setNotifOpen(false)} style={{ fontSize:"0.78rem", color:"#f97316", background:"none", border:"none", cursor:"pointer", fontWeight:600 }}>
                   View all notifications
                 </button>
               </div>
@@ -155,6 +156,7 @@ export default function Header({ title }: HeaderProps) {
 
         {/* Theme toggle */}
         <button
+          suppressHydrationWarning
           onClick={toggleTheme}
           aria-label="Toggle dark mode"
           style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:4, display:"flex", alignItems:"center" }}
@@ -164,6 +166,7 @@ export default function Header({ title }: HeaderProps) {
 
         {/* Avatar */}
         <button
+          suppressHydrationWarning
           onClick={() => router.push("/admin/settings")}
           aria-label="Go to settings"
           style={{ background:"none", border:"none", padding:0, cursor:"pointer", display:"flex", flexShrink:0 }}

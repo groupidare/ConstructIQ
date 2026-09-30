@@ -40,6 +40,7 @@ interface Project {
   manager: string; engineers: string[];
   type: string;
   isHistorical: boolean;
+  siteEngineerId?: number;
 }
 
 
@@ -55,6 +56,28 @@ const PROGRESS_COLOR: Record<string, string> = {
   PLANNING:"#374151", ACTIVE:"#f97316", COMPLETED:"#22c55e", "ON HOLD":"#d97706",
 };
 
+// Combines BOQ rows that are really the same material+spec (e.g. the same
+// "150mm CHB" appearing on both the exterior-wall and perimeter-wall lines)
+// into one summed entry before ranking — otherwise the same real material
+// could occupy two of the "Top 5" slots as if it were two different
+// materials, and a genuinely different material (that only appears once)
+// gets pushed out. Keyed on materialId + specification, not just the
+// catalog name, since two rows can share a catalog Material yet describe
+// physically different items (a mis-mapping bug, not something to paper
+// over by trusting the shared name).
+function groupMaterials(
+  rows: { key: string; material: string; estimated: number; actualRaw: number; unit: string }[],
+): { material: string; estimated: number; actual?: number; unit: string }[] {
+  const byKey = new Map<string, { material: string; estimated: number; actualRaw: number; unit: string }>();
+  for (const r of rows) {
+    const existing = byKey.get(r.key);
+    if (existing) { existing.estimated += r.estimated; existing.actualRaw += r.actualRaw; }
+    else byKey.set(r.key, { ...r });
+  }
+  return Array.from(byKey.values())
+    .map(g => ({ material: g.material, estimated: g.estimated, actual: g.actualRaw > 0 ? g.actualRaw : undefined, unit: g.unit }));
+}
+
 function toProject(dto: ProjectResponseDto): Project {
   const status = (STATUS_MAP[dto.status] ?? "PLANNING") as ProjectStatus;
   return {
@@ -63,8 +86,11 @@ function toProject(dto: ProjectResponseDto): Project {
     status, progress: dto.progress,
     progressColor: PROGRESS_COLOR[status] ?? "#374151",
     manager: dto.projectManagerName,
-    engineers: dto.siteEngineerName ? [dto.siteEngineerName] : [],
+    // A SiteEngineer-created project attributes both slots to its creator
+    // (see ProjectService.CreateAsync) — don't show their name twice.
+    engineers: dto.siteEngineerName && dto.siteEngineerName !== dto.projectManagerName ? [dto.siteEngineerName] : [],
     isHistorical: dto.isHistorical,
+    siteEngineerId: dto.siteEngineerId,
   };
 }
 
@@ -857,10 +883,11 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
         // *used*, and conflating the two is what made every row look like a
         // perfect forecast match before.
         if (project.isHistorical) {
-          const entries = boqItems.map(b => ({
+          const rows = boqItems.map(b => ({
+            key: `${b.materialId}::${b.specification ?? ''}`,
             material:  b.materialName,
             estimated: b.estimatedPurchaseQuantity ?? b.estimatedQuantity,
-            actual:    b.actualQuantity > 0 ? b.actualQuantity : undefined,
+            actualRaw: b.actualQuantity,
             // Paired with the same baseline above — EstimatedPurchaseUnit
             // when a purchase-unit estimate exists, else the row's own unit
             // (which already falls back to the catalog Material's unit) —
@@ -869,7 +896,8 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
             // BOQ measurement unit or vice versa.
             unit: b.estimatedPurchaseUnit ?? b.unit,
           }));
-          setTopDemand(entries.sort((a, b) => (b.actual ?? b.estimated) - (a.actual ?? a.estimated)).slice(0, 5));
+          const grouped = groupMaterials(rows);
+          setTopDemand(grouped.sort((a, b) => (b.actual ?? b.estimated) - (a.actual ?? a.estimated)).slice(0, 5));
           return;
         }
 
@@ -887,13 +915,15 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
         // actually been logged for it) instead of one summary line for just
         // the top material.
         const withEstimate = boqItems.filter(b => b.estimatedPurchaseQuantity != null && b.estimatedPurchaseUnit);
-        const ranked = withEstimate.slice().sort((a, b) => (b.estimatedPurchaseQuantity ?? 0) - (a.estimatedPurchaseQuantity ?? 0));
-        setAiPredicted(ranked.slice(0, 5).map(b => ({
+        const rows = withEstimate.map(b => ({
+          key: `${b.materialId}::${b.specification ?? ''}`,
           material:  b.materialName,
           estimated: b.estimatedPurchaseQuantity!,
-          actual:    b.actualQuantity > 0 ? b.actualQuantity : undefined,
+          actualRaw: b.actualQuantity,
           unit:      b.estimatedPurchaseUnit!,
-        })));
+        }));
+        const grouped = groupMaterials(rows);
+        setAiPredicted(grouped.sort((a, b) => b.estimated - a.estimated).slice(0, 5));
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -949,7 +979,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
               <span style={{ fontSize:"0.65rem", fontWeight:700, color:"#6d28d9", marginBottom: 1 }}>Top 5 Material Demand/Usage</span>
               {topDemand.map((m, i) => (
                 <span key={i} style={{ fontSize:"0.68rem", fontWeight:500, color:"#6d28d9" }}>
-                  {i + 1}. {m.material} - Est: {m.estimated.toLocaleString()} {m.unit} / Actual: {(m.actual ?? m.estimated).toLocaleString()} {m.unit}
+                  {i + 1}. {m.material} - Est: {m.estimated.toLocaleString()} {m.unit} / Actual: {m.actual != null ? `${m.actual.toLocaleString()} ${m.unit}` : "—"}
                 </span>
               ))}
             </>
@@ -963,7 +993,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
                 <span style={{ fontSize:"0.65rem", fontWeight:700, color:"#7c3aed", marginBottom: 1 }}>Top 5 AI Predicted</span>
                 {aiPredicted.map((m, i) => (
                   <span key={i} style={{ fontSize:"0.68rem", fontWeight:500, color:"#7c3aed" }}>
-                    {i + 1}. {m.material} - Est: {m.estimated.toLocaleString()} {m.unit} / Actual: {(m.actual ?? m.estimated).toLocaleString()} {m.unit}
+                    {i + 1}. {m.material} - Est: {m.estimated.toLocaleString()} {m.unit} / Actual: {m.actual != null ? `${m.actual.toLocaleString()} ${m.unit}` : "—"}
                   </span>
                 ))}
               </>
@@ -1046,12 +1076,20 @@ export default function ProjectsPage() {
   const role = user?.role ?? "SiteEngineer";
 
   // Role-based permissions
-  const canCreate    = role === "Admin" || role === "ProjectManager";
+  const canCreate    = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
   const canEdit      = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
-  const canEditDetails = role === "Admin" || role === "ProjectManager";
   const canDelete    = role === "Admin";
   const showProgress = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
   const viewOnly     = role === "ProcurementOfficer";
+
+  // A SiteEngineer can only edit the project they're assigned to (mirrors
+  // the backend's ProjectAccessService) — every other role's edit rights are
+  // all-or-nothing, so this only needs to branch for SiteEngineer.
+  function canEditProject(p: Project): boolean {
+    if (role === "Admin" || role === "ProjectManager") return true;
+    if (role === "SiteEngineer") return p.siteEngineerId === user?.id;
+    return false;
+  }
 
   async function handleDeleteProject(id: number) {
     setDeleting(true);
@@ -1172,17 +1210,17 @@ export default function ProjectsPage() {
           </div>
           <div style={{ display:"flex", gap:"0.625rem" }}>
             {canCreate && (
-              <button onClick={()=>setModal({type:"repository"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>
+              <button suppressHydrationWarning onClick={()=>setModal({type:"repository"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>
                 <Upload style={{ width:14, height:14 }} /> Import Files
               </button>
             )}
             {canCreate && (
-              <button onClick={()=>setModal({type:"addCompletedProject"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }} title="Backfill a finished project as historical data for the forecasting model">
+              <button suppressHydrationWarning onClick={()=>setModal({type:"addCompletedProject"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }} title="Backfill a finished project as historical data for the forecasting model">
                 <History style={{ width:14, height:14 }} /> Add Completed Project
               </button>
             )}
             {canCreate && (
-              <button onClick={()=>setModal({type:"newProject"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>
+              <button suppressHydrationWarning onClick={()=>setModal({type:"newProject"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>
                 <Plus style={{ width:15, height:15 }} /> New Project
               </button>
             )}
@@ -1193,6 +1231,7 @@ export default function ProjectsPage() {
         <div style={{ display:"flex", flexWrap:"wrap", justifyContent:"space-between", alignItems:"center", gap:"0.75rem", borderBottom:"1px solid #e5e7eb", marginBottom:"1.25rem" }}>
           <div style={{ display:"flex" }}>
             <button
+              suppressHydrationWarning
               onClick={()=>setView("projects")}
               style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem", background:"transparent",
                 fontWeight: view==="projects" ? 700 : 400, color: view==="projects" ? "#f97316" : "#9ca3af",
@@ -1201,6 +1240,7 @@ export default function ProjectsPage() {
               Projects ({realProjects.length})
             </button>
             <button
+              suppressHydrationWarning
               onClick={()=>setView("historical")}
               style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem", background:"transparent",
                 fontWeight: view==="historical" ? 700 : 400, color: view==="historical" ? "#f97316" : "#9ca3af",
@@ -1212,6 +1252,7 @@ export default function ProjectsPage() {
           <div style={{ position:"relative", width:260, maxWidth:"100%", marginBottom:8 }}>
             <Search style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", width:14, height:14, color:"#9ca3af", pointerEvents:"none" }} />
             <input
+              suppressHydrationWarning
               value={projectSearch}
               onChange={e=>setProjectSearch(e.target.value)}
               placeholder="Search project name..."
@@ -1245,7 +1286,7 @@ export default function ProjectsPage() {
                 project={p}
                 refreshKey={refreshKey}
                 onView={()=>setModal({type:"workspace",projectId:p.id,editable:false})}
-                onMaterialPlan={()=>setModal({type:"workspace",projectId:p.id,editable:true})}
+                onMaterialPlan={()=>setModal({type:"workspace",projectId:p.id,editable:canEditProject(p)})}
                 onReports={()=>setModal({type:"reports",project:p})}
                 onProgress={()=>setModal({type:"progress",project:p})}
                 onDelete={()=>setModal({type:"deleteConfirm",project:p})}
@@ -1255,7 +1296,7 @@ export default function ProjectsPage() {
                 }}
                 canEdit={canEdit}
                 canDelete={canDelete}
-                canEditDetails={canEditDetails}
+                canEditDetails={canEditProject(p)}
                 showProgress={showProgress}
                 viewOnly={viewOnly}
               />

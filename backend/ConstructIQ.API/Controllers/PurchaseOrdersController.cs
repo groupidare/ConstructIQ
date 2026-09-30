@@ -14,9 +14,10 @@ namespace ConstructIQ.API.Controllers;
 public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env) : ControllerBase
 {
     // Roles that manage the PO lifecycle (create + set Pending/Approved).
-    // WarehousePersonnel is deliberately excluded — they only receive
-    // deliveries, so they can't create POs or move one back to Pending/Approved.
-    private const string ManageRoles = "Admin,ProjectManager,ProcurementOfficer";
+    // ProjectManager is view-only for Procurement, and WarehousePersonnel
+    // only receives deliveries, so neither can create POs or move one back
+    // to Pending/Approved.
+    private const string ManageRoles = "Admin,ProcurementOfficer";
 
     // Only warehouse personnel physically receive the delivery, so they're the
     // only ones who can progress one (save a batch, then complete it) or rate

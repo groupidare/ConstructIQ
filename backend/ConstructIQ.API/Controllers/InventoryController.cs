@@ -26,8 +26,10 @@ public class InventoryController(IInventoryService inventoryService) : Controlle
         return record is null ? NotFound() : Ok(record);
     }
 
+    // SiteEngineer's Inventory access is view-only — only Warehouse (and
+    // Admin) actually record stock movements.
     [HttpPost("movement")]
-    [Authorize(Roles = "Admin,SiteEngineer,WarehousePersonnel")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> RecordMovement([FromBody] MovementCreateDto dto)
     {
         await inventoryService.RecordMovementAsync(dto, CurrentUserId);

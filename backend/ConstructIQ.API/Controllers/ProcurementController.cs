@@ -20,7 +20,7 @@ public class ProcurementController(IProcurementService procurementService) : Con
         Ok(await procurementService.GetRecommendationsAsync(projectId));
 
     [HttpPost("recommendations/generate/{projectId:int}")]
-    [Authorize(Roles = "Admin,ProjectManager")]
+    [Authorize(Roles = "Admin,ProcurementOfficer")]
     public async Task<IActionResult> GenerateRecommendations(int projectId)
     {
         await procurementService.GenerateRecommendationsAsync(projectId);
@@ -28,7 +28,7 @@ public class ProcurementController(IProcurementService procurementService) : Con
     }
 
     [HttpPost("purchase-requests")]
-    [Authorize(Roles = "Admin,ProjectManager,ProcurementOfficer")]
+    [Authorize(Roles = "Admin,ProcurementOfficer")]
     public async Task<IActionResult> CreatePurchaseRequest([FromBody] PurchaseRequestCreateDto dto)
     {
         var result = await procurementService.CreatePurchaseRequestAsync(dto, CurrentUserId);
@@ -36,7 +36,7 @@ public class ProcurementController(IProcurementService procurementService) : Con
     }
 
     [HttpPatch("purchase-requests/{requestId:int}/status")]
-    [Authorize(Roles = "Admin,ProjectManager,ProcurementOfficer")]
+    [Authorize(Roles = "Admin,ProcurementOfficer")]
     public async Task<IActionResult> UpdateStatus(int requestId, [FromBody] string status)
     {
         var result = await procurementService.UpdateRequestStatusAsync(requestId, status, CurrentUserId);

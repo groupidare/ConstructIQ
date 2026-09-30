@@ -9,16 +9,21 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
-public class ForecastController(IForecastService forecastService) : ControllerBase
+public class ForecastController(IForecastService forecastService, IProjectAccessService projectAccess) : ControllerBase
 {
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? User.FindFirst("sub")?.Value ?? "0");
 
+    private string CurrentRole =>
+        User.FindFirst(ClaimTypes.Role)?.Value ?? string.Empty;
+
     [HttpPost("generate")]
     [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> Generate([FromBody] ForecastRequestDto request)
     {
+        if (!await projectAccess.CanEditProjectAsync(request.ProjectId, CurrentUserId, CurrentRole))
+            return Forbid();
         try
         {
             return Ok(await forecastService.GenerateForecastAsync(request, CurrentUserId));

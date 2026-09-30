@@ -57,10 +57,12 @@ function SignOutConfirmModal({ onCancel, onConfirm }: { onCancel: () => void; on
         </h2>
         <div style={{ display:"flex", gap:"1rem", width:"100%", marginTop:"0.25rem" }}>
           <button
+            suppressHydrationWarning
             onClick={onCancel}
             style={{ flex:1, padding:"13px 0", borderRadius:10, border:"1.5px solid #e5e7eb", background:"#fff", fontWeight:700, fontSize:"0.95rem", color:"#374151", cursor:"pointer" }}
           >Stay signed in</button>
           <button
+            suppressHydrationWarning
             onClick={onConfirm}
             style={{ flex:1, padding:"13px 0", borderRadius:10, border:"none", background:"#9b1c1c", color:"#fff", fontWeight:700, fontSize:"0.95rem", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}
           >
@@ -208,6 +210,7 @@ export default function Sidebar() {
           </div>
           {!collapsed && (
             <button
+              suppressHydrationWarning
               onClick={() => setShowConfirm(true)}
               title="Sign out"
               style={{ background:"none", border:"none", cursor:"pointer", color:"#6b7280", padding:4, flexShrink:0, display:"flex", alignItems:"center" }}

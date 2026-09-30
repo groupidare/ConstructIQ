@@ -49,11 +49,12 @@ export default function ExcessAnalyticsPage() {
   const [logSearch, setLogSearch] = useState("");
 
   // Mirrors the backend's own restriction on POST/PUT /excess-waste (Admin,
-  // SiteEngineer, WarehousePersonnel) — without this, anyone could see and
-  // click "+ Excess Log"/"Edit" and only find out they lack permission after
-  // a confusing generic failure from the server's 403.
+  // WarehousePersonnel) — SiteEngineer's Excess Analytics access is
+  // view-only. Without this, anyone could see and click "+ Excess Log"/
+  // "Edit" and only find out they lack permission after a confusing
+  // generic failure from the server's 403.
   const { user } = useAuthStore();
-  const canManageExcess = user?.role === "Admin" || user?.role === "SiteEngineer" || user?.role === "WarehousePersonnel";
+  const canManageExcess = user?.role === "Admin" || user?.role === "WarehousePersonnel";
 
   const { projects } = useProjects();
   const [records, setRecords] = useState<ExcessWasteRecord[]>([]);
@@ -411,7 +412,7 @@ export default function ExcessAnalyticsPage() {
                                                   </button>
                                                 );
                                               })()}
-                                              {e.isReusable && (() => {
+                                              {canManageExcess && e.isReusable && (() => {
                                                 const isActive = ACTIVE_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "");
                                                 const isBlocked = isActive || e.quantity <= 0;
                                                 const title = isActive

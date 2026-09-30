@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
+import { useAuthStore } from "@/store/authStore";
 import { useProcurement } from "@/hooks/useProcurement";
 import type { RedistributionRecommendation, RedistributionStatus } from "@/types/procurement";
 import { Zap, Package, ClipboardCheck, Repeat, CheckSquare, Eye, X, RefreshCw } from "lucide-react";
@@ -93,8 +94,18 @@ export default function RedistributionPage() {
   const [cancelingId, setCancelingId] = useState<number | null>(null);
   const [reviewItem, setReviewItem] = useState<RedistributionRecommendation | null>(null);
 
+  // Mirrors the backend: only Admin/WarehousePersonnel can generate/approve/
+  // reject/cancel — ProjectManager's Redistribution access is view-only.
+  const { user } = useAuthStore();
+  const role = user?.role;
+  const canManageRedistribution = role === "Admin" || role === "WarehousePersonnel";
+
   useEffect(() => {
-    generateRedistribution().catch(() => fetchRedistribution());
+    if (canManageRedistribution) {
+      generateRedistribution().catch(() => fetchRedistribution());
+    } else {
+      fetchRedistribution();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -205,14 +216,16 @@ export default function RedistributionPage() {
               </p>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={handleGenerate} disabled={generating} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", fontWeight: 600, cursor: generating ? "default" : "pointer", opacity: generating ? 0.6 : 1 }}>
-              <RefreshCw style={{ width: 14, height: 14 }} /> {generating ? "Refreshing…" : "Refresh"}
-            </button>
-            <button onClick={handleExecuteAll} disabled={executingAll || approvableOpportunities.length === 0} style={{ padding: "8px 18px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontSize: "0.8rem", fontWeight: 700, cursor: executingAll || approvableOpportunities.length === 0 ? "default" : "pointer", opacity: executingAll || approvableOpportunities.length === 0 ? 0.6 : 1 }}>
-              {executingAll ? "Executing…" : "Execute All"}
-            </button>
-          </div>
+          {canManageRedistribution && (
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={handleGenerate} disabled={generating} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", fontWeight: 600, cursor: generating ? "default" : "pointer", opacity: generating ? 0.6 : 1 }}>
+                <RefreshCw style={{ width: 14, height: 14 }} /> {generating ? "Refreshing…" : "Refresh"}
+              </button>
+              <button onClick={handleExecuteAll} disabled={executingAll || approvableOpportunities.length === 0} style={{ padding: "8px 18px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontSize: "0.8rem", fontWeight: 700, cursor: executingAll || approvableOpportunities.length === 0 ? "default" : "pointer", opacity: executingAll || approvableOpportunities.length === 0 ? 0.6 : 1 }}>
+                {executingAll ? "Executing…" : "Execute All"}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* ── Opportunities list ───────────────────────────────────────────── */}
@@ -251,7 +264,7 @@ export default function RedistributionPage() {
                     </p>
                   </div>
                   <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                    {r.status === "Approved" ? (
+                    {!canManageRedistribution ? null : r.status === "Approved" ? (
                       <>
                         <span style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, background: "#e5e7eb", color: "#9ca3af", fontSize: "0.8rem", fontWeight: 600 }}>
                           <CheckSquare style={{ width: 14, height: 14 }} /> Approved

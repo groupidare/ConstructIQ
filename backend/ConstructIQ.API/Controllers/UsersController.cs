@@ -125,12 +125,14 @@ public class UsersController(AppDbContext db, IWebHostEnvironment env) : Control
         return Ok(new { message = "User deleted." });
     }
 
-    // Minimal, scoped-down listing for the project-assignment dropdown — Admin
-    // and ProjectManager can both create/edit projects, but only Admin gets
-    // the full user roster above, so this exposes just enough (id + name) for
-    // picking a site engineer without opening up the rest of GetAll().
+    // Minimal, scoped-down listing for the project-assignment dropdown — Admin,
+    // ProjectManager and SiteEngineer can all create/edit projects (a
+    // SiteEngineer needs this list too, since NewProjectWizard uses it to
+    // find and pre-select their own entry), but only Admin gets the full
+    // user roster above, so this exposes just enough (id + name) for picking
+    // a site engineer without opening up the rest of GetAll().
     [HttpGet("site-engineers")]
-    [Authorize(Roles = "Admin,ProjectManager")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> GetSiteEngineers()
     {
         var engineers = await db.Users

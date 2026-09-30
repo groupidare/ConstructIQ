@@ -16,7 +16,7 @@ public class NotificationsController(INotificationService notificationService) :
             ?? User.FindFirst("sub")?.Value ?? "0");
 
     private string CurrentRole =>
-        User.FindFirst("role")?.Value ?? string.Empty;
+        User.FindFirst(ClaimTypes.Role)?.Value ?? string.Empty;
 
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] NotificationCreateDto dto) =>

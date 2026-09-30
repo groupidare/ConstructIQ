@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Plus, RefreshCw } from 'lucide-react';
+import { useAuthStore } from '@/store/authStore';
 import { useInventory } from '@/hooks/useInventory';
 import { useProjects } from '@/hooks/useProjects';
 import { Card, CardHeader, CardBody } from '@/components/ui/Card';
@@ -27,6 +28,10 @@ export default function ProjectInventoryPage() {
   const pid = Number(projectId);
   const { inventory, loading, fetchInventory, recordMovement } = useInventory(pid);
   const { fetchProject } = useProjects();
+  // Mirrors the backend's restriction on POST /inventory/movement —
+  // SiteEngineer's Inventory access is view-only.
+  const { user } = useAuthStore();
+  const canRecordMovement = user?.role === 'Admin' || user?.role === 'WarehousePersonnel';
   const [project, setProject] = useState<Project | null>(null);
   const [showMovementModal, setShowMovementModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -60,7 +65,9 @@ export default function ProjectInventoryPage() {
         </div>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={() => fetchInventory()}><RefreshCw size={14} /> Refresh</Button>
-          <Button onClick={() => setShowMovementModal(true)}><Plus size={14} /> Record Movement</Button>
+          {canRecordMovement && (
+            <Button onClick={() => setShowMovementModal(true)}><Plus size={14} /> Record Movement</Button>
+          )}
         </div>
       </div>
 

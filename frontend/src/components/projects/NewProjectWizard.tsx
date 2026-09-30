@@ -9,6 +9,7 @@ import { Check } from 'lucide-react';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import { Card, CardHeader, CardBody } from '@/components/ui/Card';
+import { useAuthStore } from '@/store/authStore';
 import { useProjects } from '@/hooks/useProjects';
 import { useSiteEngineers } from '@/hooks/useSiteEngineers';
 import MeasurementsAndMaterialPlanInline from '@/components/projects/MeasurementsAndMaterialPlan/Inline';
@@ -43,17 +44,31 @@ interface Props {
 export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepChange, onMaterialPlanTabChange, onMaterialPlanEditableChange }: Props) {
   const { createProject } = useProjects();
   const { siteEngineers } = useSiteEngineers();
+  const { user } = useAuthStore();
+  const isSiteEngineer = user?.role === 'SiteEngineer';
   const [step, setStep] = useState<1 | 2>(1);
   const [project, setProject] = useState<Project | null>(null);
 
   useEffect(() => { onStepChange?.(step); }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const { register, handleSubmit, watch, formState: { errors, isSubmitting } } = useForm<FormData>({
+  const { register, handleSubmit, watch, setValue, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: { type: 'Renovation' },
   });
 
   const type = watch('type');
+
+  // A SiteEngineer creating a project always ends up as its assigned
+  // engineer/PIC — the backend forces this regardless of what's picked here
+  // (ProjectService.CreateAsync), so the dropdown pre-selects and locks to
+  // their own name instead of showing a pickable list that wouldn't actually
+  // take effect. Waits for the list to actually contain their own entry
+  // (rather than firing on mount) so it doesn't race the async fetch.
+  useEffect(() => {
+    if (isSiteEngineer && user && siteEngineers.some(e => e.id === user.id)) {
+      setValue('siteEngineerId', user.id);
+    }
+  }, [isSiteEngineer, user, siteEngineers, setValue]);
 
   async function onSubmit(data: FormData) {
     try {
@@ -122,7 +137,13 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepCha
             <Input label="Target End Date *" type="date" {...register('targetEndDate')} />
             <div>
               <label className="label">Assign Engineer/PIC</label>
-              <select className="input" {...register('siteEngineerId', { valueAsNumber: true })} defaultValue="">
+              <select
+                className="input"
+                {...register('siteEngineerId', { valueAsNumber: true })}
+                defaultValue=""
+                disabled={isSiteEngineer}
+                title={isSiteEngineer ? "You're automatically assigned as this project's engineer/PIC" : undefined}
+              >
                 <option value="">— Unassigned —</option>
                 {siteEngineers.map(e => (
                   <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>

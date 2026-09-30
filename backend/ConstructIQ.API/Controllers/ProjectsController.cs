@@ -9,14 +9,14 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
-public class ProjectsController(IProjectService projectService) : ControllerBase
+public class ProjectsController(IProjectService projectService, IProjectAccessService projectAccess) : ControllerBase
 {
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? User.FindFirst("sub")?.Value ?? "0");
 
     private string CurrentRole =>
-        User.FindFirst("role")?.Value ?? string.Empty;
+        User.FindFirst(ClaimTypes.Role)?.Value ?? string.Empty;
 
     [HttpGet]
     public async Task<IActionResult> GetAll() =>
@@ -30,17 +30,19 @@ public class ProjectsController(IProjectService projectService) : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin,ProjectManager")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> Create([FromBody] ProjectCreateDto dto)
     {
-        var created = await projectService.CreateAsync(dto, CurrentUserId);
+        var created = await projectService.CreateAsync(dto, CurrentUserId, CurrentRole);
         return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
     }
 
     [HttpPut("{id:int}")]
-    [Authorize(Roles = "Admin,ProjectManager")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> Update(int id, [FromBody] ProjectCreateDto dto)
     {
+        if (!await projectAccess.CanEditProjectAsync(id, CurrentUserId, CurrentRole))
+            return Forbid();
         var updated = await projectService.UpdateAsync(id, dto);
         return updated is null ? NotFound() : Ok(updated);
     }
@@ -64,6 +66,8 @@ public class ProjectsController(IProjectService projectService) : ControllerBase
     [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> LogProgress(int id, [FromForm] SubmitProgressUpdateDto dto)
     {
+        if (!await projectAccess.CanEditProjectAsync(id, CurrentUserId, CurrentRole))
+            return Forbid();
         try
         {
             var result = await projectService.LogProgressAsync(id, dto, CurrentUserId);

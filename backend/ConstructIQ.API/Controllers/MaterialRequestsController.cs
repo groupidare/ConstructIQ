@@ -15,9 +15,9 @@ namespace ConstructIQ.API.Controllers;
 [Authorize]
 public class MaterialRequestsController(AppDbContext db) : ControllerBase
 {
-    // Same "manages procurement" set as PurchaseOrdersController — viewing
-    // and fulfilling requests is a procurement action, not a site one.
-    private const string ManageRoles = "Admin,ProjectManager,ProcurementOfficer";
+    // Same "manages procurement" set as PurchaseOrdersController —
+    // ProjectManager is view-only for Procurement, so isn't included here.
+    private const string ManageRoles = "Admin,ProcurementOfficer";
 
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value

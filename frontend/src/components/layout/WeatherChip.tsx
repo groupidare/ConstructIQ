@@ -39,6 +39,7 @@ export default function WeatherChip() {
   if (status === "error" && !snapshot) {
     return (
       <button
+        suppressHydrationWarning
         onClick={() => fetchWeather(true)}
         style={{ display: "flex", alignItems: "center", gap: 6, background: "#f3f4f6", border: "1px solid #e5e7eb", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: "0.7rem", color: "#9ca3af" }}
       >
@@ -54,6 +55,7 @@ export default function WeatherChip() {
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button
+        suppressHydrationWarning
         onClick={() => setOpen((o) => !o)}
         style={{
           display: "flex", alignItems: "center", gap: 6,
@@ -88,7 +90,7 @@ export default function WeatherChip() {
               </p>
               <p style={{ fontSize: "0.78rem", color: "#6b7280", marginTop: 2 }}>{snapshot.conditionLabel}</p>
             </div>
-            <button onClick={() => fetchWeather(true)} title="Refresh" style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}>
+            <button suppressHydrationWarning onClick={() => fetchWeather(true)} title="Refresh" style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}>
               <RefreshCw style={{ width: 14, height: 14 }} />
             </button>
           </div>
