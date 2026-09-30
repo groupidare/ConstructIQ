@@ -11,11 +11,16 @@ using Microsoft.IdentityModel.Tokens;
 var builder = WebApplication.CreateBuilder(args);
 
 // ── Database ────────────────────────────────────────────────────────────────
+// SslMode defaults to "Preferred" (MySqlConnector's own default: opportunistic
+// TLS, works unchanged against a local dev MySQL with no SSL configured) — set
+// DB_SSL_MODE=Required (or VerifyCA/VerifyFull) via env var for a managed host
+// like Aiven that enforces TLS.
 var connStr = $"Server={builder.Configuration["DB_HOST"] ?? "localhost"};" +
               $"Port={builder.Configuration["DB_PORT"] ?? "3306"};" +
               $"Database={builder.Configuration["DB_NAME"] ?? "constructiq"};" +
               $"Uid={builder.Configuration["DB_USER"] ?? "root"};" +
-              $"Pwd={builder.Configuration["DB_PASSWORD"]};";
+              $"Pwd={builder.Configuration["DB_PASSWORD"]};" +
+              $"SslMode={builder.Configuration["DB_SSL_MODE"] ?? "Preferred"};";
 
 builder.Services.AddDbContext<AppDbContext>(opts =>
     opts.UseMySql(connStr, new MySqlServerVersion(new Version(8, 0, 0))));
