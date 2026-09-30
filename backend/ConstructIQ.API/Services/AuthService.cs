@@ -179,6 +179,12 @@ public class AuthService(
     private async Task<LoginResponseDto> BuildLoginResponse(User user)
     {
         user.LastLogin = DateTime.UtcNow;
+        db.ActivityLogs.Add(new ActivityLog
+        {
+            UserId = user.Id, Action = "USER_LOGIN", EntityType = "User", EntityId = user.Id,
+            IpAddress = httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString(),
+            Details = "Sign-in completed.",
+        });
         await db.SaveChangesAsync();
 
         var token     = JwtHelper.GenerateToken(user, config);
@@ -239,6 +245,10 @@ public class AuthService(
         if (user is null) return false;
 
         user.PasswordHash                 = PasswordHasher.Hash(request.NewPassword);
+        user.SecurityStamp = Guid.NewGuid().ToString("N");
+        user.PasswordChangeTokenId = user.PasswordChangeOtpHash = user.MfaChallengeToken = user.MfaCode = user.PendingDeviceId = null;
+        user.PasswordChangeExpiresAt = user.MfaCodeExpiresAt = null;
+        await db.TrustedDevices.Where(d => d.UserId == user.Id).ExecuteDeleteAsync();
         user.PasswordResetToken           = null;
         user.PasswordResetTokenExpiresAt  = null;
         user.UpdatedAt                    = DateTime.UtcNow;

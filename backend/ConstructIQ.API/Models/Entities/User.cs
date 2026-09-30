@@ -50,6 +50,14 @@ public class User
 
     public bool MfaEnabled { get; set; } = false;
 
+    [MaxLength(64)] public string? PasswordChangeOtpHash { get; set; }
+    public DateTime? PasswordChangeExpiresAt { get; set; }
+    public DateTime? PasswordChangeRequestedAt { get; set; }
+    public int PasswordChangeAttempts { get; set; }
+    [MaxLength(64)] public string? PasswordChangeTokenId { get; set; }
+    // Rotated after credential changes and restores to revoke existing sessions.
+    [MaxLength(64)] public string? SecurityStamp { get; set; }
+
     [MaxLength(10)]
     public string? MfaCode { get; set; }
     public DateTime? MfaCodeExpiresAt { get; set; }

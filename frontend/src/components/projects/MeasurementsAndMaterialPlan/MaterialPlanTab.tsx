@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X } from 'lucide-react';
 import { getApiOrigin } from '@/lib/api';
@@ -9,7 +9,7 @@ import type { Project, ProjectType } from '@/types/project';
 import type { ProjectDocument } from '@/types/document';
 import type { InventoryRecord } from '@/types/inventory';
 import type { ForecastedMaterial } from '@/types/forecast';
-import type { BOQItem, BOQItemRow } from '@/types/boq';
+import type { BOQItem, BOQItemRow, HistoricalEstimate } from '@/types/boq';
 import { PRIMARY_SECTIONS, PURCHASE_UNITS } from '@/types/boq';
 import type { PurchaseOrder, PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import { inp, sel, lbl } from './styles';
@@ -21,27 +21,6 @@ interface Props {
   otherTypeSpecify: string;
   inventory: InventoryRecord[];
   forecastedMaterials: ForecastedMaterial[];
-  // Quantity per material already received via approved redistribution —
-  // reduces how much more can be requested via Notify Procurement/Warehouse.
-  redistributedByMaterial: Record<number, number>;
-  // Materials whose warehouse check has actually been resolved (approved or
-  // rejected) — Notify Procurement only unlocks for a material once it's in
-  // this set; the warehouse always gets first look.
-  warehouseResolvedMaterialIds: Set<number>;
-  // Authoritative "how much more can be requested," computed server-side
-  // from real BOQ estimate minus redistribution/warehouse/procurement — NOT
-  // derived from BOQItem.RequestedQuantity, which only reflects what was
-  // asked, not what was actually fulfilled (a warehouse request for 12
-  // approved for only 3 only frees up 3, not 12).
-  remainingByMaterial: Record<number, number>;
-  // Display-only — quantity actually released from the warehouse per
-  // material. Only an Approved request counts; a Pending ask hasn't been
-  // released yet.
-  warehouseFulfilledByMaterial: Record<number, number>;
-  // Materials with a still-Pending warehouse check — Notify Warehouse is
-  // disabled for these until that check is resolved, so the same material
-  // can't be asked for twice while awaiting a reply.
-  warehousePendingMaterialIds: Set<number>;
   boqDocs: ProjectDocument[];
   uploading: boolean;
   onUploadBoq: (file: File) => void;
@@ -59,6 +38,7 @@ interface Props {
   onSave: (overrideRows?: BOQItemRow[], opts?: { silent?: boolean }) => Promise<void>;
   saving: boolean;
   onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string) => Promise<boolean>;
+  getHistoricalEstimate: (primarySection: string, materialDescription: string, projectType?: string) => Promise<HistoricalEstimate>;
   onRemoveDocument: (documentId: number) => void;
   onRunForecast: () => void;
   forecasting: boolean;
@@ -83,9 +63,8 @@ interface Props {
 
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
-  inventory, forecastedMaterials, redistributedByMaterial, warehouseResolvedMaterialIds,
-  remainingByMaterial, warehouseFulfilledByMaterial, warehousePendingMaterialIds, boqDocs, uploading, onUploadBoq, onParseBoq,
-  rows, boqItems, onRowsChange, onSave, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
+  inventory, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
+  rows, boqItems, onRowsChange, onSave, saving, onNotify, getHistoricalEstimate, onRemoveDocument, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
@@ -110,18 +89,9 @@ export default function MaterialPlanTab({
   // prediction, auto-suggested from historical BOQ+PO data), and Alerts
   // (purchase/warehouse request actions, not applicable to historical data).
   // No Phase column.
-  // Dropping the trailing ALERTS track (rather than keeping it and leaving it
-  // blank) is enough on its own to fill the freed width — fr tracks share
-  // whatever space actually exists in the row, so the remaining columns grow
-  // to fill it with no explicit redistribution needed.
-  // ALERTS only ever holds up to three 24px icon buttons (or one "Done"
-  // badge) — 0.9fr left it visibly wider than that content needs, showing
-  // as dead space between the buttons and the column's own right edge.
-  // Trimmed down and the freed share handed to MATERIAL SPECIFICATION,
-  // the column that actually benefits from more room.
   const columnsTemplate = isCompleted
-    ? `minmax(0,1fr) minmax(0,1fr) minmax(0,1.8fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr)${editable ? ' minmax(0,0.6fr)' : ''}`
-    : `minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.9fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr)${editable ? ' minmax(0,0.6fr)' : ''}`;
+    ? 'minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.9fr)'
+    : 'minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.6fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.9fr)';
   const [parsingId, setParsingId] = useState<number | null>(null);
 
   const timeRange = `${formatDate(project.startDate)} – ${formatDate(project.targetEndDate)}`;
@@ -323,11 +293,36 @@ export default function MaterialPlanTab({
     return inventory.find(i => i.materialId === r.materialId)?.availableQuantity ?? 0;
   }
 
-  // Est. Qty/Unit are deliberately NOT auto-suggested in the background as
-  // rows are typed or scanned in — they're computed in one batch when Run
-  // Forecast is clicked (see Shell.tsx's handleRunForecast), so the field
-  // stays visibly blank until then instead of filling in unevenly per row
-  // (some matching historical data, some not) ahead of that action.
+  // Auto-suggest Est. Qty/Unit for new (non-historical) rows once they have
+  // enough to look up (Primary Section + a material name), from real
+  // purchase-order data on similar historical/completed projects. Debounced
+  // per row so it doesn't fire on every keystroke, and never overwrites a
+  // value the user has directly edited (estimatePurchaseManuallySet).
+  const suggestKey = rows.map(r => `${r.primarySection}||${r.specification || r.newMaterialName || ''}||${r.estimatePurchaseManuallySet ? '1' : '0'}`).join('\u0001');
+  useEffect(() => {
+    if (isHistorical) return;
+    const timers = rows.map((r, i) => {
+      if (r.estimatePurchaseManuallySet) return undefined;
+      const section = (r.primarySection || '').trim();
+      const spec = (r.specification || r.newMaterialName || (r.materialId ? materialLabel(r) : '')).trim();
+      if (!section || !spec) return undefined;
+      return setTimeout(async () => {
+        try {
+          const result = await getHistoricalEstimate(section, spec, projectType);
+          if (result.estimatedQuantity == null || !result.unit) return;
+          onRowsChange(prev => prev.map((row, idx) =>
+            idx === i && !row.estimatePurchaseManuallySet
+              ? { ...row, estimatedPurchaseQuantity: result.estimatedQuantity!, estimatedPurchaseUnit: result.unit! }
+              : row
+          ));
+        } catch {
+          // Background suggestion — failing silently is fine, the field just stays blank.
+        }
+      }, 700);
+    });
+    return () => timers.forEach(t => { if (t) clearTimeout(t); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestKey, isHistorical, projectType]);
 
   return (
     <div>
@@ -354,7 +349,7 @@ export default function MaterialPlanTab({
               <span style={{ ...inp, flex: '0 0 auto', width: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9fafb', color: '#6b7280' }}>{requestPrompt.unit}</span>
             </div>
             <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginBottom: '1rem' }}>
-              This adds to the running total already requested for this row — it never splits into a separate row.
+              Requesting less than the full amount splits the remainder into a new row below, ready for its own request.
             </p>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <button onClick={() => setRequestPrompt(null)} disabled={submittingRequest} style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}>
@@ -394,17 +389,8 @@ export default function MaterialPlanTab({
             <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>Forecasted Material Demand</p>
             <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>AI-predicted demand from the latest forecast run on this project.</p>
           </div>
-          {/* isHistorical is checked first and unconditionally — historical
-              projects are training data, not real forecast targets, and
-              always show the Top 5 fallback regardless of whether
-              forecastedMaterials happens to be non-empty (e.g. leftover
-              data from a forecast run against one during testing). Checking
-              forecastedMaterials.length first here previously let stray
-              data silently skip this branch for whichever historical
-              project happened to have it, making that one project's modal
-              look inconsistent with every other historical project's. */}
-          {isHistorical ? (
-            topDemandEntries.length > 0 ? (
+          {forecastedMaterials.length === 0 ? (
+            isHistorical && topDemandEntries.length > 0 ? (
               <div style={{ padding: '1rem' }}>
                 <p style={{ fontSize: '0.65rem', fontWeight: 700, color: '#9ca3af', letterSpacing: '0.05em', marginBottom: 6 }}>TOP 5 MATERIAL DEMAND/USAGE</p>
                 {topDemandEntries.map((m, i) => (
@@ -415,10 +401,8 @@ export default function MaterialPlanTab({
                 <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 6 }}>Extracted from the uploaded BOQ and PO data — historical projects aren&apos;t forecast targets themselves, they train the forecast for other projects.</p>
               </div>
             ) : (
-              <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No material data extracted yet.</p>
+              <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No forecast has been run yet — click Run Forecast below.</p>
             )
-          ) : forecastedMaterials.length === 0 ? (
-            <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No forecast has been run yet — click Run Forecast below.</p>
           ) : (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.7fr)', gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
@@ -529,30 +513,17 @@ export default function MaterialPlanTab({
         )}
 
         <div style={{ display: isHistorical ? 'none' : 'block', overflowX: 'auto' }}>
-        {/* Only forces a minimum (and therefore only ever scrolls instead of
-            filling the container) while editing — the ALERTS column is what
-            actually needs that width; view-only mode fits comfortably at any
-            container width without it. */}
-        <div style={{ minWidth: editable ? 980 : 0 }}>
-        {/* The header used to sit as a sibling outside this scrolling div —
-            harmless until the row list actually grew tall enough to scroll,
-            at which point the vertical scrollbar ate into the rows' width
-            but not the header's (a sibling, never scrolled), leaving the
-            header's columns — ALERTS especially, at the far right — no
-            longer lined up with the row cells beneath them. Making the
-            header itself the first (sticky) child of the *same* scrolling
-            div guarantees both always share the exact same scrollbar
-            gutter, so columns stay aligned whether or not scrolling is
-            actually happening. */}
+        <div style={{ minWidth: 980 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+          {(isCompleted
+            ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'ACTUAL QTY', 'UNIT', 'EST. QTY', 'ALERTS']
+            : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'UNIT', 'EST. QTY', 'ALERTS']
+          ).map((h, idx) => (
+            <span key={`${h}-${idx}`} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
+          ))}
+        </div>
+
         <div style={{ maxHeight: 320, overflowY: 'auto' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb', position: 'sticky', top: 0, zIndex: 1 }}>
-            {(isCompleted
-              ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'ACTUAL QTY', 'UNIT', 'EST. QTY']
-              : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'UNIT', 'EST. QTY']
-            ).concat(editable ? ['ALERTS'] : []).map((h, idx) => (
-              <span key={`${h}-${idx}`} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700, ...(h === 'ALERTS' ? { textAlign: 'right' } : {}) }}>{h}</span>
-            ))}
-          </div>
           {rows.length === 0 ? (
             <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No materials added yet.</p>
           ) : (
@@ -564,49 +535,17 @@ export default function MaterialPlanTab({
               // matches what the receiving Inventory/Procurement pages show.
               const purchaseQty = r.estimatedPurchaseQuantity ?? r.estimatedQuantity;
               const purchaseUnit = r.estimatedPurchaseUnit ?? r.unit ?? '';
-              // Folded into the authoritative `remaining` figure below — kept
-              // as its own value both for the local-fallback calculation and
-              // for the EST. QTY subtext (netLeftToOrder), which deliberately
-              // only reflects these two channels, not Procurement asks.
-              const redistributedQty = r.materialId ? (redistributedByMaterial[r.materialId] ?? 0) : 0;
-              const warehouseFulfilledQty = r.materialId ? (warehouseFulfilledByMaterial[r.materialId] ?? 0) : 0;
-              // EST. QTY subtext value — Estimated Qty minus only what's
-              // actually been received in-kind (redistribution + warehouse
-              // release), separate from `remaining` below (which also nets
-              // out Procurement asks for the button-enable/cap logic).
-              const netLeftToOrder = Math.max(0, purchaseQty - redistributedQty - warehouseFulfilledQty);
-              // Authoritative remaining — computed server-side from the real
-              // BOQ estimate minus redistribution, warehouse-approved
-              // quantity, and Procurement asks already made (never from
-              // BOQItem.RequestedQuantity, which only reflects what was
-              // *asked*, not what was actually fulfilled). Falls back to a
-              // local approximation only for a brand-new row not yet
-              // reflected in that fetch.
-              const remaining = r.materialId && r.materialId in remainingByMaterial
-                ? remainingByMaterial[r.materialId]
-                : Math.max(0, purchaseQty - redistributedQty - warehouseFulfilledQty);
+              // Remaining = the row's own Est. Qty minus whatever's already
+              // been requested so far (accumulates across however many
+              // partial Procurement/Warehouse clicks) — never resets, and
+              // the row itself is never split or shrunk to match a single
+              // request; only this remaining figure shrinks.
+              const remaining = Math.max(0, purchaseQty - (r.requestedQuantity ?? 0));
               const toOrder = Math.max(0, remaining - stock);
               const needsAlert = toOrder > 0;
-              // Actions are always shown once a row is editable — including a
-              // freshly-scanned row that hasn't been saved yet. But they only
-              // become CLICKABLE once Run Forecast has actually computed a
-              // real Est. Qty for this row (not the raw Total Area/Qty
-              // fallback purchaseQty uses for its own math) — Run Forecast is
-              // also what saves the row and resolves its catalog material.
-              const canRequest = editable && !isCompleted;
-              const hasMaterial = !!r.materialId;
-              const hasForecastedEstimate = r.estimatedPurchaseQuantity != null;
-              // The warehouse gets first look at every material — Notify
-              // Procurement only unlocks once that check has actually been
-              // resolved (approved or rejected), not while it's pending.
-              const canRequestProcurement = canRequest && hasMaterial && hasForecastedEstimate && warehouseResolvedMaterialIds.has(r.materialId!);
-              // Nothing is released until a warehouse check is actually
-              // approved — block a second ask for the same material while
-              // one is still pending.
-              const canRequestWarehouse = canRequest && hasMaterial && hasForecastedEstimate && !warehousePendingMaterialIds.has(r.materialId!);
-              // Done once the running total reaches this row's own (fixed,
-              // never-changed) Est. Qty, OR redistribution alone already
-              // covers it (remaining accounts for both — see above).
+              const canRequest = editable && !isCompleted && !!r.materialId;
+              // Done only once the running total actually reaches this row's
+              // own (fixed, never-changed) Est. Qty.
               const isRequestDone = purchaseQty > 0 && remaining <= 0;
               return (
                 <div key={i} style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40 }}>
@@ -638,9 +577,9 @@ export default function MaterialPlanTab({
                       name. Only fall back to the catalog name for rows with no
                       scanned text at all (added directly from Stock on Hand). */}
                   {r.materialId && !r.specification && !r.newMaterialName ? (
-                    <span title={materialLabel(r)} style={{ fontSize: '0.78rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{materialLabel(r)}</span>
+                    <span style={{ fontSize: '0.78rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{materialLabel(r)}</span>
                   ) : (
-                    <input disabled={!editable} title={r.specification || r.newMaterialName || ''} value={r.specification || r.newMaterialName || ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material specification" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                    <input disabled={!editable} value={r.specification || r.newMaterialName || ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material specification" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   )}
                   <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
@@ -663,15 +602,7 @@ export default function MaterialPlanTab({
                     <option value="">—</option>
                     {PURCHASE_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
                   </select>
-                  {/* position:relative + an absolutely-positioned caption
-                      keeps this cell's own box the same height as every
-                      plain single-input cell in the row (UNIT, the input
-                      itself) — the caption renders as an overlay below the
-                      input instead of adding to normal flow, so its
-                      presence/absence never shifts this row's height or
-                      pushes other cells (UNIT, the Done badge in ALERTS)
-                      out of their shared top baseline. */}
-                  <div style={{ position: 'relative' }}>
+                  <div>
                     <input
                       disabled={!editable}
                       type="number"
@@ -681,50 +612,28 @@ export default function MaterialPlanTab({
                       placeholder="Est. qty"
                       style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }}
                     />
-                    {/* Hidden entirely until something's actually been
-                        received via redistribution or warehouse release —
-                        no text at all otherwise. */}
-                    {(redistributedQty > 0 || warehouseFulfilledQty > 0) && (
-                      <p style={{
-                        position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 2,
-                        fontSize: '0.6rem', color: netLeftToOrder <= 0 ? '#15803d' : '#f97316', fontWeight: 600,
-                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', pointerEvents: 'none',
-                      }}>
-                        {netLeftToOrder.toLocaleString()} left to order
+                    {(r.requestedQuantity ?? 0) > 0 && (
+                      <p style={{ fontSize: '0.6rem', color: isRequestDone ? '#15803d' : '#f97316', marginTop: 2, fontWeight: 600 }}>
+                        {r.requestedQuantity!.toLocaleString()} of {purchaseQty.toLocaleString()} requested
                       </p>
                     )}
                   </div>
-                  {editable && (
-                  <div style={{ display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'flex-end' }}>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                     {isRequestDone ? (
                       <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#dcfce7', color: '#15803d' }}>Done</span>
                     ) : canRequest && (
                       <>
                         <button
-                          onClick={() => canRequestProcurement && (() => { setRequestPrompt({ index: i, kind: 'ProcurementOrder', max: toOrder, unit: purchaseUnit, materialName: materialLabel(r) }); setRequestPromptQty(toOrder ? String(toOrder) : ''); })()}
-                          disabled={!canRequestProcurement}
-                          title={canRequestProcurement
-                            ? `Notify procurement — order up to ${toOrder} ${purchaseUnit}`
-                            : !hasForecastedEstimate
-                            ? 'Click Run Forecast first — Est. Qty needs to be calculated before this row can be requested.'
-                            : !hasMaterial
-                            ? 'Click Save Material Plan first — this row needs to be linked to a catalog material before it can be requested.'
-                            : 'Alert the warehouse first — Procurement unlocks once their check on this material is approved or rejected.'}
-                          style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: canRequestProcurement ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert && canRequestProcurement ? '#fee2e2' : '#f3f4f6', opacity: canRequestProcurement ? 1 : 0.45 }}
+                          onClick={() => { setRequestPrompt({ index: i, kind: 'ProcurementOrder', max: toOrder, unit: purchaseUnit, materialName: materialLabel(r) }); setRequestPromptQty(toOrder ? String(toOrder) : ''); }}
+                          title={`Notify procurement — order up to ${toOrder} ${purchaseUnit}`}
+                          style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert ? '#fee2e2' : '#f3f4f6' }}
                         >
-                          <ShoppingCart style={{ width: 12, height: 12, color: needsAlert && canRequestProcurement ? '#ef4444' : '#9ca3af' }} />
+                          <ShoppingCart style={{ width: 12, height: 12, color: needsAlert ? '#ef4444' : '#9ca3af' }} />
                         </button>
                         <button
-                          onClick={() => canRequestWarehouse && (() => { setRequestPrompt({ index: i, kind: 'WarehouseCheck', max: remaining, unit: purchaseUnit, materialName: materialLabel(r) }); setRequestPromptQty(remaining ? String(remaining) : ''); })()}
-                          disabled={!canRequestWarehouse}
-                          title={canRequestWarehouse
-                            ? `Notify warehouse to check material — up to ${remaining} ${purchaseUnit}`
-                            : !hasForecastedEstimate
-                            ? 'Click Run Forecast first — Est. Qty needs to be calculated before this row can be requested.'
-                            : !hasMaterial
-                            ? 'Click Save Material Plan first — this row needs to be linked to a catalog material before it can be requested.'
-                            : 'Already awaiting a warehouse response for this material.'}
-                          style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: canRequestWarehouse ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6', opacity: canRequestWarehouse ? 1 : 0.45 }}
+                          onClick={() => { setRequestPrompt({ index: i, kind: 'WarehouseCheck', max: remaining, unit: purchaseUnit, materialName: materialLabel(r) }); setRequestPromptQty(remaining ? String(remaining) : ''); }}
+                          title={`Notify warehouse to check material — up to ${remaining} ${purchaseUnit}`}
+                          style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}
                         >
                           <Package style={{ width: 12, height: 12, color: '#9ca3af' }} />
                         </button>
@@ -736,7 +645,6 @@ export default function MaterialPlanTab({
                       </button>
                     )}
                   </div>
-                  )}
                 </div>
               );
             })

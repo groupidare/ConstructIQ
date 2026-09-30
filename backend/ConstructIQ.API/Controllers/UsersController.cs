@@ -11,8 +11,12 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
-public class UsersController(AppDbContext db, IWebHostEnvironment env) : ControllerBase
+public class UsersController(AppDbContext db, IWebHostEnvironment env, Services.Interfaces.INotificationService notifications) : ControllerBase
 {
+    private int CurrentUserId =>
+        int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+            ?? User.FindFirst("sub")?.Value ?? "0");
+
     [HttpGet]
     [Authorize(Roles = "Admin")]
     public async Task<IActionResult> GetAll()
@@ -60,6 +64,10 @@ public class UsersController(AppDbContext db, IWebHostEnvironment env) : Control
         db.Users.Add(user);
         await db.SaveChangesAsync();
 
+        await notifications.CreateForRoleAsync(UserRole.Admin, NotificationKind.UserRegistered,
+            $"{user.FirstName} {user.LastName} ({user.Username}) was registered as {user.Role}.",
+            CurrentUserId, actionLink: "/admin/users");
+
         return Ok(new UserDto
         {
             Id           = user.Id,
@@ -85,11 +93,15 @@ public class UsersController(AppDbContext db, IWebHostEnvironment env) : Control
         var user = await db.Users.FindAsync(id);
         if (user is null) return NotFound();
 
+        var newRole = Enum.Parse<UserRole>(dto.Role);
+        var roleChanged = user.Role != newRole;
+        var previousRole = user.Role;
+
         user.FirstName   = dto.FirstName;
         user.LastName    = dto.LastName;
         user.Email       = dto.Email;
         user.PhoneNumber = dto.PhoneNumber;
-        user.Role        = Enum.Parse<UserRole>(dto.Role);
+        user.Role        = newRole;
         user.IsActive    = dto.IsActive;
         user.UpdatedAt   = DateTime.UtcNow;
 
@@ -97,6 +109,12 @@ public class UsersController(AppDbContext db, IWebHostEnvironment env) : Control
             user.PasswordHash = PasswordHasher.Hash(dto.Password);
 
         await db.SaveChangesAsync();
+
+        if (roleChanged)
+            await notifications.CreateForRoleAsync(UserRole.Admin, NotificationKind.UserRoleChanged,
+                $"{user.FirstName} {user.LastName}'s role changed from {previousRole} to {newRole}.",
+                CurrentUserId, actionLink: "/admin/users");
+
         return Ok(new { message = "User updated." });
     }
 

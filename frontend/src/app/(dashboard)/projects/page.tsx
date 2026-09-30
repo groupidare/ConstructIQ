@@ -18,6 +18,8 @@ import type { Project as RealProject, ProjectType } from "@/types/project";
 import { PROJECT_TYPES, PROJECT_STATUSES } from "@/types/project";
 import type { ProjectDocument } from "@/types/document";
 import type { BOQItem } from "@/types/boq";
+import { topMaterialDemand } from "@/lib/topMaterialDemand";
+import type { ExcessWasteRecord } from "@/types/excess";
 import type { ExcessAnalyticsSummary } from "@/types/excess";
 import type { RedistributionRecommendation } from "@/types/procurement";
 import {
@@ -55,28 +57,6 @@ const STATUS_MAP: Record<string, ProjectStatus> = {
 const PROGRESS_COLOR: Record<string, string> = {
   PLANNING:"#374151", ACTIVE:"#f97316", COMPLETED:"#22c55e", "ON HOLD":"#d97706",
 };
-
-// Combines BOQ rows that are really the same material+spec (e.g. the same
-// "150mm CHB" appearing on both the exterior-wall and perimeter-wall lines)
-// into one summed entry before ranking — otherwise the same real material
-// could occupy two of the "Top 5" slots as if it were two different
-// materials, and a genuinely different material (that only appears once)
-// gets pushed out. Keyed on materialId + specification, not just the
-// catalog name, since two rows can share a catalog Material yet describe
-// physically different items (a mis-mapping bug, not something to paper
-// over by trusting the shared name).
-function groupMaterials(
-  rows: { key: string; material: string; estimated: number; actualRaw: number; unit: string }[],
-): { material: string; estimated: number; actual?: number; unit: string }[] {
-  const byKey = new Map<string, { material: string; estimated: number; actualRaw: number; unit: string }>();
-  for (const r of rows) {
-    const existing = byKey.get(r.key);
-    if (existing) { existing.estimated += r.estimated; existing.actualRaw += r.actualRaw; }
-    else byKey.set(r.key, { ...r });
-  }
-  return Array.from(byKey.values())
-    .map(g => ({ material: g.material, estimated: g.estimated, actual: g.actualRaw > 0 ? g.actualRaw : undefined, unit: g.unit }));
-}
 
 function toProject(dto: ProjectResponseDto): Project {
   const status = (STATUS_MAP[dto.status] ?? "PLANNING") as ProjectStatus;
@@ -862,68 +842,25 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
     // Real materials count, fetched once and reused below instead of
     // relying on a hardcoded demo fallback that was always 0 for any
     // project outside the original 5 mock entries.
-    api.get<BOQItem[]>(`/boq/project/${project.id}`)
-      .then(({ data: boqItems }) => {
+    Promise.all([
+      api.get<BOQItem[]>(`/boq/project/${project.id}`),
+      api.get<ExcessWasteRecord[]>(`/excess-waste/project/${project.id}`),
+    ])
+      .then(([{ data: boqItems }, { data: records }]) => {
         if (cancelled) return;
         setMaterialsCount(boqItems.length);
-
-        // Historical (backfilled) records aren't forecast targets themselves —
-        // they're the training data forecasts are built from. Rank by demand
-        // straight from the real record, keeping the BOQ's own planned
-        // estimate and the real recorded quantity as two separate figures
-        // (never silently substitute one for the other) — the whole point of
-        // showing this on historical data is judging forecast accuracy.
-        // Actual usage = Est. Qty − everything logged as excess/waste
-        // against that BOQ line — BOQItem.ActualQuantity already *is*
-        // exactly that, kept live by ExcessWasteService every time an entry
-        // is logged there (see its CreateAsync), so it's read directly
-        // rather than re-derived here. historicalSupply (raw PO-delivery
-        // quantity) is deliberately NOT used for this anymore — it's what
-        // was *ordered*, not what excess/waste logging says was actually
-        // *used*, and conflating the two is what made every row look like a
-        // perfect forecast match before.
-        if (project.isHistorical) {
-          const rows = boqItems.map(b => ({
-            key: `${b.materialId}::${b.specification ?? ''}`,
-            material:  b.materialName,
-            estimated: b.estimatedPurchaseQuantity ?? b.estimatedQuantity,
-            actualRaw: b.actualQuantity,
-            // Paired with the same baseline above — EstimatedPurchaseUnit
-            // when a purchase-unit estimate exists, else the row's own unit
-            // (which already falls back to the catalog Material's unit) —
-            // matching ExcessWasteService's own baseline/unit pairing so
-            // this never mislabels a purchase-unit quantity with the raw
-            // BOQ measurement unit or vice versa.
-            unit: b.estimatedPurchaseUnit ?? b.unit,
-          }));
-          const grouped = groupMaterials(rows);
-          setTopDemand(grouped.sort((a, b) => (b.actual ?? b.estimated) - (a.actual ?? a.estimated)).slice(0, 5));
-          return;
-        }
-
-        // AI Predicted — ranked by the row's own Est. Qty/Unit (BOQItem.
-        // estimatedPurchaseQuantity/estimatedPurchaseUnit, auto-suggested
-        // from historical PO data), a real purchasable-container quantity
-        // (pc/roll/bag/...). Deliberately NOT the raw ML ForecastResult's
-        // forecastedQuantity/unit, which is expressed in the material
-        // catalog's own measurement unit (sq.m/l.m/...) — not what's
-        // actionable for procurement at a glance on this card. Actual, same
-        // as the historical Top 5 list, is BOQItem.ActualQuantity read
-        // directly — Est. Qty minus everything logged as excess/waste
-        // against that line, kept live by ExcessWasteService.CreateAsync —
-        // so each row shows its own real figure (or "—" until something's
-        // actually been logged for it) instead of one summary line for just
-        // the top material.
-        const withEstimate = boqItems.filter(b => b.estimatedPurchaseQuantity != null && b.estimatedPurchaseUnit);
-        const rows = withEstimate.map(b => ({
-          key: `${b.materialId}::${b.specification ?? ''}`,
-          material:  b.materialName,
-          estimated: b.estimatedPurchaseQuantity!,
-          actualRaw: b.actualQuantity,
-          unit:      b.estimatedPurchaseUnit!,
-        }));
-        const grouped = groupMaterials(rows);
-        setAiPredicted(grouped.sort((a, b) => b.estimated - a.estimated).slice(0, 5));
+        // Ranking/grouping lives in topMaterialDemand (lib/topMaterialDemand.ts):
+        // groups BOQ rows by materialId+specification+unit (so two rows that
+        // happen to share a catalog Material but describe different physical
+        // items never collapse into one display entry), and only trusts a
+        // row's ActualQuantity as real "actual usage" when a genuine
+        // ExcessWasteRecord was logged against it (recordedIds) — otherwise
+        // it's undefined ("—" in the UI), never silently substituted with
+        // the estimate.
+        const recordedIds = new Set(records.flatMap(r => r.boqItemId == null ? [] : [r.boqItemId]));
+        const ranked = topMaterialDemand(boqItems, project.isHistorical, recordedIds);
+        if (project.isHistorical) setTopDemand(ranked);
+        else setAiPredicted(ranked);
       })
       .catch(() => {});
     return () => { cancelled = true; };

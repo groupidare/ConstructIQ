@@ -53,6 +53,14 @@ public class BOQController(IBOQService boqService, IProjectAccessService project
         Ok(await boqService.GetHistoricalEstimateAsync(primarySection, materialDescription, projectType));
 
     [HttpGet("monthly-demand-summary")]
-    public async Task<IActionResult> GetMonthlyDemandSummary() =>
-        Ok(await boqService.GetMonthlyDemandSummaryAsync());
+    public async Task<IActionResult> GetMonthlyDemandSummary([FromQuery] int? materialId, [FromQuery] string? unit) =>
+        Ok(await boqService.GetMonthlyDemandSummaryAsync(CurrentUserId, CurrentRole, materialId, unit));
+
+    [HttpGet("material-options")]
+    public async Task<IActionResult> GetMaterialOptions() =>
+        Ok(await boqService.GetMaterialOptionsAsync(CurrentUserId, CurrentRole));
+
+    [HttpGet("flagged-excess-items")]
+    public async Task<IActionResult> GetFlaggedExcessItems() =>
+        Ok(await boqService.GetFlaggedExcessItemsAsync(CurrentUserId, CurrentRole));
 }

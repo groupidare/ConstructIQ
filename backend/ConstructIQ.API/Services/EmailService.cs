@@ -9,6 +9,26 @@ namespace ConstructIQ.API.Services;
 // This is separate from "Sign in with Google" — no OAuth client is involved.
 public class EmailService(IConfiguration config, ILogger<EmailService> logger) : IEmailService
 {
+    public async Task SendPasswordChangeCodeAsync(string email, string code)
+    {
+        var user = config["SMTP_USER"];
+        var password = config["SMTP_APP_PASSWORD"];
+        if (string.IsNullOrWhiteSpace(user) || string.IsNullOrWhiteSpace(password))
+            throw new InvalidOperationException("Email delivery is not configured.");
+        using var client = new SmtpClient(config["SMTP_HOST"] ?? "smtp.gmail.com",
+            int.TryParse(config["SMTP_PORT"], out var port) ? port : 587)
+        {
+            EnableSsl = true,
+            Credentials = new NetworkCredential(user, password),
+        };
+        using var message = new MailMessage(user, email)
+        {
+            Subject = "Verify your ConstructIQ password change",
+            Body = $"Your password change verification code is {code}. It expires in 5 minutes. " +
+                   "Do not share this code. If you did not request this, contact your administrator.",
+        };
+        await client.SendMailAsync(message);
+    }
     public async Task SendPasswordResetEmailAsync(string toEmail, string toName, string resetLink)
     {
         var host       = config["SMTP_HOST"] ?? "smtp.gmail.com";

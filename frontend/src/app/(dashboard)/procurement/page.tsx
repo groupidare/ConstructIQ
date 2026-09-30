@@ -11,7 +11,6 @@ import {
   Search, ArrowUpDown,
 } from "lucide-react";
 import { useWeatherStore } from "@/store/weatherStore";
-import { useAlertStore } from "@/store/alertStore";
 import { useAuthStore } from "@/store/authStore";
 import { RISK_VISUALS, RISK_VISUALS_DARK } from "@/lib/weather";
 import { computeWeatherAtRiskOrders } from "@/lib/deliveryRisk";
@@ -1347,23 +1346,11 @@ export default function ProcurementPage() {
   const snapshot = useWeatherStore(s => s.snapshot);
   const daily    = useWeatherStore(s => s.daily);
   const risk     = useWeatherStore(s => s.risk);
-  const addAlert = useAlertStore(s => s.addAlert);
 
   const atRiskOrders = useMemo(() => {
     if (!risk || !snapshot) return [];
     return computeWeatherAtRiskOrders(orders, risk.level, snapshot.conditionLabel);
   }, [orders, risk, snapshot]);
-
-  useEffect(() => {
-    if (!risk || !snapshot || atRiskOrders.length === 0) return;
-    const today = new Date().toISOString().slice(0, 10);
-    addAlert({
-      kind: "weather",
-      title: "Weather-Adjusted Delivery Risk",
-      body: `${atRiskOrders.length} active purchase order${atRiskOrders.length > 1 ? "s" : ""} may be delayed due to ${snapshot.conditionLabel.toLowerCase()} in ${snapshot.locationName}. Recommended buffer: +${atRiskOrders[0].bufferDays} day(s).`,
-      dedupeKey: `po-weather-${today}-${risk.level}-${atRiskOrders.length}`,
-    });
-  }, [atRiskOrders, risk, snapshot, addAlert]);
 
   if (loading) {
     return (

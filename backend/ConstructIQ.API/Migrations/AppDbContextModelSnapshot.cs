@@ -140,6 +140,68 @@ namespace ConstructIQ.API.Migrations
                     b.ToTable("BOQItems");
                 });
 
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.BackupJobRun", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("BinlogFileEnd")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("BinlogFileStart")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<long?>("BytesProcessed")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool?>("CloudSuccess")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<string>("FullChainTag")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("HostName")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<int>("JobType")
+                        .HasColumnType("int");
+
+                    b.Property<bool?>("LocalSuccess")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("SnapshotIdCloud")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("SnapshotIdLocal")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<DateTime>("StartedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("Trigger")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("BackupJobRuns");
+                });
+
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.DeliveryBatch", b =>
                 {
                     b.Property<int>("Id")
@@ -722,14 +784,15 @@ namespace ConstructIQ.API.Migrations
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("ActionLink")
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)");
 
                     b.Property<int>("CreatedByUserId")
                         .HasColumnType("int");
-
-                    b.Property<bool>("IsRead")
-                        .HasColumnType("tinyint(1)");
 
                     b.Property<int>("Kind")
                         .HasColumnType("int");
@@ -741,7 +804,7 @@ namespace ConstructIQ.API.Migrations
                         .IsRequired()
                         .HasColumnType("longtext");
 
-                    b.Property<int>("ProjectId")
+                    b.Property<int?>("ProjectId")
                         .HasColumnType("int");
 
                     b.Property<decimal?>("Quantity")
@@ -749,6 +812,11 @@ namespace ConstructIQ.API.Migrations
 
                     b.Property<int>("RecipientRole")
                         .HasColumnType("int");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
 
                     b.HasKey("Id");
 
@@ -759,6 +827,24 @@ namespace ConstructIQ.API.Migrations
                     b.HasIndex("ProjectId");
 
                     b.ToTable("Notifications");
+                });
+
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.NotificationRead", b =>
+                {
+                    b.Property<int>("NotificationId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("ReadAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("NotificationId", "UserId");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("NotificationReads");
                 });
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.Phase", b =>
@@ -879,10 +965,16 @@ namespace ConstructIQ.API.Migrations
                     b.Property<bool>("IsHistorical")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<decimal?>("Latitude")
+                        .HasColumnType("decimal(9,6)");
+
                     b.Property<string>("Location")
                         .IsRequired()
                         .HasMaxLength(300)
                         .HasColumnType("varchar(300)");
+
+                    b.Property<decimal?>("Longitude")
+                        .HasColumnType("decimal(9,6)");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -1407,6 +1499,23 @@ namespace ConstructIQ.API.Migrations
                     b.Property<bool>("MfaEnabled")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<int>("PasswordChangeAttempts")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("PasswordChangeExpiresAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("PasswordChangeOtpHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<DateTime?>("PasswordChangeRequestedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("PasswordChangeTokenId")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
                     b.Property<string>("PasswordHash")
                         .IsRequired()
                         .HasColumnType("longtext");
@@ -1428,6 +1537,10 @@ namespace ConstructIQ.API.Migrations
 
                     b.Property<int>("Role")
                         .HasColumnType("int");
+
+                    b.Property<string>("SecurityStamp")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("datetime(6)");
@@ -1851,14 +1964,32 @@ namespace ConstructIQ.API.Migrations
                     b.HasOne("ConstructIQ.API.Models.Entities.Project", "Project")
                         .WithMany()
                         .HasForeignKey("ProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("CreatedBy");
 
                     b.Navigation("Material");
 
                     b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.NotificationRead", b =>
+                {
+                    b.HasOne("ConstructIQ.API.Models.Entities.Notification", "Notification")
+                        .WithMany("Reads")
+                        .HasForeignKey("NotificationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("ConstructIQ.API.Models.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Notification");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.Phase", b =>
@@ -2184,6 +2315,11 @@ namespace ConstructIQ.API.Migrations
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.MaterialCategory", b =>
                 {
                     b.Navigation("Materials");
+                });
+
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.Notification", b =>
+                {
+                    b.Navigation("Reads");
                 });
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.Phase", b =>

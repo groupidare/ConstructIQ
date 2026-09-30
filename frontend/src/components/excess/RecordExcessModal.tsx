@@ -35,27 +35,46 @@ interface RecordExcessModalProps {
 
 export default function RecordExcessModal({ projects, onClose, onSuccess }: RecordExcessModalProps) {
   const [projectId, setProjectId] = useState(0);
-  // Free-typed search text, kept separate from projectId so the field can
-  // show whatever's been typed even before it resolves to a real project —
-  // a plain <select> forced scrolling through every project by name alone.
-  const [projectQuery, setProjectQuery] = useState("");
   const [rows, setRows]           = useState<MaterialRow[]>([{ ...EMPTY_ROW }]);
   const [submitting, setSubmitting] = useState(false);
-  const [pendingItems, setPendingItems] = useState<PendingBOQItem[]>([]);
+  // Fetched separately per kind — a BOQ line already logged as Excess can
+  // still be logged as Waste (and vice versa), so "pending" isn't one shared
+  // list; each kind has its own independent remaining-materials list.
+  const [pendingByKind, setPendingByKind] = useState<Record<"Excess" | "Waste", PendingBOQItem[]>>({ Excess: [], Waste: [] });
   const [loadingPending, setLoadingPending] = useState(false);
+  // Projects with at least one BOQ line still missing an Excess or Waste
+  // record — a fully-logged project is always a dead end here (immediately
+  // shows "No materials left to log"), so it's kept out of the picker
+  // entirely rather than offered and then rejected.
+  const [pendingProjectIds, setPendingProjectIds] = useState<Set<number> | null>(null);
 
-  const selectedProject = useMemo(() => projects.find(p => p.id === projectId) ?? null, [projects, projectId]);
-
-  // Every BOQ line for this project that hasn't had excess/waste logged
-  // against it yet — this is what "the remaining materials list" means:
-  // a material logged once (in this session or an earlier one) drops out.
   useEffect(() => {
-    if (!projectId) { setPendingItems([]); return; }
+    let cancelled = false;
+    api.get<number[]>("/excess-waste/projects-with-pending-items")
+      .then(({ data }) => { if (!cancelled) setPendingProjectIds(new Set(data)); })
+      .catch(() => { if (!cancelled) setPendingProjectIds(new Set(projects.map(p => p.id))); }); // fail open
+    return () => { cancelled = true; };
+  }, [projects]);
+
+  const selectableProjects = useMemo(
+    () => pendingProjectIds === null ? projects : projects.filter(p => pendingProjectIds.has(p.id)),
+    [projects, pendingProjectIds],
+  );
+
+  const selectedProject = useMemo(() => selectableProjects.find(p => p.id === projectId) ?? null, [selectableProjects, projectId]);
+
+  // Every BOQ line for this project that hasn't had a record of THAT kind
+  // logged against it yet.
+  useEffect(() => {
+    if (!projectId) { setPendingByKind({ Excess: [], Waste: [] }); return; }
     let cancelled = false;
     setLoadingPending(true);
-    api.get<PendingBOQItem[]>(`/excess-waste/pending-boq-items/${projectId}`)
-      .then(({ data }) => { if (!cancelled) setPendingItems(data); })
-      .catch(() => { if (!cancelled) setPendingItems([]); })
+    Promise.all([
+      api.get<PendingBOQItem[]>(`/excess-waste/pending-boq-items/${projectId}`, { params: { isReusable: true } }),
+      api.get<PendingBOQItem[]>(`/excess-waste/pending-boq-items/${projectId}`, { params: { isReusable: false } }),
+    ])
+      .then(([excess, waste]) => { if (!cancelled) setPendingByKind({ Excess: excess.data, Waste: waste.data }); })
+      .catch(() => { if (!cancelled) setPendingByKind({ Excess: [], Waste: [] }); })
       .finally(() => { if (!cancelled) setLoadingPending(false); });
     setRows([{ ...EMPTY_ROW }]);
     return () => { cancelled = true; };
@@ -66,7 +85,7 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
   }
 
   function pickBoqItem(idx: number, boqItemId: number) {
-    const item = pendingItems.find(p => p.boqItemId === boqItemId);
+    const item = pendingByKind[rows[idx].kind].find(p => p.boqItemId === boqItemId);
     if (!item) return;
     updateRow(idx, {
       boqItemId: item.boqItemId,
@@ -77,6 +96,14 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
     });
   }
 
+  // Switching a row's kind can invalidate its current pick (e.g. this
+  // material may already be logged as Waste, so it won't appear once the
+  // row is switched to Waste) — clear it rather than leave a stale,
+  // no-longer-valid selection in place.
+  function setRowKind(idx: number, kind: "Waste" | "Excess") {
+    updateRow(idx, { kind, boqItemId: null, materialId: null, description: "", unit: "", estQty: 0 });
+  }
+
   function addRow() {
     setRows(prev => [...prev, { ...EMPTY_ROW }]);
   }
@@ -85,14 +112,16 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
     setRows(prev => prev.length === 1 ? prev : prev.filter((_, i) => i !== idx));
   }
 
-  // Options for one row's picker: every pending item, minus whichever ones
-  // other rows in this same form have already claimed (a row keeps its own
-  // current pick in its own list even after picking it).
+  // Options for one row's picker: every pending item of THIS row's kind,
+  // minus whichever ones another row of the SAME kind in this form has
+  // already claimed — a material can legitimately be picked once for Excess
+  // and once for Waste across two different rows in the same session.
   function optionsFor(idx: number): PendingBOQItem[] {
+    const kind = rows[idx].kind;
     const claimedElsewhere = new Set(
-      rows.filter((_, i) => i !== idx).map(r => r.boqItemId).filter((id): id is number => id !== null)
+      rows.filter((r, i) => i !== idx && r.kind === kind).map(r => r.boqItemId).filter((id): id is number => id !== null)
     );
-    return pendingItems.filter(p => !claimedElsewhere.has(p.boqItemId));
+    return pendingByKind[kind].filter(p => !claimedElsewhere.has(p.boqItemId));
   }
 
   function validate(): string | null {
@@ -126,14 +155,16 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
       toast.success("Entry saved.");
       onSuccess?.();
       onClose();
-    } catch {
-      toast.error("Failed to save entry.");
+    } catch (err) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to save entry.");
     } finally {
       setSubmitting(false);
     }
   }
 
-  const noMaterialsLeft = projectId > 0 && !loadingPending && pendingItems.length === 0;
+  const totalPendingCount = pendingByKind.Excess.length + pendingByKind.Waste.length;
+  const noMaterialsLeft = projectId > 0 && !loadingPending && totalPendingCount === 0;
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
@@ -161,21 +192,14 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "0.75rem" }}>
           <div>
             <label style={labelStyle}>PROJECT *</label>
-            <input
-              list="record-excess-project-options"
-              value={projectQuery}
-              onChange={e => {
-                const val = e.target.value;
-                setProjectQuery(val);
-                const match = projects.find(p => p.name === val);
-                setProjectId(match ? match.id : 0);
-              }}
-              placeholder="Type to search project…"
+            <select
+              value={projectId}
+              onChange={e => setProjectId(+e.target.value)}
               style={inputStyle}
-            />
-            <datalist id="record-excess-project-options">
-              {projects.map(p => <option key={p.id} value={p.name} />)}
-            </datalist>
+            >
+              <option value={0} disabled>Select a project…</option>
+              {selectableProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
           </div>
           <div>
             <label style={labelStyle}>PROJECT TYPE</label>
@@ -214,7 +238,7 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
                           <option value={0} disabled>Select material…</option>
                           {optionsFor(idx).map(p => (
                             <option key={p.boqItemId} value={p.boqItemId}>
-                              {p.materialName} (Est. {p.estimatedQuantity.toLocaleString()} {p.unit})
+                              {p.materialName}
                             </option>
                           ))}
                         </select>
@@ -232,7 +256,7 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
                         <label style={labelStyle}>WASTE / EXCESS</label>
                         <div style={{ display: "flex", gap:4, background: "#e5e7eb", borderRadius: 8, padding: 3 }}>
                           {(["Waste", "Excess"] as const).map(k => (
-                            <button key={k} type="button" onClick={() => updateRow(idx, { kind: k })}
+                            <button key={k} type="button" onClick={() => setRowKind(idx, k)}
                               style={{
                                 flex: 1, padding: "6px 0", borderRadius: 6, border: "none", cursor: "pointer",
                                 fontSize: "0.72rem", fontWeight: 600,
@@ -259,7 +283,7 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
                 );
               })}
             </div>
-            {rows.length < pendingItems.length && (
+            {rows.length < totalPendingCount && (
               <button type="button" onClick={addRow}
                 style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", cursor: "pointer", color: "#16a34a", fontSize: "0.8rem", fontWeight: 600, padding: "6px 0", marginBottom: "1.25rem" }}>
                 <Plus style={{ width: 14, height: 14 }} /> Add material

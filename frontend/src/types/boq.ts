@@ -85,8 +85,46 @@ export interface HistoricalEstimate {
 export interface MonthlyDemandSummary {
   month: string;
   monthLabel: string;
-  aiPredicted: number | null;
+  materialId: number;
+  materialName: string;
+  unit: string;
   actualUsage: number | null;
+  aiPredicted: number | null;
+  // "Provisional" while a contributing project is still active (the total
+  // could still change); "Finalized" once every contributing project is
+  // Completed/historical. Null when actualUsage itself is null.
+  reconciliationStatus: "Provisional" | "Finalized" | null;
+  contributingProjects: string[];
+  estimatedTotal: number | null;
+  excessTotal: number | null;
+  wasteTotal: number | null;
+}
+
+// One entry in the Forecasting page's material selector — every unique
+// material+unit pair that has ever contributed a real, validated Actual
+// Usage figure, ranked by total historical demand. See
+// BOQController.GetMaterialOptions.
+export interface MaterialOption {
+  materialId: number;
+  materialName: string;
+  unit: string;
+  totalHistoricalDemand: number;
+}
+
+// A BOQItem where logged Excess+Waste exceeds its EstimatedQuantity — data
+// that can't be trusted for the Actual Usage calculation, surfaced for
+// review rather than silently clamped or hidden. See
+// BOQController.GetFlaggedExcessItems.
+export interface FlaggedExcessItem {
+  boqItemId: number;
+  projectId: number;
+  projectName: string;
+  materialName: string;
+  unit: string;
+  estimatedQuantity: number;
+  excessTotal: number;
+  wasteTotal: number;
+  reason: string;
 }
 
 export interface BOQBulkSaveRequest {

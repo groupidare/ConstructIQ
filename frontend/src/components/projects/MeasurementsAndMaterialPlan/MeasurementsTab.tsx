@@ -18,12 +18,14 @@ interface Props {
   blueprints: ProjectDocument[];
   uploading: boolean;
   onUploadBlueprint: (file: File) => void;
+  parsingBlueprintId: number | null;
+  onParseBlueprint: (documentId: number) => void;
   onRemoveDocument: (documentId: number) => void;
 }
 
 export default function MeasurementsTab({
   editable, projectType, otherTypeSpecify, onProjectTypeChange, onOtherTypeSpecifyBlur, savingProjectType,
-  blueprints, uploading, onUploadBlueprint, onRemoveDocument,
+  blueprints, uploading, onUploadBlueprint, parsingBlueprintId, onParseBlueprint, onRemoveDocument,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -90,6 +92,15 @@ export default function MeasurementsTab({
               </a>
               {editable && (
                 <button
+                  onClick={() => onParseBlueprint(doc.id)}
+                  disabled={parsingBlueprintId === doc.id}
+                  style={{ fontSize: '0.68rem', fontWeight: 600, color: '#f97316', background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap', padding: '8px 4px', flexShrink: 0 }}
+                >
+                  {parsingBlueprintId === doc.id ? 'Scanning…' : 'Scan & Fill Rows'}
+                </button>
+              )}
+              {editable && (
+                <button
                   onClick={() => onRemoveDocument(doc.id)}
                   title="Remove file"
                   style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: '8px 10px', flexShrink: 0 }}
@@ -103,7 +114,7 @@ export default function MeasurementsTab({
       )}
 
       <p style={{ fontSize: '0.68rem', color: '#9ca3af', lineHeight: 1.4 }}>
-        Blueprints are stored here for viewing and reference only — they are not scanned for measurements. Materials are planned in the Material Plan tab via the Bill of Quantities and Purchase Orders.
+        Blueprints are stored here for viewing and reference. If a file also contains a Bill of Quantities or Purchase Order table, use &quot;Scan &amp; Fill Rows&quot; to extract it into the Material Plan tab the same way as a BOQ upload.
       </p>
     </div>
   );

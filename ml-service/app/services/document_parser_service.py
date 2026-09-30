@@ -147,29 +147,6 @@ def _is_section_heading(desc: str) -> bool:
     return bool(text) and len(text) > 2 and text.upper() == text and any(c.isalpha() for c in text)
 
 
-# Some BOQ templates never give a section heading its own row at all — it's
-# folded into the same cell as the first item under it, e.g.
-# "4. ELECTRICAL WORKS 4.1 Conduit and wiring, throughout" instead of a
-# separate "4. ELECTRICAL WORKS" row followed by "4.1 Conduit and wiring...".
-# Matches a leading "N. ALL CAPS HEADING" run up to (not including) the
-# "N.M" sub-item numbering that starts the actual item text.
-_EMBEDDED_HEADING_RE = re.compile(r"^(\d+\.\s*[A-Z][A-Z0-9 &/,\-]*?)\s+(?=\d+\.\d+\b)")
-
-
-def _split_embedded_heading(desc: str) -> tuple[str | None, str]:
-    """Splits a description that starts with a folded-in section heading into
-    (heading, rest-of-description) — (None, desc) unchanged when there's no
-    such prefix. The heading seeds current_primary_section; the item keeps
-    only its own "N.M ..." text, matching plain sibling rows like
-    "4.2 Circuit Conductors..." that never had a heading attached at all."""
-    match = _EMBEDDED_HEADING_RE.match(desc.strip())
-    if not match:
-        return None, desc
-    heading = match.group(1).strip()
-    rest = desc[match.end():].strip()
-    return (heading if rest else None), (rest or desc)
-
-
 def _extract_date(pattern: re.Pattern, text: str) -> str | None:
     match = pattern.search(text)
     if not match:
@@ -223,22 +200,9 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
 
             headers = [str(c or "").strip().lower() for c in table[header_row]]
 
-            # "qty"/"quantity" covers most templates, but some (e.g. an
-            # architectural-scope BOQ) title the amount column something like
-            # "Total Area / Installation Scope" instead — no "qty" substring
-            # anywhere, which used to make the whole table look header-less
-            # downstream (qty_col is None) and fall through to the much
-            # cruder OCR-line-regex path even though this was a perfectly
-            # well-structured table.
-            qty_col     = next((i for i, h in enumerate(headers) if "qty" in h or "quantity" in h
-                                 or ("total" in h and any(k in h for k in ("area", "scope", "volume", "length")))), None)
+            qty_col     = next((i for i, h in enumerate(headers) if "qty" in h or "quantity" in h), None)
             desc_col    = _find_desc_column(headers, table, header_row, qty_col)
-            # Exact "unit"/"um" avoids grabbing a "Unit Cost"/"Unit Price"
-            # column when one exists; a header like "Installation Scope Unit"
-            # still needs the substring match, so it's allowed too as long as
-            # it's not actually a cost/price column.
-            unit_col    = next((i for i, h in enumerate(headers) if h in ("unit", "um") or "uom" in h
-                                 or ("unit" in h and "cost" not in h and "price" not in h)), None)
+            unit_col    = next((i for i, h in enumerate(headers) if h in ("unit", "um") or "uom" in h), None)
             spec_col    = next((i for i, h in enumerate(headers) if ("spec" in h or "size" in h) and i != desc_col), None)
             # "sub" + section/category checked first — a plain "section"/"category"
             # search would otherwise match "Sub Primary Section" too and leave
@@ -288,9 +252,6 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
                     continue
 
                 desc    = _clean_description(str(row[desc_col] or "").strip()) if desc_col < len(row) else ""
-                embedded_heading, desc = _split_embedded_heading(desc)
-                if embedded_heading:
-                    current_primary_section = embedded_heading
                 qty     = parse_quantity_from_cell(row[qty_col] if qty_col < len(row) else None)
                 unit    = str(row[unit_col] or "").strip() if unit_col is not None and unit_col < len(row) else "pcs"
                 spec    = str(row[spec_col] or "").strip() if spec_col is not None and spec_col < len(row) else ""
@@ -341,17 +302,6 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
                         continue
                     if _is_section_heading(desc):
                         current_section = desc
-                        # Some BOQ templates never fill a dedicated Primary
-                        # Section column at all — the section is only ever
-                        # written as its own heading row (e.g. "1. ARCHITEC-
-                        # TURAL WORKS") above the items it covers, with the
-                        # numbering embedded directly in each item's own
-                        # description ("1.4 Floor Adhesive..."). Use the
-                        # heading text as a fallback so those items don't
-                        # fall through to "Others"/blank — a real per-row
-                        # section-column value (set above, line ~266) always
-                        # overrides this the moment one actually appears.
-                        current_primary_section = desc
                     continue
                 if not _looks_like_real_name(desc):
                     continue

@@ -24,8 +24,12 @@ public class ExcessWasteController(IExcessWasteService excessWasteService) : Con
         Ok(await excessWasteService.GetSummaryAsync(projectId));
 
     [HttpGet("pending-boq-items/{projectId:int}")]
-    public async Task<IActionResult> GetPendingBOQItems(int projectId) =>
-        Ok(await excessWasteService.GetPendingBOQItemsAsync(projectId));
+    public async Task<IActionResult> GetPendingBOQItems(int projectId, [FromQuery] bool isReusable = true) =>
+        Ok(await excessWasteService.GetPendingBOQItemsAsync(projectId, isReusable));
+
+    [HttpGet("projects-with-pending-items")]
+    public async Task<IActionResult> GetProjectIdsWithPendingItems() =>
+        Ok(await excessWasteService.GetProjectIdsWithPendingItemsAsync());
 
     // SiteEngineer's Excess Analytics access is view-only — only
     // Warehouse (and Admin) actually log/edit entries.
@@ -33,8 +37,15 @@ public class ExcessWasteController(IExcessWasteService excessWasteService) : Con
     [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> Create([FromBody] ExcessWasteCreateDto dto)
     {
-        var created = await excessWasteService.CreateAsync(dto, CurrentUserId);
-        return Ok(created);
+        try
+        {
+            var created = await excessWasteService.CreateAsync(dto, CurrentUserId);
+            return Ok(created);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
     [HttpPut("{id:int}")]
@@ -45,6 +56,25 @@ public class ExcessWasteController(IExcessWasteService excessWasteService) : Con
         {
             var updated = await excessWasteService.UpdateAsync(id, dto);
             return Ok(updated);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpDelete("{id:int}")]
+    [Authorize(Roles = "Admin,SiteEngineer,WarehousePersonnel")]
+    public async Task<IActionResult> Delete(int id)
+    {
+        try
+        {
+            await excessWasteService.DeleteAsync(id);
+            return NoContent();
         }
         catch (KeyNotFoundException ex)
         {

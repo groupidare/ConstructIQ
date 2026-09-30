@@ -13,7 +13,7 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/material-requests")]
 [Authorize]
-public class MaterialRequestsController(AppDbContext db) : ControllerBase
+public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INotificationService notifications) : ControllerBase
 {
     // Same "manages procurement" set as PurchaseOrdersController —
     // ProjectManager is view-only for Procurement, so isn't included here.
@@ -53,6 +53,10 @@ public class MaterialRequestsController(AppDbContext db) : ControllerBase
 
         db.MaterialRequests.Add(request);
         await db.SaveChangesAsync();
+
+        await notifications.CreateForRoleAsync(UserRole.ProcurementOfficer, NotificationKind.ProcurementRequestSubmitted,
+            $"{project.Name} requested {dto.Quantity} {request.Unit} of {material.Name}.",
+            CurrentUserId, projectId: dto.ProjectId, materialId: dto.MaterialId, actionLink: "/procurement");
 
         return Ok(new { id = request.Id });
     }

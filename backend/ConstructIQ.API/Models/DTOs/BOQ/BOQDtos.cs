@@ -83,19 +83,62 @@ public class HistoricalEstimateResponseDto
     public int      MatchCount        { get; set; }
 }
 
-// One point on the Forecasting page's chart — a calendar month (bucketed by
-// each project's own StartDate), averaging every BOQItem's EstimatedPurchase-
-// Quantity ("AI Predicted") and ActualQuantity ("Actual Usage", only rows
-// where it's actually been backfilled) across every project whose start
-// falls in that month. Either side is null when nothing in that month has
-// that particular figure, so the chart can show a real gap instead of a
-// fabricated zero.
+// One point on the Forecasting page's chart, for one selected material+unit.
+// Actual Usage = Baseline - Excess - Waste, computed fresh from
+// ExcessWasteRecords (not read from the live BOQItem.ActualQuantity field —
+// see ActualUsageCalculator), where Baseline is EstimatedPurchaseQuantity ??
+// EstimatedQuantity per BOQ item (whichever the record was actually logged
+// against), attributed to the calendar month each record was actually
+// recorded in. AI Predicted is the real ML model's own output
+// (ForecastedMaterial.ForecastedQuantity), attributed to the month its
+// forecast run happened. Either side is null when nothing that month has
+// that particular figure — never a fabricated zero, and the frontend must
+// render this as a gap, not interpolate across it.
 public class MonthlyDemandSummaryDto
 {
-    public string   Month       { get; set; } = string.Empty; // e.g. "2026-01"
-    public string   MonthLabel  { get; set; } = string.Empty;  // e.g. "Jan 2026"
-    public decimal? AiPredicted { get; set; }
-    public decimal? ActualUsage { get; set; }
+    public string   Month                { get; set; } = string.Empty; // e.g. "2026-01"
+    public string   MonthLabel           { get; set; } = string.Empty; // e.g. "September 2026"
+    public int      MaterialId           { get; set; }
+    public string   MaterialName         { get; set; } = string.Empty;
+    public string   Unit                 { get; set; } = string.Empty;
+    public decimal? ActualUsage          { get; set; }
+    public decimal? AiPredicted          { get; set; }
+    // "Provisional" while the contributing project(s) are still active (more
+    // excess/waste could still be logged, changing this number); "Finalized"
+    // once every contributing project is Completed or IsHistorical. Null when
+    // ActualUsage itself is null (nothing to qualify).
+    public string?  ReconciliationStatus { get; set; }
+    public List<string> ContributingProjects { get; set; } = [];
+    public decimal? EstimatedTotal       { get; set; }
+    public decimal? ExcessTotal          { get; set; }
+    public decimal? WasteTotal           { get; set; }
+}
+
+// One entry in the Forecasting page's material selector — every unique
+// material+unit pair that has ever contributed a real, validated Actual
+// Usage figure, ranked by total historical demand (highest first).
+public class MaterialOptionDto
+{
+    public int     MaterialId            { get; set; }
+    public string  MaterialName          { get; set; } = string.Empty;
+    public string  Unit                  { get; set; } = string.Empty;
+    public decimal TotalHistoricalDemand { get; set; }
+}
+
+// A BOQItem where logged Excess+Waste exceeds its EstimatedQuantity — data
+// that can't be trusted for the Actual Usage calculation. Surfaced for
+// review rather than silently clamped or hidden without explanation.
+public class FlaggedExcessItemDto
+{
+    public int     BOQItemId    { get; set; }
+    public int     ProjectId    { get; set; }
+    public string  ProjectName  { get; set; } = string.Empty;
+    public string  MaterialName { get; set; } = string.Empty;
+    public string  Unit         { get; set; } = string.Empty;
+    public decimal EstimatedQuantity { get; set; }
+    public decimal ExcessTotal  { get; set; }
+    public decimal WasteTotal   { get; set; }
+    public string  Reason       { get; set; } = string.Empty;
 }
 
 public class HistoricalSupplyResponseDto

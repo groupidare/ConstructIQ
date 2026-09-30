@@ -385,41 +385,177 @@ public class BOQService(AppDbContext db) : IBOQService
         };
     }
 
-    // Drives the Forecasting page's chart — real project data, not a trained
-    // model's own output. Buckets every BOQItem by its project's StartDate
-    // month, averaging EstimatedPurchaseQuantity ("AI Predicted") and
-    // ActualQuantity ("Actual Usage") separately per month.
-    public async Task<IEnumerable<MonthlyDemandSummaryDto>> GetMonthlyDemandSummaryAsync()
+    private record ReconciledBoqItem(
+        int BOQItemId, int ProjectId, string ProjectName, bool Finalized,
+        int MaterialId, string MaterialName, string Unit, DateTime ReportingMonth,
+        decimal EstimatedQuantity, decimal ExcessTotal, decimal WasteTotal, decimal ActualUsage);
+
+    // Shared core of every Forecasting-chart endpoint below: every BOQItem
+    // that has at least one linked ExcessWasteRecord (the FK link, never
+    // matched by material name), reduced to ONE reporting month per item —
+    // the calendar month of its MOST RECENT record — carrying its full,
+    // all-records-combined Excess/Waste totals. This is what stops "excess
+    // logged in July, waste logged in September" from double-plotting a
+    // partial usage figure in two different months (spec requirement): the
+    // whole, final calculation lands once, in the month it was last touched.
+    // Items failing validation (Excess+Waste > baseline) are returned
+    // separately, never silently included or clamped.
+    private async Task<(List<ReconciledBoqItem> Valid, List<FlaggedExcessItemDto> Flagged)> GetReconciledBoqItemsAsync(
+        int userId, string role, int? materialId, string? unit)
     {
-        var rows = await db.BOQItems
-            .Include(b => b.Project)
-            .Select(b => new
-            {
-                b.Project.StartDate,
-                b.EstimatedPurchaseQuantity,
-                b.ActualQuantity,
-            })
-            .ToListAsync();
+        var recordsQuery = db.ExcessWasteRecords
+            .Where(e => e.BOQItemId != null)
+            .Include(e => e.BOQItem!).ThenInclude(b => b.Project)
+            .Include(e => e.BOQItem!).ThenInclude(b => b.Material)
+            .AsQueryable();
 
-        var months = rows
-            .GroupBy(r => new DateTime(r.StartDate.Year, r.StartDate.Month, 1))
-            .OrderBy(g => g.Key)
-            .Select(g =>
-            {
-                var predicted = g.Where(r => r.EstimatedPurchaseQuantity.HasValue)
-                    .Select(r => r.EstimatedPurchaseQuantity!.Value).ToList();
-                var actual = g.Where(r => r.ActualQuantity > 0)
-                    .Select(r => r.ActualQuantity).ToList();
+        // Same SiteEngineer/ProjectManager scoping as ProjectService.GetAllAsync —
+        // this endpoint had none at all before.
+        if (role is "SiteEngineer")
+            recordsQuery = recordsQuery.Where(e => e.BOQItem!.Project.SiteEngineerId == userId);
+        else if (role is "ProjectManager")
+            recordsQuery = recordsQuery.Where(e => e.BOQItem!.Project.ProjectManagerId == userId);
 
-                return new MonthlyDemandSummaryDto
+        if (materialId.HasValue)
+            recordsQuery = recordsQuery.Where(e => e.BOQItem!.MaterialId == materialId.Value);
+
+        var records = await recordsQuery.ToListAsync();
+
+        var valid = new List<ReconciledBoqItem>();
+        var flagged = new List<FlaggedExcessItemDto>();
+
+        foreach (var group in records.GroupBy(e => e.BOQItemId!.Value))
+        {
+            var boqItem = group.First().BOQItem!;
+            var project = boqItem.Project;
+
+            // The baseline and unit a record's Quantity is actually
+            // denominated in — the exact same precedence the Record
+            // Excess/Waste picker (GetPendingBOQItemsAsync) and
+            // BOQItem.ActualQuantity already use as ground truth, so the
+            // figure computed here is always unit-consistent with what was
+            // logged, never mixed with the item's separate EstimatedQuantity/
+            // Unit when a purchase-unit baseline was the one actually used.
+            var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
+            var effectiveUnit = !string.IsNullOrWhiteSpace(boqItem.EstimatedPurchaseUnit)
+                ? boqItem.EstimatedPurchaseUnit
+                : boqItem.Material.Unit;
+            if (unit is not null && !string.Equals(effectiveUnit, unit, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var excessTotal = group.Where(e => e.IsReusable).Sum(e => e.Quantity);
+            var wasteTotal  = group.Where(e => !e.IsReusable).Sum(e => e.Quantity);
+
+            var result = ActualUsageCalculator.Calculate(baseline, excessTotal, wasteTotal);
+            if (!result.IsValid)
+            {
+                flagged.Add(new FlaggedExcessItemDto
                 {
-                    Month       = g.Key.ToString("yyyy-MM"),
-                    MonthLabel  = g.Key.ToString("MMM yyyy"),
-                    AiPredicted = predicted.Count > 0 ? Math.Round(predicted.Average(), 2) : null,
-                    ActualUsage = actual.Count > 0 ? Math.Round(actual.Average(), 2) : null,
-                };
-            });
+                    BOQItemId = boqItem.Id, ProjectId = project.Id, ProjectName = project.Name,
+                    MaterialName = boqItem.Material.Name, Unit = effectiveUnit,
+                    EstimatedQuantity = baseline, ExcessTotal = excessTotal, WasteTotal = wasteTotal,
+                    Reason = result.ErrorMessage!,
+                });
+                continue;
+            }
 
-        return months;
+            var reportingMonth = group.Max(e => e.RecordedAt);
+            valid.Add(new ReconciledBoqItem(
+                boqItem.Id, project.Id, project.Name, project.Status == ProjectStatus.Completed || project.IsHistorical,
+                boqItem.MaterialId, boqItem.Material.Name, effectiveUnit,
+                new DateTime(reportingMonth.Year, reportingMonth.Month, 1),
+                baseline, excessTotal, wasteTotal, result.ActualUsage!.Value));
+        }
+
+        return (valid, flagged);
+    }
+
+    // Real AI model output only — ForecastedMaterial.ForecastedQuantity from
+    // ForecastResult, never EstimatedPurchaseQuantity (which is user/BOQ-scan
+    // entered, at best auto-suggested from a historical-average heuristic;
+    // see GetHistoricalEstimateAsync — it has never been touched by the ML
+    // pipeline). Attributed to the calendar month of the run that produced it
+    // (GeneratedAt) — there's no target-period field to do better, and this
+    // is disclosed in the UI rather than presented as more precise than it is.
+    private async Task<Dictionary<(int MaterialId, string Unit, DateTime Month), decimal>> GetMonthlyPredictedTotalsAsync(
+        int userId, string role, int? materialId)
+    {
+        var query = db.ForecastedMaterials
+            .Include(fm => fm.Material)
+            .Include(fm => fm.ForecastResult).ThenInclude(fr => fr.Project)
+            .AsQueryable();
+
+        if (role is "SiteEngineer")
+            query = query.Where(fm => fm.ForecastResult.Project.SiteEngineerId == userId);
+        else if (role is "ProjectManager")
+            query = query.Where(fm => fm.ForecastResult.Project.ProjectManagerId == userId);
+        if (materialId.HasValue)
+            query = query.Where(fm => fm.MaterialId == materialId.Value);
+
+        var rows = await query.ToListAsync();
+
+        return rows
+            .GroupBy(fm => (fm.MaterialId, Unit: fm.Material.Unit, Month: new DateTime(fm.ForecastResult.GeneratedAt.Year, fm.ForecastResult.GeneratedAt.Month, 1)))
+            .ToDictionary(g => g.Key, g => g.Sum(fm => fm.ForecastedQuantity));
+    }
+
+    // Drives the Forecasting page's chart for one selected material+unit (or
+    // every material if none is selected). Actual Usage is a monthly TOTAL
+    // (sum, not average) of every reconciled BOQItem's calculated usage whose
+    // reporting month falls in that bucket; AI Predicted is a monthly total
+    // of real forecast-run output for the same material+unit. Either side is
+    // null — never zero — when nothing that month has that figure.
+    public async Task<IEnumerable<MonthlyDemandSummaryDto>> GetMonthlyDemandSummaryAsync(int userId, string role, int? materialId, string? unit)
+    {
+        var (valid, _) = await GetReconciledBoqItemsAsync(userId, role, materialId, unit);
+        var predicted = await GetMonthlyPredictedTotalsAsync(userId, role, materialId);
+
+        var actualByKey = valid
+            .GroupBy(r => (r.MaterialId, r.Unit, Month: r.ReportingMonth))
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var keys = actualByKey.Keys.Concat(predicted.Keys).Distinct().OrderBy(k => k.Month);
+
+        return keys.Select(key =>
+        {
+            var items = actualByKey.GetValueOrDefault(key);
+            return new MonthlyDemandSummaryDto
+            {
+                Month       = key.Month.ToString("yyyy-MM"),
+                MonthLabel  = key.Month.ToString("MMMM yyyy"),
+                MaterialId  = key.MaterialId,
+                MaterialName = items?.FirstOrDefault()?.MaterialName ?? string.Empty,
+                Unit        = key.Unit,
+                ActualUsage = items is null ? null : Math.Round(items.Sum(i => i.ActualUsage), 2),
+                AiPredicted = predicted.TryGetValue(key, out var p) ? Math.Round(p, 2) : null,
+                ReconciliationStatus = items is null ? null : (items.All(i => i.Finalized) ? "Finalized" : "Provisional"),
+                ContributingProjects = items?.Select(i => i.ProjectName).Distinct().ToList() ?? [],
+                EstimatedTotal = items is null ? null : items.Sum(i => i.EstimatedQuantity),
+                ExcessTotal    = items is null ? null : items.Sum(i => i.ExcessTotal),
+                WasteTotal     = items is null ? null : items.Sum(i => i.WasteTotal),
+            };
+        });
+    }
+
+    public async Task<IEnumerable<MaterialOptionDto>> GetMaterialOptionsAsync(int userId, string role)
+    {
+        var (valid, _) = await GetReconciledBoqItemsAsync(userId, role, null, null);
+        return valid
+            .GroupBy(r => (r.MaterialId, r.Unit))
+            .Select(g => new MaterialOptionDto
+            {
+                MaterialId = g.Key.MaterialId,
+                MaterialName = g.First().MaterialName,
+                Unit = g.Key.Unit,
+                TotalHistoricalDemand = g.Sum(r => r.ActualUsage),
+            })
+            .OrderByDescending(m => m.TotalHistoricalDemand)
+            .ThenBy(m => m.MaterialName);
+    }
+
+    public async Task<IEnumerable<FlaggedExcessItemDto>> GetFlaggedExcessItemsAsync(int userId, string role)
+    {
+        var (_, flagged) = await GetReconciledBoqItemsAsync(userId, role, null, null);
+        return flagged;
     }
 }

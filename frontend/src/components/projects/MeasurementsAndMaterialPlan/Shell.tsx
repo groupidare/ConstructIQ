@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Pencil, Eye, FileText, Folder } from 'lucide-react';
 import { useDocuments } from '@/hooks/useDocuments';
@@ -10,14 +10,12 @@ import { useForecasting } from '@/hooks/useForecasting';
 import { useNotifications } from '@/hooks/useNotifications';
 import { useMaterialRequests } from '@/hooks/useMaterialRequests';
 import { useWarehouseRequests } from '@/hooks/useWarehouseRequests';
-import { useRedistributionReceived } from '@/hooks/useRedistributionReceived';
 import { useAlertStore } from '@/store/alertStore';
 import { useProjects } from '@/hooks/useProjects';
 import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
 import type { Project, ProjectType } from '@/types/project';
 import type { BOQItem, BOQItemRow } from '@/types/boq';
 import type { PurchaseOrderMaterial } from '@/types/purchaseOrder';
-import type { WarehouseRequest } from '@/types/warehouseRequest';
 import MeasurementsTab from './MeasurementsTab';
 import MaterialPlanTab from './MaterialPlanTab';
 
@@ -48,6 +46,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [savingBoq, setSavingBoq] = useState(false);
   const [forecasting, setForecasting] = useState(false);
   const [uploadingBlueprint, setUploadingBlueprint] = useState(false);
+  const [parsingBlueprintId, setParsingBlueprintId] = useState<number | null>(null);
   const [uploadingBoq, setUploadingBoq] = useState(false);
   const [uploadingPo, setUploadingPo] = useState(false);
   const [savingPo, setSavingPo] = useState(false);
@@ -57,73 +56,17 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [poExpectedDate, setPoExpectedDate] = useState('');
 
   const { documents, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument } = useDocuments(project.id);
-  const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems, deleteItem: deleteBoqItem, getHistoricalEstimate } = useBOQ(project.id);
+  const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems, getHistoricalEstimate } = useBOQ(project.id);
   const { inventory, fetchInventory } = useInventory(project.id);
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
   const { sendNotification } = useNotifications();
-  const { createRequest: createMaterialRequest, fetchRemaining } = useMaterialRequests();
-  const { createRequest: createWarehouseRequest, fetchByProject: fetchWarehouseRequestsByProject } = useWarehouseRequests();
-  const [warehouseRequests, setWarehouseRequests] = useState<WarehouseRequest[]>([]);
-  const [remainingByMaterial, setRemainingByMaterial] = useState<Record<number, number>>({});
+  const { createRequest: createMaterialRequest } = useMaterialRequests();
+  const { createRequest: createWarehouseRequest } = useWarehouseRequests();
   const addAlert = useAlertStore(s => s.addAlert);
   const { editProject } = useProjects();
   const { items: purchaseOrders, fetchItems: fetchPurchaseOrders, createOrder, linkMaterial } = usePurchaseOrders(project.id);
-  const { receivedByMaterial, fetchReceived } = useRedistributionReceived(project.id);
-
-  async function fetchWarehouseRequests() {
-    setWarehouseRequests(await fetchWarehouseRequestsByProject(project.id));
-  }
-
-  async function fetchRemainingByMaterial() {
-    const data = await fetchRemaining(project.id);
-    setRemainingByMaterial(Object.fromEntries(data.map(d => [d.materialId, d.remaining])));
-  }
-
-  // A material can only be sent to Notify Procurement once the warehouse has
-  // actually answered a check on it — not while one's still pending. This is
-  // a project-wide gate: it's not tied to which specific BOQ row triggered
-  // the original warehouse check.
-  const warehouseResolvedMaterialIds = useMemo(
-    () => new Set(warehouseRequests.filter(r => r.status !== 'Pending').map(r => r.materialId)),
-    [warehouseRequests],
-  );
-
-  // A material with a still-Pending warehouse check can't be notified again —
-  // nothing is released until it's actually approved (see
-  // warehouseFulfilledByMaterial below), so the button is disabled while one
-  // is outstanding instead of letting the user fire off duplicates.
-  const warehousePendingMaterialIds = useMemo(
-    () => new Set(warehouseRequests.filter(r => r.status === 'Pending').map(r => r.materialId)),
-    [warehouseRequests],
-  );
-
-  // Display-only — how much of each material has actually been released
-  // from the warehouse. Only Approved counts: clicking Notify Warehouse
-  // creates a Pending request, not a release — it must wait for approval
-  // before it reduces what's left to request or shows as "released" here.
-  const warehouseFulfilledByMaterial = useMemo(() => {
-    const map: Record<number, number> = {};
-    for (const r of warehouseRequests) {
-      if (r.status !== 'Approved') continue;
-      const qty = r.approvedQuantity ?? r.requestedQuantity;
-      map[r.materialId] = (map[r.materialId] ?? 0) + qty;
-    }
-    return map;
-  }, [warehouseRequests]);
 
   const seededBoq = useRef(false);
-  // `forecasting`/`parsingBoq` (useState) don't disable their buttons in
-  // time to block a rapid double-click or double-tap — the state update
-  // that sets disabled=true is applied on the next render, not
-  // synchronously, so a second click landing in that window still fires
-  // the handler. A ref updates immediately, so it can bail out a genuine
-  // re-entrant call inline instead of relying on the button's disabled
-  // attribute alone. Matters here specifically because both handlers
-  // upsert boqRows by BOQItem.Id, and a row scanned/computed in this same
-  // call has no Id yet — two concurrent calls each create their own full
-  // set of new rows server-side instead of one updating the other's.
-  const runForecastInFlight = useRef(false);
-  const parseBoqInFlight = useRef(false);
 
   // Shared by the initial-load seed effect below and by every save — reused
   // so the draft rows always carry the server-assigned Id afterward. Without
@@ -151,24 +94,6 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     fetchInventory(true);
     fetchForecasts();
     fetchPurchaseOrders();
-    fetchReceived();
-    fetchWarehouseRequests();
-    fetchRemainingByMaterial();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id]);
-
-  // Warehouse approvals happen on a different page (Inventory's Requests
-  // tab) — there's no polling anywhere in this app, so a lightweight
-  // focus/visibility refetch is the minimal way for this authoritative
-  // "remaining" figure to catch up without a manual reload.
-  useEffect(() => {
-    function onFocus() { fetchRemainingByMaterial(); fetchWarehouseRequests(); }
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onFocus);
-    return () => {
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onFocus);
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
 
@@ -217,29 +142,14 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   }
 
   async function handleParseBoq(documentId: number) {
-    if (parseBoqInFlight.current) return;
-    parseBoqInFlight.current = true;
     try {
       const result = await parseDocument(documentId);
       if (result.items.length === 0) {
         toast.error(result.parseErrors[0] || 'No line items detected in that document.');
         return;
       }
-      // Tagged per-document so re-scanning the same file replaces its own
-      // previous output instead of piling a second copy on top of it every
-      // click — a row from a *different* document (or a manually-added row,
-      // whose notes never carry this tag) is left untouched either way.
-      // Previously-*saved* rows with this tag are also deleted server-side,
-      // not just dropped from local state — otherwise they'd silently
-      // survive as orphaned duplicates in the DB even though they vanish
-      // from view the moment this state update lands.
-      const sourceTag = `Auto-scanned:${documentId}`;
-      const stale = boqRows.filter(r => r.notes === sourceTag && r.id != null);
-      if (stale.length > 0) {
-        await Promise.all(stale.map(r => deleteBoqItem(r.id!)));
-      }
       setBoqRows(prev => [
-        ...prev.filter(r => r.notes !== sourceTag),
+        ...prev,
         ...result.items.map(item => ({
           phaseId: item.phaseHint
             ? project.phases.find(p => p.name.toLowerCase() === item.phaseHint!.toLowerCase())?.id
@@ -263,15 +173,22 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
           unit: item.unit,
           estimatedQuantity: item.estimatedQuantity,
           historicalSupply: item.historicalSupply,
-          notes: sourceTag,
+          notes: 'Auto-scanned',
         })),
       ]);
       toast.success(`${result.items.length} line item(s) scanned — review and edit as needed.`);
       if (result.parseErrors.length > 0) toast.error(result.parseErrors[0]);
     } catch (error) {
       toast.error(apiErrorMessage(error, 'Failed to scan document.'));
+    }
+  }
+
+  async function handleParseBlueprint(documentId: number) {
+    setParsingBlueprintId(documentId);
+    try {
+      await handleParseBoq(documentId);
     } finally {
-      parseBoqInFlight.current = false;
+      setParsingBlueprintId(null);
     }
   }
 
@@ -399,42 +316,14 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   }
 
   async function handleRunForecast() {
-    if (runForecastInFlight.current) return;
-    runForecastInFlight.current = true;
     setForecasting(true);
     try {
-      // Est. Qty is only ever computed here, on a deliberate Run Forecast
-      // click — not passively in the background as rows are typed or
-      // scanned in. A row the user has edited directly
-      // (estimatePurchaseManuallySet) is left alone; every other row is
-      // looked up fresh each time against historical PO data for the same
-      // Primary Section + material, so re-running after later edits keeps
-      // estimates current.
-      const materialNameById = new Map<number, string>();
-      boqItems.forEach(b => materialNameById.set(b.materialId, b.materialName));
-      inventory.forEach(i => { if (!materialNameById.has(i.materialId)) materialNameById.set(i.materialId, i.materialName); });
-
-      const estimatedRows = await Promise.all(boqRows.map(async row => {
-        if (row.estimatePurchaseManuallySet) return row;
-        const section = (row.primarySection || '').trim();
-        const spec = (row.specification || row.newMaterialName || (row.materialId ? materialNameById.get(row.materialId) : undefined) || '').trim();
-        if (!section || !spec) return row;
-        try {
-          const result = await getHistoricalEstimate(section, spec, projectType);
-          if (result.estimatedQuantity == null || !result.unit) return row;
-          return { ...row, estimatedPurchaseQuantity: result.estimatedQuantity, estimatedPurchaseUnit: result.unit };
-        } catch {
-          return row;
-        }
-      }));
-      setBoqRows(estimatedRows);
-
-      // Run Forecast should reflect exactly what's on screen — save the
-      // (now estimate-filled) rows so a forecast never silently runs against
-      // stale (or missing) data just because "Save Material Plan" wasn't
-      // clicked separately first.
-      if (estimatedRows.length > 0) {
-        const saved = await saveBoqItems(estimatedRows);
+      // Run Forecast should reflect exactly what's on screen — save any
+      // reviewed/edited BOQ rows first so a forecast never silently runs
+      // against stale (or missing) data just because "Save Material Plan"
+      // wasn't clicked separately first.
+      if (boqRows.length > 0) {
+        const saved = await saveBoqItems(boqRows);
         setBoqRows(saved.map(boqItemToRow));
       }
       await generateForecast({ projectId: project.id, period: 'Monthly', planningWeeks: 4 });
@@ -443,7 +332,6 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     } catch (error) {
       toast.error(apiErrorMessage(error, 'Failed to generate forecast — no historical or BOQ data available yet.'));
     } finally {
-      runForecastInFlight.current = false;
       setForecasting(false);
     }
   }
@@ -469,19 +357,6 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       toast.error('Nothing to request — current stock already covers the estimated quantity.');
       return false;
     }
-    // Procurement is a last resort — the warehouse gets first look at every
-    // material, and Procurement only unlocks once that check has actually
-    // been answered (approved or rejected), not while it's still pending.
-    if (isProcurement && !warehouseResolvedMaterialIds.has(materialId)) {
-      toast.error('Alert the warehouse first — Procurement unlocks once their check on this material is approved or rejected.');
-      return false;
-    }
-    // A material can't be asked twice while a warehouse check is still
-    // outstanding — nothing is released until it's actually approved.
-    if (!isProcurement && warehousePendingMaterialIds.has(materialId)) {
-      toast.error('A warehouse check for this material is already pending — wait for it to be approved or rejected first.');
-      return false;
-    }
 
     const message = isProcurement
       ? `${materialName}: order ${quantity.toLocaleString()} more for "${project.name}".`
@@ -499,14 +374,12 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
         toast.success('Procurement notified — request added to their queue.');
       } else {
         await createWarehouseRequest({ projectId: project.id, materialId, requestedQuantity: quantity });
-        await fetchWarehouseRequests();
         addAlert({ kind: 'overstock', title: 'Warehouse Alert', body: message });
         toast.success(`Material request sent for ${materialName}.`);
         // Deliberately no longer navigates away to /inventory — a partial
         // request needs the user to stay right here to act on the leftover
         // (e.g. notify Procurement next for what the warehouse couldn't cover).
       }
-      await fetchRemainingByMaterial();
       return true;
     } catch (error) {
       toast.error(apiErrorMessage(error, isProcurement ? 'Failed to send the material request.' : 'Failed to create warehouse request.'));
@@ -519,11 +392,10 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     projectType, otherTypeSpecify,
     onProjectTypeChange: handleProjectTypeChange, onOtherTypeSpecifyBlur: handleOtherTypeSpecifyBlur, savingProjectType,
     boqRows, setBoqRows, boqItems,
-    blueprints, boqDocs, poDocs, inventory, forecastedMaterials, receivedByMaterial, warehouseResolvedMaterialIds,
-    remainingByMaterial, warehouseFulfilledByMaterial, warehousePendingMaterialIds,
-    savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
-    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
-    handleSaveBoq, handleRunForecast, handleNotify,
+    blueprints, boqDocs, poDocs, inventory, forecastedMaterials,
+    savingBoq, forecasting, uploadingBlueprint, parsingBlueprintId, uploadingBoq, uploadingPo, savingPo,
+    handleUploadBlueprint, handleParseBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
+    handleSaveBoq, handleRunForecast, handleNotify, getHistoricalEstimate,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
     poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
     poOrderDate, setPoOrderDate, poExpectedDate, setPoExpectedDate,
@@ -575,6 +447,8 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       blueprints={state.blueprints}
       uploading={state.uploadingBlueprint}
       onUploadBlueprint={state.handleUploadBlueprint}
+      parsingBlueprintId={state.parsingBlueprintId}
+      onParseBlueprint={state.handleParseBlueprint}
       onRemoveDocument={state.handleRemoveDocument}
     />
   ) : (
@@ -585,11 +459,6 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       otherTypeSpecify={state.otherTypeSpecify}
       inventory={state.inventory}
       forecastedMaterials={state.forecastedMaterials}
-      redistributedByMaterial={state.receivedByMaterial}
-      warehouseResolvedMaterialIds={state.warehouseResolvedMaterialIds}
-      remainingByMaterial={state.remainingByMaterial}
-      warehouseFulfilledByMaterial={state.warehouseFulfilledByMaterial}
-      warehousePendingMaterialIds={state.warehousePendingMaterialIds}
       boqDocs={state.boqDocs}
       uploading={state.uploadingBoq}
       onUploadBoq={state.handleUploadBoq}
@@ -601,6 +470,7 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onSave={state.handleSaveBoq}
       saving={state.savingBoq}
       onNotify={state.handleNotify}
+      getHistoricalEstimate={state.getHistoricalEstimate}
       onRunForecast={state.handleRunForecast}
       forecasting={state.forecasting}
       purchaseOrders={state.purchaseOrders}

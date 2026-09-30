@@ -10,6 +10,7 @@ import type { ExcessWasteRecord } from "@/types/excess";
 import RedistributeModal from "@/components/excess/RedistributeModal";
 import RecordExcessModal from "@/components/excess/RecordExcessModal";
 import EditExcessModal from "@/components/excess/EditExcessModal";
+import toast from "react-hot-toast";
 import {
   Trash2, Package,
   TrendingUp, FileText, Plus, Search, Recycle, ChevronDown, ChevronRight, Pencil,
@@ -63,6 +64,7 @@ export default function ExcessAnalyticsPage() {
   const [editTarget, setEditTarget] = useState<ExcessWasteRecord | null>(null);
   const [showRecordModal, setShowRecordModal] = useState(false);
   const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   async function loadRecords() {
     if (projects.length === 0) return;
@@ -78,6 +80,24 @@ export default function ExcessAnalyticsPage() {
   }
 
   useEffect(() => { loadRecords(); }, [projects]);
+
+  // Removing the entry from local state (rather than a full reload) is what
+  // makes a project with no remaining entries disappear from the log
+  // immediately — groupedByProject is derived purely from `records`.
+  async function handleDelete(record: ExcessWasteRecord) {
+    if (!window.confirm(`Delete this ${record.materialName} entry (${record.quantity.toLocaleString()} ${record.unit})? This can't be undone.`)) return;
+    setDeletingId(record.id);
+    try {
+      await api.delete(`/excess-waste/${record.id}`);
+      setRecords(prev => prev.filter(r => r.id !== record.id));
+      toast.success("Entry deleted.");
+    } catch (error) {
+      const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to delete entry.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   // Approve/Reject on the Redistribution page updates that page's own list
   // immediately, but this page has no way to know about it otherwise — no
@@ -428,6 +448,21 @@ export default function ExcessAnalyticsPage() {
                                                     style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb", background: isBlocked ? "#f3f4f6" : "#fff", color: isBlocked ? "#9ca3af" : "#374151", fontSize:"0.7rem", fontWeight:600, cursor: isBlocked ? "not-allowed" : "pointer", whiteSpace:"nowrap" }}
                                                   >
                                                     <Recycle style={{ width:11, height:11 }} /> Redistribute
+                                                  </button>
+                                                );
+                                              })()}
+                                              {canManageExcess && (() => {
+                                                const isActive = ACTIVE_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "");
+                                                const isDeleting = deletingId === e.id;
+                                                const isBlocked = isActive || isDeleting;
+                                                return (
+                                                  <button
+                                                    onClick={() => !isBlocked && handleDelete(e)}
+                                                    disabled={isBlocked}
+                                                    title={isActive ? `Already redistributed to ${e.redistributionTargetProjectName} — can't be deleted.` : undefined}
+                                                    style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #fecaca", background: isBlocked ? "#f3f4f6" : "#fff", color: isBlocked ? "#9ca3af" : "#dc2626", fontSize:"0.7rem", fontWeight:600, cursor: isBlocked ? "not-allowed" : "pointer", whiteSpace:"nowrap" }}
+                                                  >
+                                                    <Trash2 style={{ width:11, height:11 }} /> {isDeleting ? "Deleting…" : "Delete"}
                                                   </button>
                                                 );
                                               })()}
