@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.*" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.*" />
+    <ProjectReference Include="../ConstructIQ.API/ConstructIQ.API.csproj" />
+    <None Include="../../database/maintenance/clear-excess-waste.mysql.sql" Link="clear-excess-waste.mysql.sql" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

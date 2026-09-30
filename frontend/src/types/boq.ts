@@ -80,13 +80,45 @@ export interface HistoricalEstimate {
   matchCount: number;
 }
 
-// One point on the Forecasting page's chart — real project data (not a
-// trained model's own output), see BOQController.GetMonthlyDemandSummary.
+// One point on the Forecasting page's chart, for one selected material+unit.
+// actualUsage = EstimatedQuantity - Excess - Waste, computed from
+// ExcessWasteRecords linked by BOQItemId (never matched by material name),
+// attributed to the calendar month it was reconciled in. aiPredicted is the
+// real ML model's own output (ForecastedMaterial.ForecastedQuantity), not
+// the user/BOQ-entered EstimatedPurchaseQuantity. Either field is null (not
+// zero) when nothing that month has that figure — see BOQService.
 export interface MonthlyDemandSummary {
   month: string;
   monthLabel: string;
-  aiPredicted: number | null;
+  materialId: number;
+  materialName: string;
+  unit: string;
   actualUsage: number | null;
+  aiPredicted: number | null;
+  reconciliationStatus: "Provisional" | "Finalized" | null;
+  contributingProjects: string[];
+  estimatedTotal: number | null;
+  excessTotal: number | null;
+  wasteTotal: number | null;
+}
+
+export interface MaterialOption {
+  materialId: number;
+  materialName: string;
+  unit: string;
+  totalHistoricalDemand: number;
+}
+
+export interface FlaggedExcessItem {
+  boqItemId: number;
+  projectId: number;
+  projectName: string;
+  materialName: string;
+  unit: string;
+  estimatedQuantity: number;
+  excessTotal: number;
+  wasteTotal: number;
+  reason: string;
 }
 
 export interface BOQBulkSaveRequest {

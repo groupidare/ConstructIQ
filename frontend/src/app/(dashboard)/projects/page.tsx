@@ -18,6 +18,8 @@ import type { Project as RealProject, ProjectType } from "@/types/project";
 import { PROJECT_TYPES, PROJECT_STATUSES } from "@/types/project";
 import type { ProjectDocument } from "@/types/document";
 import type { BOQItem } from "@/types/boq";
+import { topMaterialDemand } from "@/lib/topMaterialDemand";
+import type { ExcessWasteRecord } from "@/types/excess";
 import type { ExcessAnalyticsSummary } from "@/types/excess";
 import type { RedistributionRecommendation } from "@/types/procurement";
 import {
@@ -836,64 +838,17 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
     // Real materials count, fetched once and reused below instead of
     // relying on a hardcoded demo fallback that was always 0 for any
     // project outside the original 5 mock entries.
-    api.get<BOQItem[]>(`/boq/project/${project.id}`)
-      .then(({ data: boqItems }) => {
+    Promise.all([
+      api.get<BOQItem[]>(`/boq/project/${project.id}`),
+      api.get<ExcessWasteRecord[]>(`/excess-waste/project/${project.id}`),
+    ])
+      .then(([{ data: boqItems }, { data: records }]) => {
         if (cancelled) return;
         setMaterialsCount(boqItems.length);
-
-        // Historical (backfilled) records aren't forecast targets themselves —
-        // they're the training data forecasts are built from. Rank by demand
-        // straight from the real record, keeping the BOQ's own planned
-        // estimate and the real recorded quantity as two separate figures
-        // (never silently substitute one for the other) — the whole point of
-        // showing this on historical data is judging forecast accuracy.
-        // Actual usage = Est. Qty − everything logged as excess/waste
-        // against that BOQ line — BOQItem.ActualQuantity already *is*
-        // exactly that, kept live by ExcessWasteService every time an entry
-        // is logged there (see its CreateAsync), so it's read directly
-        // rather than re-derived here. historicalSupply (raw PO-delivery
-        // quantity) is deliberately NOT used for this anymore — it's what
-        // was *ordered*, not what excess/waste logging says was actually
-        // *used*, and conflating the two is what made every row look like a
-        // perfect forecast match before.
-        if (project.isHistorical) {
-          const entries = boqItems.map(b => ({
-            material:  b.materialName,
-            estimated: b.estimatedPurchaseQuantity ?? b.estimatedQuantity,
-            actual:    b.actualQuantity > 0 ? b.actualQuantity : undefined,
-            // Paired with the same baseline above — EstimatedPurchaseUnit
-            // when a purchase-unit estimate exists, else the row's own unit
-            // (which already falls back to the catalog Material's unit) —
-            // matching ExcessWasteService's own baseline/unit pairing so
-            // this never mislabels a purchase-unit quantity with the raw
-            // BOQ measurement unit or vice versa.
-            unit: b.estimatedPurchaseUnit ?? b.unit,
-          }));
-          setTopDemand(entries.sort((a, b) => (b.actual ?? b.estimated) - (a.actual ?? a.estimated)).slice(0, 5));
-          return;
-        }
-
-        // AI Predicted — ranked by the row's own Est. Qty/Unit (BOQItem.
-        // estimatedPurchaseQuantity/estimatedPurchaseUnit, auto-suggested
-        // from historical PO data), a real purchasable-container quantity
-        // (pc/roll/bag/...). Deliberately NOT the raw ML ForecastResult's
-        // forecastedQuantity/unit, which is expressed in the material
-        // catalog's own measurement unit (sq.m/l.m/...) — not what's
-        // actionable for procurement at a glance on this card. Actual, same
-        // as the historical Top 5 list, is BOQItem.ActualQuantity read
-        // directly — Est. Qty minus everything logged as excess/waste
-        // against that line, kept live by ExcessWasteService.CreateAsync —
-        // so each row shows its own real figure (or "—" until something's
-        // actually been logged for it) instead of one summary line for just
-        // the top material.
-        const withEstimate = boqItems.filter(b => b.estimatedPurchaseQuantity != null && b.estimatedPurchaseUnit);
-        const ranked = withEstimate.slice().sort((a, b) => (b.estimatedPurchaseQuantity ?? 0) - (a.estimatedPurchaseQuantity ?? 0));
-        setAiPredicted(ranked.slice(0, 5).map(b => ({
-          material:  b.materialName,
-          estimated: b.estimatedPurchaseQuantity!,
-          actual:    b.actualQuantity > 0 ? b.actualQuantity : undefined,
-          unit:      b.estimatedPurchaseUnit!,
-        })));
+        const recordedIds = new Set(records.flatMap(r => r.boqItemId == null ? [] : [r.boqItemId]));
+        const ranked = topMaterialDemand(boqItems, project.isHistorical, recordedIds);
+        if (project.isHistorical) setTopDemand(ranked);
+        else setAiPredicted(ranked);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -949,7 +904,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
               <span style={{ fontSize:"0.65rem", fontWeight:700, color:"#6d28d9", marginBottom: 1 }}>Top 5 Material Demand/Usage</span>
               {topDemand.map((m, i) => (
                 <span key={i} style={{ fontSize:"0.68rem", fontWeight:500, color:"#6d28d9" }}>
-                  {i + 1}. {m.material} - Est: {m.estimated.toLocaleString()} {m.unit} / Actual: {(m.actual ?? m.estimated).toLocaleString()} {m.unit}
+                  {i + 1}. {m.material} - Est: {m.estimated.toLocaleString()} {m.unit} / Actual: {m.actual == null ? "?" : m.actual.toLocaleString()} {m.unit}
                 </span>
               ))}
             </>
@@ -963,7 +918,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
                 <span style={{ fontSize:"0.65rem", fontWeight:700, color:"#7c3aed", marginBottom: 1 }}>Top 5 AI Predicted</span>
                 {aiPredicted.map((m, i) => (
                   <span key={i} style={{ fontSize:"0.68rem", fontWeight:500, color:"#7c3aed" }}>
-                    {i + 1}. {m.material} - Est: {m.estimated.toLocaleString()} {m.unit} / Actual: {(m.actual ?? m.estimated).toLocaleString()} {m.unit}
+                    {i + 1}. {m.material} - Est: {m.estimated.toLocaleString()} {m.unit} / Actual: {m.actual == null ? "?" : m.actual.toLocaleString()} {m.unit}
                   </span>
                 ))}
               </>
