@@ -152,7 +152,11 @@ export default function Header({ title }: HeaderProps) {
                 })}
               </div>
               <div style={{ padding:"10px 16px", borderTop:"1px solid #f3f4f6", textAlign:"center" }}>
-                <button suppressHydrationWarning onClick={() => setNotifOpen(false)} style={{ fontSize:"0.78rem", color:"#f97316", background:"none", border:"none", cursor:"pointer", fontWeight:600 }}>
+                <button
+                  suppressHydrationWarning
+                  onClick={() => { setNotifOpen(false); router.push("/dashboard"); }}
+                  style={{ fontSize:"0.78rem", color:"#f97316", background:"none", border:"none", cursor:"pointer", fontWeight:600 }}
+                >
                   View all notifications
                 </button>
               </div>

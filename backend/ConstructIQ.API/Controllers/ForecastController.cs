@@ -39,6 +39,10 @@ public class ForecastController(IForecastService forecastService, IProjectAccess
     public async Task<IActionResult> GetAccuracy(int projectId) =>
         Ok(await forecastService.GetAccuracyReportAsync(projectId));
 
+    [HttpGet("top-demand")]
+    public async Task<IActionResult> GetTopDemand([FromQuery] string? unit) =>
+        Ok(await forecastService.GetTopForecastedDemandAsync(unit));
+
     [HttpPost("train")]
     [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Train()
