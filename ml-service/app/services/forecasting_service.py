@@ -18,7 +18,12 @@ def get_engine() -> Engine:
         "DATABASE_URL",
         "mysql+pymysql://root:password@db:3306/constructiq"
     )
-    return create_engine(url, pool_recycle=300)
+    # Aiven (and most managed MySQL hosts) require TLS. Set DB_SSL_CA to the
+    # path of the provider's downloaded CA certificate to enable it — unset
+    # by default, so local/docker-compose (no TLS configured) is unaffected.
+    ssl_ca = os.getenv("DB_SSL_CA")
+    connect_args = {"ssl": {"ca": ssl_ca}} if ssl_ca else {}
+    return create_engine(url, pool_recycle=300, connect_args=connect_args)
 
 
 def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> list[dict]:

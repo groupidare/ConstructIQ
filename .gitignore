@@ -38,9 +38,6 @@ venv/
 env/
 *.egg-info/
 .pytest_cache/
-ml-service/trained_models/*.pkl
-ml-service/trained_models/*.json
-ml-service/trained_models/*.ubj
 
 # OS
 .DS_Store
