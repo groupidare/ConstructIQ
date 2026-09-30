@@ -50,22 +50,4 @@ public class ActualUsageCalculatorTests
         Assert.False(result.IsValid);
         Assert.Null(result.ActualUsage);
     }
-
-    [Fact]
-    public void IsUnitSafe_NoEstimatedPurchaseQuantity_IsSafe()
-    {
-        Assert.True(ActualUsageCalculator.IsUnitSafe(null, null, "sq.m"));
-    }
-
-    [Fact]
-    public void IsUnitSafe_SameUnitAsEstimatedPurchase_IsSafe()
-    {
-        Assert.True(ActualUsageCalculator.IsUnitSafe(10, "sq.m", "sq.m"));
-    }
-
-    [Fact] // Case 13 (calculator half): incompatible units must not be silently treated as compatible.
-    public void IsUnitSafe_DifferentPurchaseUnit_IsNotSafe()
-    {
-        Assert.False(ActualUsageCalculator.IsUnitSafe(10, "bag", "sq.m"));
-    }
 }

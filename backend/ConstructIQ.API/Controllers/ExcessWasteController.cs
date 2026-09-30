@@ -27,6 +27,10 @@ public class ExcessWasteController(IExcessWasteService excessWasteService) : Con
     public async Task<IActionResult> GetPendingBOQItems(int projectId, [FromQuery] bool isReusable = true) =>
         Ok(await excessWasteService.GetPendingBOQItemsAsync(projectId, isReusable));
 
+    [HttpGet("projects-with-pending-items")]
+    public async Task<IActionResult> GetProjectIdsWithPendingItems() =>
+        Ok(await excessWasteService.GetProjectIdsWithPendingItemsAsync());
+
     [HttpPost]
     [Authorize(Roles = "Admin,SiteEngineer,WarehousePersonnel")]
     public async Task<IActionResult> Create([FromBody] ExcessWasteCreateDto dto)

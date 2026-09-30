@@ -35,10 +35,6 @@ interface RecordExcessModalProps {
 
 export default function RecordExcessModal({ projects, onClose, onSuccess }: RecordExcessModalProps) {
   const [projectId, setProjectId] = useState(0);
-  // Free-typed search text, kept separate from projectId so the field can
-  // show whatever's been typed even before it resolves to a real project —
-  // a plain <select> forced scrolling through every project by name alone.
-  const [projectQuery, setProjectQuery] = useState("");
   const [rows, setRows]           = useState<MaterialRow[]>([{ ...EMPTY_ROW }]);
   const [submitting, setSubmitting] = useState(false);
   // Fetched separately per kind — a BOQ line already logged as Excess can
@@ -46,8 +42,26 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
   // list; each kind has its own independent remaining-materials list.
   const [pendingByKind, setPendingByKind] = useState<Record<"Excess" | "Waste", PendingBOQItem[]>>({ Excess: [], Waste: [] });
   const [loadingPending, setLoadingPending] = useState(false);
+  // Projects with at least one BOQ line still missing an Excess or Waste
+  // record — a fully-logged project is always a dead end here (immediately
+  // shows "No materials left to log"), so it's kept out of the picker
+  // entirely rather than offered and then rejected.
+  const [pendingProjectIds, setPendingProjectIds] = useState<Set<number> | null>(null);
 
-  const selectedProject = useMemo(() => projects.find(p => p.id === projectId) ?? null, [projects, projectId]);
+  useEffect(() => {
+    let cancelled = false;
+    api.get<number[]>("/excess-waste/projects-with-pending-items")
+      .then(({ data }) => { if (!cancelled) setPendingProjectIds(new Set(data)); })
+      .catch(() => { if (!cancelled) setPendingProjectIds(new Set(projects.map(p => p.id))); }); // fail open
+    return () => { cancelled = true; };
+  }, [projects]);
+
+  const selectableProjects = useMemo(
+    () => pendingProjectIds === null ? projects : projects.filter(p => pendingProjectIds.has(p.id)),
+    [projects, pendingProjectIds],
+  );
+
+  const selectedProject = useMemo(() => selectableProjects.find(p => p.id === projectId) ?? null, [selectableProjects, projectId]);
 
   // Every BOQ line for this project that hasn't had a record of THAT kind
   // logged against it yet.
@@ -178,21 +192,14 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "0.75rem" }}>
           <div>
             <label style={labelStyle}>PROJECT *</label>
-            <input
-              list="record-excess-project-options"
-              value={projectQuery}
-              onChange={e => {
-                const val = e.target.value;
-                setProjectQuery(val);
-                const match = projects.find(p => p.name === val);
-                setProjectId(match ? match.id : 0);
-              }}
-              placeholder="Type to search project…"
+            <select
+              value={projectId}
+              onChange={e => setProjectId(+e.target.value)}
               style={inputStyle}
-            />
-            <datalist id="record-excess-project-options">
-              {projects.map(p => <option key={p.id} value={p.name} />)}
-            </datalist>
+            >
+              <option value={0} disabled>Select a project…</option>
+              {selectableProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
           </div>
           <div>
             <label style={labelStyle}>PROJECT TYPE</label>
@@ -231,7 +238,7 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
                           <option value={0} disabled>Select material…</option>
                           {optionsFor(idx).map(p => (
                             <option key={p.boqItemId} value={p.boqItemId}>
-                              {p.materialName} (Est. {p.estimatedQuantity.toLocaleString()} {p.unit})
+                              {p.materialName}
                             </option>
                           ))}
                         </select>

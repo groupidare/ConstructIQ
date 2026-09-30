@@ -46,8 +46,11 @@ public class MonthlyDemandSummaryTests(DatabaseFixture fixture)
         Assert.Equal(85, summary[0].ActualUsage); // 100 - 10 - 5, the full combined figure
     }
 
-    [Fact] // Case 13: a BOQItem whose EstimatedPurchaseUnit differs from Unit is excluded, and flagged, not guessed.
-    public async Task IncompatibleUnits_AreExcludedAndFlagged()
+    [Fact] // Case 13: a BOQItem whose EstimatedPurchaseUnit differs from Unit still charts —
+    // the record was logged against EstimatedPurchaseQuantity (the picker's own baseline
+    // whenever it's set), so that's the figure used, never the separate, non-convertible
+    // EstimatedQuantity/Unit pair, and never excluded as if the data were bad.
+    public async Task PurchaseUnitDiffersFromEstimateUnit_UsesPurchaseQuantityAsBaseline()
     {
         await using var db = fixture.CreateContext();
         var user = await TestDataBuilder.CreateUserAsync(db);
@@ -58,11 +61,13 @@ public class MonthlyDemandSummaryTests(DatabaseFixture fixture)
         await TestDataBuilder.CreateExcessWasteRecordAsync(db, project.Id, material.Id, boq.Id, user.Id, 5, isReusable: true);
 
         var boqService = new BOQService(db);
-        var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null)).ToList();
-        Assert.Empty(summary);
+        var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, "bag")).ToList();
+        Assert.Single(summary);
+        Assert.Equal(35, summary[0].ActualUsage); // 40 (EstimatedPurchaseQuantity) - 5, never against the 100 sq.m estimate
+        Assert.Equal("bag", summary[0].Unit);
 
         var flagged = (await boqService.GetFlaggedExcessItemsAsync(user.Id, "Admin")).ToList();
-        Assert.Contains(flagged, f => f.BOQItemId == boq.Id);
+        Assert.DoesNotContain(flagged, f => f.BOQItemId == boq.Id);
     }
 
     [Fact] // Case 14: a material with both a reconciled actual usage and a forecast run in the same month shows both.

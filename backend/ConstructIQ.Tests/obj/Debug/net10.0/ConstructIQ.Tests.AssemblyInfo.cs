@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ConstructIQ.Tests")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e71a98e2d7ddbd5956de8345c30b0c614210ec03")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+f52b9eb988617fff1e219dbb4ab53f9222d439d9")]
 [assembly: System.Reflection.AssemblyProductAttribute("ConstructIQ.Tests")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ConstructIQ.Tests")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

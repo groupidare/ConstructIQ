@@ -369,8 +369,8 @@ public class BOQService(AppDbContext db) : IBOQService
     // logged in July, waste logged in September" from double-plotting a
     // partial usage figure in two different months (spec requirement): the
     // whole, final calculation lands once, in the month it was last touched.
-    // Items failing validation (Excess+Waste > Estimated) or the unit-safety
-    // guard are returned separately, never silently included or clamped.
+    // Items failing validation (Excess+Waste > baseline) are returned
+    // separately, never silently included or clamped.
     private async Task<(List<ReconciledBoqItem> Valid, List<FlaggedExcessItemDto> Flagged)> GetReconciledBoqItemsAsync(
         int userId, string role, int? materialId, string? unit)
     {
@@ -399,33 +399,32 @@ public class BOQService(AppDbContext db) : IBOQService
         {
             var boqItem = group.First().BOQItem!;
             var project = boqItem.Project;
-            var effectiveUnit = !string.IsNullOrWhiteSpace(boqItem.Unit) ? boqItem.Unit : boqItem.Material.Unit;
+
+            // The baseline and unit a record's Quantity is actually
+            // denominated in — the exact same precedence the Record
+            // Excess/Waste picker (GetPendingBOQItemsAsync) and
+            // BOQItem.ActualQuantity already use as ground truth, so the
+            // figure computed here is always unit-consistent with what was
+            // logged, never mixed with the item's separate EstimatedQuantity/
+            // Unit when a purchase-unit baseline was the one actually used.
+            var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
+            var effectiveUnit = !string.IsNullOrWhiteSpace(boqItem.EstimatedPurchaseUnit)
+                ? boqItem.EstimatedPurchaseUnit
+                : boqItem.Material.Unit;
             if (unit is not null && !string.Equals(effectiveUnit, unit, StringComparison.OrdinalIgnoreCase))
                 continue;
 
             var excessTotal = group.Where(e => e.IsReusable).Sum(e => e.Quantity);
             var wasteTotal  = group.Where(e => !e.IsReusable).Sum(e => e.Quantity);
 
-            if (!ActualUsageCalculator.IsUnitSafe(boqItem.EstimatedPurchaseQuantity, boqItem.EstimatedPurchaseUnit, effectiveUnit))
-            {
-                flagged.Add(new FlaggedExcessItemDto
-                {
-                    BOQItemId = boqItem.Id, ProjectId = project.Id, ProjectName = project.Name,
-                    MaterialName = boqItem.Material.Name, Unit = effectiveUnit,
-                    EstimatedQuantity = boqItem.EstimatedQuantity, ExcessTotal = excessTotal, WasteTotal = wasteTotal,
-                    Reason = "Estimated Purchase Quantity uses a different unit than Estimated Quantity — can't be safely compared without a unit conversion.",
-                });
-                continue;
-            }
-
-            var result = ActualUsageCalculator.Calculate(boqItem.EstimatedQuantity, excessTotal, wasteTotal);
+            var result = ActualUsageCalculator.Calculate(baseline, excessTotal, wasteTotal);
             if (!result.IsValid)
             {
                 flagged.Add(new FlaggedExcessItemDto
                 {
                     BOQItemId = boqItem.Id, ProjectId = project.Id, ProjectName = project.Name,
                     MaterialName = boqItem.Material.Name, Unit = effectiveUnit,
-                    EstimatedQuantity = boqItem.EstimatedQuantity, ExcessTotal = excessTotal, WasteTotal = wasteTotal,
+                    EstimatedQuantity = baseline, ExcessTotal = excessTotal, WasteTotal = wasteTotal,
                     Reason = result.ErrorMessage!,
                 });
                 continue;
@@ -436,7 +435,7 @@ public class BOQService(AppDbContext db) : IBOQService
                 boqItem.Id, project.Id, project.Name, project.Status == ProjectStatus.Completed || project.IsHistorical,
                 boqItem.MaterialId, boqItem.Material.Name, effectiveUnit,
                 new DateTime(reportingMonth.Year, reportingMonth.Month, 1),
-                boqItem.EstimatedQuantity, excessTotal, wasteTotal, result.ActualUsage!.Value));
+                baseline, excessTotal, wasteTotal, result.ActualUsage!.Value));
         }
 
         return (valid, flagged);

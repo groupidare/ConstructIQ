@@ -10,4 +10,5 @@ public interface IExcessWasteService
     Task DeleteAsync(int id);
     Task<ExcessAnalyticsSummaryDto> GetSummaryAsync(int projectId);
     Task<IEnumerable<PendingBOQItemDto>> GetPendingBOQItemsAsync(int projectId, bool isReusable);
+    Task<IEnumerable<int>> GetProjectIdsWithPendingItemsAsync();
 }

@@ -6,6 +6,13 @@ namespace ConstructIQ.API.Algorithms;
 // without a database. Never clamps an invalid result to zero — a BOQ item
 // whose logged Excess+Waste exceeds its Estimated Quantity is a data problem
 // to flag and exclude, not something to silently paper over.
+//
+// "Estimated Quantity" here is always whichever baseline the Excess/Waste
+// records were actually logged against (BOQService resolves that to
+// EstimatedPurchaseQuantity ?? EstimatedQuantity, exactly like the Record
+// Excess/Waste picker and BOQItem.ActualQuantity already do) — never a fixed
+// field name, since two independent, non-convertible baselines exist on one
+// BOQ line and only one of them is ever the one a given record used.
 public static class ActualUsageCalculator
 {
     public readonly record struct Result(decimal? ActualUsage, bool IsValid, string? ErrorMessage)
@@ -29,13 +36,4 @@ public static class ActualUsageCalculator
         // in-range combination — not a special case.
         return Result.Ok(estimatedQuantity - deducted);
     }
-
-    // A BOQItem's ExcessWasteRecords are only trustworthy as EstimatedQuantity/
-    // Unit-denominated figures when there's no evidence they might actually
-    // have been logged in a different, non-convertible purchase unit — i.e.
-    // no EstimatedPurchaseQuantity is set, or it happens to share the same
-    // unit as EstimatedQuantity anyway. No conversion is ever attempted.
-    public static bool IsUnitSafe(decimal? estimatedPurchaseQuantity, string? estimatedPurchaseUnit, string? unit) =>
-        estimatedPurchaseQuantity is null
-        || string.Equals(estimatedPurchaseUnit?.Trim(), unit?.Trim(), StringComparison.OrdinalIgnoreCase);
 }

@@ -174,6 +174,44 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         });
     }
 
+    // Every Project that still has at least one BOQ line missing an Excess OR
+    // a Waste record — one bulk query rather than looping GetPendingBOQItemsAsync
+    // per project, since a project with none of these is a dead end in the
+    // Record Material Excess modal (always lands on "No materials left to
+    // log") and should never appear in its project picker at all.
+    public async Task<IEnumerable<int>> GetProjectIdsWithPendingItemsAsync()
+    {
+        var boqItems = await db.BOQItems
+            .Select(b => new { b.Id, b.ProjectId, b.MaterialId })
+            .ToListAsync();
+
+        var excessLogged = (await db.ExcessWasteRecords
+                .Where(e => e.BOQItemId != null && e.IsReusable)
+                .Select(e => e.BOQItemId!.Value)
+                .Distinct()
+                .ToListAsync())
+            .ToHashSet();
+        var wasteLogged = (await db.ExcessWasteRecords
+                .Where(e => e.BOQItemId != null && !e.IsReusable)
+                .Select(e => e.BOQItemId!.Value)
+                .Distinct()
+                .ToListAsync())
+            .ToHashSet();
+
+        var pendingRedistributionsByProject = (await db.RedistributionRequests
+                .Where(r => RedistributionStatuses.Pending.Contains(r.Status))
+                .Select(r => new { r.SourceProjectId, r.MaterialId })
+                .ToListAsync())
+            .ToLookup(r => r.SourceProjectId, r => r.MaterialId);
+
+        return boqItems
+            .Where(b => !(excessLogged.Contains(b.Id) && wasteLogged.Contains(b.Id)))
+            .Where(b => !pendingRedistributionsByProject[b.ProjectId].Contains(b.MaterialId))
+            .Select(b => b.ProjectId)
+            .Distinct()
+            .ToList();
+    }
+
     public async Task<ExcessWasteResponseDto> UpdateAsync(int id, ExcessWasteUpdateDto dto)
     {
         var record = await db.ExcessWasteRecords

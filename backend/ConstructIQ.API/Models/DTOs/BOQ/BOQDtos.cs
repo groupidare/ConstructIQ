@@ -84,10 +84,12 @@ public class HistoricalEstimateResponseDto
 }
 
 // One point on the Forecasting page's chart, for one selected material+unit.
-// Actual Usage = EstimatedQuantity - Excess - Waste, computed fresh from
+// Actual Usage = Baseline - Excess - Waste, computed fresh from
 // ExcessWasteRecords (not read from the live BOQItem.ActualQuantity field —
-// see ActualUsageCalculator), attributed to the calendar month each record
-// was actually recorded in. AI Predicted is the real ML model's own output
+// see ActualUsageCalculator), where Baseline is EstimatedPurchaseQuantity ??
+// EstimatedQuantity per BOQ item (whichever the record was actually logged
+// against), attributed to the calendar month each record was actually
+// recorded in. AI Predicted is the real ML model's own output
 // (ForecastedMaterial.ForecastedQuantity), attributed to the month its
 // forecast run happened. Either side is null when nothing that month has
 // that particular figure — never a fabricated zero, and the frontend must
@@ -113,7 +115,7 @@ public class MonthlyDemandSummaryDto
 }
 
 // One entry in the Forecasting page's material selector — every unique
-// material+unit pair that has ever contributed a real, unit-safe Actual
+// material+unit pair that has ever contributed a real, validated Actual
 // Usage figure, ranked by total historical demand (highest first).
 public class MaterialOptionDto
 {

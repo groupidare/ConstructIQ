@@ -116,4 +116,22 @@ using (var scope = app.Services.CreateScope())
     catch (Exception ex) { Console.WriteLine($"[SEEDER ERROR] {ex.Message}"); }
 }
 
+// One-off historical data backfill for the Forecasting chart: `dotnet run
+// --seed-excess` runs it and exits, never as part of a normal app start.
+if (args.Contains("--seed-excess"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await ConstructIQ.API.Data.DbInitializer.SeedHistoricalExcessAndWasteAsync(db);
+    return;
+}
+
+if (args.Contains("--seed-forecasts"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await ConstructIQ.API.Data.DbInitializer.SeedHistoricalForecastsAsync(db);
+    return;
+}
+
 app.Run();
