@@ -38,6 +38,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<TrustedDevice>            TrustedDevices            => Set<TrustedDevice>();
     public DbSet<WarehouseStockItem>       WarehouseStockItems       => Set<WarehouseStockItem>();
     public DbSet<MaterialRequest>          MaterialRequests          => Set<MaterialRequest>();
+    public DbSet<BackupJobRun>             BackupJobRuns             => Set<BackupJobRun>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {

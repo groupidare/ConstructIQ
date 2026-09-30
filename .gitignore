@@ -13,6 +13,10 @@ backend/ConstructIQ.API/bin/
 backend/ConstructIQ.API/obj/
 backend/ConstructIQ.SecurityChecks/bin/
 backend/ConstructIQ.SecurityChecks/obj/
+backend/ConstructIQ.Tests/bin/
+backend/ConstructIQ.Tests/obj/
+backend/ConstructIQ.MaintenanceChecks/bin/
+backend/ConstructIQ.MaintenanceChecks/obj/
 backend/ConstructIQ.API/appsettings.json
 backend/ConstructIQ.API/appsettings.Development.json
 backend/ConstructIQ.API/appsettings.json.backup
@@ -48,6 +52,17 @@ logs/
 
 # Docker
 .docker/
+
+# Backup secrets - never committed. This is a DEV-ONLY fallback location;
+# production must relocate it outside the repo entirely (docs/backup-runbook.md).
+backend/backup/backup.env
+backend/backup/secrets/
+backend/backup/staging/
+backend/backup/local-repo/
+backend/backup/logs/
+backend/backup/state/
+backend/backup/test-run/
+backend/backup/test-scratch/
 
 # IDE
 .vscode/settings.json

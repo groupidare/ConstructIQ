@@ -8,12 +8,13 @@ import { useAuthStore } from "@/store/authStore";
 import { Avatar } from "@/components/ui/Avatar";
 import api from "@/lib/api";
 import { ChangePasswordModal, MFAModal, BackupModal } from "@/components/auth/SecurityModals";
+import BackupStatusModal from "@/components/auth/BackupStatusModal";
 import ActivityLogView from "@/components/auth/ActivityLogView";
 import Modal from "@/components/ui/Modal";
 import {
   Lock, Shield, CloudUpload, Database, ChevronRight,
   LogOut, Pencil, X,
-  Camera, Trash2, Loader2,
+  Camera, Trash2, Loader2, HardDrive,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -35,27 +36,6 @@ const DEPT_MAP: Record<string, string> = {
   WarehousePersonnel: "Warehouse & Logistics",
   ProcurementOfficer: "Procurement & Supply",
 };
-
-// ── Toggle ────────────────────────────────────────────────────────────────────
-
-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      onClick={() => onChange(!on)}
-      style={{
-        width: 44, height: 24, borderRadius: 12, padding: 0, border: "none", cursor: "pointer",
-        background: on ? "#f97316" : "#d1d5db", position: "relative", flexShrink: 0,
-        transition: "background 0.2s",
-      }}
-    >
-      <span style={{
-        position: "absolute", top: 3, left: on ? 23 : 3,
-        width: 18, height: 18, borderRadius: "50%", background: "#fff",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.2)", transition: "left 0.2s",
-      }} />
-    </button>
-  );
-}
 
 // ── Security row ──────────────────────────────────────────────────────────────
 
@@ -265,7 +245,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type ModalType = "changePassword" | "mfa" | "backup" | "activityLog" | "editProfile" | "signOutConfirm" | null;
+type ModalType = "changePassword" | "mfa" | "backup" | "backupStatus" | "activityLog" | "editProfile" | "signOutConfirm" | null;
 
 // ── Sign Out Confirmation Modal ───────────────────────────────────────────────
 
@@ -317,12 +297,6 @@ export default function SettingsPage() {
   const router = useRouter();
 
   const [modal, setModal] = useState<ModalType>(null);
-  const [notifs, setNotifs] = useState({
-    shortageAlerts:    true,
-    overstockWarnings: true,
-    deliveryUpdates:   true,
-    aiForecastUpdates: true,
-  });
 
   function handleSignOut() {
     logout();
@@ -349,6 +323,7 @@ export default function SettingsPage() {
       {modal === "changePassword"&& <ChangePasswordModal onClose={()=>setModal(null)} />}
       {modal === "mfa"           && <MFAModal            onClose={()=>setModal(null)} />}
       {user?.role === "Admin" && modal === "backup" && <BackupModal         onClose={()=>setModal(null)} />}
+      {user?.role === "Admin" && modal === "backupStatus" && <BackupStatusModal onClose={()=>setModal(null)} />}
       {user?.role === "Admin" && modal === "activityLog" && <Modal open title="Activity Log" size="xl" onClose={()=>setModal(null)}><ActivityLogView /></Modal>}
       {modal === "signOutConfirm" && <SignOutConfirmModal onCancel={()=>setModal(null)} onConfirm={handleSignOut} />}
 
@@ -395,32 +370,12 @@ export default function SettingsPage() {
           </div>
         </Card>
 
-        {/* ── Notification Preferences ── */}
-        <Card title="Notification Preferences">
-          {([
-            ["shortageAlerts",    "Shortage Alerts",       "Get notified when materials reach critical levels"],
-            ["overstockWarnings", "Overstock Warnings",    "Alerts for materials exceeding maximum thresholds"],
-            ["deliveryUpdates",   "Delivery Updates",      "Track procurement order status changes"],
-            ["aiForecastUpdates", "AI Forecast Updates",   "Notifications when demand predictions change significantly"],
-          ] as [keyof typeof notifs, string, string][]).map(([key, title, desc], i, arr) => (
-            <div key={key} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 0", borderBottom: i < arr.length-1 ? "1px solid #f3f4f6" : "none" }}>
-              <div>
-                <p style={{ fontWeight:600, fontSize:"0.875rem", color:"#111827" }}>{title}</p>
-                <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:2 }}>{desc}</p>
-              </div>
-              <Toggle on={notifs[key]} onChange={v => {
-                setNotifs(n => ({ ...n, [key]: v }));
-                toast.success(`${title} ${v ? "enabled" : "disabled"}.`);
-              }} />
-            </div>
-          ))}
-        </Card>
-
         {/* ── Privacy and Security ── */}
         <Card title="Privacy and Security">
           <SecRow icon={Lock}        label="Change Password"                onClick={()=>setModal("changePassword")} />
           <SecRow icon={Shield}      label="Multi-Factor Authentication (MFA)" onClick={()=>setModal("mfa")} />
           {user?.role === "Admin" && <SecRow icon={CloudUpload} label="Backup and Restore" onClick={()=>setModal("backup")} />}
+          {user?.role === "Admin" && <SecRow icon={HardDrive} label="Backup & Disaster Recovery" onClick={()=>setModal("backupStatus")} />}
           {user?.role === "Admin" && <SecRow icon={Database} label="Activity Log" onClick={()=>setModal("activityLog")} />}
         </Card>
 

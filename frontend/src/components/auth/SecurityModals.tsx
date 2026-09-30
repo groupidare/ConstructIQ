@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import axios from "axios";
 import toast from "react-hot-toast";
@@ -26,22 +26,17 @@ export function ChangePasswordModal({ onClose }: { onClose: () => void }) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
-  const started = useRef(false);
   const logout = useAuthStore(s => s.logout);
   const router = useRouter();
 
   async function requestCode() {
-    setBusy(true); setError(""); setToken(""); setStage("request");
+    setBusy(true); setError(""); setToken("");
     try {
       await api.post("/v1/auth/change-password/request-otp");
       setCode(""); setStage("verify");
     } catch (err) { setError(errorMessage(err)); }
     finally { setBusy(false); }
   }
-
-  useEffect(() => {
-    if (!started.current) { started.current = true; void requestCode(); }
-  }, []);
 
   async function verify() {
     setBusy(true); setError("");
@@ -69,7 +64,7 @@ export function ChangePasswordModal({ onClose }: { onClose: () => void }) {
 
   return <SecurityModal title="Change Password" onClose={onClose} busy={busy}>
     {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-    {stage === "request" && <><p className="text-sm text-gray-600">Verify your identity using a code sent to your registered email.</p><Button loading={busy} onClick={requestCode}>Send verification code</Button></>}
+    {stage === "request" && <><p className="text-sm text-gray-600">Verify your identity using a code sent to your registered email.</p><Button loading={busy} onClick={requestCode}>Send code to change password</Button></>}
     {stage === "verify" && <form className="space-y-4" onSubmit={e => { e.preventDefault(); void verify(); }}>
       <p className="text-sm text-gray-600">Enter the six-digit email code. It expires in five minutes.</p>
       <Input aria-label="Verification code" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ""))} required />

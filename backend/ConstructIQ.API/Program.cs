@@ -39,6 +39,7 @@ builder.Services.AddScoped<IDocumentService, DocumentService>();
 builder.Services.AddScoped<IMeasurementService, MeasurementService>();
 builder.Services.AddScoped<IBOQService, BOQService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
+builder.Services.AddScoped<IBackupJobService, BackupJobService>();
 builder.Services.AddScoped<IPhaseService, PhaseService>();
 builder.Services.AddScoped<IWarehouseStockService, WarehouseStockService>();
 builder.Services.AddScoped<IWeatherGeocodingService, WeatherGeocodingService>();
