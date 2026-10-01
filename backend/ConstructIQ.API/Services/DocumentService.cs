@@ -91,21 +91,12 @@ public class DocumentService(
         var doc = await db.ProjectDocuments.FindAsync(documentId)
             ?? throw new KeyNotFoundException("Document not found.");
 
-        // ML service reads this off local disk — only correct when both processes
-        // share a filesystem (true for local dev; a Docker deployment would need a
-        // shared volume mounted at the same path on both containers).
-        var webRoot = env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot");
-        var absolutePath = Path.Combine(webRoot, doc.StoragePath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-
         var client = httpFactory.CreateClient("MLService");
         MlDocumentParseResponse? mlResponse;
         try
         {
-            var response = await client.PostAsJsonAsync("/documents/parse", new MlDocumentParseRequest
-            {
-                FilePath  = absolutePath,
-                ProjectId = doc.ProjectId,
-            });
+            using var content = await BuildParseRequestContentAsync(doc);
+            var response = await client.PostAsync("/documents/parse", content);
             response.EnsureSuccessStatusCode();
             mlResponse = await response.Content.ReadFromJsonAsync<MlDocumentParseResponse>();
         }
@@ -154,18 +145,12 @@ public class DocumentService(
         var doc = await db.ProjectDocuments.FindAsync(documentId)
             ?? throw new KeyNotFoundException("Document not found.");
 
-        var webRoot = env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot");
-        var absolutePath = Path.Combine(webRoot, doc.StoragePath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-
         var client = httpFactory.CreateClient("MLService");
         MlDocumentParsePoResponse? mlResponse;
         try
         {
-            var response = await client.PostAsJsonAsync("/documents/parse-po", new MlDocumentParseRequest
-            {
-                FilePath  = absolutePath,
-                ProjectId = doc.ProjectId,
-            });
+            using var content = await BuildParseRequestContentAsync(doc);
+            var response = await client.PostAsync("/documents/parse-po", content);
             response.EnsureSuccessStatusCode();
             mlResponse = await response.Content.ReadFromJsonAsync<MlDocumentParsePoResponse>();
         }
@@ -209,6 +194,27 @@ public class DocumentService(
                 MatchedSupplierId     = !string.IsNullOrWhiteSpace(i.SupplierName) && supplierMatches.TryGetValue(i.SupplierName.Trim().ToLower(), out var sid) ? sid : null,
             }).ToList(),
         };
+    }
+
+    // Uploads the file's actual bytes to the ml-service rather than a local
+    // path — the backend and ml-service are separate processes with no
+    // shared filesystem in any real deployment (Render, Docker containers),
+    // so a path only meaningful on the backend's own disk would never
+    // resolve on the other side. The backend still reads the file from its
+    // own wwwroot/uploads as before; only the transport to the ml-service
+    // changed, from "here's where it is" to "here it is".
+    private async Task<MultipartFormDataContent> BuildParseRequestContentAsync(ProjectDocument doc)
+    {
+        var webRoot = env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot");
+        var absolutePath = Path.Combine(webRoot, doc.StoragePath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+
+        var bytes = await File.ReadAllBytesAsync(absolutePath);
+        var content = new MultipartFormDataContent
+        {
+            { new StringContent(doc.ProjectId.ToString()), "project_id" },
+            { new ByteArrayContent(bytes), "file", doc.FileName },
+        };
+        return content;
     }
 
     public async Task<bool> DeleteAsync(int documentId)

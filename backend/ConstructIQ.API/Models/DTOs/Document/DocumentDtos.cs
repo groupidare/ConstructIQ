@@ -22,12 +22,9 @@ public class ProjectDocumentDto
 
 // ── ML service wire types (POST /documents/parse on the Python service) ────────
 // Field names must match ml-service/app/models/schemas.py exactly (snake_case).
-
-public class MlDocumentParseRequest
-{
-    [JsonPropertyName("file_path")]  public string FilePath  { get; set; } = string.Empty;
-    [JsonPropertyName("project_id")] public int    ProjectId { get; set; }
-}
+// The request itself is sent as multipart/form-data (project_id + file),
+// built in DocumentService.BuildParseRequestContentAsync — not a JSON DTO,
+// since it carries the actual file bytes now instead of a server-side path.
 
 public class MlParsedBoqItem
 {

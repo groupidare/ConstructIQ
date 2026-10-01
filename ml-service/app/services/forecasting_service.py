@@ -32,7 +32,12 @@ def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> lis
         SELECT
             m.Id         AS material_id,
             m.Name       AS material_name,
-            m.Unit       AS unit,
+            -- The BOQ row's own unit, not the catalog Material's default unit
+            -- (bi.Unit) — a material can legitimately be estimated in
+            -- different units across rows (e.g. sq.m for one wall, l.m for
+            -- a pipe run), per BOQItem's own Unit field. Falls back to the
+            -- catalog unit only when a row has none of its own.
+            COALESCE(NULLIF(bi.Unit, ''), m.Unit) AS unit,
             m.UnitCost   AS unit_cost,
             bi.EstimatedQuantity AS boq_quantity,
             COALESCE(bi.ActualQuantity, 0) AS actual_used,
@@ -48,21 +53,21 @@ def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> lis
             COALESCE(ph.ProgressPercent, 0) AS progress_percent,
             COALESCE((
                 SELECT AVG(de.ActualLeadDays)
-                FROM purchaseordermaterials pom
-                JOIN purchaseorders po ON po.Id = pom.PurchaseOrderId AND po.Status = 2
-                JOIN deliveryevaluations de ON de.PurchaseOrderId = po.Id
+                FROM PurchaseOrderMaterials pom
+                JOIN PurchaseOrders po ON po.Id = pom.PurchaseOrderId AND po.Status = 2
+                JOIN DeliveryEvaluations de ON de.PurchaseOrderId = po.Id
                 WHERE pom.BOQItemId = bi.Id
                    OR (pom.BOQItemId IS NULL AND pom.MaterialId = bi.MaterialId
                        AND (pom.PhaseId = bi.PhaseId OR (pom.PhaseId IS NULL AND bi.PhaseId IS NULL)))
             ), 7) AS supplier_lead_time_days
-        FROM boqitems bi
-        JOIN materials m ON m.Id = bi.MaterialId
-        JOIN projects p  ON p.Id = bi.ProjectId
-        LEFT JOIN phases ph ON ph.Id = bi.PhaseId
-        LEFT JOIN inventoryrecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
+        FROM BOQItems bi
+        JOIN Materials m ON m.Id = bi.MaterialId
+        JOIN Projects p  ON p.Id = bi.ProjectId
+        LEFT JOIN Phases ph ON ph.Id = bi.PhaseId
+        LEFT JOIN InventoryRecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
         WHERE bi.ProjectId = :project_id
         {phase_filter}
-        GROUP BY m.Id, bi.Id, bi.EstimatedQuantity, bi.ActualQuantity, ir.AvailableQuantity,
+        GROUP BY m.Id, bi.Id, bi.Unit, bi.EstimatedQuantity, bi.ActualQuantity, ir.AvailableQuantity,
                  ir.ExcessQuantity, ir.WastedQuantity, bi.PrimarySection, bi.CoverageArea, p.Type,
                  ph.StartDate, ph.EndDate, p.StartDate, p.TargetEndDate, ph.ProgressPercent
     """)
@@ -101,20 +106,30 @@ def run_forecast(request: ForecastRequest) -> ForecastResponse:
     # identifier at all) actually holds, instead of silently returning
     # duplicate material_ids that predicted totals apart and duplicate rows
     # downstream (React key collisions, doubled-looking numbers in the UI).
-    by_material: dict[int, ForecastedMaterial] = {}
+    #
+    # Grouped by (material_id, unit) rather than material_id alone — a BOQ
+    # row's unit can legitimately differ from another row of the same
+    # material (sq.m for one wall, l.m for a pipe run of the same CHB/pipe
+    # material). Summing those raw quantities together under one label would
+    # silently combine incompatible units into a single meaningless number;
+    # keeping them as separate entries means each one only ever sums
+    # same-unit quantities.
+    by_material: dict[tuple[int, str], ForecastedMaterial] = {}
     for i, record in enumerate(records):
         qty      = float(max(preds[i], 0))
         stock    = float(record["current_stock"])
         material_id = record["material_id"]
+        unit        = record["unit"]
+        key = (material_id, unit)
 
-        existing = by_material.get(material_id)
+        existing = by_material.get(key)
         if existing is not None:
             existing.forecasted_quantity += qty
         else:
-            by_material[material_id] = ForecastedMaterial(
+            by_material[key] = ForecastedMaterial(
                 material_id         = material_id,
                 material_name       = record["material_name"],
-                unit                = record["unit"],
+                unit                = unit,
                 forecasted_quantity = qty,
                 current_stock       = stock,   # per-material fact — identical across this material's rows
                 shortage            = 0,       # recomputed below, once the total is known
@@ -127,6 +142,13 @@ def run_forecast(request: ForecastRequest) -> ForecastResponse:
         fm.shortage           = max(fm.forecasted_quantity - fm.current_stock, 0)
         fm.reorder_suggestion = fm.shortage * 1.1
         fm.risk_level         = RiskLevel(classify_risk(fm.shortage, fm.current_stock))
+        # Material quantities are always whole units in practice — round only
+        # after shortage/reorder/risk are derived from the precise float, so
+        # the rounding itself never skews the risk classification.
+        fm.forecasted_quantity = round(fm.forecasted_quantity)
+        fm.current_stock       = round(fm.current_stock)
+        fm.shortage            = round(fm.shortage)
+        fm.reorder_suggestion  = round(fm.reorder_suggestion)
 
     return ForecastResponse(
         project_id=request.project_id,
