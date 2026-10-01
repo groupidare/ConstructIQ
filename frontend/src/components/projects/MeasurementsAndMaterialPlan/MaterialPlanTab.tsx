@@ -231,27 +231,6 @@ export default function MaterialPlanTab({
     [rows],
   );
 
-  // Historical projects never get a real AI forecast run against them (they're
-  // training data for other projects, not a forecast target themselves) — the
-  // top-demanded materials extracted from the BOQ+PO are the closest thing
-  // they have to a "forecast", mirroring the same calc the project card
-  // itself uses. Real PO quantities (historicalSupply — genuine supplier
-  // lines from the combined BOQ+PO extraction) are preferred over the BOQ's
-  // own estimate/actual qty since they're truer usage; a BOQ line falls back
-  // to its own qty only when it has no PO data at all.
-  const topDemandEntries = useMemo(() => {
-    if (!isHistorical || boqItems.length === 0) return [];
-    const entries: { material: string; qty: number; unit: string }[] = [];
-    boqItems.forEach(b => {
-      if (b.historicalSupply && b.historicalSupply.length > 0) {
-        b.historicalSupply.forEach(s => entries.push({ material: s.materialName, qty: s.quantity, unit: s.unit }));
-      } else {
-        entries.push({ material: b.materialName, qty: b.actualQuantity > 0 ? b.actualQuantity : b.estimatedQuantity, unit: b.unit });
-      }
-    });
-    return entries.sort((a, b) => b.qty - a.qty).slice(0, 5);
-  }, [isHistorical, boqItems]);
-
   // Same ranking, but over every saved BOQ row (not just the single top one) —
   // feeds the historical-only "Materials by Demand" list below.
   const rowsByDemand = useMemo(() => {
@@ -357,28 +336,19 @@ export default function MaterialPlanTab({
         </div>
       )}
 
-      {/* Forecasted Material Demand — completed projects only; ongoing projects
-          only get the summary label on the project card, not this full breakdown. */}
-      {isCompleted && (
+      {/* Forecasted Material Demand — completed, non-historical projects only;
+          ongoing projects only get the summary label on the project card, not
+          this full breakdown. Historical projects get "Materials by Demand"
+          below instead (ranked by real recorded usage, not a forecast — a
+          finished historical project has nothing left to forecast). */}
+      {isCompleted && !isHistorical && (
         <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', marginBottom: '1rem' }}>
           <div style={{ padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
             <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>Forecasted Material Demand</p>
             <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>AI-predicted demand from the latest forecast run on this project.</p>
           </div>
           {forecastedMaterials.length === 0 ? (
-            isHistorical && topDemandEntries.length > 0 ? (
-              <div style={{ padding: '1rem' }}>
-                <p style={{ fontSize: '0.65rem', fontWeight: 700, color: '#9ca3af', letterSpacing: '0.05em', marginBottom: 6 }}>TOP 5 MATERIAL DEMAND/USAGE</p>
-                {topDemandEntries.map((m, i) => (
-                  <p key={i} style={{ fontSize: '0.85rem', fontWeight: 600, color: '#6d28d9', marginBottom: 2 }}>
-                    {i + 1}. {m.qty.toLocaleString()} {m.unit} · {m.material}
-                  </p>
-                ))}
-                <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 6 }}>Extracted from the uploaded BOQ and PO data — historical projects aren&apos;t forecast targets themselves, they train the forecast for other projects.</p>
-              </div>
-            ) : (
-              <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No forecast has been run yet — click Run Forecast below.</p>
-            )
+            <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No forecast has been run yet — click Run Forecast below.</p>
           ) : (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.7fr)', gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
