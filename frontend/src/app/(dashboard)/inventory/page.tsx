@@ -82,7 +82,11 @@ function InventoryPageInner() {
 
   const groupedRequestsByProject = useMemo(() => {
     const map = new Map<number, { projectId: number; projectName: string; records: WarehouseRequest[] }>();
+    // A Rejected request has nothing left to act on — drop it from this queue
+    // entirely rather than showing it alongside the still-actionable ones
+    // (a project whose only requests were rejected disappears from the list).
     for (const r of requests) {
+      if (r.status === "Rejected") continue;
       if (!map.has(r.projectId)) map.set(r.projectId, { projectId: r.projectId, projectName: r.projectName, records: [] });
       map.get(r.projectId)!.records.push(r);
     }

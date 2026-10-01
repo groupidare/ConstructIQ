@@ -30,6 +30,9 @@ public record PurchaseOrderDto
     // True once a WarehousePersonnel has rated this delivery — lets the
     // frontend show/hide the "Rate Supplier" action without a second call.
     public bool HasEvaluation { get; init; }
+    // The master PO document — uploaded once, with the first delivery batch,
+    // and reused by every later one. See PurchaseOrder.PoFileUrl.
+    public string? PoFileUrl { get; init; }
 }
 
 public record DeliveryBatchDto
@@ -38,7 +41,12 @@ public record DeliveryBatchDto
     public int      BatchNumber    { get; init; }
     public string   UploadedByName { get; init; } = "";
     public DateTime CreatedAt      { get; init; }
-    public List<string> PhotoUrls  { get; init; } = [];
+    // Split by DeliveryDocumentType rather than one flat PhotoUrls list — a
+    // batch always has exactly one Delivery Receipt and one-or-more Proof of
+    // Delivery photos, and the frontend needs to render them as distinct,
+    // separately-labeled dropzones/sections.
+    public string?       DrFileUrl    { get; init; }
+    public List<string>  PodPhotoUrls { get; init; } = [];
 }
 
 public record CreatePurchaseOrderDto
@@ -54,12 +62,17 @@ public record UpdatePurchaseOrderStatusDto(string Status);
 
 public record LinkPurchaseOrderMaterialDto(int? BOQItemId);
 
-// Bound from multipart/form-data — just the photos for one batch. Saved
-// while a PO is DeliveryInProgress; a PO can have any number of these before
-// "Delivery Complete" moves it to Delivered.
+// Bound from multipart/form-data — one batch's documents. Saved while a PO
+// is DeliveryInProgress; a PO can have any number of these before "Delivery
+// Complete" moves it to Delivered. PoFile is only required/used on the very
+// first batch (see PurchaseOrdersController.AddDeliveryBatch) — every batch
+// after that reuses PurchaseOrder.PoFileUrl instead, so the frontend simply
+// stops sending it from Batch 2 onward.
 public class SubmitDeliveryBatchDto
 {
-    public List<IFormFile> Photos { get; set; } = [];
+    public IFormFile? PoFile { get; set; }
+    public IFormFile? DrFile { get; set; }
+    public List<IFormFile> PodPhotos { get; set; } = [];
 }
 
 // Rating is its own step, submitted independently of any delivery batch and

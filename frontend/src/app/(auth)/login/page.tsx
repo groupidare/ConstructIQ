@@ -66,6 +66,7 @@ export default function LoginPage() {
       const res = await api.post<LoginResponse>("/auth/login", {
         username: data.username.trim(),
         password: data.password.trim(),
+        role: data.role,
         deviceId: getDeviceId(),
       });
 
@@ -155,7 +156,7 @@ export default function LoginPage() {
     }
     setLoading(true);
     try {
-      const res = await api.post<LoginResponse>("/auth/google", { idToken, deviceId: getDeviceId() });
+      const res = await api.post<LoginResponse>("/auth/google", { idToken, role: selectedRole, deviceId: getDeviceId() });
 
       if (res.data.mfaRequired) {
         setMfaStep({ challengeToken: res.data.challengeToken, role: selectedRole });

@@ -19,7 +19,9 @@ public class BOQService(AppDbContext db) : IBOQService
             .Where(b => b.ProjectId == projectId)
             .ToListAsync();
 
-        return rows.Select(ToDto);
+        var fulfillment = await ProcurementCapCalculator.GetNetLeftToOrderForProjectAsync(db, projectId);
+        var remainingRequestable = await ProcurementCapCalculator.GetRemainingRequestableForProjectAsync(db, projectId);
+        return rows.Select(b => ToDto(b, fulfillment, remainingRequestable));
     }
 
     public async Task<IEnumerable<BOQItemResponseDto>> BulkSaveAsync(int projectId, List<BOQItemUpsertDto> items, int userId)
@@ -141,7 +143,10 @@ public class BOQService(AppDbContext db) : IBOQService
             .Include(b => b.HistoricalSupplies).ThenInclude(h => h.Supplier)
             .Where(b => ids.Contains(b.Id))
             .ToListAsync();
-        return reloaded.Select(ToDto);
+
+        var fulfillment = await ProcurementCapCalculator.GetNetLeftToOrderForProjectAsync(db, projectId);
+        var remainingRequestable = await ProcurementCapCalculator.GetRemainingRequestableForProjectAsync(db, projectId);
+        return reloaded.Select(b => ToDto(b, fulfillment, remainingRequestable));
     }
 
     public async Task<bool> DeleteAsync(int id)
@@ -226,7 +231,15 @@ public class BOQService(AppDbContext db) : IBOQService
         return supplier.Id;
     }
 
-    private static BOQItemResponseDto ToDto(BOQItem b) => new()
+    private static BOQItemResponseDto ToDto(BOQItem b, Dictionary<int, (decimal NetLeftToOrder, bool WarehouseApproved)> fulfillment, Dictionary<int, decimal> remainingRequestable)
+    {
+        var f = fulfillment.TryGetValue(b.MaterialId, out var found)
+            ? found
+            : (NetLeftToOrder: b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity, WarehouseApproved: false);
+        var remaining = remainingRequestable.TryGetValue(b.MaterialId, out var r)
+            ? r
+            : b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity;
+        return new()
     {
         Id                = b.Id,
         ProjectId         = b.ProjectId,
@@ -259,7 +272,11 @@ public class BOQService(AppDbContext db) : IBOQService
         EstimatedPurchaseQuantity = b.EstimatedPurchaseQuantity,
         EstimatedPurchaseUnit     = b.EstimatedPurchaseUnit,
         RequestedQuantity         = b.RequestedQuantity,
+        NetLeftToOrder            = f.NetLeftToOrder,
+        WarehouseApproved         = f.WarehouseApproved,
+        RemainingRequestable      = remaining,
     };
+    }
 
     // Units a real historical PO line can carry — mirrors the frontend's Est.
     // Qty unit dropdown. Originally restricted to purchasable containers only

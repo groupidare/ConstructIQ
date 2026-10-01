@@ -1,11 +1,10 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import type { ReportTable } from "@/lib/reportTables";
 
 export interface ReportProject {
-  name: string; location: string; type: string; status: string;
-  progress: number; startDate: string; endDate: string;
-  materials: number;
-  manager: string; engineers: string[];
+  name: string;
+  location: string;
 }
 
 export interface ReportData {
@@ -13,6 +12,7 @@ export interface ReportData {
   reportType: string;
   from: Date;
   to: Date;
+  table: ReportTable;
 }
 
 function slug(s: string): string {
@@ -27,18 +27,12 @@ function fileBaseName(data: ReportData): string {
   return `${slug(data.project.name)}_${slug(data.reportType)}`;
 }
 
-function buildRows(data: ReportData): [string, string][] {
-  const { project } = data;
-  return [
-    ["Project Type", project.type],
-    ["Status", project.status],
-    ["Progress", `${project.progress}%`],
-    ["Start Date", project.startDate],
-    ["Target End Date", project.endDate],
-    ["Materials Tracked", String(project.materials)],
-    ["Project Manager", project.manager],
-    ["Engineers", project.engineers.join(", ") || "—"],
-  ];
+// Material Usage reflects the material plan's current state, not events
+// within the chosen date range (see reportTables.ts) — say so plainly
+// instead of printing a "Period" line that would imply filtering happened.
+function periodLabel(data: ReportData): string {
+  if (data.reportType === "Material Usage") return "Current material plan (not period-filtered)";
+  return `Period: ${formatDate(data.from)} to ${formatDate(data.to)}`;
 }
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -53,34 +47,39 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 export function exportReportCSV(data: ReportData) {
-  const rows = buildRows(data);
-  const csv = [
-    `"${data.reportType}"`,
-    `"${data.project.name} - ${data.project.location}"`,
-    `"Period","${formatDate(data.from)} to ${formatDate(data.to)}"`,
+  const { table } = data;
+  const csvCell = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
+  const lines = [
+    csvCell(data.reportType),
+    csvCell(`${data.project.name} - ${data.project.location}`),
+    csvCell(periodLabel(data)),
     `"Generated","${formatDate(new Date())}"`,
     "",
-    `"Field","Value"`,
-    ...rows.map(([k, v]) => `"${k}","${v.replace(/"/g, '""')}"`),
-  ].join("\n");
-  downloadBlob(new Blob([csv], { type: "text/csv" }), `${fileBaseName(data)}.csv`);
+    table.columns.map(csvCell).join(","),
+    ...table.rows.map(row => row.map(csvCell).join(",")),
+  ];
+  if (table.rows.length === 0) lines.push(`"No data found for the selected period."`);
+  downloadBlob(new Blob([lines.join("\n")], { type: "text/csv" }), `${fileBaseName(data)}.csv`);
 }
 
 export function exportReportXLS(data: ReportData) {
-  const rows = buildRows(data);
-  const rowsHtml = rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("");
+  const { table } = data;
+  const headRow = `<tr>${table.columns.map(c => `<th>${c}</th>`).join("")}</tr>`;
+  const bodyRows = table.rows.length > 0
+    ? table.rows.map(row => `<tr>${row.map(v => `<td>${v}</td>`).join("")}</tr>`).join("")
+    : `<tr><td colspan="${table.columns.length || 1}">No data found for the selected period.</td></tr>`;
   const html = `
     <html xmlns:x="urn:schemas-microsoft-com:office:excel">
       <head><meta charset="utf-8" /></head>
       <body>
         <table border="1">
-          <tr><th colspan="2" style="text-align:left;font-size:14pt;">${data.reportType}</th></tr>
-          <tr><td colspan="2">${data.project.name} — ${data.project.location}</td></tr>
-          <tr><td>Period</td><td>${formatDate(data.from)} to ${formatDate(data.to)}</td></tr>
-          <tr><td>Generated</td><td>${formatDate(new Date())}</td></tr>
-          <tr><td></td><td></td></tr>
-          <tr><th>Field</th><th>Value</th></tr>
-          ${rowsHtml}
+          <tr><th colspan="${table.columns.length || 1}" style="text-align:left;font-size:14pt;">${data.reportType}</th></tr>
+          <tr><td colspan="${table.columns.length || 1}">${data.project.name} — ${data.project.location}</td></tr>
+          <tr><td colspan="${table.columns.length || 1}">${periodLabel(data)}</td></tr>
+          <tr><td>Generated</td><td colspan="${Math.max(table.columns.length - 1, 1)}">${formatDate(new Date())}</td></tr>
+          <tr><td colspan="${table.columns.length || 1}"></td></tr>
+          ${headRow}
+          ${bodyRows}
         </table>
       </body>
     </html>`;
@@ -89,10 +88,7 @@ export function exportReportXLS(data: ReportData) {
 
 export function exportReportPDF(data: ReportData) {
   const doc = new jsPDF();
-
-  // jsPDF's standard fonts have no glyph for "₱"; substitute plain text so
-  // it doesn't render as a mangled fallback character.
-  const pdfRows = buildRows(data).map(([k, v]) => [k, v.replace(/₱/g, "PHP ")] as [string, string]);
+  const { table } = data;
 
   doc.setFontSize(16);
   doc.setTextColor(17, 24, 39);
@@ -101,16 +97,23 @@ export function exportReportPDF(data: ReportData) {
   doc.setFontSize(10);
   doc.setTextColor(107, 114, 128);
   doc.text(`${data.project.name} - ${data.project.location}`, 14, 25);
-  doc.text(`Period: ${formatDate(data.from)} to ${formatDate(data.to)}`, 14, 31);
+  doc.text(periodLabel(data), 14, 31);
   doc.text(`Generated: ${formatDate(new Date())}`, 14, 36);
+
+  // jsPDF's standard fonts have no glyph for "₱"; substitute plain text so
+  // it doesn't render as a mangled fallback character.
+  const sanitize = (v: string | number) => String(v).replace(/₱/g, "PHP ");
+  const body = table.rows.length > 0
+    ? table.rows.map(row => row.map(sanitize))
+    : [[`No data found for the selected period.`]];
 
   autoTable(doc, {
     startY: 44,
-    head: [["Field", "Value"]],
-    body: pdfRows,
+    head: table.rows.length > 0 ? [table.columns] : undefined,
+    body,
     theme: "striped",
     headStyles: { fillColor: [249, 115, 22] },
-    styles: { fontSize: 10 },
+    styles: { fontSize: 9 },
   });
 
   doc.save(`${fileBaseName(data)}.pdf`);

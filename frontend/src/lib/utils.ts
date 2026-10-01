@@ -19,7 +19,7 @@ export function formatCurrency(amount: number): string {
 // timezone is (e.g. up to 8am in Manila/UTC+8). A bare "YYYY-MM-DD" (no time
 // component) is already unambiguous — the spec always treats that form as
 // UTC — so it's left alone.
-function parseServerDate(dateStr: string): Date {
+export function parseServerDate(dateStr: string): Date {
   const hasTime = dateStr.includes("T");
   const hasZone = /Z$|[+-]\d{2}:\d{2}$/.test(dateStr);
   return new Date(hasTime && !hasZone ? `${dateStr}Z` : dateStr);

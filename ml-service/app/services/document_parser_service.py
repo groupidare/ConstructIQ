@@ -201,14 +201,15 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
             headers = [str(c or "").strip().lower() for c in table[header_row]]
 
             unit_col    = next((i for i, h in enumerate(headers) if "unit" in h or h == "um" or "uom" in h), None)
-            qty_col     = next((i for i, h in enumerate(headers) if i != unit_col and ("qty" in h or "quantity" in h)), None)
+            # "qty"/"quantity"/"total area" are treated as strong, unambiguous
+            # signals (checked first); "scope"/"area" alone are a weaker
+            # fallback only used once those come up empty, and both tiers
+            # exclude unit_col — a header like "Installation Scope Unit" can
+            # itself contain "scope"/"area", so without the exclusion the
+            # fallback tier would grab the unit column instead of the real
+            # quantity column.
+            qty_col     = next((i for i, h in enumerate(headers) if i != unit_col and ("qty" in h or "quantity" in h or "total area" in h)), None)
             if qty_col is None:
-                # Some BOQ templates label the estimate column "Total Area" /
-                # "Installation Scope" instead of "Qty" (a quantity-takeoff
-                # convention, not a generic word) — only fall back to this
-                # once real "qty"/"quantity" vocabulary comes up empty, and
-                # never pick the unit column itself (which can also contain
-                # "scope", e.g. "Installation Scope Unit").
                 qty_col = next((i for i, h in enumerate(headers) if i != unit_col and ("scope" in h or "area" in h)), None)
             desc_col    = _find_desc_column(headers, table, header_row, qty_col)
             spec_col    = next((i for i, h in enumerate(headers) if ("spec" in h or "size" in h) and i != desc_col), None)

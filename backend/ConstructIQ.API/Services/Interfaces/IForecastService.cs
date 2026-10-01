@@ -8,4 +8,5 @@ public interface IForecastService
     Task<IEnumerable<ForecastResponseDto>> GetByProjectAsync(int projectId);
     Task<ForecastAccuracyReportDto> GetAccuracyReportAsync(int projectId);
     Task<TrainModelsResponseDto> TrainModelsAsync();
+    Task<TopForecastedDemandDto> GetTopForecastedDemandAsync(string? unit);
 }

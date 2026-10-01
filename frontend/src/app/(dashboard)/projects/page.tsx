@@ -7,6 +7,7 @@ import Header from "@/components/layout/Header";
 import { useAuthStore } from "@/store/authStore";
 import { DatePickerField } from "@/components/ui/DatePickerField";
 import { exportReport } from "@/lib/reportExport";
+import { buildReportTable } from "@/lib/reportTables";
 import MeasurementsAndMaterialPlan from "@/components/projects/MeasurementsAndMaterialPlan";
 import NewProjectWizardModal from "@/components/projects/NewProjectWizardModal";
 import AddCompletedProjectWizardModal from "@/components/projects/AddCompletedProjectWizardModal";
@@ -22,6 +23,8 @@ import { topMaterialDemand } from "@/lib/topMaterialDemand";
 import type { ExcessWasteRecord } from "@/types/excess";
 import type { ExcessAnalyticsSummary } from "@/types/excess";
 import type { RedistributionRecommendation } from "@/types/procurement";
+import type { PurchaseOrder } from "@/types/purchaseOrder";
+import type { ForecastResult } from "@/types/forecast";
 import {
   Plus, MapPin, Calendar, Users, FileText, X, Eye, Pencil,
   Upload, FolderOpen, Trash2, Search, BarChart3, Camera, Activity, History, ExternalLink, File as FileIcon,
@@ -372,16 +375,39 @@ function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void 
   const [from, setFrom] = useState(new Date("2026-05-01"));
   const [to,   setTo]   = useState(new Date("2026-06-01"));
   const [fmt,  setFmt]  = useState(".PDF");
-  const [materialsCount, setMaterialsCount] = useState(0);
+  const [generating, setGenerating] = useState(false);
   const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
 
-  useEffect(() => {
-    let cancelled = false;
-    api.get<BOQItem[]>(`/boq/project/${project.id}`)
-      .then(({ data }) => { if (!cancelled) setMaterialsCount(data.length); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [project.id]);
+  async function handleGenerate() {
+    setGenerating(true);
+    try {
+      // Pulls whichever real, already-tracked dataset backs the selected
+      // report type — never hardcoded content, see lib/reportTables.ts.
+      let table;
+      if (type === "Procurement Summary") {
+        const { data } = await api.get<PurchaseOrder[]>("/purchase-orders", { params: { projectId: project.id } });
+        table = buildReportTable(type, { purchaseOrders: data }, from, to);
+      } else if (type === "Excess Analytics") {
+        const { data } = await api.get<ExcessWasteRecord[]>(`/excess-waste/project/${project.id}`);
+        table = buildReportTable(type, { excessRecords: data }, from, to);
+      } else if (type === "Forecast Report") {
+        const { data } = await api.get<ForecastResult[]>(`/forecast/project/${project.id}`);
+        table = buildReportTable(type, { forecastResults: data }, from, to);
+      } else {
+        const { data } = await api.get<BOQItem[]>(`/boq/project/${project.id}`);
+        table = buildReportTable(type, { boqItems: data }, from, to);
+      }
+
+      exportReport(fmt, { project: { name: project.name, location: project.location }, reportType: type, from, to, table });
+      toast.success(`${type}${fmt} downloaded!`);
+      onClose();
+    } catch {
+      toast.error("Failed to generate report — couldn't load the project's data.");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   return (
     <Overlay onClose={onClose}>
       <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:460, boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
@@ -390,7 +416,7 @@ function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void 
           <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
-          <div><label style={lbl}>Report Type</label><select value={type} onChange={e=>setType(e.target.value)} style={{ ...sel, width:"100%" }}>{["Material Usage","Procurement Summary","Cost Report","Excess Analytics","Forecast Report"].map(t=><option key={t}>{t}</option>)}</select></div>
+          <div><label style={lbl}>Report Type</label><select value={type} onChange={e=>setType(e.target.value)} style={{ ...sel, width:"100%" }}>{["Material Usage","Procurement Summary","Excess Analytics","Forecast Report"].map(t=><option key={t}>{t}</option>)}</select></div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
             <div><label style={lbl}>From</label><DatePickerField value={from} onChange={setFrom} inputStyle={{ ...inp, width:"100%", boxSizing:"border-box" as const }} /></div>
             <div><label style={lbl}>To</label><DatePickerField value={to} onChange={setTo} inputStyle={{ ...inp, width:"100%", boxSizing:"border-box" as const }} /></div>
@@ -399,11 +425,11 @@ function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void 
         </div>
         <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:"1.25rem" }}>
           <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={()=>{
-            exportReport(fmt, { project: { ...project, materials: materialsCount }, reportType: type, from, to });
-            toast.success(`${type}${fmt} downloaded!`);
-            onClose();
-          }} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Generate</button>
+          <button
+            onClick={handleGenerate}
+            disabled={generating}
+            style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor: generating ? "not-allowed" : "pointer", opacity: generating ? 0.7 : 1 }}
+          >{generating ? "Generating…" : "Generate"}</button>
         </div>
       </div>
     </Overlay>

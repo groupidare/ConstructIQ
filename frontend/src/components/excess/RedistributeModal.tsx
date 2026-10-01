@@ -114,7 +114,9 @@ export default function RedistributeModal({ record, onClose, onSuccess }: Redist
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontWeight: 700, fontSize: "0.85rem", color: "#111827" }}>{s.projectName}</span>
-                  {s.usesThisMaterial && (
+                  {s.neededQuantity > 0 ? (
+                    <span style={{ fontSize: "0.62rem", fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#ffedd5", color: "#c2410c", whiteSpace: "nowrap" }}>NEEDS {s.neededQuantity.toLocaleString()} MORE</span>
+                  ) : s.usesThisMaterial && (
                     <span style={{ fontSize: "0.62rem", fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#dcfce7", color: "#15803d", whiteSpace: "nowrap" }}>ALREADY USES THIS MATERIAL</span>
                   )}
                 </div>

@@ -94,12 +94,26 @@ public static class TestDataBuilder
         return record;
     }
 
-    public static async Task<ForecastResult> CreateForecastResultAsync(AppDbContext db, int projectId, DateTime generatedAt)
+    public static async Task<ForecastResult> CreateForecastResultAsync(AppDbContext db, int projectId, DateTime generatedAt, int? phaseId = null)
     {
-        var result = new ForecastResult { ProjectId = projectId, Period = ForecastPeriod.Monthly, GeneratedAt = generatedAt };
+        var result = new ForecastResult { ProjectId = projectId, PhaseId = phaseId, Period = ForecastPeriod.Monthly, GeneratedAt = generatedAt };
         db.ForecastResults.Add(result);
         await db.SaveChangesAsync();
         return result;
+    }
+
+    public static async Task<Phase> CreatePhaseAsync(AppDbContext db, int projectId)
+    {
+        var phase = new Phase
+        {
+            ProjectId = projectId,
+            Name = "Phase " + Guid.NewGuid().ToString("N")[..8],
+            StartDate = DateTime.UtcNow,
+            EndDate = DateTime.UtcNow.AddMonths(1),
+        };
+        db.Phases.Add(phase);
+        await db.SaveChangesAsync();
+        return phase;
     }
 
     public static async Task AddForecastedMaterialAsync(AppDbContext db, int forecastResultId, int materialId, decimal quantity)

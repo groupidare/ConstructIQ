@@ -164,9 +164,18 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env, 
     };
     private const long MaxPhotoBytes = 5 * 1024 * 1024; // 5 MB
 
-    // Saves one batch of proof-of-delivery photos. Can be called repeatedly —
-    // each partial shipment gets its own batch — and moves an Approved PO
-    // into DeliveryInProgress the first time it's called. Rating happens
+    // The PO/DR documents are often a scanned paper form rather than a photo
+    // of the goods, so — unlike AllowedPhotoTypes above, which stays
+    // image-only for the actual proof-of-delivery photos — these also accept
+    // a PDF.
+    private static readonly Dictionary<string, string> AllowedDocTypes = new(AllowedPhotoTypes)
+    {
+        ["application/pdf"] = ".pdf",
+    };
+
+    // Saves one batch of delivery documents. Can be called repeatedly — each
+    // partial shipment gets its own batch — and moves an Approved PO into
+    // DeliveryInProgress the first time it's called. Rating happens
     // separately (see Rate below), so this never touches the Evaluation.
     [HttpPost("{id:int}/delivery-batches")]
     [Authorize(Roles = DeliverRoles)]
@@ -182,33 +191,69 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env, 
             return BadRequest(new { message = "This PO has already been delivered." });
         if (po.Status == PurchaseOrderStatus.Pending)
             return BadRequest(new { message = "Approve this PO before recording a delivery." });
-        if (dto.Photos.Count == 0)
+
+        // The PO file is required only once — the very first batch, and only
+        // if nothing was uploaded for it yet (a retry after a failed first
+        // save shouldn't force re-picking it). Every batch after that reuses
+        // PurchaseOrder.PoFileUrl, so the frontend simply stops sending it.
+        var needsPoFile = po.DeliveryBatches.Count == 0 && string.IsNullOrEmpty(po.PoFileUrl);
+        if (needsPoFile && (dto.PoFile is null || dto.PoFile.Length == 0))
+            return BadRequest(new { message = "A Purchase Order file is required for the first delivery batch." });
+        if (dto.DrFile is null || dto.DrFile.Length == 0)
+            return BadRequest(new { message = "A Delivery Receipt file is required for every batch." });
+        if (dto.PodPhotos.Count == 0)
             return BadRequest(new { message = "At least one proof-of-delivery photo is required." });
 
         var uploadsDir = Path.Combine(env.WebRootPath, "uploads", "deliveries");
         Directory.CreateDirectory(uploadsDir);
 
-        var photos = new List<DeliveryBatchPhoto>();
-        foreach (var file in dto.Photos)
+        async Task<string> SaveFileAsync(IFormFile file, Dictionary<string, string> allowedTypes, string typeLabel)
         {
-            if (file.Length == 0) continue;
             if (file.Length > MaxPhotoBytes)
-                return BadRequest(new { message = "Each photo must be 5MB or smaller." });
-            if (!AllowedPhotoTypes.TryGetValue(file.ContentType, out var ext))
-                return BadRequest(new { message = "Only JPEG, PNG, or WebP images are allowed." });
+                throw new InvalidOperationException($"{typeLabel} must be 5MB or smaller.");
+            if (!allowedTypes.TryGetValue(file.ContentType, out var ext))
+                throw new InvalidOperationException(allowedTypes == AllowedDocTypes
+                    ? $"{typeLabel} must be a JPEG, PNG, WebP, or PDF file."
+                    : $"{typeLabel} must be a JPEG, PNG, or WebP image.");
 
             var fileName = $"{id}_{Guid.NewGuid():N}{ext}";
-            await using (var stream = System.IO.File.Create(Path.Combine(uploadsDir, fileName)))
-                await file.CopyToAsync(stream);
-            photos.Add(new DeliveryBatchPhoto { Url = $"/uploads/deliveries/{fileName}" });
+            await using var stream = System.IO.File.Create(Path.Combine(uploadsDir, fileName));
+            await file.CopyToAsync(stream);
+            return $"/uploads/deliveries/{fileName}";
         }
+
+        string? poFileUrl = null;
+        string drFileUrl;
+        var podPhotos = new List<DeliveryBatchPhoto>();
+        try
+        {
+            if (needsPoFile)
+                poFileUrl = await SaveFileAsync(dto.PoFile!, AllowedDocTypes, "Purchase Order file");
+            drFileUrl = await SaveFileAsync(dto.DrFile, AllowedDocTypes, "Delivery Receipt file");
+            foreach (var file in dto.PodPhotos)
+            {
+                if (file.Length == 0) continue;
+                var url = await SaveFileAsync(file, AllowedPhotoTypes, "Each proof-of-delivery photo");
+                podPhotos.Add(new DeliveryBatchPhoto { Url = url, DocumentType = DeliveryDocumentType.ProofOfDelivery });
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+
+        if (poFileUrl is not null)
+            po.PoFileUrl = poFileUrl;
+
+        var batchPhotos = new List<DeliveryBatchPhoto> { new() { Url = drFileUrl, DocumentType = DeliveryDocumentType.DeliveryReceipt } };
+        batchPhotos.AddRange(podPhotos);
 
         var nextBatchNumber = po.DeliveryBatches.Count == 0 ? 1 : po.DeliveryBatches.Max(b => b.BatchNumber) + 1;
         po.DeliveryBatches.Add(new DeliveryBatch
         {
             BatchNumber = nextBatchNumber,
             UploadedByUserId = CurrentUserId,
-            Photos = photos,
+            Photos = batchPhotos,
         });
 
         po.Status = PurchaseOrderStatus.DeliveryInProgress;
@@ -297,7 +342,12 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env, 
             ActualLeadDays = dto.ActualLeadDays,
             Comments = string.IsNullOrWhiteSpace(dto.Comments) ? null : dto.Comments.Trim(),
             RatedByUserId = CurrentUserId,
-            Photos = po.DeliveryBatches.SelectMany(b => b.Photos).Select(p => new DeliveryPhoto { Url = p.Url }).ToList(),
+            // Only real proof-of-delivery photos — a Delivery Receipt is a
+            // paperwork scan, not a photo of the delivered goods, so it
+            // doesn't belong in the supplier's visual delivery history.
+            Photos = po.DeliveryBatches.SelectMany(b => b.Photos)
+                .Where(p => p.DocumentType == DeliveryDocumentType.ProofOfDelivery)
+                .Select(p => new DeliveryPhoto { Url = p.Url }).ToList(),
         });
 
         await db.SaveChangesAsync();
@@ -338,8 +388,10 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env, 
                 BatchNumber = b.BatchNumber,
                 UploadedByName = $"{b.UploadedBy.FirstName} {b.UploadedBy.LastName}",
                 CreatedAt = b.CreatedAt,
-                PhotoUrls = b.Photos.Select(p => p.Url).ToList(),
+                DrFileUrl = b.Photos.FirstOrDefault(p => p.DocumentType == DeliveryDocumentType.DeliveryReceipt)?.Url,
+                PodPhotoUrls = b.Photos.Where(p => p.DocumentType == DeliveryDocumentType.ProofOfDelivery).Select(p => p.Url).ToList(),
             }).ToList(),
         HasEvaluation = po.Evaluation is not null,
+        PoFileUrl = po.PoFileUrl,
     };
 }

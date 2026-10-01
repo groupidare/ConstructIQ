@@ -197,8 +197,36 @@ public class ProjectService(AppDbContext db, IWebHostEnvironment env, IWeatherGe
         // Planning on its own — no one has to remember to flip it by hand.
         if (dto.Progress >= 100)
         {
+            var wasAlreadyCompleted = project.Status == ProjectStatus.Completed;
             project.Status = ProjectStatus.Completed;
             project.IsHistorical = true;
+
+            // A BOQ row with no Excess/Waste record against it has
+            // ActualQuantity stuck at its creation-time default of 0 (see
+            // BOQItem.ActualQuantity) — that's "never checked", not "verified
+            // zero used". Now that the project is actually finished, silence
+            // is the best signal available: assume the estimate was consumed
+            // as planned. Rows that DO have a logged record are left alone —
+            // their ActualQuantity already reflects a real baseline-minus-
+            // logged calculation (see ExcessWasteService), which may
+            // legitimately be 0. Only runs on the actual transition into
+            // Completed, not on every later progress update still at 100.
+            if (!wasAlreadyCompleted)
+            {
+                var boqItems = await db.BOQItems.Where(b => b.ProjectId == projectId).ToListAsync();
+                var boqItemIds = boqItems.Select(b => b.Id).ToList();
+                var loggedBoqItemIds = await db.ExcessWasteRecords
+                    .Where(e => e.BOQItemId != null && boqItemIds.Contains(e.BOQItemId.Value))
+                    .Select(e => e.BOQItemId!.Value)
+                    .Distinct()
+                    .ToListAsync();
+                var loggedSet = loggedBoqItemIds.ToHashSet();
+                foreach (var b in boqItems)
+                {
+                    if (!loggedSet.Contains(b.Id))
+                        b.ActualQuantity = b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity;
+                }
+            }
         }
         else if (project.Status == ProjectStatus.Planning && dto.Progress > ActiveThreshold)
         {

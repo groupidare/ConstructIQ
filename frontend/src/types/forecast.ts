@@ -61,3 +61,34 @@ export interface TrainModelsResult {
   randomForest: ModelMetrics;
   xgboost: ModelMetrics;
 }
+
+export interface ForecastContribution {
+  projectId: number;
+  projectName: string;
+  forecastedQuantity: number;
+  generatedAt: string;
+  period: ForecastPeriod;
+  isPhaseScoped: boolean;
+}
+
+export interface TopForecastedMaterial {
+  rank: number;
+  materialId: number;
+  materialName: string;
+  specification: string;
+  unit: string;
+  totalForecastedQuantity: number;
+  contributingProjectCount: number;
+  contributions: ForecastContribution[];
+}
+
+export interface TopForecastedDemand {
+  availableUnits: string[];
+  selectedUnit: string | null;
+  eligibleProjectCount: number;
+  projectsWithForecastCount: number;
+  phaseOnlyProjectCount: number;
+  usedHistoricalFallback: boolean;
+  historicalProjectsWithForecastCount: number;
+  materials: TopForecastedMaterial[];
+}
