@@ -314,9 +314,9 @@ public class RedistributionService(AppDbContext db, INotificationService notific
                 && p.Status != ProjectStatus.Cancelled)
             .ToListAsync();
 
-        // Sole real matching signal: does the candidate project already use
-        // this exact material at all (BOQ or current inventory)? No shortage
-        // or forecast math involved — just presence of the same material.
+        // Which candidates carry this exact material at all (BOQ or current
+        // inventory) — used to decide whether GetNetLeftToOrderAsync is even
+        // worth computing (zero for a project with no BOQ rows for it).
         var usesThisMaterialProjectIds = (await db.BOQItems
                 .Where(b => b.MaterialId == record.MaterialId)
                 .Select(b => b.ProjectId)
@@ -329,32 +329,42 @@ public class RedistributionService(AppDbContext db, INotificationService notific
                 .ToListAsync())
             .ToHashSet();
 
-        var suggestions = candidateProjects.Select(p =>
+        var suggestions = new List<RedistributionTargetSuggestionDto>();
+        foreach (var p in candidateProjects)
         {
             var usesMaterial = usesThisMaterialProjectIds.Contains(p.Id);
             var sameType     = p.Type == record.Project.Type;
+            // The real, currently-outstanding BOQ need — the same figure the
+            // Material Plan tab's "left to order" subtext shows, not just a
+            // binary "has this material" flag.
+            var needed = usesMaterial
+                ? await ProcurementCapCalculator.GetNetLeftToOrderAsync(db, p.Id, record.MaterialId)
+                : 0;
 
-            var score = (usesMaterial ? 100 : 0) + (sameType ? 10 : 0);
+            // Real shortage is the strongest signal; "uses the material at
+            // all" and "same project type" are soft tie-breakers for
+            // candidates that don't (yet) have a quantified need.
+            var score = (int)Math.Min(needed, 1000) + (usesMaterial ? 50 : 0) + (sameType ? 10 : 0);
 
             var reasons = new List<string>();
-            if (usesMaterial) reasons.Add($"Already uses {record.Material.Name}");
-            if (sameType)     reasons.Add($"Same project type ({p.Type})");
+            if (needed > 0)       reasons.Add($"Needs {needed:N2} {record.Material.Unit} more of {record.Material.Name}");
+            else if (usesMaterial) reasons.Add($"Already uses {record.Material.Name}");
+            if (sameType)         reasons.Add($"Same project type ({p.Type})");
             if (reasons.Count == 0) reasons.Add("No strong match signal — general candidate only");
 
-            return new RedistributionTargetSuggestionDto
+            suggestions.Add(new RedistributionTargetSuggestionDto
             {
-                ProjectId       = p.Id,
-                ProjectName     = p.Name,
+                ProjectId        = p.Id,
+                ProjectName      = p.Name,
                 UsesThisMaterial = usesMaterial,
-                SameProjectType = sameType,
-                MatchScore      = score,
-                MatchReason     = string.Join(" · ", reasons),
-            };
-        })
-        .OrderByDescending(s => s.MatchScore)
-        .ToList();
+                SameProjectType  = sameType,
+                NeededQuantity   = needed,
+                MatchScore       = score,
+                MatchReason      = string.Join(" · ", reasons),
+            });
+        }
 
-        return suggestions;
+        return suggestions.OrderByDescending(s => s.MatchScore).ToList();
     }
 
     // Total quantity a project has received via approved redistribution, per

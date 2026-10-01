@@ -57,10 +57,15 @@ public class RedistributionTargetSuggestionDto
     public int      ProjectId                 { get; set; }
     public string   ProjectName               { get; set; } = string.Empty;
     // True when the candidate project already uses this exact material
-    // (appears in its BOQ or current inventory) — the sole real matching
-    // signal; no shortage/forecast math involved.
+    // (appears in its BOQ or current inventory).
     public bool     UsesThisMaterial          { get; set; }
     public bool     SameProjectType           { get; set; }
+    // The project's real, currently-outstanding need for this material —
+    // Estimated Qty minus whatever's already been approved (redistribution/
+    // warehouse/PO), the same figure the Material Plan tab's "left to order"
+    // subtext shows. 0 when the project doesn't carry this material in its
+    // BOQ at all. See ProcurementCapCalculator.GetNetLeftToOrderAsync.
+    public decimal  NeededQuantity            { get; set; }
     public int      MatchScore                { get; set; }
     public string   MatchReason               { get; set; } = string.Empty;
 }

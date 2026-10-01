@@ -46,7 +46,10 @@ interface DeliveryBatch {
   batchNumber: number;
   uploadedByName: string;
   createdAt: string;
-  photoUrls: string[];
+  // One Delivery Receipt (null only for a pre-existing batch saved before
+  // this split existed) and one-or-more Proof of Delivery photos.
+  drFileUrl: string | null;
+  podPhotoUrls: string[];
 }
 
 interface PO {
@@ -61,6 +64,9 @@ interface PO {
   materials: POMaterial[];
   deliveryBatches: DeliveryBatch[];
   hasEvaluation: boolean;
+  // The master PO document — uploaded once with the first delivery batch,
+  // reused by every later one. Null until the first batch is saved.
+  poFileUrl: string | null;
 }
 
 // DELAYED is never manually selectable — it's derived from the expected date
@@ -204,7 +210,8 @@ function sortSuppliersByPreference(suppliers: Supplier[]): Supplier[] {
 
 interface ApiPOMaterial { name: string; quantity: number; unit: string; }
 interface ApiDeliveryBatch {
-  id: number; batchNumber: number; uploadedByName: string; createdAt: string; photoUrls: string[];
+  id: number; batchNumber: number; uploadedByName: string; createdAt: string;
+  drFileUrl: string | null; podPhotoUrls: string[];
 }
 interface ApiPO {
   id: number; number: string;
@@ -214,6 +221,7 @@ interface ApiPO {
   materials: ApiPOMaterial[];
   deliveryBatches: ApiDeliveryBatch[];
   hasEvaluation: boolean;
+  poFileUrl: string | null;
 }
 interface ApiEvaluation {
   priceRating: number; deliveryRating: number; qualityRating: number;
@@ -242,9 +250,10 @@ function mapPO(a: ApiPO): PO {
     materials: a.materials.map(m => ({ name: m.name, qty: `${Number(m.quantity)} ${m.unit}` })),
     deliveryBatches: a.deliveryBatches.map(b => ({
       id: b.id, batchNumber: b.batchNumber, uploadedByName: b.uploadedByName,
-      createdAt: b.createdAt, photoUrls: b.photoUrls,
+      createdAt: b.createdAt, drFileUrl: b.drFileUrl, podPhotoUrls: b.podPhotoUrls,
     })),
     hasEvaluation: a.hasEvaluation,
+    poFileUrl: a.poFileUrl,
   };
 }
 
@@ -875,61 +884,121 @@ const RATING_CATEGORY_SUBTITLES: Record<keyof CategoryRatings, string> = {
 
 interface PhotoEntry { file: File; previewUrl: string; }
 
+// One file dropzone for a single required document (PO or DR) — distinct
+// from the POD grid below since these are typically a single scanned
+// document (often a PDF), not a set of photos of the goods themselves.
+function SingleFileDropzone({ label, accept, file, existingUrl, onPick, onClear }: {
+  label: string; accept: string; file: File | null; existingUrl?: string | null;
+  onPick: (f: File) => void; onClear: () => void;
+}) {
+  if (file) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, border: "1px solid #e5e7eb", borderRadius: 10, padding: "0.6rem 0.75rem", background: "#f9fafb" }}>
+        <span style={{ fontSize: "0.78rem", color: "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.name}</span>
+        <button onClick={onClear} title="Remove" style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", flexShrink: 0, display: "flex" }}>
+          <X style={{ width: 14, height: 14 }} />
+        </button>
+      </div>
+    );
+  }
+  if (existingUrl) {
+    return (
+      <a href={resolveUploadUrl(existingUrl) ?? existingUrl} target="_blank" rel="noopener noreferrer"
+        style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid #e5e7eb", borderRadius: 10, padding: "0.6rem 0.75rem", background: "#f9fafb", fontSize: "0.78rem", color: "#f97316", fontWeight: 600, textDecoration: "none" }}>
+        View uploaded {label}
+      </a>
+    );
+  }
+  return (
+    <label style={{
+      display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+      border: "2px dashed #e5e7eb", borderRadius: 10, padding: "0.75rem 1rem", cursor: "pointer", background: "#f9fafb",
+    }}>
+      <Upload style={{ width: 16, height: 16, color: "#9ca3af" }} />
+      <span style={{ fontSize: "0.78rem", color: "#6b7280" }}>Click to upload {label}</span>
+      <input type="file" accept={accept} onChange={e => { const f = e.target.files?.[0]; if (f) onPick(f); e.target.value = ""; }} style={{ display: "none" }} />
+    </label>
+  );
+}
+
 // ── Delivery Batch Overlay ───────────────────────────────────────────────────
 // Opened from the status dropdown/pill once a PO is Approved or already
-// DeliveryInProgress. Each "Save" persists the currently-picked photos as one
-// batch (a partial shipment) and the overlay stays open so another batch can
-// be added later, whenever the next one arrives. "Delivery Complete" saves
-// any photos still pending, then finalizes — it never requires a rating,
-// that's a separate step only WarehousePersonnel can do (see RateSupplierModal).
+// DeliveryInProgress. Each batch needs a Delivery Receipt + at least one
+// Proof of Delivery photo; the Purchase Order file is only asked for once —
+// on the very first batch — and persists afterward as the PO's own master
+// document (see PurchaseOrder.PoFileUrl). "Save" persists the currently-
+// picked documents as one batch (a partial shipment) and the overlay stays
+// open so another batch can be added later. "Delivery Complete" saves
+// whatever's currently picked (if anything), then finalizes — it never
+// requires a rating, that's a separate step only WarehousePersonnel can do
+// (see RateSupplierModal).
 function DeliveryBatchModal({ po, onClose, onSaveBatch, onComplete }: {
   po: PO;
   onClose: () => void;
-  onSaveBatch: (photos: File[]) => Promise<void>;
+  onSaveBatch: (payload: { poFile: File | null; drFile: File; podPhotos: File[] }) => Promise<void>;
   onComplete: () => Promise<void>;
 }) {
-  const [photos, setPhotos] = useState<PhotoEntry[]>([]);
+  const [poFile, setPoFile] = useState<File | null>(null);
+  const [drFile, setDrFile] = useState<File | null>(null);
+  const [podPhotos, setPodPhotos] = useState<PhotoEntry[]>([]);
+  const [expandedBatchId, setExpandedBatchId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [completing, setCompleting] = useState(false);
 
   const busy = saving || completing;
-  const hasAnyPhoto = po.deliveryBatches.some(b => b.photoUrls.length > 0) || photos.length > 0;
+  // The PO file is only required/shown once — the first batch, and only if
+  // nothing's been uploaded for it yet.
+  const needsPoFile = po.deliveryBatches.length === 0 && !po.poFileUrl;
+  const hasActiveInput = !!poFile || !!drFile || podPhotos.length > 0;
 
-  function handlePhotoSelected(e: React.ChangeEvent<HTMLInputElement>) {
+  function handlePodSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
     if (files.length === 0) return;
     const nonImages = files.filter(f => !f.type.startsWith("image/"));
     if (nonImages.length > 0) { toast.error("Please select image files only."); }
     const entries = files.filter(f => f.type.startsWith("image/")).map(f => ({ file: f, previewUrl: URL.createObjectURL(f) }));
-    setPhotos(prev => [...prev, ...entries]);
+    setPodPhotos(prev => [...prev, ...entries]);
     e.target.value = "";
   }
 
-  function handleRemovePhoto(index: number) {
-    setPhotos(prev => {
+  function handleRemovePodPhoto(index: number) {
+    setPodPhotos(prev => {
       URL.revokeObjectURL(prev[index].previewUrl);
       return prev.filter((_, i) => i !== index);
     });
   }
 
-  function clearPending() {
-    setPhotos(prev => { prev.forEach(p => URL.revokeObjectURL(p.previewUrl)); return []; });
+  function clearActive() {
+    setPoFile(null);
+    setDrFile(null);
+    setPodPhotos(prev => { prev.forEach(p => URL.revokeObjectURL(p.previewUrl)); return []; });
   }
 
   function handleClose() {
-    clearPending();
+    clearActive();
     onClose();
   }
 
+  // Shared by Save and Complete (when it has to save pending input first) —
+  // same requirements the backend enforces, checked here so the error
+  // appears before a round trip instead of after.
+  function validateActive(): string | null {
+    if (needsPoFile && !poFile) return "Upload the Purchase Order file.";
+    if (!drFile) return "Upload the Delivery Receipt file.";
+    if (podPhotos.length === 0) return "Add at least one Proof of Delivery photo.";
+    return null;
+  }
+
   async function handleSave() {
-    if (photos.length === 0) { toast.error("Add at least one photo before saving this batch."); return; }
+    const err = validateActive();
+    if (err) { toast.error(err); return; }
     setSaving(true);
     try {
-      await onSaveBatch(photos.map(p => p.file));
-      clearPending();
+      await onSaveBatch({ poFile: needsPoFile ? poFile : null, drFile: drFile!, podPhotos: podPhotos.map(p => p.file) });
+      clearActive();
     } catch {
       // Already toasted inside onSaveBatch (which rethrows only so
-      // clearPending() above is skipped on failure) — swallow here so it
+      // clearActive() above is skipped on failure) — swallow here so it
       // doesn't also surface as an unhandled rejection.
     } finally {
       setSaving(false);
@@ -937,19 +1006,34 @@ function DeliveryBatchModal({ po, onClose, onSaveBatch, onComplete }: {
   }
 
   async function handleComplete() {
+    if (hasActiveInput) {
+      const err = validateActive();
+      if (err) { toast.error(err); return; }
+      setCompleting(true);
+      try {
+        await onSaveBatch({ poFile: needsPoFile ? poFile : null, drFile: drFile!, podPhotos: podPhotos.map(p => p.file) });
+        clearActive();
+        await onComplete();
+      } catch {
+        // Same reasoning as handleSave above.
+      } finally {
+        setCompleting(false);
+      }
+      return;
+    }
+    if (po.deliveryBatches.length === 0) {
+      toast.error("Add at least one delivery batch before completing delivery.");
+      return;
+    }
     setCompleting(true);
     try {
-      if (photos.length > 0) {
-        await onSaveBatch(photos.map(p => p.file));
-        clearPending();
-      }
       await onComplete();
-    } catch {
-      // Same reasoning as handleSave above.
     } finally {
       setCompleting(false);
     }
   }
+
+  const canComplete = hasActiveInput || po.deliveryBatches.length > 0;
 
   return (
     <div onClick={handleClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
@@ -968,70 +1052,118 @@ function DeliveryBatchModal({ po, onClose, onSaveBatch, onComplete }: {
         </div>
 
         <p style={{ fontSize: "0.82rem", color: "#374151", marginTop: 0, marginBottom: "1.1rem" }}>
-          Upload photos for each batch as it arrives and click Save — you can come back and add another batch later. Once everything has arrived, click Delivery Complete.
+          {needsPoFile
+            ? "Upload the Purchase Order, Delivery Receipt, and Proof of Delivery photos, then click Save. Once everything has arrived, click Delivery Complete."
+            : "Upload the Delivery Receipt and Proof of Delivery photos for each batch as it arrives and click Save — you can come back and add another batch later. Once everything has arrived, click Delivery Complete."}
         </p>
 
+        {/* Collapsed by default — each batch expands on click to show its
+            documents, rather than always rendering every photo from every
+            past batch at once. */}
         {po.deliveryBatches.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: "1.1rem" }}>
-            {po.deliveryBatches.map(b => (
-              <div key={b.id} style={{ border: "1px solid #f3f4f6", borderRadius: 10, padding: "0.6rem 0.75rem" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <span style={{ fontSize: "0.78rem", fontWeight: 700, color: "#111827" }}>Batch {b.batchNumber}</span>
-                  <span style={{ fontSize: "0.66rem", color: "#9ca3af" }}>{b.uploadedByName} · {toDisplayDate(b.createdAt)}</span>
+            {po.deliveryBatches.map(b => {
+              const expanded = expandedBatchId === b.id;
+              return (
+                <div key={b.id} style={{ border: "1px solid #f3f4f6", borderRadius: 10, padding: "0.6rem 0.75rem" }}>
+                  <button
+                    onClick={() => setExpandedBatchId(expanded ? null : b.id)}
+                    style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", background: "none", border: "none", padding: 0, cursor: "pointer" }}
+                  >
+                    <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                      <ChevronRight style={{ width: 13, height: 13, color: "#9ca3af", transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+                      <span style={{ fontSize: "0.78rem", fontWeight: 700, color: "#111827" }}>Batch {b.batchNumber}</span>
+                    </span>
+                    <span style={{ fontSize: "0.66rem", color: "#9ca3af" }}>{b.uploadedByName} · {toDisplayDate(b.createdAt)}</span>
+                  </button>
+                  {expanded && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+                      {b.batchNumber === 1 && po.poFileUrl && (
+                        <a href={resolveUploadUrl(po.poFileUrl) ?? po.poFileUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.75rem", color: "#f97316", fontWeight: 600 }}>
+                          View Purchase Order file
+                        </a>
+                      )}
+                      {b.drFileUrl && (
+                        <a href={resolveUploadUrl(b.drFileUrl) ?? b.drFileUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.75rem", color: "#f97316", fontWeight: 600 }}>
+                          View Delivery Receipt file
+                        </a>
+                      )}
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
+                        {b.podPhotoUrls.map((url, i) => (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img key={i} src={resolveUploadUrl(url) ?? url} alt={`Batch ${b.batchNumber} proof of delivery photo ${i + 1}`} style={{ width: "100%", height: 56, borderRadius: 6, objectFit: "cover" }} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
-                  {b.photoUrls.map((url, i) => (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img key={i} src={resolveUploadUrl(url) ?? url} alt={`Batch ${b.batchNumber} photo ${i + 1}`} style={{ width: "100%", height: 56, borderRadius: 6, objectFit: "cover" }} />
-                  ))}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          <p style={{ fontWeight: 700, fontSize: "0.85rem", color: "#111827", margin: 0 }}>
-            Batch {po.deliveryBatches.length + 1}
-          </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.9rem" }}>
+          {po.deliveryBatches.length > 0 && (
+            <p style={{ fontWeight: 700, fontSize: "0.85rem", color: "#111827", margin: 0 }}>
+              Batch {po.deliveryBatches.length + 1}
+            </p>
+          )}
 
-          {photos.length > 0 && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
-              {photos.map((p, i) => (
-                <div key={i} style={{ position: "relative" }}>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={p.previewUrl} alt={`Proof of delivery ${i + 1}`} style={{ width: "100%", height: 90, borderRadius: 8, objectFit: "cover" }} />
-                  <button onClick={() => handleRemovePhoto(i)} title="Remove"
-                    style={{ position: "absolute", top: 4, right: 4, width: 20, height: 20, borderRadius: "50%", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <X style={{ width: 12, height: 12 }} />
-                  </button>
-                </div>
-              ))}
+          {needsPoFile && (
+            <div>
+              <label style={{ display: "block", fontSize: "0.72rem", fontWeight: 600, color: "#374151", marginBottom: 5 }}>1. Purchase Order (PO)</label>
+              <SingleFileDropzone label="PO file" accept="image/*,application/pdf" file={poFile} onPick={setPoFile} onClear={() => setPoFile(null)} />
             </div>
           )}
 
-          <label style={{
-            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
-            border: "2px dashed #e5e7eb", borderRadius: 12, padding: "1.25rem 1rem", cursor: "pointer", background: "#f9fafb",
-          }}>
-            <Upload style={{ width: 22, height: 22, color: "#9ca3af" }} />
-            <span style={{ fontSize: "0.8rem", color: "#6b7280" }}>{photos.length > 0 ? "Add more photos" : "Click to upload photos"}</span>
-            <input type="file" accept="image/*" multiple onChange={handlePhotoSelected} style={{ display: "none" }} />
-          </label>
+          <div>
+            <label style={{ display: "block", fontSize: "0.72rem", fontWeight: 600, color: "#374151", marginBottom: 5 }}>
+              {needsPoFile ? "2. Delivery Receipt (DR / Photo)" : "Delivery Receipt (DR / Photo)"}
+            </label>
+            <SingleFileDropzone label="DR file" accept="image/*,application/pdf" file={drFile} onPick={setDrFile} onClear={() => setDrFile(null)} />
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: "0.72rem", fontWeight: 600, color: "#374151", marginBottom: 5 }}>
+              {needsPoFile ? "3. Proof of Delivery (POD / Photos)" : "Proof of Delivery (POD / Photos)"}
+            </label>
+            {podPhotos.length > 0 && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8 }}>
+                {podPhotos.map((p, i) => (
+                  <div key={i} style={{ position: "relative" }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={p.previewUrl} alt={`Proof of delivery ${i + 1}`} style={{ width: "100%", height: 90, borderRadius: 8, objectFit: "cover" }} />
+                    <button onClick={() => handleRemovePodPhoto(i)} title="Remove"
+                      style={{ position: "absolute", top: 4, right: 4, width: 20, height: 20, borderRadius: "50%", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <X style={{ width: 12, height: 12 }} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <label style={{
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
+              border: "2px dashed #e5e7eb", borderRadius: 12, padding: "1.25rem 1rem", cursor: "pointer", background: "#f9fafb",
+            }}>
+              <Upload style={{ width: 22, height: 22, color: "#9ca3af" }} />
+              <span style={{ fontSize: "0.8rem", color: "#6b7280" }}>{podPhotos.length > 0 ? "Add more photos" : "Click to upload photos"}</span>
+              <input type="file" accept="image/*" multiple onChange={handlePodSelected} style={{ display: "none" }} />
+            </label>
+          </div>
         </div>
 
         <div style={{ display: "flex", gap: "0.75rem", marginTop: "1.5rem" }}>
-          <button onClick={handleSave} disabled={photos.length === 0 || busy} style={{
+          <button onClick={handleSave} disabled={!hasActiveInput || busy} style={{
             flex: 1, padding: "10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff",
             color: "#374151", fontWeight: 700, fontSize: "0.875rem",
-            cursor: photos.length > 0 && !busy ? "pointer" : "not-allowed", opacity: photos.length > 0 ? 1 : 0.6,
+            cursor: hasActiveInput && !busy ? "pointer" : "not-allowed", opacity: hasActiveInput ? 1 : 0.6,
           }}>
             {saving ? "Saving…" : "Save"}
           </button>
-          <button onClick={handleComplete} disabled={!hasAnyPhoto || busy} style={{
+          <button onClick={handleComplete} disabled={!canComplete || busy} style={{
             flex: 1, padding: "10px", borderRadius: 8, border: "none",
-            background: hasAnyPhoto ? "#f97316" : "#fbd0a6", color: "#fff", fontWeight: 700, fontSize: "0.875rem",
-            cursor: hasAnyPhoto && !busy ? "pointer" : "not-allowed",
+            background: canComplete ? "#f97316" : "#fbd0a6", color: "#fff", fontWeight: 700, fontSize: "0.875rem",
+            cursor: canComplete && !busy ? "pointer" : "not-allowed",
           }}>
             {completing ? "Completing…" : "Delivery Complete"}
           </button>
@@ -1295,9 +1427,11 @@ export default function ProcurementPage() {
     }
   }
 
-  async function handleSaveBatch(po: PO, photos: File[]) {
+  async function handleSaveBatch(po: PO, payload: { poFile: File | null; drFile: File; podPhotos: File[] }) {
     const form = new FormData();
-    photos.forEach(f => form.append("Photos", f));
+    if (payload.poFile) form.append("PoFile", payload.poFile);
+    form.append("DrFile", payload.drFile);
+    payload.podPhotos.forEach(f => form.append("PodPhotos", f));
     try {
       await api.post(`/purchase-orders/${po.id}/delivery-batches`, form, { headers: { "Content-Type": undefined } });
       await refetch();
@@ -1384,7 +1518,7 @@ export default function ProcurementPage() {
         <DeliveryBatchModal
           po={deliveryPO}
           onClose={() => setDeliveryPOId(null)}
-          onSaveBatch={photos => handleSaveBatch(deliveryPO, photos)}
+          onSaveBatch={payload => handleSaveBatch(deliveryPO, payload)}
           onComplete={() => handleCompleteDelivery(deliveryPO)}
         />
       )}

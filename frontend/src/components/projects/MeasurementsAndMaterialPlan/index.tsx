@@ -13,7 +13,13 @@ interface Props {
 }
 
 export default function MeasurementsAndMaterialPlan({ project, onClose, initialEditable = true, initialTab = 'measurements', onProjectSaved }: Props) {
-  const state = useMeasurementsAndMaterialPlan({ project, initialEditable, initialTab, onProjectSaved });
+  // Historical projects are seeded/backfilled training data — reopening one
+  // from the Projects list must never start editable, and (with the toggle
+  // hidden below) there's no way to flip it back on from here. This is
+  // narrower than forcing it in the shared hook itself: AddCompletedProjectWizard
+  // reuses this same hook via Inline.tsx for a historical project's OWN initial
+  // data-entry step, right after creation, which still needs to be editable.
+  const state = useMeasurementsAndMaterialPlan({ project, initialEditable: project.isHistorical ? false : initialEditable, initialTab, onProjectSaved });
 
   // Files only has a narrow single-column layout — a fixed wide modal leaves
   // a large empty gap on the right. Material Plan's BOQ table needs the
@@ -34,7 +40,13 @@ export default function MeasurementsAndMaterialPlan({ project, onClose, initialE
               <p style={{ fontSize: '0.78rem', color: '#9ca3af', marginTop: 2 }}>{project.name}</p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <EditToggle editable={state.editable} onToggle={() => state.setEditable(e => !e)} />
+              {project.isHistorical ? (
+                <span style={{ padding: '6px 12px', borderRadius: 999, background: '#f3f4f6', color: '#6b7280', fontSize: '0.72rem', fontWeight: 600 }}>
+                  Historical — View only
+                </span>
+              ) : (
+                <EditToggle editable={state.editable} onToggle={() => state.setEditable(e => !e)} />
+              )}
               <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af' }}><X style={{ width: 20, height: 20 }} /></button>
             </div>
           </div>

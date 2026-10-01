@@ -47,6 +47,14 @@ public class PurchaseOrder
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
+    // The PO document itself — a single master file for the whole order, not
+    // one per delivery batch. Uploaded once, with the first delivery batch
+    // (see PurchaseOrdersController.AddDeliveryBatch), and reused by every
+    // later batch — unlike DeliveryBatchPhoto's DeliveryReceipt/
+    // ProofOfDelivery, which are genuinely per-shipment.
+    [MaxLength(255)]
+    public string? PoFileUrl { get; set; }
+
     public ICollection<PurchaseOrderMaterial> Materials { get; set; } = [];
     public ICollection<DeliveryBatch> DeliveryBatches { get; set; } = [];
     public DeliveryEvaluation? Evaluation { get; set; }

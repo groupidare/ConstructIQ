@@ -165,17 +165,11 @@ export default function DashboardPage() {
   const forecastRiskCount = useMemo(() => materials.filter(m => m.riskLevel === "High" || m.riskLevel === "Critical").length, [materials]);
   const pendingPOs = useMemo(() => orders.filter(po => poEffectiveStatus(po) !== "Delivered").length, [orders]);
   const delayedPOs = useMemo(() => orders.filter(po => poEffectiveStatus(po) === "Delayed").length, [orders]);
-  const predictedDemandPct = useMemo(() => {
-    const totalForecasted = materials.reduce((s, m) => s + m.forecastedQuantity, 0);
-    const totalCurrent = materials.reduce((s, m) => s + m.currentStock, 0);
-    return totalCurrent > 0 ? ((totalForecasted - totalCurrent) / totalCurrent) * 100 : null;
-  }, [materials]);
 
   const STATS: { icon: React.ElementType; iconBg: string; iconColor: string; value: string; label: string; sub: string }[] = [
     { icon: Package,     iconBg: "#dcfce7", iconColor: "#16a34a", value: materialsInStock.toLocaleString(), label: "Total Materials", sub: "Materials currently in stock" },
     { icon: AlertCircle, iconBg: "#fee2e2", iconColor: "#dc2626", value: String(outOfStockCount),           label: "Shortage Alerts",  sub: "Materials out of stock" },
     { icon: ShoppingCart,iconBg: "#ede9fe", iconColor: "#7c3aed", value: String(pendingPOs),                  label: "Procurement",      sub: "Purchase orders in progress" },
-    { icon: TrendingUp,  iconBg: "#ffedd5", iconColor: "#ea580c", value: predictedDemandPct != null ? `${predictedDemandPct >= 0 ? "+" : ""}${predictedDemandPct.toFixed(1)}%` : "—", label: "Predicted Demand", sub: "Forecasted vs current stock" },
     { icon: Truck,       iconBg: "#f3f4f6", iconColor: "#6b7280", value: String(delayedPOs),                  label: "Delayed Deliveries", sub: "Past expected delivery date" },
   ];
 
@@ -199,7 +193,7 @@ export default function DashboardPage() {
       <div style={{ padding: "1.25rem 1.5rem" }}>
 
         {/* Stats grid */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: "0.875rem", marginBottom: "1.25rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "0.875rem", marginBottom: "1.25rem" }}>
           {STATS.map((s, i) => {
             const Icon = s.icon;
             return (
@@ -377,25 +371,30 @@ export default function DashboardPage() {
             <div>
               {watchlist.length === 0 ? (
                 <p style={{ fontSize: "0.8rem", color: "#d1d5db", padding: "1rem 0" }}>{loading ? "Loading…" : "No warehouse stock synced yet."}</p>
-              ) : watchlist.map((item, i) => (
-                <div key={item.id} style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center",
-                  padding: "0.55rem 0",
-                  borderBottom: i < watchlist.length - 1 ? "1px solid #f3f4f6" : "none",
-                }}>
-                  <div>
-                    <p style={{ fontSize: "0.78rem", fontWeight: 500, color: "#111827" }}>{item.materialName}</p>
-                    <p style={{ fontSize: "0.68rem", color: "#9ca3af" }}>{item.balance.toLocaleString()} {item.unit}</p>
+              ) : watchlist.map(item => {
+                const zeroStock = item.balance <= 0;
+                return (
+                  <div
+                    key={item.id}
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "0.55rem 0.6rem", borderRadius: 8, transition: "background 0.12s" }}
+                    onMouseEnter={e => (e.currentTarget.style.background = "#f8fafc")}
+                    onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                  >
+                    <p style={{ fontSize: "0.78rem", fontWeight: 500, color: "#1f2937", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{item.materialName}</p>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
+                      <span style={{ fontSize: "0.68rem", color: "#9ca3af", whiteSpace: "nowrap" }}>{item.balance.toLocaleString()} {item.unit}</span>
+                      <span style={{
+                        fontSize: "0.65rem", fontWeight: 600, padding: "2px 8px", borderRadius: 999, whiteSpace: "nowrap",
+                        background: zeroStock ? "#fef2f2" : "#ecfdf5",
+                        color: zeroStock ? "#dc2626" : "#059669",
+                        border: `1px solid ${zeroStock ? "rgba(220,38,38,0.2)" : "rgba(5,150,105,0.2)"}`,
+                      }}>
+                        • {zeroStock ? "ZERO STOCK" : "IN STOCK"}
+                      </span>
+                    </div>
                   </div>
-                  <span style={{
-                    fontSize: "0.68rem", fontWeight: 700, padding: "3px 8px", borderRadius: 999, whiteSpace: "nowrap",
-                    background: item.balance <= 0 ? "#fee2e2" : "#dcfce7",
-                    color: item.balance <= 0 ? "#dc2626" : "#16a34a",
-                  }}>
-                    • {item.balance <= 0 ? "ZERO STOCK" : "IN STOCK"}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
@@ -411,9 +410,10 @@ export default function DashboardPage() {
               myNotifications.length === 0 ? (
                 <p style={{ fontSize: "0.8rem", color: "#d1d5db", padding: "1rem 0" }}>No notifications yet.</p>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.7rem" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                   {myNotifications.slice(0, 6).map(n => {
                     const meta = NOTIFICATION_KIND_META[n.kind];
+                    const Icon = meta?.icon;
                     return (
                       <div
                         key={n.id}
@@ -421,12 +421,16 @@ export default function DashboardPage() {
                           void markNotificationRead(n.id);
                           if (n.actionLink) router.push(n.actionLink);
                         }}
-                        style={{ display: "flex", gap: 9, alignItems: "flex-start", cursor: n.actionLink ? "pointer" : "default" }}
+                        style={{ display: "flex", gap: 10, alignItems: "center", padding: "0.5rem", borderRadius: 8, cursor: n.actionLink ? "pointer" : "default", transition: "background 0.12s" }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "#f8fafc")}
+                        onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
                       >
-                        <div style={{ width: 8, height: 8, borderRadius: "50%", background: meta?.color ?? "#9ca3af", flexShrink: 0, marginTop: 5 }} />
-                        <div>
-                          <p style={{ fontSize: "0.76rem", color: "#111827", fontWeight: n.isRead ? 500 : 700, lineHeight: 1.4 }}>{n.title}</p>
-                          <p style={{ fontSize: "0.66rem", color: "#9ca3af", marginTop: 1 }}>{relativeTime(n.createdAt)}</p>
+                        <div style={{ width: 30, height: 30, borderRadius: "50%", flexShrink: 0, background: meta?.bg ?? "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          {Icon && <Icon style={{ width: 14, height: 14, color: meta?.color ?? "#6b7280" }} />}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                          <p style={{ fontSize: "0.76rem", color: "#111827", fontWeight: n.isRead ? 500 : 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{n.title}</p>
+                          <span style={{ fontSize: "0.63rem", color: "#9ca3af", whiteSpace: "nowrap", flexShrink: 0 }}>{relativeTime(n.createdAt)}</span>
                         </div>
                       </div>
                     );

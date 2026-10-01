@@ -74,6 +74,25 @@ public class BOQItemResponseDto
     public decimal? EstimatedPurchaseQuantity { get; set; }
     public string?  EstimatedPurchaseUnit     { get; set; }
     public decimal? RequestedQuantity { get; set; }
+    // Server-computed "Net Left to Order" — EstimatedPurchaseQuantity (or
+    // EstimatedQuantity if that's unset) minus whatever's actually been
+    // APPROVED so far (redistribution transfer, warehouse release, or
+    // purchase order past Pending). A still-Pending request never moves
+    // this. See ProcurementCapCalculator.GetNetLeftToOrderForProjectAsync.
+    public decimal  NetLeftToOrder    { get; set; }
+    // True once at least one WarehouseRequest for this row's material has
+    // been Approved — Procurement can't be requested before that.
+    public bool     WarehouseApproved { get; set; }
+    // The real cap the Notify Procurement/Warehouse endpoints will actually
+    // enforce — unlike NetLeftToOrder above, this ALSO subtracts every
+    // MaterialRequest ever submitted for this material (not just approved
+    // sources), since a prior ask already eats into what can be asked for
+    // again. Deliberately can be lower than NetLeftToOrder — e.g. a request
+    // for the full amount was already sent and is still awaiting a Purchase
+    // Order, so nothing more can be requested yet even though nothing's been
+    // approved against it either. See
+    // ProcurementCapCalculator.GetRemainingRequestableForProjectAsync.
+    public decimal  RemainingRequestable { get; set; }
 }
 
 public class HistoricalEstimateResponseDto

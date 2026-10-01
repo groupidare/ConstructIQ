@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X } from 'lucide-react';
 import { getApiOrigin } from '@/lib/api';
@@ -9,7 +9,7 @@ import type { Project, ProjectType } from '@/types/project';
 import type { ProjectDocument } from '@/types/document';
 import type { InventoryRecord } from '@/types/inventory';
 import type { ForecastedMaterial } from '@/types/forecast';
-import type { BOQItem, BOQItemRow, HistoricalEstimate } from '@/types/boq';
+import type { BOQItem, BOQItemRow } from '@/types/boq';
 import { PRIMARY_SECTIONS, PURCHASE_UNITS } from '@/types/boq';
 import type { PurchaseOrder, PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import { inp, sel, lbl } from './styles';
@@ -38,7 +38,6 @@ interface Props {
   onSave: (overrideRows?: BOQItemRow[], opts?: { silent?: boolean }) => Promise<void>;
   saving: boolean;
   onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string) => Promise<boolean>;
-  getHistoricalEstimate: (primarySection: string, materialDescription: string, projectType?: string) => Promise<HistoricalEstimate>;
   onRemoveDocument: (documentId: number) => void;
   onRunForecast: () => void;
   forecasting: boolean;
@@ -64,7 +63,7 @@ interface Props {
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
-  rows, boqItems, onRowsChange, onSave, saving, onNotify, getHistoricalEstimate, onRemoveDocument, onRunForecast, forecasting,
+  rows, boqItems, onRowsChange, onSave, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
@@ -89,9 +88,13 @@ export default function MaterialPlanTab({
   // prediction, auto-suggested from historical BOQ+PO data), and Alerts
   // (purchase/warehouse request actions, not applicable to historical data).
   // No Phase column.
+  // Alerts is a fixed, content-sized width (just enough for its 3 icons)
+  // rather than a flexible fr column — a flexible share there left visible
+  // dead space between the icons and the row's right edge; Material
+  // Specification's own flexible share absorbs whatever that frees up.
   const columnsTemplate = isCompleted
-    ? 'minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.9fr)'
-    : 'minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.6fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.9fr)';
+    ? 'minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr) 96px'
+    : 'minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.6fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr) 96px';
   const [parsingId, setParsingId] = useState<number | null>(null);
 
   const timeRange = `${formatDate(project.startDate)} – ${formatDate(project.targetEndDate)}`;
@@ -120,6 +123,10 @@ export default function MaterialPlanTab({
     const { index, max, unit } = requestPrompt;
     const qty = parseFloat(requestPromptQty);
     if (!qty || qty <= 0) { toast.error('Enter a quantity greater than zero.'); return; }
+    // Hard cap: Quantity to request <= Net Left to Order, always — the
+    // action buttons stay clickable even once a row is fully covered (so
+    // they're never hidden/swapped for a badge), but the modal never lets
+    // the actual request exceed what's really still needed.
     if (qty > max) { toast.error(`Cannot request more than ${max.toLocaleString()} ${unit} — that's all this row still needs.`); return; }
 
     const row = rows[index];
@@ -292,37 +299,6 @@ export default function MaterialPlanTab({
     if (!r.materialId) return 0;
     return inventory.find(i => i.materialId === r.materialId)?.availableQuantity ?? 0;
   }
-
-  // Auto-suggest Est. Qty/Unit for new (non-historical) rows once they have
-  // enough to look up (Primary Section + a material name), from real
-  // purchase-order data on similar historical/completed projects. Debounced
-  // per row so it doesn't fire on every keystroke, and never overwrites a
-  // value the user has directly edited (estimatePurchaseManuallySet).
-  const suggestKey = rows.map(r => `${r.primarySection}||${r.specification || r.newMaterialName || ''}||${r.estimatePurchaseManuallySet ? '1' : '0'}`).join('\u0001');
-  useEffect(() => {
-    if (isHistorical) return;
-    const timers = rows.map((r, i) => {
-      if (r.estimatePurchaseManuallySet) return undefined;
-      const section = (r.primarySection || '').trim();
-      const spec = (r.specification || r.newMaterialName || (r.materialId ? materialLabel(r) : '')).trim();
-      if (!section || !spec) return undefined;
-      return setTimeout(async () => {
-        try {
-          const result = await getHistoricalEstimate(section, spec, projectType);
-          if (result.estimatedQuantity == null || !result.unit) return;
-          onRowsChange(prev => prev.map((row, idx) =>
-            idx === i && !row.estimatePurchaseManuallySet
-              ? { ...row, estimatedPurchaseQuantity: result.estimatedQuantity!, estimatedPurchaseUnit: result.unit! }
-              : row
-          ));
-        } catch {
-          // Background suggestion — failing silently is fine, the field just stays blank.
-        }
-      }, 700);
-    });
-    return () => timers.forEach(t => { if (t) clearTimeout(t); });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [suggestKey, isHistorical, projectType]);
 
   return (
     <div>
@@ -523,7 +499,10 @@ export default function MaterialPlanTab({
           ))}
         </div>
 
-        <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+        {/* scrollbarGutter reserves the scrollbar's own width up front, so
+            rows never shift a few pixels narrower than the (never-scrolled)
+            header once enough rows appear to need a scrollbar. */}
+        <div style={{ maxHeight: 320, overflowY: 'auto', scrollbarGutter: 'stable' }}>
           {rows.length === 0 ? (
             <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No materials added yet.</p>
           ) : (
@@ -533,20 +512,44 @@ export default function MaterialPlanTab({
               // (the columns actually meant for procurement/inventory action),
               // not the raw BOQ Total Area/Qty measurement (sq.m/l.m/...) —
               // matches what the receiving Inventory/Procurement pages show.
-              const purchaseQty = r.estimatedPurchaseQuantity ?? r.estimatedQuantity;
+              // Deliberately NOT falling back to r.estimatedQuantity when
+              // blank — Est. Qty only exists once Run Forecast has filled it
+              // in (or the user set it manually), and until then there is no
+              // real purchase target to alert against at all.
+              const hasPurchaseEstimate = r.estimatedPurchaseQuantity != null;
+              const purchaseQty = r.estimatedPurchaseQuantity ?? 0;
               const purchaseUnit = r.estimatedPurchaseUnit ?? r.unit ?? '';
-              // Remaining = the row's own Est. Qty minus whatever's already
-              // been requested so far (accumulates across however many
-              // partial Procurement/Warehouse clicks) — never resets, and
-              // the row itself is never split or shrunk to match a single
-              // request; only this remaining figure shrinks.
-              const remaining = Math.max(0, purchaseQty - (r.requestedQuantity ?? 0));
-              const toOrder = Math.max(0, remaining - stock);
-              const needsAlert = toOrder > 0;
-              const canRequest = editable && !isCompleted && !!r.materialId;
-              // Done only once the running total actually reaches this row's
-              // own (fixed, never-changed) Est. Qty.
-              const isRequestDone = purchaseQty > 0 && remaining <= 0;
+              // Net Left to Order — server-computed: Est. Qty minus whatever
+              // has actually been APPROVED so far (an approved redistribution
+              // transfer, an approved warehouse release, or a purchase order
+              // past Pending). A still-Pending request never moves this
+              // number — see ProcurementCapCalculator. Falls back to the full
+              // Est. Qty until the row has been saved at least once (nothing
+              // server-computed to read yet).
+              const netLeftToOrder = hasPurchaseEstimate ? (r.netLeftToOrder ?? purchaseQty) : 0;
+              const toOrder = hasPurchaseEstimate ? Math.max(0, netLeftToOrder - stock) : 0;
+              // The real cap Notify Procurement/Warehouse will enforce
+              // server-side — unlike netLeftToOrder above, this also
+              // subtracts every MaterialRequest already submitted for this
+              // material (fulfilled or not), so it can be LOWER even when
+              // nothing's been approved yet (e.g. a request for the full
+              // amount is already sent and awaiting a PO). Both dialogs below
+              // must cap at this, or they invite a quantity the backend then
+              // rejects. See ProcurementCapCalculator.GetRemainingRequestableAsync.
+              const remainingRequestable = hasPurchaseEstimate ? (r.remainingRequestable ?? netLeftToOrder) : 0;
+              const needsAlert = hasPurchaseEstimate && toOrder > 0;
+              const canRequestBase = editable && !isCompleted && !!r.materialId && hasPurchaseEstimate;
+              // Warehouse Check is always the first step; Procurement can't
+              // be requested for a row until Warehouse has actually APPROVED
+              // a check for it — merely submitting one isn't enough. Neither
+              // button is ever disabled just because the estimate's already
+              // fully covered — users can still request a buffer amount.
+              const canRequestWarehouse = canRequestBase;
+              const canRequestProcurement = canRequestBase && !!r.warehouseApproved;
+              // The subtext only appears once something's actually been
+              // approved against this row (net < the full estimate) — never
+              // for a still-Pending request, and never with nothing requested.
+              const showLeftToOrder = hasPurchaseEstimate && netLeftToOrder < purchaseQty;
               return (
                 <div key={i} style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40 }}>
                   {editable ? (
@@ -602,7 +605,13 @@ export default function MaterialPlanTab({
                     <option value="">—</option>
                     {PURCHASE_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
                   </select>
-                  <div>
+                  {/* position:relative + the subtext positioned absolute
+                      below it keeps this cell's own layout height identical
+                      to every other column's — the subtext overlays the
+                      row's bottom gap instead of growing the grid row, so
+                      showing/hiding it never shifts UNIT/ALERTS in this row
+                      or the vertical position of any other row. */}
+                  <div style={{ position: 'relative' }}>
                     <input
                       disabled={!editable}
                       type="number"
@@ -612,33 +621,68 @@ export default function MaterialPlanTab({
                       placeholder="Est. qty"
                       style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }}
                     />
-                    {(r.requestedQuantity ?? 0) > 0 && (
-                      <p style={{ fontSize: '0.6rem', color: isRequestDone ? '#15803d' : '#f97316', marginTop: 2, fontWeight: 600 }}>
-                        {r.requestedQuantity!.toLocaleString()} of {purchaseQty.toLocaleString()} requested
+                    {showLeftToOrder && (
+                      <p style={{
+                        position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 2,
+                        fontSize: '0.6rem', color: '#f97316', fontWeight: 600,
+                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                      }}>
+                        {netLeftToOrder.toLocaleString()} left to order
                       </p>
                     )}
                   </div>
-                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                    {isRequestDone ? (
-                      <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#dcfce7', color: '#15803d' }}>Done</span>
-                    ) : canRequest && (
-                      <>
-                        <button
-                          onClick={() => { setRequestPrompt({ index: i, kind: 'ProcurementOrder', max: toOrder, unit: purchaseUnit, materialName: materialLabel(r) }); setRequestPromptQty(toOrder ? String(toOrder) : ''); }}
-                          title={`Notify procurement — order up to ${toOrder} ${purchaseUnit}`}
-                          style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: needsAlert ? '#fee2e2' : '#f3f4f6' }}
-                        >
-                          <ShoppingCart style={{ width: 12, height: 12, color: needsAlert ? '#ef4444' : '#9ca3af' }} />
-                        </button>
-                        <button
-                          onClick={() => { setRequestPrompt({ index: i, kind: 'WarehouseCheck', max: remaining, unit: purchaseUnit, materialName: materialLabel(r) }); setRequestPromptQty(remaining ? String(remaining) : ''); }}
-                          title={`Notify warehouse to check material — up to ${remaining} ${purchaseUnit}`}
-                          style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}
-                        >
-                          <Package style={{ width: 12, height: 12, color: '#9ca3af' }} />
-                        </button>
-                      </>
-                    )}
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'flex-end', paddingRight: 2 }}>
+                    {/* Action buttons always stay visible — never swapped for
+                        a "Done" badge, even once the estimate is fully
+                        covered (though at that point Net Left to Order is 0,
+                        so the request dialog's own cap blocks submitting). */}
+                    <button
+                      disabled={!canRequestProcurement}
+                      onClick={() => {
+                        const cap = Math.max(0, Math.min(toOrder, remainingRequestable));
+                        setRequestPrompt({ index: i, kind: 'ProcurementOrder', max: cap, unit: purchaseUnit, materialName: materialLabel(r) });
+                        setRequestPromptQty(cap ? String(cap) : '');
+                      }}
+                      title={
+                        !editable || isCompleted || !r.materialId ? undefined
+                          : !hasPurchaseEstimate ? 'Run Forecast first to set an estimated quantity'
+                          : !r.warehouseApproved ? 'Procurement unlocks once Warehouse approves a check for this material'
+                          : toOrder <= 0 ? 'Nothing left to order — fully covered by approved redistribution/warehouse/PO quantity'
+                          : remainingRequestable <= 0 ? 'A request for this material is already pending — wait for it to be fulfilled before asking again'
+                          : `Notify procurement — order up to ${Math.min(toOrder, remainingRequestable)} ${purchaseUnit}`
+                      }
+                      style={{
+                        width: 24, height: 24, borderRadius: 6, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        cursor: canRequestProcurement ? 'pointer' : 'not-allowed',
+                        opacity: canRequestProcurement ? 1 : 0.4,
+                        background: needsAlert && canRequestProcurement ? '#fee2e2' : '#f3f4f6',
+                      }}
+                    >
+                      <ShoppingCart style={{ width: 12, height: 12, color: needsAlert && canRequestProcurement ? '#ef4444' : '#9ca3af' }} />
+                    </button>
+                    <button
+                      disabled={!canRequestWarehouse}
+                      onClick={() => {
+                        const cap = Math.max(0, Math.min(netLeftToOrder, remainingRequestable));
+                        setRequestPrompt({ index: i, kind: 'WarehouseCheck', max: cap, unit: purchaseUnit, materialName: materialLabel(r) });
+                        setRequestPromptQty(cap ? String(cap) : '');
+                      }}
+                      title={
+                        !editable || isCompleted || !r.materialId ? undefined
+                          : !hasPurchaseEstimate ? 'Run Forecast first to set an estimated quantity'
+                          : netLeftToOrder <= 0 ? 'Nothing left to order — fully covered by approved redistribution/warehouse/PO quantity'
+                          : remainingRequestable <= 0 ? 'A request for this material is already pending — wait for it to be fulfilled before asking again'
+                          : `Notify warehouse to check material — up to ${Math.min(netLeftToOrder, remainingRequestable)} ${purchaseUnit}`
+                      }
+                      style={{
+                        width: 24, height: 24, borderRadius: 6, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        cursor: canRequestWarehouse ? 'pointer' : 'not-allowed',
+                        opacity: canRequestWarehouse ? 1 : 0.4,
+                        background: '#f3f4f6',
+                      }}
+                    >
+                      <Package style={{ width: 12, height: 12, color: '#9ca3af' }} />
+                    </button>
                     {editable && (
                       <button onClick={() => removeRow(i)} style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent' }}>
                         <Trash2 style={{ width: 12, height: 12, color: '#d1d5db' }} />

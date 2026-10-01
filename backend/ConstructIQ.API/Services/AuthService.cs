@@ -25,6 +25,9 @@ public class AuthService(
         if (user is null || !PasswordHasher.Verify(request.Password, user.PasswordHash))
             return null;
 
+        if (!string.IsNullOrEmpty(request.Role) && !string.Equals(user.Role.ToString(), request.Role, StringComparison.Ordinal))
+            throw new WrongRoleException(user.Role.ToString());
+
         var deviceTrusted = await IsDeviceTrustedAsync(user.Id, request.DeviceId);
         if (user.MfaEnabled || !deviceTrusted)
             return await IssueMfaChallengeAsync(user, deviceTrusted ? null : request.DeviceId);
@@ -66,6 +69,9 @@ public class AuthService(
             u.Email.ToLower() == payload.Email.ToLower() && u.IsActive);
 
         if (user is null) return null;
+
+        if (!string.IsNullOrEmpty(request.Role) && !string.Equals(user.Role.ToString(), request.Role, StringComparison.Ordinal))
+            throw new WrongRoleException(user.Role.ToString());
 
         var deviceTrusted = await IsDeviceTrustedAsync(user.Id, request.DeviceId);
         if (user.MfaEnabled || !deviceTrusted)

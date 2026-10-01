@@ -200,9 +200,16 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
 
             headers = [str(c or "").strip().lower() for c in table[header_row]]
 
-            qty_col     = next((i for i, h in enumerate(headers) if "qty" in h or "quantity" in h), None)
+            # "total area" covers BOQ templates that label the quantity column
+            # by what it measures rather than calling it "qty" (e.g. "TOTAL
+            # AREA / INSTALLATION SCOPE") — without it this column, and the
+            # whole table, goes undetected and silently falls back to the far
+            # less reliable raw-text OCR line scanner.
+            qty_col     = next((i for i, h in enumerate(headers) if "qty" in h or "quantity" in h or "total area" in h), None)
             desc_col    = _find_desc_column(headers, table, header_row, qty_col)
-            unit_col    = next((i for i, h in enumerate(headers) if h in ("unit", "um") or "uom" in h), None)
+            # Substring match, not exact - real headers are often "Installation
+            # Scope Unit"/"Unit of Measure", never the bare word alone.
+            unit_col    = next((i for i, h in enumerate(headers) if "unit" in h or h == "um" or "uom" in h), None)
             spec_col    = next((i for i, h in enumerate(headers) if ("spec" in h or "size" in h) and i != desc_col), None)
             # "sub" + section/category checked first — a plain "section"/"category"
             # search would otherwise match "Sub Primary Section" too and leave
@@ -385,7 +392,7 @@ def parse_po_document(request: DocumentParseRequest) -> DocumentParsePOResponse:
 
             qty_col      = next((i for i, h in enumerate(headers) if "qty" in h or "quantity" in h), None)
             desc_col     = _find_desc_column(headers, table, header_row, qty_col)
-            unit_col     = next((i for i, h in enumerate(headers) if h in ("unit", "um") or "uom" in h), None)
+            unit_col     = next((i for i, h in enumerate(headers) if "unit" in h or h == "um" or "uom" in h), None)
             supplier_col = next((i for i, h in enumerate(headers) if "supplier" in h or "vendor" in h), None)
 
             if desc_col is None or qty_col is None:

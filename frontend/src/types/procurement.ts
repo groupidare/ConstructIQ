@@ -50,11 +50,14 @@ export interface PurchaseRequestCreateRequest {
 export interface RedistributionTargetSuggestion {
   projectId: number;
   projectName: string;
-  // Sole real matching signal — does this project already use the exact
-  // material being redistributed (BOQ or current inventory)? No shortage or
-  // forecast math involved.
+  // Does this project already use the exact material being redistributed
+  // (BOQ or current inventory)?
   usesThisMaterial: boolean;
   sameProjectType: boolean;
+  // Real, currently-outstanding BOQ need (Est. Qty minus what's already
+  // approved via redistribution/warehouse/PO) — the strongest ranking
+  // signal. 0 when the project doesn't carry this material at all.
+  neededQuantity: number;
   matchScore: number;
   matchReason: string;
 }

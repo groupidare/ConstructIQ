@@ -1,4 +1,5 @@
 using ConstructIQ.API.Models.DTOs.Auth;
+using ConstructIQ.API.Services;
 using ConstructIQ.API.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 
@@ -11,18 +12,32 @@ public class AuthController(IAuthService authService) : ControllerBase
     [HttpPost("login")]
     public async Task<IActionResult> Login([FromBody] LoginRequestDto request)
     {
-        var result = await authService.LoginAsync(request);
-        if (result is null) return Unauthorized(new { message = "Invalid username or password." });
-        return Ok(result);
+        try
+        {
+            var result = await authService.LoginAsync(request);
+            if (result is null) return Unauthorized(new { message = "Invalid username or password." });
+            return Ok(result);
+        }
+        catch (WrongRoleException ex)
+        {
+            return Unauthorized(new { message = $"Wrong role. Your account role is \"{ex.ActualRole}\"." });
+        }
     }
 
     [HttpPost("google")]
     public async Task<IActionResult> GoogleLogin([FromBody] GoogleLoginRequestDto request)
     {
-        var result = await authService.GoogleLoginAsync(request);
-        if (result is null)
-            return Unauthorized(new { message = "No ConstructIQ account is registered for this Google email. Contact your administrator." });
-        return Ok(result);
+        try
+        {
+            var result = await authService.GoogleLoginAsync(request);
+            if (result is null)
+                return Unauthorized(new { message = "No ConstructIQ account is registered for this Google email. Contact your administrator." });
+            return Ok(result);
+        }
+        catch (WrongRoleException ex)
+        {
+            return Unauthorized(new { message = $"Wrong role. Your account role is \"{ex.ActualRole}\"." });
+        }
     }
 
     [HttpPost("mfa/verify")]
