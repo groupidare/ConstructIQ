@@ -1,13 +1,33 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import toast from "react-hot-toast";
 import api from "@/lib/api";
 import Header from "@/components/layout/Header";
+import { useAuthStore } from "@/store/authStore";
+import { DatePickerField } from "@/components/ui/DatePickerField";
+import { exportReport } from "@/lib/reportExport";
+import { buildReportTable } from "@/lib/reportTables";
+import MeasurementsAndMaterialPlan from "@/components/projects/MeasurementsAndMaterialPlan";
+import NewProjectWizardModal from "@/components/projects/NewProjectWizardModal";
+import AddCompletedProjectWizardModal from "@/components/projects/AddCompletedProjectWizardModal";
+import { useDocumentRepository } from "@/hooks/useDocumentRepository";
+import { useSiteEngineers } from "@/hooks/useSiteEngineers";
+import { getApiOrigin } from "@/lib/api";
+import { formatDate } from "@/lib/utils";
+import type { Project as RealProject, ProjectType } from "@/types/project";
+import { PROJECT_TYPES, PROJECT_STATUSES } from "@/types/project";
+import type { ProjectDocument } from "@/types/document";
+import type { BOQItem } from "@/types/boq";
+import { topMaterialDemand } from "@/lib/topMaterialDemand";
+import type { ExcessWasteRecord } from "@/types/excess";
+import type { ExcessAnalyticsSummary } from "@/types/excess";
+import type { RedistributionRecommendation } from "@/types/procurement";
+import type { PurchaseOrder } from "@/types/purchaseOrder";
+import type { ForecastResult, ForecastedMaterial } from "@/types/forecast";
 import {
-  Plus, MapPin, Calendar, Users, FileText, Ruler, BarChart3, X,
-  Zap, Calculator, Archive, ChevronDown, ChevronUp, Brain, Target,
-  TrendingUp, CheckCircle2, BarChart2, Pencil, Package,
+  Plus, MapPin, Calendar, Users, FileText, X, Eye, Pencil,
+  Upload, FolderOpen, Trash2, Search, BarChart3, Camera, Activity, History, ExternalLink, File as FileIcon,
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
@@ -17,242 +37,43 @@ import {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type ProjectStatus = "ACTIVE" | "PLANNING" | "COMPLETED" | "ON HOLD";
-interface BOMRow { material: string; unit: string; qty: number; unitCost: number; supplier: string; }
+
 interface Project {
   id: number; name: string; location: string;
   startDate: string; endDate: string; status: ProjectStatus;
   progress: number; progressColor: string;
-  budget: string; spent: string; materials: number;
   manager: string; engineers: string[];
-  type: string; bom: BOMRow[]; forecastReady: boolean;
-}
-interface PhaseMat { material: string; unit: string; actualQty: number; forecastQty: number; unitCost: number; }
-interface FPhase { name: string; duration: string; materials: PhaseMat[]; }
-interface FinishedProject {
-  id: number; name: string; location: string; type: string;
-  startDate: string; endDate: string;
-  budget: number; spent: number;
-  manager: string; notes: string;
-  phases: FPhase[];
+  type: string;
+  isHistorical: boolean;
+  siteEngineerId?: number;
 }
 
-// ── Active / planning projects ────────────────────────────────────────────────
 
-const INIT_PROJECTS: Project[] = [
-  { id:1, name:"Metro Station Phase 3",   location:"EDSA, QC",      startDate:"2024-08-01", endDate:"2026-03-31", status:"ACTIVE",   progress:62,  progressColor:"#f97316", budget:"₱45.0M",  spent:"₱27.9M", materials:8,  manager:"Remy Santos",  engineers:["Carlos Reyes","Maria Tan"],  type:"Infrastructure", bom:[{ material:"Portland Cement (40kg)", unit:"bags", qty:250, unitCost:290, supplier:"ABI Corp." },{ material:"Deformed Steel Bars (12mm)", unit:"pcs", qty:180, unitCost:540, supplier:"CMC Trading" },{ material:"CHB 4 inch", unit:"pcs", qty:1200, unitCost:18, supplier:"DCI Materials" }], forecastReady:false },
-  { id:2, name:"BGC Tower Complex",        location:"BGC, Taguig",   startDate:"2025-01-15", endDate:"2027-06-30", status:"ACTIVE",   progress:38,  progressColor:"#1e3154", budget:"₱120.0M", spent:"₱45.6M", materials:12, manager:"Remy Santos",  engineers:["Jose Lim"],                  type:"Commercial",     bom:[], forecastReady:false },
-  { id:3, name:"Harbor Bridge Renovation", location:"Manila Harbor",  startDate:"2024-03-01", endDate:"2025-12-31", status:"ACTIVE",   progress:81,  progressColor:"#22c55e", budget:"₱28.0M",  spent:"₱22.7M", materials:6,  manager:"Remy Santos",  engineers:["Carlos Reyes"],              type:"Infrastructure", bom:[], forecastReady:false },
-  { id:4, name:"Southgate Mall Expansion", location:"BGC, Taguig",   startDate:"2025-06-01", endDate:"2027-09-30", status:"PLANNING", progress:12,  progressColor:"#374151", budget:"₱75.0M",  spent:"₱9.0M",  materials:4,  manager:"Remy Santos",  engineers:["Ana Cruz","Ben Torres"],     type:"Commercial",     bom:[], forecastReady:false },
-  { id:5, name:"PUP ICTC Building",        location:"Sta. Mesa",      startDate:"2023-01-10", endDate:"2025-01-15", status:"COMPLETED",progress:100, progressColor:"#22c55e", budget:"₱19.3M",  spent:"₱19.1M", materials:9,  manager:"Remy Santos",  engineers:["Ana Cruz"],                  type:"Infrastructure", bom:[], forecastReady:false },
-];
+// ── API ────────────────────────────────────────────────────────────────────────
 
-// ── Finished Projects Repository ──────────────────────────────────────────────
+type ProjectResponseDto = RealProject;
 
-const INIT_FINISHED: FinishedProject[] = [
-  {
-    id:101, name:"PUP ICTC Building", location:"Sta. Mesa, Manila", type:"Infrastructure",
-    startDate:"2023-01-10", endDate:"2025-01-15", budget:19300000, spent:19100000,
-    manager:"Remy Santos", notes:"4-storey RC ICT center. State university campus build-out.",
-    phases:[
-      { name:"Foundation", duration:"3 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:1820, forecastQty:1750, unitCost:290 },
-        { material:"Deformed Bars 16mm", unit:"pcs", actualQty:680, forecastQty:700, unitCost:580 },
-        { material:"Coarse Aggregates", unit:"m³", actualQty:95, forecastQty:90, unitCost:1200 },
-        { material:"Fine Aggregates", unit:"m³", actualQty:48, forecastQty:45, unitCost:900 },
-      ]},
-      { name:"Structural", duration:"8 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:3200, forecastQty:3000, unitCost:290 },
-        { material:"Deformed Bars 12mm", unit:"pcs", actualQty:1240, forecastQty:1200, unitCost:480 },
-        { material:"CHB 4-inch", unit:"pcs", actualQty:18500, forecastQty:18000, unitCost:14 },
-        { material:"Ready-mix Concrete", unit:"m³", actualQty:320, forecastQty:300, unitCost:5800 },
-      ]},
-      { name:"MEP", duration:"4 months", materials:[
-        { material:"PVC Pipes 4-inch", unit:"length", actualQty:240, forecastQty:220, unitCost:450 },
-        { material:"Electrical Conduit", unit:"length", actualQty:380, forecastQty:360, unitCost:180 },
-        { material:"Circuit Breaker 20A", unit:"pcs", actualQty:48, forecastQty:44, unitCost:850 },
-      ]},
-      { name:"Finishing", duration:"3 months", materials:[
-        { material:"Floor Tiles 60x60", unit:"sqm", actualQty:1850, forecastQty:1800, unitCost:420 },
-        { material:"Paint (Latex)", unit:"gal", actualQty:620, forecastQty:600, unitCost:520 },
-        { material:"Ceiling Board", unit:"sqm", actualQty:1400, forecastQty:1350, unitCost:180 },
-      ]},
-    ],
-  },
-  {
-    id:102, name:"Marikina Valley Mall", location:"Marikina City", type:"Commercial",
-    startDate:"2021-03-01", endDate:"2023-08-30", budget:85000000, spent:83200000,
-    manager:"Ana Bonifacio", notes:"4-level commercial mall with basement parking.",
-    phases:[
-      { name:"Site Preparation", duration:"2 months", materials:[
-        { material:"Gravel Fill", unit:"m³", actualQty:480, forecastQty:500, unitCost:950 },
-        { material:"Portland Cement", unit:"bags", actualQty:420, forecastQty:400, unitCost:290 },
-      ]},
-      { name:"Foundation", duration:"5 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:6800, forecastQty:6500, unitCost:290 },
-        { material:"Deformed Bars 20mm", unit:"pcs", actualQty:2400, forecastQty:2300, unitCost:940 },
-        { material:"Ready-mix Concrete", unit:"m³", actualQty:820, forecastQty:800, unitCost:5800 },
-      ]},
-      { name:"Structural Steel", duration:"7 months", materials:[
-        { material:"W-Flange Beams 200x100", unit:"pcs", actualQty:380, forecastQty:360, unitCost:4200 },
-        { material:"Steel Columns 150x150", unit:"pcs", actualQty:120, forecastQty:115, unitCost:6800 },
-        { material:"Metal Deck Sheet", unit:"sqm", actualQty:4800, forecastQty:4600, unitCost:280 },
-      ]},
-      { name:"Interior & Finishing", duration:"8 months", materials:[
-        { material:"Granite Floor Tiles", unit:"sqm", actualQty:8200, forecastQty:8000, unitCost:650 },
-        { material:"Gypsum Board", unit:"sqm", actualQty:5400, forecastQty:5200, unitCost:220 },
-        { material:"Paint (Interior)", unit:"gal", actualQty:1800, forecastQty:1750, unitCost:520 },
-      ]},
-    ],
-  },
-  {
-    id:103, name:"C6 Road Overpass", location:"Pasig-Taguig Boundary", type:"Infrastructure",
-    startDate:"2022-06-01", endDate:"2024-03-15", budget:32000000, spent:31500000,
-    manager:"Carlos Reyes", notes:"Single-span highway overpass. DPWH standard. 28m span.",
-    phases:[
-      { name:"Foundation & Piers", duration:"6 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:4200, forecastQty:4000, unitCost:290 },
-        { material:"Deformed Bars 25mm", unit:"pcs", actualQty:980, forecastQty:950, unitCost:1250 },
-        { material:"Ready-mix Concrete C40", unit:"m³", actualQty:560, forecastQty:540, unitCost:6200 },
-      ]},
-      { name:"Structural Deck", duration:"5 months", materials:[
-        { material:"Deformed Bars 16mm", unit:"pcs", actualQty:1800, forecastQty:1750, unitCost:580 },
-        { material:"Ready-mix Concrete C35", unit:"m³", actualQty:380, forecastQty:360, unitCost:5900 },
-        { material:"Prestressed Girders", unit:"pcs", actualQty:12, forecastQty:12, unitCost:280000 },
-      ]},
-      { name:"Asphalt & Safety", duration:"3 months", materials:[
-        { material:"Asphalt Concrete", unit:"tonnes", actualQty:280, forecastQty:260, unitCost:4200 },
-        { material:"Guardrail Beam", unit:"pcs", actualQty:120, forecastQty:115, unitCost:1800 },
-      ]},
-    ],
-  },
-  {
-    id:104, name:"BGC Residential Tower A", location:"BGC, Taguig", type:"Residential",
-    startDate:"2020-09-01", endDate:"2023-12-31", budget:95000000, spent:94100000,
-    manager:"Jose Lim", notes:"24-storey residential high-rise. RC shear wall system.",
-    phases:[
-      { name:"Foundation & Pit", duration:"6 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:8400, forecastQty:8000, unitCost:290 },
-        { material:"Deformed Bars 25mm", unit:"pcs", actualQty:3200, forecastQty:3000, unitCost:1250 },
-        { material:"Ready-mix Concrete C40", unit:"m³", actualQty:1200, forecastQty:1150, unitCost:6200 },
-      ]},
-      { name:"Structural", duration:"18 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:21800, forecastQty:21000, unitCost:290 },
-        { material:"Deformed Bars 16mm", unit:"pcs", actualQty:11000, forecastQty:10600, unitCost:580 },
-        { material:"CHB 4-inch", unit:"pcs", actualQty:80000, forecastQty:76000, unitCost:14 },
-      ]},
-      { name:"MEP & Finishing", duration:"12 months", materials:[
-        { material:"Floor Tiles 60x60", unit:"sqm", actualQty:12000, forecastQty:11500, unitCost:420 },
-        { material:"PVC Pipes 2-inch", unit:"length", actualQty:1800, forecastQty:1750, unitCost:180 },
-        { material:"Aluminum Windows", unit:"sqm", actualQty:3200, forecastQty:3100, unitCost:2800 },
-      ]},
-    ],
-  },
-  {
-    id:105, name:"Manila Water Treatment Facility", location:"Paco, Manila", type:"Industrial",
-    startDate:"2021-01-15", endDate:"2023-05-30", budget:58000000, spent:57300000,
-    manager:"Ben Torres", notes:"Municipal water treatment plant with tanks and pump house.",
-    phases:[
-      { name:"Foundation & Waterproofing", duration:"4 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:3800, forecastQty:3600, unitCost:290 },
-        { material:"Waterproofing Membrane", unit:"sqm", actualQty:1800, forecastQty:1750, unitCost:380 },
-        { material:"Ready-mix Concrete C35", unit:"m³", actualQty:420, forecastQty:400, unitCost:5900 },
-      ]},
-      { name:"Structural & Tanks", duration:"8 months", materials:[
-        { material:"Portland Cement (40kg)", unit:"bags", actualQty:5200, forecastQty:5000, unitCost:290 },
-        { material:"GI Pipes 6-inch", unit:"length", actualQty:480, forecastQty:460, unitCost:2200 },
-        { material:"Waterproofing Admixture", unit:"pails", actualQty:280, forecastQty:260, unitCost:1800 },
-      ]},
-      { name:"Equipment & Commissioning", duration:"8 months", materials:[
-        { material:"Stainless Steel Pipes", unit:"length", actualQty:320, forecastQty:310, unitCost:1800 },
-        { material:"Valve Gate 4-inch", unit:"pcs", actualQty:48, forecastQty:45, unitCost:3500 },
-        { material:"Electrical Conduit", unit:"length", actualQty:680, forecastQty:660, unitCost:180 },
-      ]},
-    ],
-  },
-];
-
-// ── Accuracy metrics ──────────────────────────────────────────────────────────
-
-const ACCURACY_METRICS = (() => {
-  let totalAPE = 0, totalAbs = 0, count = 0;
-  const perProject: { name: string; type: string; accuracy: number }[] = [];
-  INIT_FINISHED.forEach(fp => {
-    let pAPE = 0, pC = 0;
-    fp.phases.forEach(ph => ph.materials.forEach(m => {
-      const ape = Math.abs(m.actualQty - m.forecastQty) / m.actualQty * 100;
-      totalAPE += ape; totalAbs += Math.abs(m.actualQty - m.forecastQty); count++; pAPE += ape; pC++;
-    }));
-    perProject.push({ name: fp.name, type: fp.type, accuracy: parseFloat((100 - pAPE / pC).toFixed(1)) });
-  });
-  return { accuracy: parseFloat((100 - totalAPE / count).toFixed(1)), mape: parseFloat((totalAPE / count).toFixed(1)), mae: Math.round(totalAbs / count), perProject };
-})();
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function parseBudgetNum(s: string): number {
-  const cleaned = s.replace(/[₱,\s]/g, "");
-  const num = parseFloat(cleaned) || 0;
-  if (cleaned.toUpperCase().endsWith("M")) return num * 1_000_000;
-  if (cleaned.toUpperCase().endsWith("K")) return num * 1_000;
-  return num;
-}
-
-interface ForecastPhase { name: string; materials: { material: string; unit: string; qty: number; unitCost: number; total: number }[] }
-function generateAIForecast(project: Project, repo: FinishedProject[]): { phases: ForecastPhase[]; confidence: number; refs: string[]; scale: number } {
-  const similar = repo.filter(fp => fp.type === project.type);
-  const pool = similar.length > 0 ? similar : repo;
-  const confidence = similar.length >= 2 ? 91 : similar.length === 1 ? 78 : 62;
-  const targetBudget = parseBudgetNum(project.budget);
-  const avgSpent = pool.reduce((s, p) => s + p.spent, 0) / pool.length;
-  const scale = targetBudget / avgSpent;
-  const phaseMap = new Map<string, { mats: Map<string, PhaseMat & { count: number }>; count: number }>();
-  pool.forEach(fp => fp.phases.forEach(ph => {
-    if (!phaseMap.has(ph.name)) phaseMap.set(ph.name, { mats: new Map(), count: 0 });
-    const entry = phaseMap.get(ph.name)!; entry.count++;
-    ph.materials.forEach(m => {
-      if (!entry.mats.has(m.material)) entry.mats.set(m.material, { ...m, count: 0 });
-      const em = entry.mats.get(m.material)!; em.actualQty += m.actualQty; em.forecastQty += m.forecastQty; em.count++;
-    });
-  }));
-  const phases: ForecastPhase[] = [];
-  phaseMap.forEach((val, phaseName) => {
-    const materials: ForecastPhase["materials"] = [];
-    val.mats.forEach(m => {
-      const avg = m.actualQty / m.count;
-      const qty = Math.round(avg * scale);
-      materials.push({ material: m.material, unit: m.unit, qty, unitCost: m.unitCost, total: qty * m.unitCost });
-    });
-    phases.push({ name: phaseName, materials });
-  });
-  return { phases, confidence, refs: pool.map(p => p.name), scale: parseFloat(scale.toFixed(2)) };
-}
-
-// ── API ───────────────────────────────────────────────────────────────────────
-
-interface ProjectResponseDto {
-  id: number; name: string; type: string; location: string;
-  description?: string; budget: number; startDate: string;
-  targetEndDate: string; status: string;
-  projectManagerName: string; siteEngineerName?: string;
-  phases: unknown[];
-}
-const STATUS_MAP: Record<string, ProjectStatus> = { Planning:"PLANNING", Active:"ACTIVE", OnHold:"ON HOLD", Completed:"COMPLETED", Cancelled:"COMPLETED" };
-const PROGRESS_COLOR: Record<string, string> = { PLANNING:"#374151", ACTIVE:"#f97316", COMPLETED:"#22c55e", "ON HOLD":"#d97706" };
+const STATUS_MAP: Record<string, ProjectStatus> = {
+  Planning:"PLANNING", Active:"ACTIVE", OnHold:"ON HOLD",
+  Completed:"COMPLETED", Cancelled:"COMPLETED",
+};
+const PROGRESS_COLOR: Record<string, string> = {
+  PLANNING:"#374151", ACTIVE:"#f97316", COMPLETED:"#22c55e", "ON HOLD":"#d97706",
+};
 
 function toProject(dto: ProjectResponseDto): Project {
   const status = (STATUS_MAP[dto.status] ?? "PLANNING") as ProjectStatus;
-  const demo = INIT_PROJECTS.find(p => p.name === dto.name);
   return {
     id: dto.id, name: dto.name, location: dto.location, type: dto.type,
-    startDate: dto.startDate.split("T")[0], endDate: dto.targetEndDate.split("T")[0], status,
-    progress:      demo?.progress      ?? (status==="COMPLETED"?100:status==="ACTIVE"?50:10),
-    progressColor: demo?.progressColor ?? PROGRESS_COLOR[status] ?? "#374151",
-    budget: `₱${Number(dto.budget).toLocaleString()}`,
-    spent:     demo?.spent     ?? "₱0",
-    materials: demo?.materials ?? 0,
-    manager:   demo?.manager   ?? dto.projectManagerName,
-    engineers: demo?.engineers ?? (dto.siteEngineerName ? [dto.siteEngineerName] : []),
-    bom: demo?.bom ?? [], forecastReady: demo?.forecastReady ?? false,
+    startDate: dto.startDate.split("T")[0], endDate: dto.targetEndDate.split("T")[0],
+    status, progress: dto.progress,
+    progressColor: PROGRESS_COLOR[status] ?? "#374151",
+    manager: dto.projectManagerName,
+    // A SiteEngineer-created project attributes both slots to its creator
+    // (see ProjectService.CreateAsync) — don't show their name twice.
+    engineers: dto.siteEngineerName && dto.siteEngineerName !== dto.projectManagerName ? [dto.siteEngineerName] : [],
+    isHistorical: dto.isHistorical,
+    siteEngineerId: dto.siteEngineerId,
   };
 }
 
@@ -263,587 +84,284 @@ const STATUS_STYLE: Record<ProjectStatus, { bg: string; color: string }> = {
   "ON HOLD": { bg:"#fef3c7", color:"#b45309" },
 };
 
+// ── Shared input style ─────────────────────────────────────────────────────────
+
 const inp: React.CSSProperties = {
-  background:"#111827", color:"#fff", border:"none", borderRadius:8,
-  padding:"10px 12px", fontSize:"0.875rem", outline:"none",
-  width:"100%", boxSizing:"border-box" as const,
+  width:"100%", boxSizing:"border-box" as const, padding:"9px 12px",
+  border:"1px solid #e5e7eb", borderRadius:8, fontSize:"0.85rem",
+  outline:"none", background:"#fff", color:"#111827",
 };
 
-// ── Overlay ───────────────────────────────────────────────────────────────────
+const lbl: React.CSSProperties = { display:"block", fontSize:"0.72rem", color:"#6b7280", fontWeight:500, marginBottom:4 };
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+// ── Overlay ────────────────────────────────────────────────────────────────────
 
 function Overlay({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   return (
     <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:"1rem" }}>
-      <div onClick={e => e.stopPropagation()} style={{ maxHeight:"90vh", overflowY:"auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ maxHeight:"90vh", overflowY:"auto", borderRadius:16 }}>
         {children}
       </div>
     </div>
   );
 }
 
-// ── Choice Modal ──────────────────────────────────────────────────────────────
+// ── File Repository Modal ─────────────────────────────────────────────────────
 
-function ChoiceModal({ onNew, onFinished, onClose }: { onNew: ()=>void; onFinished: ()=>void; onClose: ()=>void }) {
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"2rem", width:420 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.5rem" }}>
-          <p style={{ fontWeight:800, fontSize:"1.05rem" }}>Add Project</p>
-          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.875rem" }}>
-          <button onClick={onNew} style={{ padding:"1.5rem 1rem", borderRadius:12, border:"2px solid #f97316", background:"#fff7ed", cursor:"pointer", textAlign:"left" }}>
-            <Plus style={{ width:22, height:22, color:"#f97316", marginBottom:8 }} />
-            <p style={{ fontWeight:700, fontSize:"0.875rem" }}>New Project</p>
-            <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:4, lineHeight:1.4 }}>Start tracking a new project from day one.</p>
-          </button>
-          <button onClick={onFinished} style={{ padding:"1.5rem 1rem", borderRadius:12, border:"2px solid #6366f1", background:"#eef2ff", cursor:"pointer", textAlign:"left" }}>
-            <Archive style={{ width:22, height:22, color:"#6366f1", marginBottom:8 }} />
-            <p style={{ fontWeight:700, fontSize:"0.875rem" }}>Add Finished Project</p>
-            <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:4, lineHeight:1.4 }}>Upload a completed project for the forecasting database.</p>
-          </button>
-        </div>
-      </div>
-    </Overlay>
-  );
+type RepoTab = "upload" | "repository";
+
+function categoryDisplay(doc: ProjectDocument): { label: string; bg: string; color: string } {
+  switch (doc.category) {
+    case "Blueprint":     return { label: "Blueprint / Drawing", bg: "#dbeafe", color: "#1d4ed8" };
+    case "Contract":      return { label: "Contract / Agreement", bg: "#dcfce7", color: "#15803d" };
+    case "BOQ":           return { label: "Bill of Quantities", bg: "#eff6ff", color: "#2563eb" };
+    case "PurchaseOrder": return { label: "Purchase Order", bg: "#fff7ed", color: "#c2410c" };
+    default:
+      return doc.categoryOther
+        ? { label: `Others — ${doc.categoryOther}`, bg: "#ffedd5", color: "#c2410c" }
+        : { label: "Other Record", bg: "#ffedd5", color: "#c2410c" };
+  }
 }
 
-// ── New Project Modal ─────────────────────────────────────────────────────────
+interface StagedFile { id: string; file: File; previewUrl: string }
 
-function NewProjectModal({ onClose, onCreate }: { onClose: ()=>void; onCreate: (p: Project)=>void }) {
-  const [name, setName] = useState(""); const [type, setType] = useState("Renovation");
-  const [location, setLocation] = useState(""); const [budget, setBudget] = useState("1500000");
-  const [startDate, setStartDate] = useState("2026-05-05"); const [endDate, setEndDate] = useState("2026-08-08");
-  const [contractor, setContractor] = useState(""); const [description, setDescription] = useState("");
-  const [saving, setSaving] = useState(false);
-  const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
+function FileRepositoryModal({ onClose, projects }: { onClose:()=>void; projects: RealProject[] }) {
+  const { documents, fetchAll, upload, remove } = useDocumentRepository();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  async function handleCreate() {
-    if (!name.trim() || !location.trim()) { toast.error("Name and location are required."); return; }
-    setSaving(true);
-    try {
-      const budgetNum = parseFloat(budget.replace(/[^0-9.]/g,"")) || 0;
-      const { data } = await api.post<ProjectResponseDto>("/projects", { name:name.trim(), type, location:location.trim(), description:description||null, budget:budgetNum, startDate:new Date(startDate).toISOString(), targetEndDate:new Date(endDate).toISOString(), assignedContractor:contractor||null, siteEngineerId:null, phases:[] });
-      toast.success(`Project "${data.name}" created!`); onCreate(toProject(data)); onClose();
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      toast.error(msg ?? "Failed to create project.");
-    } finally { setSaving(false); }
+  const [tab,           setTab]           = useState<RepoTab>("upload");
+  const [staged,         setStaged]        = useState<StagedFile[]>([]);
+  const [projectId,      setProjectId]     = useState<number | "">("");
+  const [description,    setDescription]   = useState("");
+  const [saving,         setSaving]        = useState(false);
+  const [search,         setSearch]        = useState("");
+  const [projectFilter,  setProjectFilter] = useState<number | "">("");
+
+  useEffect(() => { fetchAll(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleFilesPicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = e.target.files;
+    if (picked && picked.length > 0) {
+      const additions: StagedFile[] = Array.from(picked).map(file => ({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        file,
+        previewUrl: URL.createObjectURL(file),
+      }));
+      setStaged(prev => [...prev, ...additions]);
+    }
+    e.target.value = "";
   }
 
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:520 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
-          <p style={{ fontWeight:800, fontSize:"1.05rem" }}>New Project</p>
-          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Name *</p><input value={name} onChange={e=>setName(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Type *</p><select value={type} onChange={e=>setType(e.target.value)} style={sel}>{["Renovation","Commercial","Industrial","Infrastructure","Residential"].map(t=><option key={t}>{t}</option>)}</select></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Location *</p><input value={location} onChange={e=>setLocation(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Budget (₱)</p><input type="number" value={budget} onChange={e=>setBudget(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Start Date *</p><input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>End Date *</p><input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div style={{ gridColumn:"1/-1" }}><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Contractor</p><input value={contractor} onChange={e=>setContractor(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div style={{ gridColumn:"1/-1" }}><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Description</p><textarea value={description} onChange={e=>setDescription(e.target.value)} rows={2} style={{ ...inp, resize:"vertical" as React.CSSProperties["resize"] }} suppressHydrationWarning /></div>
-        </div>
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.25rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleCreate} disabled={saving} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", opacity:saving?0.7:1 }}>{saving?"Creating…":"Create Project"}</button>
-        </div>
-      </div>
-    </Overlay>
-  );
-}
-
-// ── Edit Project Modal ────────────────────────────────────────────────────────
-
-function EditProjectModal({ project, onClose, onSave }: { project: Project; onClose: ()=>void; onSave: (updated: Partial<Project>)=>void }) {
-  const [name,      setName]      = useState(project.name);
-  const [location,  setLocation]  = useState(project.location);
-  const [type,      setType]      = useState(project.type);
-  const [status,    setStatus]    = useState<ProjectStatus>(project.status);
-  const [progress,  setProgress]  = useState(String(project.progress));
-  const [budget,    setBudget]    = useState(project.budget.replace(/[₱,M]/g,"").trim());
-  const [endDate,   setEndDate]   = useState(project.endDate);
-  const [manager,   setManager]   = useState(project.manager);
-
-  const sel: React.CSSProperties = { ...inp, appearance:"none" as React.CSSProperties["appearance"], cursor:"pointer" };
-  const PROG_COLOR: Record<ProjectStatus, string> = { ACTIVE:"#f97316", PLANNING:"#374151", COMPLETED:"#22c55e", "ON HOLD":"#d97706" };
-
-  function handleSave() {
-    if (!name.trim() || !location.trim()) { toast.error("Name and location required."); return; }
-    onSave({
-      name: name.trim(), location: location.trim(), type, status,
-      progress: Math.max(0, Math.min(100, Number(progress) || 0)),
-      progressColor: PROG_COLOR[status],
-      budget: `₱${parseFloat(budget.replace(/[^0-9.]/g,""))||0}`,
-      endDate, manager,
+  function removeStaged(id: string) {
+    setStaged(prev => {
+      const target = prev.find(s => s.id === id);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter(s => s.id !== id);
     });
-    toast.success("Project updated!");
-    onClose();
   }
+
+  async function saveToRepo() {
+    if (!projectId) { toast.error("Select a project."); return; }
+    if (staged.length === 0) { toast.error("Attach at least one file."); return; }
+
+    setSaving(true);
+    let successCount = 0;
+    const failedNames: string[] = [];
+
+    for (const s of staged) {
+      try {
+        await upload(s.file, Number(projectId), "Other", undefined, description.trim() || undefined);
+        successCount++;
+      } catch {
+        failedNames.push(s.file.name);
+      }
+    }
+    staged.forEach(s => URL.revokeObjectURL(s.previewUrl));
+    setSaving(false);
+
+    if (successCount > 0) {
+      toast.success(`${successCount} file(s) saved to repository.`);
+      setStaged([]); setDescription("");
+      setTab("repository");
+    }
+    if (failedNames.length > 0) toast.error(`Failed to upload: ${failedNames.join(", ")}`);
+  }
+
+  async function handleDelete(doc: ProjectDocument) {
+    if (!window.confirm(`Delete "${doc.fileName}"? This removes it permanently — this cannot be undone.`)) return;
+    try {
+      await remove(doc.id);
+      toast.success("File deleted.");
+    } catch {
+      toast.error("Failed to delete file.");
+    }
+  }
+
+  const filtered = documents.filter(d => {
+    if (projectFilter && d.projectId !== projectFilter) return false;
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return d.fileName.toLowerCase().includes(q) || d.projectName.toLowerCase().includes(q);
+  });
+
+  const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
+  const tabStyle = (t: RepoTab): React.CSSProperties => ({
+    padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem",
+    fontWeight:tab===t?700:400, background:"transparent",
+    color:tab===t?"#f97316":"#9ca3af",
+    borderBottom:tab===t?"2px solid #f97316":"2px solid transparent",
+  });
 
   return (
     <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:520 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <Pencil style={{ width:17, height:17, color:"#f97316" }} />
-            <p style={{ fontWeight:800, fontSize:"1.05rem" }}>Edit Project</p>
-          </div>
-          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-          <div style={{ gridColumn:"1/-1" }}><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Name *</p><input value={name} onChange={e=>setName(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Type</p><select value={type} onChange={e=>setType(e.target.value)} style={sel}>{["Renovation","Commercial","Industrial","Infrastructure","Residential"].map(t=><option key={t}>{t}</option>)}</select></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Status</p><select value={status} onChange={e=>setStatus(e.target.value as ProjectStatus)} style={sel}>{(["ACTIVE","PLANNING","ON HOLD","COMPLETED"] as ProjectStatus[]).map(s=><option key={s}>{s}</option>)}</select></div>
-          <div style={{ gridColumn:"1/-1" }}><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Location *</p><input value={location} onChange={e=>setLocation(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Progress (%)</p><input type="number" min={0} max={100} value={progress} onChange={e=>setProgress(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Budget (₱)</p><input value={budget} onChange={e=>setBudget(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>End Date</p><input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Manager</p><input value={manager} onChange={e=>setManager(e.target.value)} style={inp} suppressHydrationWarning /></div>
-        </div>
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.25rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleSave} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Save Changes</button>
-        </div>
-      </div>
-    </Overlay>
-  );
-}
-
-// ── Add Finished Modal ────────────────────────────────────────────────────────
-
-function AddFinishedModal({ onClose, onAdd }: { onClose: ()=>void; onAdd: (fp: FinishedProject)=>void }) {
-  const [name, setName] = useState(""); const [type, setType] = useState("Infrastructure");
-  const [location, setLocation] = useState(""); const [manager, setManager] = useState("");
-  const [startDate, setStartDate] = useState("2022-01-01"); const [endDate, setEndDate] = useState("2024-01-01");
-  const [budget, setBudget] = useState(""); const [spent, setSpent] = useState(""); const [notes, setNotes] = useState("");
-  const sel: React.CSSProperties = { ...inp, appearance:"none" as React.CSSProperties["appearance"], cursor:"pointer" };
-
-  function handleSave() {
-    if (!name.trim() || !location.trim()) { toast.error("Name and location are required."); return; }
-    const fp: FinishedProject = { id:Date.now(), name:name.trim(), location:location.trim(), type, startDate, endDate, budget:parseFloat(budget)||0, spent:parseFloat(spent)||0, manager:manager||"Unknown", notes:notes||"—", phases:[] };
-    onAdd(fp); toast.success(`"${fp.name}" added to Finished Repository!`); onClose();
-  }
-
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:500 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1rem" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}><Archive style={{ width:17, height:17, color:"#6366f1" }} /><p style={{ fontWeight:800, fontSize:"1.05rem" }}>Add Finished Project</p></div>
-          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-        <div style={{ background:"#eef2ff", border:"1px solid #c7d2fe", borderRadius:8, padding:"0.625rem 1rem", marginBottom:"1rem" }}>
-          <p style={{ fontSize:"0.78rem", color:"#4338ca" }}>Saved projects feed the AI forecasting engine for future material estimates.</p>
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Name *</p><input value={name} onChange={e=>setName(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Type</p><select value={type} onChange={e=>setType(e.target.value)} style={sel}>{["Infrastructure","Commercial","Residential","Industrial","Renovation"].map(t=><option key={t}>{t}</option>)}</select></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Location *</p><input value={location} onChange={e=>setLocation(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Manager</p><input value={manager} onChange={e=>setManager(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Start Date</p><input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>End Date</p><input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Budget (₱)</p><input type="number" value={budget} onChange={e=>setBudget(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Actual Spent (₱)</p><input type="number" value={spent} onChange={e=>setSpent(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div style={{ gridColumn:"1/-1" }}><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Notes</p><textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={2} style={{ ...inp, resize:"vertical" as React.CSSProperties["resize"] }} suppressHydrationWarning /></div>
-        </div>
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.25rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleSave} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#6366f1", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Save to Repository</button>
-        </div>
-      </div>
-    </Overlay>
-  );
-}
-
-// ── Material Plan Modal ───────────────────────────────────────────────────────
-
-const EMPTY_ROW = (): BOMRow => ({ material:"", unit:"pcs", qty:0, unitCost:0, supplier:"" });
-
-function MaterialPlanModal({ project, onClose, onSaveBOM, onRunForecast, extraRows }: {
-  project: Project; onClose: ()=>void;
-  onSaveBOM: (bom: BOMRow[])=>void;
-  onRunForecast: (bom: BOMRow[])=>void;
-  extraRows?: BOMRow[];
-}) {
-  const [phase,   setPhase]   = useState("Foundation");
-  const [period,  setPeriod]  = useState("30 days");
-  const [reorder, setReorder] = useState("20");
-  const [lead,    setLead]    = useState("7");
-  const [bomSaved, setBomSaved] = useState(false);
-
-  const buildInitRows = (): BOMRow[] => {
-    const existing = project.bom.length > 0 ? [...project.bom] : [];
-    const extra    = extraRows && extraRows.length > 0 ? [...extraRows] : [];
-    const merged   = [...existing, ...extra];
-    if (merged.length === 0) return [EMPTY_ROW(), EMPTY_ROW(), EMPTY_ROW(), EMPTY_ROW(), EMPTY_ROW()];
-    while (merged.length < 3) merged.push(EMPTY_ROW());
-    return merged;
-  };
-
-  const [rows, setRows] = useState<BOMRow[]>(buildInitRows);
-  const total = rows.reduce((s, r) => s + r.qty * r.unitCost, 0);
-  const validRows = rows.filter(r => r.material.trim());
-
-  function updateRow(i: number, field: keyof BOMRow, val: string | number) {
-    setRows(r => r.map((row, idx) => idx === i ? { ...row, [field]: val } : row));
-  }
-  function removeRow(i: number) { setRows(r => r.filter((_, idx) => idx !== i)); }
-
-  const cell: React.CSSProperties = { ...inp, padding:"7px 8px", fontSize:"0.78rem" };
-
-  if (bomSaved) {
-    return (
-      <Overlay onClose={onClose}>
-        <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:700 }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1rem" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <CheckCircle2 style={{ width:20, height:20, color:"#22c55e" }} />
+      <div style={{ background:"#fff", borderRadius:16, width:560, boxShadow:"0 20px 60px rgba(0,0,0,0.18)", display:"flex", flexDirection:"column", maxHeight:"90vh", overflow:"hidden" }}>
+        {/* Header */}
+        <div style={{ padding:"1.5rem 1.5rem 0", flexShrink:0 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1rem" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+              <div style={{ width:44, height:44, borderRadius:10, background:"#111827", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <Upload style={{ width:20, height:20, color:"#fff" }} />
+              </div>
               <div>
-                <p style={{ fontWeight:800, fontSize:"1.05rem" }}>BOM Saved — {project.name}</p>
-                <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:1 }}>{validRows.length} materials · Total: ₱{total.toLocaleString()}</p>
+                <p style={{ fontWeight:800, fontSize:"1.1rem", color:"#111827" }}>File Repository</p>
+                <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:1 }}>Blueprints, contracts, and project records</p>
               </div>
             </div>
             <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
           </div>
-
-          <div style={{ background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:8, padding:"0.625rem 1rem", marginBottom:"1rem" }}>
-            <p style={{ fontSize:"0.78rem", color:"#15803d" }}>Bill of Materials has been saved to this project. Use &quot;Run Forecast&quot; to generate a demand forecast based on this BOM.</p>
+          <div style={{ display:"flex", borderBottom:"1px solid #e5e7eb" }}>
+            <button style={tabStyle("upload")} onClick={()=>setTab("upload")}>Upload Files</button>
+            <button style={tabStyle("repository")} onClick={()=>setTab("repository")}>Repository ({documents.length})</button>
           </div>
+        </div>
 
-          {/* BOM list */}
-          <p style={{ fontSize:"0.68rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.08em", marginBottom:"0.5rem" }}>GENERATED BILL OF MATERIALS</p>
-          <div style={{ border:"1px solid #e5e7eb", borderRadius:10, overflow:"hidden", marginBottom:"1rem" }}>
-            <div style={{ display:"grid", gridTemplateColumns:"2fr 0.7fr 0.8fr 0.8fr 1fr 1.2fr", gap:4, padding:"0.625rem 1rem", background:"#f9fafb", borderBottom:"1px solid #e5e7eb" }}>
-              {["Material","Unit","Qty","Unit Cost","Total","Supplier"].map(h=>(
-                <span key={h} style={{ fontSize:"0.6rem", color:"#9ca3af", fontWeight:700 }}>{h}</span>
-              ))}
-            </div>
-            {validRows.map((r, i) => (
-              <div key={i} style={{ display:"grid", gridTemplateColumns:"2fr 0.7fr 0.8fr 0.8fr 1fr 1.2fr", gap:4, padding:"0.625rem 1rem", borderBottom: i < validRows.length-1 ? "1px solid #f3f4f6" : "none" }}>
-                <span style={{ fontSize:"0.78rem", fontWeight:500, color:"#111827" }}>{r.material}</span>
-                <span style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{r.unit}</span>
-                <span style={{ fontSize:"0.78rem", fontWeight:600 }}>{r.qty.toLocaleString()}</span>
-                <span style={{ fontSize:"0.78rem", color:"#6b7280" }}>₱{r.unitCost.toLocaleString()}</span>
-                <span style={{ fontSize:"0.78rem", fontWeight:700, color:"#f97316" }}>₱{(r.qty*r.unitCost).toLocaleString()}</span>
-                <span style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{r.supplier || "—"}</span>
+        {/* Body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"1.25rem 1.5rem" }}>
+
+          {tab==="upload" && (
+            <>
+              <input ref={fileInputRef} type="file" multiple onChange={handleFilesPicked} style={{ display:"none" }} />
+
+              <div style={{ border:"2px dashed #e5e7eb", borderRadius:12, padding:"2rem", textAlign:"center", marginBottom:"1.25rem", cursor:"pointer", background:"#fafafa" }} onClick={()=>fileInputRef.current?.click()}>
+                <Upload style={{ width:28, height:28, color:"#9ca3af", margin:"0 auto 0.625rem" }} />
+                <p style={{ fontSize:"0.875rem", color:"#374151" }}>Drag &amp; drop or <span style={{ color:"#f97316", fontWeight:600, cursor:"pointer" }}>browse</span> to attach a file</p>
+                <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:4 }}>Any file type — max 25 MB each</p>
               </div>
-            ))}
-          </div>
 
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <div style={{ background:"#fff7ed", borderRadius:8, padding:"0.5rem 1rem" }}>
-              <span style={{ fontSize:"0.78rem", color:"#9ca3af" }}>Total BOM Cost: </span>
-              <span style={{ fontWeight:800, color:"#f97316", fontSize:"1rem" }}>₱{total.toLocaleString()}</span>
-            </div>
-            <div style={{ display:"flex", gap:"0.75rem" }}>
-              <button onClick={onClose} style={{ padding:"9px 18px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.8rem", cursor:"pointer" }}>Close</button>
-              <button onClick={()=>{ onRunForecast(rows); onClose(); }} style={{ padding:"9px 18px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.8rem", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}><Zap style={{ width:13, height:13 }} /> Run Forecast</button>
-            </div>
-          </div>
-        </div>
-      </Overlay>
-    );
-  }
-
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:740 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.25rem" }}>
-          <div>
-            <p style={{ fontWeight:800, fontSize:"1.05rem" }}>Material Plan — <span style={{ color:"#f97316" }}>{project.name}</span></p>
-            <p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>Bill of Materials (BOM) &amp; procurement planning</p>
-          </div>
-          <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.75rem", marginBottom:"1.25rem" }}>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>PROJECT PHASE</p><input value={phase} onChange={e=>setPhase(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>PLANNING PERIOD</p><input value={period} onChange={e=>setPeriod(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>LEAD TIME (DAYS)</p><input value={lead} onChange={e=>setLead(e.target.value)} style={inp} suppressHydrationWarning /></div>
-        </div>
-
-        <p style={{ fontSize:"0.68rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.08em", marginBottom:"0.5rem" }}>BILL OF MATERIALS</p>
-        <div style={{ display:"grid", gridTemplateColumns:"2fr 0.65fr 0.65fr 0.85fr 0.9fr 1fr 28px", gap:4, marginBottom:4 }}>
-          {["MATERIAL","UNIT","QTY","UNIT COST (₱)","TOTAL (₱)","SUPPLIER",""].map(h=>(
-            <p key={h} style={{ fontSize:"0.6rem", color:"#9ca3af", fontWeight:700 }}>{h}</p>
-          ))}
-        </div>
-        <div style={{ maxHeight:260, overflowY:"auto" }}>
-          {rows.map((row, i) => (
-            <div key={i} style={{ display:"grid", gridTemplateColumns:"2fr 0.65fr 0.65fr 0.85fr 0.9fr 1fr 28px", gap:4, marginBottom:4, alignItems:"center" }}>
-              <input value={row.material}  onChange={e=>updateRow(i,"material",e.target.value)}  placeholder="e.g. Portland Cement (40kg)" style={cell} suppressHydrationWarning />
-              <select value={row.unit} onChange={e=>updateRow(i,"unit",e.target.value)} style={{ ...cell, appearance:"none" as React.CSSProperties["appearance"] }}>
-                {["pcs","bags","m³","cu.m","rolls","sheets","sqm","length","kg","tonnes","gal","pails","box"].map(u=><option key={u}>{u}</option>)}
-              </select>
-              <input value={row.qty||""} onChange={e=>updateRow(i,"qty",Number(e.target.value))} type="number" placeholder="0" style={cell} suppressHydrationWarning />
-              <input value={row.unitCost||""} onChange={e=>updateRow(i,"unitCost",Number(e.target.value))} type="number" placeholder="0" style={cell} suppressHydrationWarning />
-              <div style={{ ...cell, background:"#1a2235", display:"flex", alignItems:"center", borderRadius:8 }}>
-                <span style={{ color:"#f97316", fontWeight:700, fontSize:"0.78rem" }}>₱{(row.qty*row.unitCost).toLocaleString()}</span>
-              </div>
-              <input value={row.supplier} onChange={e=>updateRow(i,"supplier",e.target.value)} placeholder="Supplier" style={cell} suppressHydrationWarning />
-              <button onClick={()=>removeRow(i)} style={{ background:"none", border:"none", cursor:"pointer", color:"#dc2626", padding:0, display:"flex", alignItems:"center", justifyContent:"center" }}><X style={{ width:14, height:14 }} /></button>
-            </div>
-          ))}
-        </div>
-
-        <button onClick={()=>setRows(r=>[...r, EMPTY_ROW()])} style={{ color:"#0d9488", background:"none", border:"none", cursor:"pointer", fontSize:"0.8rem", fontWeight:600, margin:"0.5rem 0 1.25rem", display:"flex", alignItems:"center", gap:4 }}>
-          <Plus style={{ width:13, height:13 }} /> Add Material Row
-        </button>
-
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem", marginBottom:"1rem" }}>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>REORDER POINT (%)</p><input value={reorder} onChange={e=>setReorder(e.target.value)} style={inp} suppressHydrationWarning /></div>
-          <div style={{ background:"#f9fafb", borderRadius:8, padding:"0.625rem 1rem", display:"flex", flexDirection:"column", justifyContent:"center" }}>
-            <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>EST. BOM TOTAL</p>
-            <p style={{ fontWeight:800, fontSize:"1.1rem", color:"#f97316" }}>₱{total.toLocaleString()}</p>
-          </div>
-        </div>
-
-        <div style={{ background:"#eff6ff", border:"1px solid #bfdbfe", borderRadius:8, padding:"0.625rem 1rem", marginBottom:"1.25rem", display:"flex", gap:8 }}>
-          <Zap style={{ width:13, height:13, color:"#3b82f6", flexShrink:0, marginTop:3 }} />
-          <p style={{ fontSize:"0.75rem", color:"#1d4ed8", lineHeight:1.5 }}>ConstructIQ uses this BOM alongside project schedules and historical usage to generate demand forecasts.</p>
-        </div>
-
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end" }}>
-          <button onClick={onClose} style={{ padding:"9px 18px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.8rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={()=>{ if(validRows.length===0){toast.error("Add at least one material.");return;} onSaveBOM(rows); setBomSaved(true); }} style={{ padding:"9px 18px", borderRadius:8, border:"none", background:"#0d9488", color:"#fff", fontSize:"0.8rem", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
-            <Package style={{ width:13, height:13 }} /> Add to BOM
-          </button>
-          <button onClick={()=>{ if(validRows.length===0){toast.error("Add at least one material.");return;} onRunForecast(rows); onClose(); }} style={{ padding:"9px 18px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.8rem", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
-            <Zap style={{ width:13, height:13 }} /> Run Forecast
-          </button>
-        </div>
-      </div>
-    </Overlay>
-  );
-}
-
-// ── Measurements Modal ────────────────────────────────────────────────────────
-
-function MeasurementsModal({ project, onClose, onAddToPlan }: {
-  project: Project; onClose: ()=>void;
-  onAddToPlan: (rows: BOMRow[])=>void;
-}) {
-  const [structType, setStructType] = useState<"Floor Slab"|"Wall"|"Column">("Floor Slab");
-  const [label,     setLabel]     = useState("");
-  const [length,    setLength]    = useState("");
-  const [width,     setWidth]     = useState("");
-  const [thickness, setThickness] = useState("0.10");
-  const [mixRatio,  setMixRatio]  = useState("1:2:4 (Standard)");
-  const [results,   setResults]   = useState<null|{cement:number;sand:number;gravel:number}>(null);
-
-  function calculate() {
-    const L = parseFloat(length)||0, W = parseFloat(width)||0, T = parseFloat(thickness)||0;
-    const vol = L * W * T;
-    setResults({ cement: Math.ceil(vol * 8), sand: parseFloat((vol * 0.44).toFixed(2)), gravel: parseFloat((vol * 0.88).toFixed(2)) });
-  }
-
-  function handleAddToPlan() {
-    if (!results) { toast.error("Calculate first."); return; }
-    const rows: BOMRow[] = [
-      { material:"Portland Cement (40kg)", unit:"bags", qty:results.cement, unitCost:290, supplier:"" },
-      { material:"Fine Sand",              unit:"m³",   qty:results.sand,   unitCost:900, supplier:"" },
-      { material:"Coarse Gravel",          unit:"m³",   qty:results.gravel, unitCost:1200,supplier:"" },
-    ];
-    onAddToPlan(rows);
-    onClose();
-  }
-
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:580 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.25rem" }}>
-          <div>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}><Ruler style={{ width:17, height:17, color:"#f97316" }} /><p style={{ fontWeight:800, fontSize:"1.05rem" }}>Material Measurement Calculator</p></div>
-            <p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>{project.name} — site measurement &amp; quantity estimation</p>
-          </div>
-          <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-
-        <p style={{ fontSize:"0.68rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.08em", marginBottom:"0.5rem" }}>STRUCTURE TYPE</p>
-        <div style={{ display:"flex", background:"#111827", borderRadius:10, padding:4, width:"fit-content", marginBottom:"1.25rem" }}>
-          {(["Floor Slab","Wall","Column"] as const).map(t=>(
-            <button key={t} onClick={()=>setStructType(t)} style={{ padding:"7px 18px", borderRadius:8, border:"none", cursor:"pointer", fontSize:"0.875rem", fontWeight:500, background:structType===t?"#fff":"transparent", color:structType===t?"#111827":"#9ca3af", transition:"all 0.15s" }}>{t}</button>
-          ))}
-        </div>
-
-        <div style={{ marginBottom:"0.75rem" }}>
-          <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>STRUCTURE / AREA LABEL</p>
-          <input value={label} onChange={e=>setLabel(e.target.value)} placeholder="e.g. Ground Floor — Zone A" style={inp} suppressHydrationWarning />
-        </div>
-
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.75rem", marginBottom:"0.75rem" }}>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>LENGTH (M)</p><input value={length} onChange={e=>setLength(e.target.value)} type="number" placeholder="0.00" style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>WIDTH (M)</p><input value={width} onChange={e=>setWidth(e.target.value)} type="number" placeholder="0.00" style={inp} suppressHydrationWarning /></div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>THICKNESS (M)</p><input value={thickness} onChange={e=>setThickness(e.target.value)} type="number" style={inp} suppressHydrationWarning /></div>
-        </div>
-
-        <div style={{ marginBottom:"1rem" }}>
-          <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>CONCRETE MIX RATIO</p>
-          <select value={mixRatio} onChange={e=>setMixRatio(e.target.value)} style={{ ...inp, appearance:"none" as React.CSSProperties["appearance"], cursor:"pointer" }}>
-            <option>1:2:4 (Standard)</option>
-            <option>1:1.5:3 (Rich Mix)</option>
-            <option>1:3:6 (Lean Mix)</option>
-          </select>
-        </div>
-
-        <button onClick={calculate} style={{ width:"100%", padding:"11px", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.875rem", fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, marginBottom:"0.875rem" }}>
-          <Calculator style={{ width:15, height:15 }} /> Calculate Material Requirements
-        </button>
-
-        {results && (
-          <div style={{ background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:10, padding:"1rem", marginBottom:"1rem" }}>
-            <p style={{ fontSize:"0.75rem", fontWeight:700, color:"#15803d", marginBottom:"0.75rem" }}>Calculated Requirements (no waste buffer)</p>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.5rem" }}>
-              {([["Portland Cement (40kg)","bags",results.cement,"#f97316"],["Fine Sand","m³",results.sand,"#22c55e"],["Coarse Gravel","m³",results.gravel,"#3b82f6"]] as [string,string,number,string][]).map(([n,u,v,c])=>(
-                <div key={n} style={{ background:"#fff", borderRadius:8, padding:"0.75rem", textAlign:"center" }}>
-                  <p style={{ fontSize:"1.1rem", fontWeight:800, color:c }}>{v}</p>
-                  <p style={{ fontSize:"0.65rem", color:"#6b7280" }}>{u}</p>
-                  <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>{n}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <p style={{ fontSize:"0.72rem", color:"#9ca3af" }}>Follows DPWH standard mix ratios</p>
-          <div style={{ display:"flex", gap:"0.75rem" }}>
-            <button onClick={onClose} style={{ padding:"9px 18px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.8rem", cursor:"pointer" }}>Cancel</button>
-            <button onClick={handleAddToPlan} disabled={!results} style={{ padding:"9px 18px", borderRadius:8, border:"none", background:results?"#0d9488":"#e5e7eb", color:results?"#fff":"#9ca3af", fontSize:"0.8rem", fontWeight:700, cursor:results?"pointer":"default", display:"flex", alignItems:"center", gap:6 }}>
-              <Package style={{ width:13, height:13 }} /> Add to Material Plan
-            </button>
-          </div>
-        </div>
-      </div>
-    </Overlay>
-  );
-}
-
-// ── Forecast Modal ────────────────────────────────────────────────────────────
-
-function ForecastModal({ project, onClose }: { project: Project; onClose: ()=>void }) {
-  const weeks = ["Wk 1","Wk 2","Wk 3","Wk 4","Wk 5","Wk 6","Wk 7","Wk 8"];
-  const data = weeks.map((wk, i) => {
-    const row: Record<string, string|number> = { week: wk };
-    project.bom.slice(0,3).forEach(b => {
-      const curve = Math.sin((i/7)*Math.PI)*0.6+0.4;
-      row[b.material.split(" ")[0]] = Math.round((b.qty/8)*(i+1)*0.8*curve);
-    });
-    return row;
-  });
-  const colors = ["#f97316","#22c55e","#3b82f6"];
-  const keys = project.bom.slice(0,3).map(b=>b.material.split(" ")[0]);
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:660 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"1.25rem" }}>
-          <div>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}><Zap style={{ width:17, height:17, color:"#f97316" }} /><p style={{ fontWeight:800, fontSize:"1.05rem" }}>Simulated Material Forecast</p></div>
-            <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{project.name} — 8-week material consumption projection</p>
-          </div>
-          <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-        <ResponsiveContainer width="100%" height={220}>
-          <AreaChart data={data} margin={{ top:4, right:8, left:-20, bottom:0 }}>
-            <defs>{keys.map((k,i)=>(<linearGradient key={k} id={`g${i}`} x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={colors[i]} stopOpacity={0.3}/><stop offset="95%" stopColor={colors[i]} stopOpacity={0}/></linearGradient>))}</defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6"/>
-            <XAxis dataKey="week" tick={{ fontSize:11, fill:"#9ca3af" }} axisLine={false} tickLine={false}/>
-            <YAxis tick={{ fontSize:11, fill:"#9ca3af" }} axisLine={false} tickLine={false}/>
-            <Tooltip contentStyle={{ borderRadius:8, border:"1px solid #e5e7eb", fontSize:"0.72rem" }}/>
-            <Legend iconType="plainline" wrapperStyle={{ fontSize:"0.72rem", paddingTop:8 }}/>
-            {keys.map((k,i)=>(<Area key={k} type="monotone" dataKey={k} stroke={colors[i]} strokeWidth={2} fill={`url(#g${i})`}/>))}
-          </AreaChart>
-        </ResponsiveContainer>
-        <div style={{ display:"grid", gridTemplateColumns:`repeat(${keys.length},1fr)`, gap:"0.75rem", marginTop:"1rem" }}>
-          {project.bom.slice(0,3).map((b,i)=>(
-            <div key={b.material} style={{ background:"#f9fafb", borderRadius:10, padding:"0.875rem" }}>
-              <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>{b.material}</p>
-              <p style={{ fontWeight:700, fontSize:"1rem", color:colors[i] }}>{b.qty} {b.unit}</p>
-              <p style={{ fontSize:"0.65rem", color:"#9ca3af" }}>Peak: Week {i+4}</p>
-            </div>
-          ))}
-        </div>
-        <div style={{ display:"flex", justifyContent:"flex-end", marginTop:"1rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontWeight:700, fontSize:"0.875rem", cursor:"pointer" }}>Done</button>
-        </div>
-      </div>
-    </Overlay>
-  );
-}
-
-// ── AI Forecast Modal ─────────────────────────────────────────────────────────
-
-function AIForecastModal({ project, repo, onClose }: { project: Project; repo: FinishedProject[]; onClose: ()=>void }) {
-  const { phases, confidence, refs, scale } = generateAIForecast(project, repo);
-  const totalEst = phases.reduce((s, ph) => s + ph.materials.reduce((ms, m) => ms + m.total, 0), 0);
-  const [expanded, setExpanded] = useState<string[]>([phases[0]?.name ?? ""]);
-  const toggle = (n: string) => setExpanded(p => p.includes(n) ? p.filter(x=>x!==n) : [...p, n]);
-
-  return (
-    <Overlay onClose={onClose}>
-      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:680 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"1rem" }}>
-          <div>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}><Brain style={{ width:17, height:17, color:"#f97316" }} /><p style={{ fontWeight:800, fontSize:"1.05rem" }}>AI Material Forecast</p></div>
-            <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{project.name} — based on {refs.length} historical project{refs.length!==1?"s":""}</p>
-          </div>
-          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.75rem", marginBottom:"1rem" }}>
-          {[{l:"Confidence",v:`${confidence}%`,c:"#22c55e",bg:"#f0fdf4"},{l:"Budget Scale",v:`${scale}×`,c:"#f97316",bg:"#fff7ed"},{l:"Est. Materials Cost",v:`₱${(totalEst/1_000_000).toFixed(1)}M`,c:"#3b82f6",bg:"#eff6ff"}].map(s=>(
-            <div key={s.l} style={{ background:s.bg, borderRadius:10, padding:"0.875rem", textAlign:"center" }}>
-              <p style={{ fontSize:"1.2rem", fontWeight:800, color:s.c }}>{s.v}</p>
-              <p style={{ fontSize:"0.68rem", color:"#9ca3af", marginTop:2 }}>{s.l}</p>
-            </div>
-          ))}
-        </div>
-        <div style={{ background:"#f9fafb", borderRadius:8, padding:"0.625rem 1rem", marginBottom:"1rem" }}>
-          <p style={{ fontSize:"0.78rem", color:"#374151" }}>References: {refs.map((r,i)=><span key={r}><strong>{r}</strong>{i<refs.length-1?", ":""}</span>)}</p>
-        </div>
-        <div style={{ border:"1px solid #e5e7eb", borderRadius:10, overflow:"hidden", marginBottom:"1rem" }}>
-          {phases.map((ph, pi) => {
-            const open = expanded.includes(ph.name);
-            const phTotal = ph.materials.reduce((s,m)=>s+m.total,0);
-            return (
-              <div key={ph.name} style={{ borderBottom: pi<phases.length-1?"1px solid #e5e7eb":"none" }}>
-                <button onClick={()=>toggle(ph.name)} style={{ width:"100%", display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0.75rem 1rem", background:"#f9fafb", border:"none", cursor:"pointer" }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                    <span style={{ width:20, height:20, borderRadius:6, background:"#f97316", color:"#fff", fontSize:"0.62rem", fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{pi+1}</span>
-                    <span style={{ fontWeight:600, fontSize:"0.875rem" }}>{ph.name}</span>
-                    <span style={{ fontSize:"0.7rem", color:"#9ca3af" }}>({ph.materials.length} materials)</span>
-                  </div>
-                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                    <span style={{ fontSize:"0.82rem", fontWeight:700, color:"#f97316" }}>₱{phTotal.toLocaleString()}</span>
-                    {open?<ChevronUp style={{ width:15,height:15,color:"#9ca3af" }}/>:<ChevronDown style={{ width:15,height:15,color:"#9ca3af" }}/>}
-                  </div>
-                </button>
-                {open && (
-                  <div style={{ padding:"0 1rem 0.75rem" }}>
-                    <div style={{ display:"grid", gridTemplateColumns:"2fr 0.6fr 0.8fr 0.8fr 1fr", gap:4, padding:"0.5rem 0", borderBottom:"1px solid #f3f4f6", marginBottom:4 }}>
-                      {["Material","Unit","AI Qty","Unit Cost","Est. Total"].map(h=><span key={h} style={{ fontSize:"0.6rem", color:"#9ca3af", fontWeight:700 }}>{h}</span>)}
-                    </div>
-                    {ph.materials.map(m=>(
-                      <div key={m.material} style={{ display:"grid", gridTemplateColumns:"2fr 0.6fr 0.8fr 0.8fr 1fr", gap:4, padding:"4px 0", borderBottom:"1px solid #f9fafb" }}>
-                        <span style={{ fontSize:"0.78rem", color:"#374151" }}>{m.material}</span>
-                        <span style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{m.unit}</span>
-                        <span style={{ fontSize:"0.78rem", fontWeight:600 }}>{m.qty.toLocaleString()}</span>
-                        <span style={{ fontSize:"0.78rem", color:"#9ca3af" }}>₱{m.unitCost.toLocaleString()}</span>
-                        <span style={{ fontSize:"0.78rem", fontWeight:700, color:"#f97316" }}>₱{m.total.toLocaleString()}</span>
+              {staged.length > 0 && (
+                <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:"1.25rem" }}>
+                  {staged.map(s => (
+                    <div key={s.id} style={{ display:"flex", alignItems:"center", gap:8, border:"1px solid #e5e7eb", borderRadius:8, padding:"8px 10px" }}>
+                      {s.file.type.startsWith("image/") ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={s.previewUrl} alt={s.file.name} style={{ width:36, height:36, objectFit:"cover", borderRadius:6, flexShrink:0 }} />
+                      ) : (
+                        <div style={{ width:36, height:36, borderRadius:6, background:"#f3f4f6", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                          <FileIcon style={{ width:16, height:16, color:"#9ca3af" }} />
+                        </div>
+                      )}
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <p style={{ fontSize:"0.8rem", color:"#374151", fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{s.file.name}</p>
+                        <p style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{formatBytes(s.file.size)}</p>
                       </div>
-                    ))}
-                  </div>
-                )}
+                      <a href={s.previewUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize:"0.72rem", fontWeight:600, color:"#f97316", textDecoration:"none", whiteSpace:"nowrap" }}>Preview</a>
+                      <button onClick={()=>removeStaged(s.id)} title="Remove" style={{ background:"none", border:"none", cursor:"pointer", color:"#ef4444", padding:4, flexShrink:0 }}>
+                        <X style={{ width:14, height:14 }} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ display:"flex", flexDirection:"column", gap:"0.875rem" }}>
+                <div>
+                  <label style={lbl}>Project <span style={{ color:"#ef4444" }}>*</span></label>
+                  <select value={projectId} onChange={e=>setProjectId(e.target.value ? Number(e.target.value) : "")} style={sel}>
+                    <option value="">Select a project…</option>
+                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <div><label style={lbl}>Description / Remarks</label><textarea value={description} onChange={e=>setDescription(e.target.value)} rows={3} style={{ ...inp, resize:"vertical" as React.CSSProperties["resize"] }} placeholder="Brief description of the document contents..." suppressHydrationWarning /></div>
               </div>
-            );
-          })}
+            </>
+          )}
+
+          {tab==="repository" && (
+            <>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem", marginBottom:"1rem" }}>
+                <div style={{ position:"relative" }}>
+                  <Search style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", width:14, height:14, color:"#9ca3af" }} />
+                  <input value={search} onChange={e=>setSearch(e.target.value)} style={{ ...inp, paddingLeft:32 }} placeholder="Search files or projects" suppressHydrationWarning />
+                </div>
+                <select value={projectFilter} onChange={e=>setProjectFilter(e.target.value ? Number(e.target.value) : "")} style={{ ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] }}>
+                  <option value="">All Projects</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+
+              <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
+                {filtered.map(doc => {
+                  const cat = categoryDisplay(doc);
+                  return (
+                    <div key={doc.id} style={{ border:"1px solid #e5e7eb", borderRadius:10, padding:"1rem" }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.5rem" }}>
+                        <div style={{ display:"flex", gap:10, alignItems:"flex-start", minWidth:0, flex:1 }}>
+                          <div style={{ width:32, height:32, borderRadius:8, background:cat.bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                            <FolderOpen style={{ width:15, height:15, color:cat.color }} />
+                          </div>
+                          <div style={{ minWidth:0 }}>
+                            <p style={{ fontWeight:700, fontSize:"0.875rem", color:"#111827", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{doc.fileName}</p>
+                            <div style={{ display:"flex", gap:5, marginTop:4, flexWrap:"wrap" }}>
+                              <span style={{ fontSize:"0.65rem", fontWeight:600, padding:"2px 8px", borderRadius:999, background:cat.bg, color:cat.color }}>{cat.label}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{ display:"flex", alignItems:"center", gap:4, flexShrink:0 }}>
+                          <a href={`${getApiOrigin()}${doc.url}`} target="_blank" rel="noopener noreferrer" title="Preview" style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af", padding:4, display:"flex" }}>
+                            <ExternalLink style={{ width:15, height:15 }} />
+                          </a>
+                          <button onClick={()=>handleDelete(doc)} title="Delete" style={{ background:"none", border:"none", cursor:"pointer", color:"#d1d5db", padding:4 }}>
+                            <Trash2 style={{ width:15, height:15 }} />
+                          </button>
+                        </div>
+                      </div>
+                      <p style={{ fontSize:"0.72rem", color:"#6b7280", marginBottom:2 }}>{doc.projectName}</p>
+                      <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginBottom:4 }}>{doc.uploadedBy} · {formatDate(doc.uploadedAt)} · {formatBytes(doc.sizeBytes)}</p>
+                      {doc.description && <p style={{ fontSize:"0.72rem", color:"#6b7280" }}>{doc.description}</p>}
+                    </div>
+                  );
+                })}
+                {filtered.length===0 && <p style={{ textAlign:"center", color:"#9ca3af", fontSize:"0.875rem", padding:"2rem" }}>No files found.</p>}
+              </div>
+            </>
+          )}
         </div>
-        <div style={{ display:"flex", justifyContent:"flex-end", gap:"0.75rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Close</button>
-          <button onClick={()=>{ toast.success("Forecast exported!"); onClose(); }} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Export Forecast</button>
+
+        {/* Footer */}
+        <div style={{ padding:"0.875rem 1.5rem", borderTop:"1px solid #e5e7eb", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+          {tab==="repository"
+            ? <p style={{ fontSize:"0.78rem", color:"#9ca3af" }}>{filtered.length} of {documents.length} records</p>
+            : <div />
+          }
+          <div style={{ display:"flex", gap:8 }}>
+            {tab==="upload"
+              ? <>
+                  <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer" }}>Cancel</button>
+                  <button onClick={saveToRepo} disabled={saving} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.82rem", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6, opacity:saving?0.7:1 }}><Upload style={{ width:13, height:13 }} /> {saving ? "Saving…" : "Save to Repository"}</button>
+                </>
+              : <>
+                  <button onClick={()=>setTab("upload")} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>+ Upload New</button>
+                  <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.82rem", cursor:"pointer" }}>Close</button>
+                </>
+            }
+          </div>
         </div>
       </div>
     </Overlay>
@@ -852,211 +370,631 @@ function AIForecastModal({ project, repo, onClose }: { project: Project; repo: F
 
 // ── Reports Modal ─────────────────────────────────────────────────────────────
 
-function ReportsModal({ project, onClose }: { project: Project; onClose: ()=>void }) {
-  const [reportType, setReportType] = useState("Inventory Stock"); const [fromDate, setFromDate] = useState("2026-05-01"); const [toDate, setToDate] = useState("2026-06-01");
-  const [selProject, setSelProject] = useState("Southgate Mall Expansion"); const [format, setFormat] = useState(".CSV");
-  const [requester, setRequester] = useState("Remy Santos"); const [approver, setApprover] = useState("Ana Bonifacio");
-  const [checks, setChecks] = useState({ cost:true, material:true, labor:false, audit:false });
-  const dark: React.CSSProperties = { ...inp, background:"#1e2d50", border:"1px solid rgba(255,255,255,0.1)" };
+function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void }) {
+  const [type, setType] = useState("Material Usage");
+  // Relative to "now" (not a fixed date) so this default never goes stale —
+  // a hardcoded past range meant every report silently came back empty once
+  // enough time had passed, unless the user thought to change the dates first.
+  const [from, setFrom] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 3); return d; });
+  const [to,   setTo]   = useState(() => new Date());
+  const [fmt,  setFmt]  = useState(".PDF");
+  const [generating, setGenerating] = useState(false);
+  const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
+
+  async function handleGenerate() {
+    setGenerating(true);
+    try {
+      // Pulls whichever real, already-tracked dataset backs the selected
+      // report type — never hardcoded content, see lib/reportTables.ts.
+      let table;
+      if (type === "Procurement Summary") {
+        const { data } = await api.get<PurchaseOrder[]>("/purchase-orders", { params: { projectId: project.id } });
+        table = buildReportTable(type, { purchaseOrders: data }, from, to);
+      } else if (type === "Excess Analytics") {
+        const { data } = await api.get<ExcessWasteRecord[]>(`/excess-waste/project/${project.id}`);
+        table = buildReportTable(type, { excessRecords: data }, from, to);
+      } else if (type === "Forecast Report") {
+        const { data } = await api.get<ForecastResult[]>(`/forecast/project/${project.id}`);
+        table = buildReportTable(type, { forecastResults: data }, from, to);
+      } else {
+        const { data } = await api.get<BOQItem[]>(`/boq/project/${project.id}`);
+        table = buildReportTable(type, { boqItems: data }, from, to);
+      }
+
+      exportReport(fmt, { project: { name: project.name, location: project.location }, reportType: type, from, to, table });
+      toast.success(`${type}${fmt} downloaded!`);
+      onClose();
+    } catch {
+      toast.error("Failed to generate report — couldn't load the project's data.");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   return (
     <Overlay onClose={onClose}>
-      <div style={{ background:"#1a2235", borderRadius:16, padding:"1.75rem", width:500 }}>
-        <div style={{ marginBottom:"1rem" }}><p style={{ fontWeight:800, fontSize:"1.05rem", color:"#fff" }}>Generate Report</p><p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{project.name}</p></div>
-        <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Report Type</p><select value={reportType} onChange={e=>setReportType(e.target.value)} style={{ ...dark, appearance:"none" as React.CSSProperties["appearance"], width:"100%", color:"#fff" }}>{["Inventory Stock","Excess Analytics","Procurement Summary","Material Usage","Cost Report"].map(t=><option key={t}>{t}</option>)}</select></div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-            <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>From</p><input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)} style={{ ...dark, color:"#fff", width:"100%", boxSizing:"border-box" }} suppressHydrationWarning /></div>
-            <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>To</p><input type="date" value={toDate} onChange={e=>setToDate(e.target.value)} style={{ ...dark, color:"#fff", width:"100%", boxSizing:"border-box" }} suppressHydrationWarning /></div>
-          </div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project</p><select value={selProject} onChange={e=>setSelProject(e.target.value)} style={{ ...dark, appearance:"none" as React.CSSProperties["appearance"], width:"100%", color:"#fff" }}>{["Southgate Mall Expansion","Metro Station Phase 3","BGC Tower Complex","Harbor Bridge Renovation","PUP ICTC Building"].map(p=><option key={p}>{p}</option>)}</select></div>
-          <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:"0.5rem" }}>Include in Report</p>{([["cost","Cost Breakdown"],["material","Material Usage"],["labor","Labor Analysis"],["audit","Audit Log"]] as [keyof typeof checks,string][]).map(([k,label])=>(<label key={k} style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", marginBottom:6 }}><input type="checkbox" checked={checks[k]} onChange={e=>setChecks(c=>({...c,[k]:e.target.checked}))} style={{ width:14, height:14, accentColor:"#22c55e" }} /><span style={{ fontSize:"0.8rem", color:"#d1d5db" }}>{label}</span></label>))}</div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-            <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Format</p><select value={format} onChange={e=>setFormat(e.target.value)} style={{ ...dark, appearance:"none" as React.CSSProperties["appearance"], width:"100%", color:"#fff" }}>{[".CSV",".PDF",".XLSX"].map(f=><option key={f}>{f}</option>)}</select></div>
-            <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Requested by</p><select value={requester} onChange={e=>setRequester(e.target.value)} style={{ ...dark, appearance:"none" as React.CSSProperties["appearance"], width:"100%", color:"#fff" }}>{["Remy Santos","Ana Bonifacio","Jose Reyes"].map(m=><option key={m}>{m}</option>)}</select></div>
-          </div>
+      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:460, boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"1rem" }}>
+          <div><p style={{ fontWeight:800, fontSize:"1.05rem", color:"#111827" }}>Generate Report</p><p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>{project.name}</p></div>
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
         </div>
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.25rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid rgba(255,255,255,0.2)", background:"transparent", color:"#d1d5db", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>Generate</button>
+        <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
+          <div><label style={lbl}>Report Type</label><select value={type} onChange={e=>setType(e.target.value)} style={{ ...sel, width:"100%" }}>{["Material Usage","Procurement Summary","Excess Analytics","Forecast Report"].map(t=><option key={t}>{t}</option>)}</select></div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
+            <div><label style={lbl}>From</label><DatePickerField value={from} onChange={setFrom} inputStyle={{ ...inp, width:"100%", boxSizing:"border-box" as const }} /></div>
+            <div><label style={lbl}>To</label><DatePickerField value={to} onChange={setTo} inputStyle={{ ...inp, width:"100%", boxSizing:"border-box" as const }} /></div>
+          </div>
+          <div><label style={lbl}>Format</label><select value={fmt} onChange={e=>setFmt(e.target.value)} style={{ ...sel, width:"100%" }}>{[".PDF",".CSV",".XLS"].map(f=><option key={f}>{f}</option>)}</select></div>
+        </div>
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:"1.25rem" }}>
+          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
+          <button
+            onClick={handleGenerate}
+            disabled={generating}
+            style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor: generating ? "not-allowed" : "pointer", opacity: generating ? 0.7 : 1 }}
+          >{generating ? "Generating…" : "Generate"}</button>
         </div>
       </div>
     </Overlay>
   );
 }
 
-// ── Finished Project Card ─────────────────────────────────────────────────────
+// ── Forecast Mini Chart Modal ─────────────────────────────────────────────────
 
-function FinishedProjectCard({ fp }: { fp: FinishedProject }) {
-  const [expanded, setExpanded] = useState(false);
-  const [activePhase, setActivePhase] = useState(0);
-  const accuracy = ACCURACY_METRICS.perProject.find(p=>p.name===fp.name)?.accuracy;
-  const months = Math.round((new Date(fp.endDate).getTime()-new Date(fp.startDate).getTime())/(1000*60*60*24*30));
-  const variance = fp.budget > 0 ? ((fp.spent-fp.budget)/fp.budget*100) : 0;
+function ForecastModal({ project, onClose }: { project:Project; onClose:()=>void }) {
+  const weeks = ["Wk 1","Wk 2","Wk 3","Wk 4","Wk 5","Wk 6","Wk 7","Wk 8"];
+  const data  = weeks.map((wk,i) => ({ week:wk, Cement:Math.round(30*(i+1)*0.8*Math.sin((i/7)*Math.PI)*0.6+0.4), Steel:Math.round(15*(i+1)*0.7), Gravel:Math.round(20*(i+1)*0.9) }));
   return (
-    <div style={{ background:"#fff", borderRadius:14, boxShadow:"0 1px 4px rgba(0,0,0,0.08)", overflow:"hidden" }}>
-      <div style={{ padding:"1.25rem 1.25rem 0.875rem" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.5rem" }}>
-          <p style={{ fontWeight:700, fontSize:"0.95rem", color:"#111827" }}>{fp.name}</p>
-          <div style={{ display:"flex", gap:5 }}>
-            <span style={{ fontSize:"0.62rem", fontWeight:700, padding:"2px 7px", borderRadius:999, background:"#f3f4f6", color:"#374151" }}>{fp.type}</span>
-            <span style={{ fontSize:"0.62rem", fontWeight:700, padding:"2px 7px", borderRadius:999, background:"#dcfce7", color:"#15803d", display:"flex", alignItems:"center", gap:2 }}><CheckCircle2 style={{ width:9,height:9 }} /> COMPLETED</span>
-          </div>
+    <Overlay onClose={onClose}>
+      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:580 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"1rem" }}>
+          <div><p style={{ fontWeight:800, fontSize:"1.05rem" }}>Material Forecast</p><p style={{ fontSize:"0.75rem", color:"#9ca3af" }}>{project.name} — 8-week projection</p></div>
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
         </div>
-        <div style={{ display:"flex", gap:12, marginBottom:"0.875rem" }}>
-          <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><MapPin style={{ width:10,height:10 }} />{fp.location}</span>
-          <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><Calendar style={{ width:10,height:10 }} />{months} months</span>
-          <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><Users style={{ width:10,height:10 }} />{fp.manager}</span>
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:"0.5rem" }}>
-          {[
-            { l:"Budget",   v:`₱${(fp.budget/1_000_000).toFixed(1)}M` },
-            { l:"Spent",    v:`₱${(fp.spent/1_000_000).toFixed(1)}M` },
-            { l:"Variance", v:`${variance>0?"+":""}${variance.toFixed(1)}%`, c:Math.abs(variance)<5?"#22c55e":"#f97316" },
-            { l:"Accuracy", v:accuracy?`${accuracy}%`:"N/A", c:"#3b82f6" },
-          ].map(s=>(
-            <div key={s.l} style={{ background:"#f9fafb", borderRadius:8, padding:"0.5rem 0.625rem" }}>
-              <p style={{ fontSize:"0.6rem", color:"#9ca3af" }}>{s.l}</p>
-              <p style={{ fontWeight:700, fontSize:"0.82rem", color:s.c??"#111827" }}>{s.v}</p>
-            </div>
-          ))}
+        <ResponsiveContainer width="100%" height={200}>
+          <AreaChart data={data} margin={{ top:4, right:8, left:-20, bottom:0 }}>
+            <defs>
+              {[["C","#f97316"],["S","#22c55e"],["G","#3b82f6"]].map(([k,c])=>(
+                <linearGradient key={k} id={`g${k}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={c} stopOpacity={0.3}/><stop offset="95%" stopColor={c} stopOpacity={0}/>
+                </linearGradient>
+              ))}
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6"/>
+            <XAxis dataKey="week" tick={{ fontSize:11, fill:"#9ca3af" }} axisLine={false} tickLine={false}/>
+            <YAxis tick={{ fontSize:11, fill:"#9ca3af" }} axisLine={false} tickLine={false}/>
+            <Tooltip contentStyle={{ borderRadius:8, border:"1px solid #e5e7eb", fontSize:"0.72rem" }}/>
+            <Legend iconType="plainline" wrapperStyle={{ fontSize:"0.72rem", paddingTop:8 }}/>
+            <Area type="monotone" dataKey="Cement" stroke="#f97316" strokeWidth={2} fill="url(#gC)"/>
+            <Area type="monotone" dataKey="Steel"  stroke="#22c55e" strokeWidth={2} fill="url(#gS)"/>
+            <Area type="monotone" dataKey="Gravel" stroke="#3b82f6" strokeWidth={2} fill="url(#gG)"/>
+          </AreaChart>
+        </ResponsiveContainer>
+        <div style={{ display:"flex", justifyContent:"flex-end", marginTop:"1rem" }}>
+          <button onClick={onClose} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontWeight:700, fontSize:"0.875rem", cursor:"pointer" }}>Done</button>
         </div>
       </div>
-      <button onClick={()=>setExpanded(e=>!e)} style={{ width:"100%", display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0.625rem 1.25rem", background:"#f9fafb", border:"none", borderTop:"1px solid #f3f4f6", cursor:"pointer" }}>
-        <span style={{ fontSize:"0.72rem", fontWeight:600, color:"#374151" }}>{expanded?"Hide":"View"} Phase Breakdown ({fp.phases.length} phases)</span>
-        {expanded?<ChevronUp style={{ width:14,height:14,color:"#9ca3af" }}/>:<ChevronDown style={{ width:14,height:14,color:"#9ca3af" }}/>}
-      </button>
-      {expanded && fp.phases.length > 0 && (
-        <div style={{ padding:"1rem 1.25rem" }}>
-          <div style={{ display:"flex", gap:4, marginBottom:"0.75rem", flexWrap:"wrap" }}>
-            {fp.phases.map((ph,i)=>(
-              <button key={ph.name} onClick={()=>setActivePhase(i)} style={{ padding:"3px 10px", borderRadius:999, fontSize:"0.72rem", border:"none", cursor:"pointer", background:activePhase===i?"#1e3154":"#f3f4f6", color:activePhase===i?"#fff":"#374151" }}>{ph.name}</button>
-            ))}
-          </div>
-          {fp.phases[activePhase] && (
-            <>
-              <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:6 }}>Duration: <strong style={{ color:"#374151" }}>{fp.phases[activePhase].duration}</strong></p>
-              <div style={{ display:"grid", gridTemplateColumns:"2fr 0.6fr 0.7fr 0.7fr 0.7fr 0.7fr", gap:4, paddingBottom:4, marginBottom:4, borderBottom:"1px solid #f3f4f6" }}>
-                {["Material","Unit","Actual","Forecast","Unit Cost","Variance"].map(h=><span key={h} style={{ fontSize:"0.58rem", color:"#9ca3af", fontWeight:700 }}>{h}</span>)}
-              </div>
-              {fp.phases[activePhase].materials.map(m=>{
-                const v = ((m.actualQty-m.forecastQty)/m.forecastQty*100);
-                return (
-                  <div key={m.material} style={{ display:"grid", gridTemplateColumns:"2fr 0.6fr 0.7fr 0.7fr 0.7fr 0.7fr", gap:4, padding:"4px 0", borderBottom:"1px solid #f9fafb" }}>
-                    <span style={{ fontSize:"0.72rem", color:"#374151" }}>{m.material}</span>
-                    <span style={{ fontSize:"0.72rem", color:"#9ca3af" }}>{m.unit}</span>
-                    <span style={{ fontSize:"0.72rem", fontWeight:600 }}>{m.actualQty.toLocaleString()}</span>
-                    <span style={{ fontSize:"0.72rem", color:"#6b7280" }}>{m.forecastQty.toLocaleString()}</span>
-                    <span style={{ fontSize:"0.72rem", color:"#6b7280" }}>₱{m.unitCost.toLocaleString()}</span>
-                    <span style={{ fontSize:"0.72rem", fontWeight:700, color:Math.abs(v)<5?"#22c55e":Math.abs(v)<10?"#f97316":"#dc2626" }}>{v>0?"+":""}{v.toFixed(1)}%</span>
-                  </div>
-                );
-              })}
-            </>
-          )}
-        </div>
-      )}
-      {expanded && <div style={{ padding:"0.625rem 1.25rem", background:"#f9fafb", borderTop:"1px solid #f3f4f6" }}><p style={{ fontSize:"0.72rem", color:"#6b7280", fontStyle:"italic" }}>{fp.notes}</p></div>}
-    </div>
+    </Overlay>
   );
 }
 
-// ── Forecasting Tab ───────────────────────────────────────────────────────────
+// ── Progress Tracker Modal ────────────────────────────────────────────────────
 
-function ForecastingTab({ repo }: { repo: FinishedProject[] }) {
-  const [genType, setGenType] = useState("Infrastructure");
-  const [genBudget, setGenBudget] = useState("30000000");
-  const [genResult, setGenResult] = useState<ReturnType<typeof generateAIForecast>|null>(null);
-  const mock: Project = { id:0, name:"Preview", location:"—", type:genType, status:"PLANNING", budget:`₱${Number(genBudget).toLocaleString()}`, spent:"₱0", progress:0, progressColor:"#374151", materials:0, manager:"—", engineers:[], startDate:"2026-01-01", endDate:"2027-01-01", bom:[], forecastReady:false };
-  const totalEst = genResult?.phases.reduce((s,ph)=>s+ph.materials.reduce((ms,m)=>ms+m.total,0),0)??0;
-  const sel: React.CSSProperties = { background:"#111827", color:"#fff", border:"none", borderRadius:8, padding:"9px 12px", fontSize:"0.875rem", outline:"none", cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"], width:"100%" };
+interface ProgressUpdateDto {
+  id: number; progress: number; notes: string;
+  photoUrls: string[]; updatedByName: string; createdAt: string;
+}
+
+function ProgressTrackerModal({ project, onClose, onSaved }: {
+  project: Project;
+  onClose: ()=>void;
+  onSaved: (updated: RealProject) => void;
+}) {
+  const [progress, setProgress] = useState(project.progress);
+  const [notes, setNotes]       = useState("");
+  const [photos, setPhotos]     = useState<File[]>([]);
+  const [saving, setSaving]     = useState(false);
+  const [updates, setUpdates]   = useState<ProgressUpdateDto[]>([]);
+  // Primary Sections from the project's own BOQ — replaces the old hardcoded
+  // 4-phase list so "section status" actually reflects what's being built.
+  const [sections, setSections] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get<BOQItem[]>(`/boq/project/${project.id}`).then(({ data }) => {
+      if (cancelled) return;
+      const seen: string[] = [];
+      data.forEach(item => { if (item.primarySection && !seen.includes(item.primarySection)) seen.push(item.primarySection); });
+      setSections(seen);
+    }).catch(() => {});
+    api.get<ProgressUpdateDto[]>(`/projects/${project.id}/progress-updates`)
+      .then(({ data }) => { if (!cancelled) setUpdates(data); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [project.id]);
+
+  async function handleSave() {
+    if (!notes.trim()) { toast.error("Please add progress notes before saving."); return; }
+    setSaving(true);
+    try {
+      const form = new FormData();
+      form.append("Progress", String(progress));
+      form.append("Notes", notes);
+      photos.forEach(f => form.append("Photos", f));
+      const { data } = await api.post<{ project: RealProject; update: ProgressUpdateDto }>(
+        `/projects/${project.id}/progress-updates`, form, { headers: { "Content-Type": undefined } },
+      );
+      setUpdates(prev => [data.update, ...prev]);
+      if (data.project.isHistorical && !project.isHistorical) {
+        toast.success("Progress updated — project completed and moved to Historical Data!");
+      } else if (data.project.status === "Active" && project.status !== "ACTIVE") {
+        toast.success("Progress updated — project is now Active!");
+      } else {
+        toast.success("Progress updated successfully!");
+      }
+      onSaved(data.project);
+    } catch {
+      toast.error("Failed to save progress update.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:"1rem" }}>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:"0.875rem" }}>
-        {[{icon:Target,bg:"#dcfce7",ic:"#15803d",l:"Overall Accuracy",v:`${ACCURACY_METRICS.accuracy}%`},{icon:BarChart2,bg:"#eff6ff",ic:"#1d4ed8",l:"Mean Abs. Error",v:`${ACCURACY_METRICS.mae} units`},{icon:TrendingUp,bg:"#fff7ed",ic:"#c2410c",l:"MAPE",v:`${ACCURACY_METRICS.mape}%`},{icon:Archive,bg:"#f3f4f6",ic:"#374151",l:"Projects Analyzed",v:`${repo.length}`}].map(s=>{
-          const Icon = s.icon;
-          return (
-            <div key={s.l} style={{ background:"#fff", borderRadius:14, padding:"1.25rem", boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
-              <div style={{ width:36,height:36,borderRadius:9,background:s.bg,display:"flex",alignItems:"center",justifyContent:"center",marginBottom:"0.75rem" }}><Icon style={{ width:17,height:17,color:s.ic }} /></div>
-              <p style={{ fontSize:"1.5rem", fontWeight:800, color:"#111827", lineHeight:1 }}>{s.v}</p>
-              <p style={{ fontSize:"0.7rem", color:"#9ca3af", marginTop:4 }}>{s.l}</p>
+    <Overlay onClose={onClose}>
+      <div style={{ background:"#fff", borderRadius:16, width:580, boxShadow:"0 20px 60px rgba(0,0,0,0.18)", overflow:"hidden", maxHeight:"90vh", display:"flex", flexDirection:"column" }}>
+        {/* Header */}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", padding:"2rem 2rem 0", flexShrink:0 }}>
+          <div>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <Activity style={{ width:18, height:18, color:"#f97316" }} />
+              <p style={{ fontWeight:800, fontSize:"1.1rem", color:"#111827" }}>Progress Tracker</p>
             </div>
-          );
-        })}
-      </div>
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
-        <div style={{ background:"#fff", borderRadius:12, padding:"1.25rem", boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
-          <p style={{ fontWeight:700, fontSize:"0.9rem", marginBottom:"0.25rem" }}>Forecast Accuracy per Project</p>
-          <p style={{ fontSize:"0.7rem", color:"#9ca3af", marginBottom:"1rem" }}>Actual vs. forecasted material quantities</p>
-          {ACCURACY_METRICS.perProject.map(p=>(
-            <div key={p.name} style={{ marginBottom:"0.75rem" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
-                <span style={{ fontSize:"0.75rem", color:"#374151", fontWeight:500 }}>{p.name}</span>
-                <span style={{ fontSize:"0.75rem", fontWeight:700, color:p.accuracy>=95?"#22c55e":"#f97316" }}>{p.accuracy}%</span>
-              </div>
-              <div style={{ height:7, background:"#f3f4f6", borderRadius:99 }}>
-                <div style={{ height:"100%", width:`${p.accuracy}%`, background:p.accuracy>=95?"#22c55e":"#f97316", borderRadius:99 }} />
-              </div>
-            </div>
-          ))}
-        </div>
-        <div style={{ background:"#fff", borderRadius:12, padding:"1.25rem", boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
-          <p style={{ fontWeight:700, fontSize:"0.9rem", marginBottom:"0.25rem" }}>Generate AI Forecast</p>
-          <p style={{ fontSize:"0.7rem", color:"#9ca3af", marginBottom:"1rem" }}>Estimate materials for a new project by type &amp; budget</p>
-          <div style={{ display:"flex", flexDirection:"column", gap:"0.625rem", marginBottom:"0.875rem" }}>
-            <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Project Type</p><select value={genType} onChange={e=>{setGenType(e.target.value);setGenResult(null);}} style={sel}>{["Infrastructure","Commercial","Residential","Industrial","Renovation"].map(t=><option key={t}>{t}</option>)}</select></div>
-            <div><p style={{ fontSize:"0.68rem", color:"#9ca3af", marginBottom:4 }}>Total Budget (₱)</p><input value={genBudget} onChange={e=>{setGenBudget(e.target.value);setGenResult(null);}} type="number" style={{ background:"#111827",color:"#fff",border:"none",borderRadius:8,padding:"9px 12px",fontSize:"0.875rem",outline:"none",width:"100%",boxSizing:"border-box" as const }} suppressHydrationWarning /></div>
+            <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:3 }}>{project.name} · {project.location}</p>
           </div>
-          <button onClick={()=>{ if(!genBudget||isNaN(Number(genBudget))){toast.error("Enter a valid budget.");return;} setGenResult(generateAIForecast(mock,repo)); toast.success("Forecast generated!"); }} style={{ width:"100%",padding:"10px",borderRadius:8,border:"none",background:"#f97316",color:"#fff",fontWeight:700,fontSize:"0.875rem",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6 }}>
-            <Brain style={{ width:14,height:14 }} /> Run AI Forecast
-          </button>
-          {genResult && (
-            <div style={{ marginTop:"0.875rem", background:"#f9fafb", borderRadius:10, padding:"0.875rem" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"0.5rem" }}>
-                <span style={{ fontSize:"0.78rem", fontWeight:700 }}>Forecast Result</span>
-                <span style={{ fontSize:"0.72rem", fontWeight:700, color:"#22c55e" }}>{genResult.confidence}% confidence</span>
-              </div>
-              <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginBottom:"0.5rem" }}>Est. materials cost: <strong style={{ color:"#f97316" }}>₱{(totalEst/1_000_000).toFixed(2)}M</strong></p>
-              {genResult.phases.slice(0,3).map(ph=>(
-                <div key={ph.name} style={{ padding:"0.4rem 0", borderBottom:"1px solid #e5e7eb" }}>
-                  <p style={{ fontSize:"0.72rem", fontWeight:600, color:"#374151", marginBottom:2 }}>{ph.name}</p>
-                  {ph.materials.slice(0,2).map(m=>(
-                    <div key={m.material} style={{ display:"flex", justifyContent:"space-between" }}>
-                      <span style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{m.material}</span>
-                      <span style={{ fontSize:"0.68rem", fontWeight:600 }}>{m.qty.toLocaleString()} {m.unit}</span>
-                    </div>
-                  ))}
-                </div>
-              ))}
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"1.5rem 2rem" }}>
+
+        {/* Progress bar + slider */}
+        <div style={{ background:"#f9fafb", borderRadius:12, padding:"1.25rem", marginBottom:"1.25rem" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
+            <span style={{ fontSize:"0.8rem", fontWeight:600, color:"#374151" }}>Overall Progress</span>
+            <span style={{ fontSize:"1.25rem", fontWeight:800, color:project.progressColor }}>{progress}%</span>
+          </div>
+          <div style={{ height:14, background:"#e5e7eb", borderRadius:99, marginBottom:"0.875rem", overflow:"hidden" }}>
+            <div style={{ height:"100%", width:`${progress}%`, background:project.progressColor, borderRadius:99, transition:"width 0.25s ease" }} />
+          </div>
+          <input type="range" min={0} max={100} step={1} value={progress}
+            onChange={e=>setProgress(Number(e.target.value))}
+            style={{ width:"100%", accentColor:project.progressColor, cursor:"pointer" }}
+          />
+          <div style={{ display:"flex", justifyContent:"space-between", marginTop:4 }}>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>0%</span>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>25%</span>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>50%</span>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>75%</span>
+            <span style={{ fontSize:"0.65rem", color:"#9ca3af" }}>100%</span>
+          </div>
+        </div>
+
+        {/* Section status — every Primary Section from this project's own BOQ,
+            not a generic hardcoded phase list. Done/in-progress/pending is
+            derived by splitting 0-100 evenly across however many sections
+            the BOQ actually has. */}
+        <div style={{ marginBottom:"1.25rem" }}>
+          <p style={{ fontSize:"0.78rem", fontWeight:700, color:"#374151", marginBottom:8 }}>Section Status</p>
+          {sections.length === 0 ? (
+            <p style={{ fontSize:"0.75rem", color:"#9ca3af", padding:"0.5rem 0" }}>
+              No BOQ sections yet — add materials in the Material Plan tab first.
+            </p>
+          ) : (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              {sections.map((section, i) => {
+                const threshold     = ((i + 1) / sections.length) * 100;
+                const prevThreshold = (i / sections.length) * 100;
+                const done   = progress >= threshold;
+                const inProg = !done && progress >= prevThreshold;
+                return (
+                  <div
+                    key={section}
+                    // Math.ceil, not round — rounding down could land a hair
+                    // under the exact (unrounded) threshold this same section
+                    // checks against below, showing "In Progress" instead of
+                    // "Done" right after clicking to mark it done.
+                    onClick={() => setProgress(Math.ceil(threshold))}
+                    title={`Mark "${section}" as done — sets Overall Progress to ${Math.ceil(threshold)}%`}
+                    style={{
+                      display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
+                      background: done ? "#dcfce7" : inProg ? "#fff7ed" : "#f9fafb",
+                      borderRadius:8, cursor:"pointer",
+                      border: `1px solid ${done ? "#86efac" : inProg ? "#fed7aa" : "#e5e7eb"}`,
+                    }}>
+                    <div style={{ width:8, height:8, borderRadius:"50%", flexShrink:0,
+                      background: done ? "#22c55e" : inProg ? "#f97316" : "#d1d5db" }} />
+                    <span style={{ fontSize:"0.75rem", fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
+                      color: done ? "#15803d" : inProg ? "#c2410c" : "#9ca3af" }}>{section}</span>
+                    <span style={{ fontSize:"0.65rem", color:"#9ca3af", marginLeft:"auto", flexShrink:0 }}>
+                      {done ? "Done" : inProg ? "In Progress" : "Pending"}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
+
+        {/* Update form */}
+        <div style={{ marginBottom:"1.25rem" }}>
+          <p style={{ fontSize:"0.78rem", fontWeight:700, color:"#374151", marginBottom:8 }}>Log Progress Update</p>
+          <textarea
+            placeholder="Describe work completed (e.g., Completed column pour for Grid A1-A5, forms removed and passed QC inspection...)"
+            value={notes} onChange={e=>setNotes(e.target.value)}
+            style={{ ...inp, minHeight:76, resize:"vertical" as const }}
+          />
+          <label style={{ display:"flex", alignItems:"center", gap:8, marginTop:8, padding:"9px 14px", border:"1.5px dashed #d1d5db", borderRadius:8, cursor:"pointer", background:"#fafafa" }}>
+            <Camera style={{ width:15, height:15, color:"#9ca3af" }} />
+            <span style={{ fontSize:"0.78rem", color:"#6b7280" }}>
+              {photos.length > 0 ? `${photos.length} photo(s) selected` : "Attach site photos (optional)"}
+            </span>
+            <input type="file" accept="image/*" multiple style={{ display:"none" }}
+              onChange={e => setPhotos(Array.from(e.target.files ?? []))} />
+          </label>
+        </div>
+
+        {/* Update history */}
+        {updates.length > 0 && (
+          <div style={{ marginBottom:"1.25rem" }}>
+            <p style={{ fontSize:"0.78rem", fontWeight:700, color:"#374151", marginBottom:8 }}>Recent Updates</p>
+            <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+              {updates.slice(0,3).map(u => (
+                <div key={u.id} style={{ padding:"10px 12px", background:"#f9fafb", borderRadius:8, borderLeft:"3px solid #f97316" }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                    <span style={{ fontSize:"0.7rem", fontWeight:700, color:"#f97316" }}>{u.progress}% progress</span>
+                    <span style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{formatDate(u.createdAt)}</span>
+                  </div>
+                  <p style={{ fontSize:"0.75rem", color:"#374151", lineHeight:1.4 }}>{u.notes}</p>
+                  <p style={{ fontSize:"0.65rem", color:"#9ca3af", marginTop:3 }}>
+                    Updated by {u.updatedByName}{u.photoUrls.length > 0 ? ` · ${u.photoUrls.length} photo(s)` : ""}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        </div>
+
+        {/* Footer */}
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", padding:"1.25rem 2rem", flexShrink:0, borderTop:"1px solid #f3f4f6" }}>
+          <button onClick={onClose} disabled={saving} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:saving?"default":"pointer" }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:saving?"default":"pointer", opacity:saving?0.7:1 }}>
+            {saving ? "Saving…" : "Save Update"}
+          </button>
+        </div>
       </div>
-    </div>
+    </Overlay>
+  );
+}
+
+// ── Delete Confirmation Modal ──────────────────────────────────────────────────
+
+function DeleteProjectModal({ project, onClose, onConfirm, deleting }: {
+  project: Project; onClose: ()=>void; onConfirm: ()=>void; deleting: boolean;
+}) {
+  return (
+    <Overlay onClose={onClose}>
+      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:420, boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:"1rem" }}>
+          <div style={{ width:40, height:40, borderRadius:10, background:"#fee2e2", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+            <Trash2 style={{ width:18, height:18, color:"#dc2626" }} />
+          </div>
+          <div>
+            <p style={{ fontWeight:800, fontSize:"1.05rem", color:"#111827" }}>Delete Project</p>
+            <p style={{ fontSize:"0.8rem", color:"#6b7280", marginTop:4 }}>
+              This will permanently delete <strong>{project.name}</strong> and all of its phases, BOQ items, purchase orders, documents, and forecast data. This action cannot be undone.
+            </p>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:"1.25rem" }}>
+          <button onClick={onClose} disabled={deleting} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:deleting?"default":"pointer" }}>Cancel</button>
+          <button onClick={onConfirm} disabled={deleting} style={{ padding:"9px 20px", borderRadius:8, border:"none", background:"#dc2626", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:deleting?"default":"pointer", opacity:deleting?0.7:1 }}>
+            {deleting ? "Deleting…" : "Delete Project"}
+          </button>
+        </div>
+      </div>
+    </Overlay>
+  );
+}
+
+// ── Edit Project Details Modal ─────────────────────────────────────────────────
+
+function EditProjectModal({ project, onClose, onSaved }: {
+  project: RealProject; onClose: ()=>void; onSaved: (p: RealProject)=>void;
+}) {
+  const [name, setName]               = useState(project.name);
+  const [type, setType]               = useState<ProjectType>(project.type);
+  const [otherType, setOtherType]     = useState(project.otherTypeSpecify ?? "");
+  const [location, setLocation]       = useState(project.location);
+  const [description, setDescription] = useState(project.description ?? "");
+  const [startDate, setStartDate]     = useState(new Date(project.startDate));
+  const [endDate, setEndDate]         = useState(new Date(project.targetEndDate));
+  const [status, setStatus]           = useState(project.status);
+  const [siteEngineerId, setSiteEngineerId] = useState<number | "">(project.siteEngineerId ?? "");
+  const [saving, setSaving]           = useState(false);
+  const { siteEngineers } = useSiteEngineers();
+
+  const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
+
+  async function handleSave() {
+    if (!name.trim() || !location.trim()) { toast.error("Name and location are required."); return; }
+    setSaving(true);
+    try {
+      const { data } = await api.put<RealProject>(`/projects/${project.id}`, {
+        name: name.trim(),
+        type,
+        otherTypeSpecify: type === "Others" ? otherType.trim() : undefined,
+        location: location.trim(),
+        description: description.trim() || undefined,
+        budget: project.budget,
+        startDate: startDate.toISOString(),
+        targetEndDate: endDate.toISOString(),
+        status,
+        siteEngineerId: siteEngineerId === "" ? undefined : siteEngineerId,
+        phases: [],
+      });
+      toast.success("Project details updated.");
+      onSaved(data);
+      onClose();
+    } catch {
+      toast.error("Failed to update project.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Overlay onClose={onClose}>
+      <div style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:520, boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"1rem" }}>
+          <div><p style={{ fontWeight:800, fontSize:"1.05rem", color:"#111827" }}>Edit Project Details</p><p style={{ fontSize:"0.75rem", color:"#9ca3af", marginTop:2 }}>{project.name}</p></div>
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", gap:"0.875rem", maxHeight:"60vh", overflowY:"auto", paddingRight:4 }}>
+          <div><label style={lbl}>Project Name</label><input value={name} onChange={e=>setName(e.target.value)} style={inp} /></div>
+          <div style={{ display:"grid", gridTemplateColumns: type==="Others" ? "1fr 1fr" : "1fr", gap:"0.75rem" }}>
+            <div>
+              <label style={lbl}>Project Type</label>
+              <select value={type} onChange={e=>setType(e.target.value as ProjectType)} style={sel}>
+                {PROJECT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            {type === "Others" && (
+              <div><label style={lbl}>Specify Type</label><input value={otherType} onChange={e=>setOtherType(e.target.value)} style={inp} /></div>
+            )}
+          </div>
+          <div><label style={lbl}>Location</label><input value={location} onChange={e=>setLocation(e.target.value)} style={inp} /></div>
+          <div><label style={lbl}>Description</label><textarea value={description} onChange={e=>setDescription(e.target.value)} rows={3} style={{ ...inp, resize:"vertical" as const }} /></div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
+            <div><label style={lbl}>Start Date</label><DatePickerField value={startDate} onChange={setStartDate} inputStyle={{ ...inp, width:"100%", boxSizing:"border-box" as const }} /></div>
+            <div><label style={lbl}>Target End Date</label><DatePickerField value={endDate} onChange={setEndDate} inputStyle={{ ...inp, width:"100%", boxSizing:"border-box" as const }} /></div>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
+            <div>
+              <label style={lbl}>Status</label>
+              <select value={status} onChange={e=>setStatus(e.target.value as typeof status)} style={sel}>
+                {PROJECT_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={lbl}>Assign Engineer/PIC</label>
+              <select value={siteEngineerId} onChange={e=>setSiteEngineerId(e.target.value === "" ? "" : Number(e.target.value))} style={sel}>
+                <option value="">— Unassigned —</option>
+                {/* The currently-assigned engineer might have since been
+                    deactivated (dropped from the active list below) — keep
+                    them selectable so re-saving this form without touching
+                    the field doesn't silently unassign them. */}
+                {project.siteEngineerId != null && !siteEngineers.some(e => e.id === project.siteEngineerId) && (
+                  <option value={project.siteEngineerId}>{project.siteEngineerName} (inactive)</option>
+                )}
+                {siteEngineers.map(e => <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>)}
+              </select>
+            </div>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:"1.25rem" }}>
+          <button onClick={onClose} disabled={saving} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", cursor:saving?"default":"pointer" }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontWeight:700, fontSize:"0.875rem", cursor:saving?"default":"pointer", opacity:saving?0.7:1 }}>{saving?"Saving…":"Save Changes"}</button>
+        </div>
+      </div>
+    </Overlay>
   );
 }
 
 // ── Project Card ──────────────────────────────────────────────────────────────
 
-function ProjectCard({ project, onMaterialPlan, onMeasurements, onReports, onAIForecast, onEdit }: {
-  project: Project; onMaterialPlan:()=>void; onMeasurements:()=>void; onReports:()=>void; onAIForecast:()=>void; onEdit:()=>void;
+function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, onProgress, onDelete, onEditDetails, canEdit, canDelete, canEditDetails, showProgress, viewOnly }: {
+  project: Project;
+  // Bumped by the parent whenever a Material Plan session closes (for any
+  // project) — this card doesn't otherwise know a forecast/BOQ save
+  // happened while its modal was open, since project.id/status don't change.
+  refreshKey: number;
+  onView: ()=>void;
+  onMaterialPlan: ()=>void;
+  onReports: ()=>void;
+  onProgress?: ()=>void;
+  onDelete?: ()=>void;
+  onEditDetails?: ()=>void;
+  canEdit: boolean;
+  canDelete: boolean;
+  canEditDetails: boolean;
+  showProgress: boolean;
+  viewOnly: boolean;
 }) {
   const st = STATUS_STYLE[project.status];
-  const btn: React.CSSProperties = { flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:5, padding:"7px 0", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.7rem", fontWeight:600, cursor:"pointer" };
+  const btn: React.CSSProperties = { flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"10px 0", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.8rem", fontWeight:600, cursor:"pointer" };
+
+  // actual is undefined when this specific line never got a real recorded
+  // quantity (neither a historicalSupply delivery nor BOQItem.ActualQuantity)
+  // — shown as "—" rather than silently standing in for the estimate, so a
+  // viewer can tell forecast-validation signal from filler at a glance.
+  // Genuine ML output from the project's latest saved forecast run (GET
+  // /forecast/project/:id, newest first) — never the historical-average
+  // heuristic (topMaterialDemand), which has never been touched by the ML
+  // pipeline despite ranking similarly. Empty when no forecast has been run
+  // yet for this project; never silently substituted with something else.
+  const [aiPredicted, setAiPredicted] = useState<ForecastedMaterial[]>([]);
+  const [topDemand, setTopDemand]     = useState<{ material:string; estimated:number; actual?:number; unit:string }[]>([]);
+  const [excessStock, setExcessStock]     = useState(0);
+  const [redistributed, setRedistributed] = useState(0);
+  const [materialsCount, setMaterialsCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get<ExcessAnalyticsSummary>(`/excess-waste/summary/${project.id}`)
+      .then(({ data }) => { if (!cancelled) setExcessStock(data.totalExcessQuantity); })
+      .catch(() => {});
+    api.get<RedistributionRecommendation[]>("/redistribution")
+      .then(({ data }) => {
+        if (cancelled) return;
+        // Approved is the sole terminal state for a redistribution transfer —
+        // InTransit/Completed are never set by any code (see RedistributionStatuses).
+        const total = data
+          .filter(r => r.status === "Approved" && (r.sourceProjectId === project.id || r.targetProjectId === project.id))
+          .reduce((sum, r) => sum + r.transferQuantity, 0);
+        setRedistributed(total);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [project.id, refreshKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Real materials count, fetched once and reused below instead of
+    // relying on a hardcoded demo fallback that was always 0 for any
+    // project outside the original 5 mock entries.
+    Promise.all([
+      api.get<BOQItem[]>(`/boq/project/${project.id}`),
+      api.get<ExcessWasteRecord[]>(`/excess-waste/project/${project.id}`),
+    ])
+      .then(([{ data: boqItems }, { data: records }]) => {
+        if (cancelled) return;
+        setMaterialsCount(boqItems.length);
+        // Historical projects are training data, not a forecast target
+        // themselves (see Material Plan's "Materials by Demand" panel) —
+        // ranked by real recorded demand instead of a forecast. Ranking/
+        // grouping lives in topMaterialDemand (lib/topMaterialDemand.ts):
+        // groups BOQ rows by materialId+specification+unit, and only trusts
+        // a row's ActualQuantity as real "actual usage" when a genuine
+        // ExcessWasteRecord was logged against it (recordedIds) — otherwise
+        // it's undefined ("—" in the UI), never silently substituted with
+        // the estimate.
+        if (project.isHistorical) {
+          const recordedIds = new Set(records.flatMap(r => r.boqItemId == null ? [] : [r.boqItemId]));
+          setTopDemand(topMaterialDemand(boqItems, project.isHistorical, recordedIds));
+        }
+      })
+      .catch(() => {});
+
+    // Non-historical ("AI Predicted") comes from this project's own latest
+    // saved forecast run — genuine Random Forest + XGBoost ensemble output,
+    // never the historical-average heuristic above (which, despite ranking
+    // similarly, has never been touched by the ML pipeline). Empty when no
+    // forecast has been generated for this project yet.
+    if (!project.isHistorical) {
+      api.get<ForecastResult[]>(`/forecast/project/${project.id}`)
+        .then(({ data }) => {
+          if (cancelled) return;
+          const latest = data[0];
+          const top5 = (latest?.forecastedMaterials ?? [])
+            .slice()
+            .sort((a, b) => b.forecastedQuantity - a.forecastedQuantity)
+            .slice(0, 5);
+          setAiPredicted(top5);
+        })
+        .catch(() => {});
+    }
+
+    return () => { cancelled = true; };
+  }, [project.id, project.status, project.isHistorical, refreshKey]);
+
   return (
     <div style={{ background:"#fff", borderRadius:14, padding:"1.25rem", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.5rem" }}>
-        <p style={{ fontWeight:700, fontSize:"1rem", color:"#2563eb" }}>{project.name}</p>
-        <div style={{ display:"flex", gap:5, alignItems:"center", flexShrink:0 }}>
-          <span style={{ fontSize:"0.62rem", fontWeight:700, padding:"3px 9px", borderRadius:999, background:st.bg, color:st.color }}>· {project.status}</span>
-          <button onClick={onEdit} style={{ display:"flex", alignItems:"center", gap:4, padding:"4px 10px", borderRadius:6, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.68rem", fontWeight:600, cursor:"pointer" }}>
-            <Pencil style={{ width:11, height:11 }} /> Edit
-          </button>
+      {/* Title row */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.375rem" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, flex:1, minWidth:0 }}>
+          <p style={{ fontWeight:700, fontSize:"1rem", color:"#1d4ed8", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{project.name}</p>
+          {canEdit && (
+            <button onClick={onView} title="View" style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#9ca3af", display:"flex", alignItems:"center", flexShrink:0 }}>
+              <Eye style={{ width:13, height:13 }} />
+            </button>
+          )}
+          {canEditDetails && (
+            <button onClick={onEditDetails} title="Edit project details" style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#9ca3af", display:"flex", alignItems:"center", flexShrink:0 }}>
+              <Pencil style={{ width:13, height:13 }} />
+            </button>
+          )}
+          {viewOnly && (
+            <span style={{ fontSize:"0.6rem", fontWeight:700, padding:"2px 7px", borderRadius:999, background:"#f3f4f6", color:"#6b7280", flexShrink:0 }}>VIEW ONLY</span>
+          )}
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
+          {project.isHistorical ? (
+            <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 10px", borderRadius:999, background:"#ede9fe", color:"#6d28d9", whiteSpace:"nowrap" }}>HISTORICAL DATA</span>
+          ) : (
+            <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 10px", borderRadius:999, background:st.bg, color:st.color, whiteSpace:"nowrap" }}>· {project.status}</span>
+          )}
+          {canDelete && (
+            <button onClick={onDelete} title="Delete project" style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#d1d5db", display:"flex", alignItems:"center" }}>
+              <Trash2 style={{ width:14, height:14 }} />
+            </button>
+          )}
         </div>
       </div>
-      <div style={{ display:"flex", gap:14, marginBottom:"0.875rem" }}>
-        <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><MapPin style={{ width:11,height:11 }} />{project.location}</span>
-        <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><Calendar style={{ width:11,height:11 }} />{project.startDate} – {project.endDate}</span>
+
+      {/* Meta */}
+      <div style={{ display:"flex", gap:14, marginBottom:"0.875rem", flexWrap:"wrap" }}>
+        <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><MapPin style={{ width:11, height:11 }} />{project.location}</span>
+        <span style={{ fontSize:"0.72rem", color:"#9ca3af", display:"flex", alignItems:"center", gap:3 }}><Calendar style={{ width:11, height:11 }} />{project.startDate} – {project.endDate}</span>
       </div>
+
+      {/* AI forecast summary */}
+      <div style={{ display:"flex", flexDirection:"column", gap:2, marginBottom:"0.75rem" }}>
+        {project.isHistorical ? (
+          topDemand.length === 0 ? (
+            <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#6d28d9" }}>Most Material Demand/Usage: —</span>
+          ) : (
+            <>
+              <span style={{ fontSize:"0.65rem", fontWeight:700, color:"#6d28d9", marginBottom: 1 }}>Top 5 Material Demand/Usage</span>
+              {topDemand.map((m, i) => (
+                <span key={i} style={{ fontSize:"0.68rem", fontWeight:500, color:"#6d28d9" }}>
+                  {i + 1}. {m.material} - Est: {m.estimated.toLocaleString()} {m.unit} / Actual: {m.actual != null ? `${m.actual.toLocaleString()} ${m.unit}` : "—"}
+                </span>
+              ))}
+            </>
+          )
+        ) : (
+          <>
+            {aiPredicted.length === 0 ? (
+              <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#7c3aed" }}>AI Predicted: — (no forecast run yet)</span>
+            ) : (
+              <>
+                <span style={{ fontSize:"0.65rem", fontWeight:700, color:"#7c3aed", marginBottom: 1 }}>Top 5 AI Predicted</span>
+                {aiPredicted.map((m, i) => (
+                  <span key={i} style={{ fontSize:"0.68rem", fontWeight:500, color:"#7c3aed" }}>
+                    {i + 1}. {m.materialName} - Forecast: {m.forecastedQuantity.toLocaleString()} {m.unit}
+                  </span>
+                ))}
+              </>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Progress */}
       <div style={{ marginBottom:"0.875rem" }}>
         <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
           <span style={{ fontSize:"0.7rem", color:"#9ca3af" }}>Progress</span>
@@ -1066,29 +1004,32 @@ function ProjectCard({ project, onMaterialPlan, onMeasurements, onReports, onAIF
           <div style={{ height:"100%", width:`${project.progress}%`, background:project.progressColor, borderRadius:99 }} />
         </div>
       </div>
+
+      {/* Stats */}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.5rem", marginBottom:"0.75rem" }}>
-        {[["Budget",project.budget],["Spent",project.spent],["Materials",`${project.materials} items`]].map(([l,v])=>(
+        {[["Excess Stock",`${excessStock.toLocaleString()} units`],["Redistributed",`${redistributed.toLocaleString()} units`],["Materials",`${materialsCount} items`]].map(([l,v])=>(
           <div key={l} style={{ background:"#f9fafb", borderRadius:8, padding:"0.5rem 0.75rem" }}>
             <p style={{ fontSize:"0.6rem", color:"#9ca3af" }}>{l}</p>
             <p style={{ fontWeight:700, fontSize:"0.85rem", color:"#111827" }}>{v}</p>
           </div>
         ))}
       </div>
-      {project.bom.length > 0 && (
-        <div style={{ background:"#fff7ed", borderRadius:8, padding:"0.5rem 0.75rem", marginBottom:"0.75rem", display:"flex", alignItems:"center", gap:6 }}>
-          <Package style={{ width:12, height:12, color:"#f97316" }} />
-          <span style={{ fontSize:"0.7rem", color:"#c2410c", fontWeight:500 }}>BOM: {project.bom.length} materials · ₱{project.bom.reduce((s,b)=>s+b.qty*b.unitCost,0).toLocaleString()}</span>
-        </div>
-      )}
+
+      {/* Team */}
       <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:"0.875rem" }}>
         <Users style={{ width:11, height:11, color:"#9ca3af" }} />
-        <span style={{ fontSize:"0.7rem", color:"#6b7280" }}>{project.manager}{project.engineers.length>0&&` · ${project.engineers.join(", ")}`}</span>
+        <span style={{ fontSize:"0.7rem", color:"#6b7280" }}>{project.manager}{project.engineers.length>0&&` · Engineers: ${project.engineers.join(", ")}`}</span>
       </div>
-      <div style={{ display:"flex", gap:"0.375rem" }}>
-        <button onClick={onMaterialPlan} style={btn}><FileText style={{ width:11,height:11 }} /> Material Plan</button>
-        <button onClick={onMeasurements} style={btn}><Ruler style={{ width:11,height:11 }} /> Measure</button>
-        <button onClick={onReports} style={btn}><BarChart3 style={{ width:11,height:11 }} /> Reports</button>
-        <button onClick={onAIForecast} style={{ ...btn, background:"#f97316" }}><Brain style={{ width:11,height:11 }} /> AI Forecast</button>
+
+      {/* Action buttons */}
+      <div style={{ display:"flex", gap:"0.5rem" }}>
+        <button onClick={onMaterialPlan} style={btn}><FileText style={{ width:13, height:13 }} /> Material Plan</button>
+        {showProgress && project.status !== "COMPLETED" && (
+          <button onClick={onProgress} style={{ ...btn, flex:"0 0 auto", padding:"10px 14px", background:"#1e3154" }}>
+            <Activity style={{ width:13, height:13 }} /> Progress
+          </button>
+        )}
+        <button onClick={onReports} style={{ ...btn, flex:"0 0 auto", padding:"10px 16px" }}><BarChart3 style={{ width:13, height:13 }} /> Reports</button>
       </div>
     </div>
   );
@@ -1096,140 +1037,264 @@ function ProjectCard({ project, onMaterialPlan, onMeasurements, onReports, onAIF
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type PageTab = "active" | "finished" | "forecasting";
 type ModalState =
-  | { type:"choice" }
-  | { type:"new" }
-  | { type:"addFinished" }
-  | { type:"materialPlan"; project: Project; extraRows?: BOMRow[] }
-  | { type:"measurements"; project: Project }
-  | { type:"reports"; project: Project }
-  | { type:"forecast"; project: Project }
-  | { type:"aiForecast"; project: Project }
-  | { type:"edit"; project: Project }
+  | { type:"newProject" }
+  | { type:"addCompletedProject" }
+  | { type:"workspace"; projectId:number; editable:boolean }
+  | { type:"reports"; project:Project }
+  | { type:"forecast"; project:Project }
+  | { type:"repository" }
+  | { type:"progress"; project:Project }
+  | { type:"deleteConfirm"; project:Project }
+  | { type:"editProject"; fullProject:RealProject }
   | null;
 
 export default function ProjectsPage() {
-  const [projects, setProjects] = useState<Project[]>(INIT_PROJECTS);
-  const [finRepo,  setFinRepo]  = useState<FinishedProject[]>(INIT_FINISHED);
+  const [projects,     setProjects]     = useState<Project[]>([]);
+  const [fullProjects, setFullProjects] = useState<RealProject[]>([]);
   const [loading,  setLoading]  = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [modal,    setModal]    = useState<ModalState>(null);
-  const [pageTab,  setPageTab]  = useState<PageTab>("active");
+  const [deleting, setDeleting] = useState(false);
+  // "Projects" = every real project tracked through the app (any status,
+  // reached via the Progress Tracker). "Historical Data" = pure backfilled
+  // records entered only to train the forecasting model — not real projects.
+  const [view, setView] = useState<"projects" | "historical">("projects");
+  const [projectSearch, setProjectSearch] = useState("");
+  // Bumped whenever a Material Plan session closes, so cards refetch their
+  // forecast/BOQ-derived summaries (see ProjectCard's refreshKey prop).
+  const [refreshKey, setRefreshKey] = useState(0);
+  const { user } = useAuthStore();
+  const role = user?.role ?? "SiteEngineer";
 
-  useEffect(() => {
-    api.get<ProjectResponseDto[]>("/projects")
-      .then(r => setProjects(r.data.map(toProject)))
-      .catch(() => toast.error("Failed to load projects."))
+  // Role-based permissions
+  const canCreate    = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
+  const canEdit      = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
+  const canDelete    = role === "Admin";
+  const showProgress = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
+  const viewOnly     = role === "ProcurementOfficer";
+
+  // A SiteEngineer can only edit the project they're assigned to (mirrors
+  // the backend's ProjectAccessService) — every other role's edit rights are
+  // all-or-nothing, so this only needs to branch for SiteEngineer.
+  function canEditProject(p: Project): boolean {
+    if (role === "Admin" || role === "ProjectManager") return true;
+    if (role === "SiteEngineer") return p.siteEngineerId === user?.id;
+    return false;
+  }
+
+  async function handleDeleteProject(id: number) {
+    setDeleting(true);
+    try {
+      await api.delete(`/projects/${id}`);
+      setProjects(prev => prev.filter(p => p.id !== id));
+      setFullProjects(prev => prev.filter(p => p.id !== id));
+      toast.success("Project deleted.");
+      setModal(null);
+    } catch {
+      toast.error("Failed to delete project.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  function refreshProjects() {
+    return api.get<ProjectResponseDto[]>("/projects")
+      .then(r => {
+        setProjects(r.data.map(toProject));
+        setFullProjects(r.data);
+        setLoadError(false);
+      })
+      .catch(() => {
+        // Leave whatever was last successfully loaded on screen (if
+        // anything) rather than silently swallowing the failure — a stale
+        // or empty list looks identical to "no projects yet" otherwise.
+        setLoadError(true);
+        toast.error("Failed to load projects — check that the server is reachable.");
+      })
       .finally(() => setLoading(false));
-  }, []);
-
-  const activeProjects = projects.filter(p => p.status !== "COMPLETED");
-
-  function handleCreate(p: Project) { setProjects(prev => [...prev, p]); }
-
-  function handleSaveBOM(project: Project, bom: BOMRow[]) {
-    setProjects(prev => prev.map(p => p.id===project.id ? { ...p, bom, forecastReady:bom.length>0, materials:bom.filter(b=>b.material.trim()).length } : p));
-    toast.success("BOM saved!");
   }
 
-  function handleRunForecast(project: Project, bom: BOMRow[]) {
-    setProjects(prev => prev.map(p => p.id===project.id ? { ...p, bom, forecastReady:true } : p));
-    setModal({ type:"forecast", project: { ...project, bom } });
-  }
-
-  function handleAddToPlan(project: Project, extraRows: BOMRow[]) {
-    setModal({ type:"materialPlan", project, extraRows });
-  }
-
-  function handleEditSave(project: Project, updates: Partial<Project>) {
-    setProjects(prev => prev.map(p => p.id===project.id ? { ...p, ...updates } : p));
-  }
+  useEffect(() => { refreshProjects(); }, []);
 
   const proj = modal && "project" in modal ? modal.project : undefined;
-
-  const TABS = [
-    { id:"active"      as PageTab, label:"Active Projects",     count: activeProjects.length },
-    { id:"finished"    as PageTab, label:"Finished Repository", count: finRepo.length },
-    { id:"forecasting" as PageTab, label:"Forecasting" },
-  ];
+  const workspaceProject = modal?.type === "workspace" ? fullProjects.find(p => p.id === modal.projectId) : undefined;
+  const realProjects       = projects.filter(p => !p.isHistorical);
+  // Historical Data only, newest project first — startDate is a plain
+  // "YYYY-MM-DD" string (see toProject below), so lexicographic order is
+  // already chronological order; Projects (live/planned work) is left in
+  // whatever order the API returns, unaffected.
+  const historicalProjects = projects.filter(p => p.isHistorical)
+    .slice().sort((a, b) => b.startDate.localeCompare(a.startDate));
+  const searchQuery        = projectSearch.trim().toLowerCase();
+  // Tab badges/summary text above still reflect the full, unfiltered counts —
+  // only the grid itself narrows down to what matches the search.
+  const visibleProjects    = (view === "historical" ? historicalProjects : realProjects)
+    .filter(p => !searchQuery || p.name.toLowerCase().includes(searchQuery));
 
   return (
-    <div style={{ background:"#f5f4f0" }}>
-      {modal?.type==="choice"       && <ChoiceModal onNew={()=>setModal({type:"new"})} onFinished={()=>setModal({type:"addFinished"})} onClose={()=>setModal(null)} />}
-      {modal?.type==="new"          && <NewProjectModal onClose={()=>setModal(null)} onCreate={handleCreate} />}
-      {modal?.type==="addFinished"  && <AddFinishedModal onClose={()=>setModal(null)} onAdd={fp=>setFinRepo(r=>[...r,fp])} />}
-      {modal?.type==="edit"         && proj && <EditProjectModal project={proj} onClose={()=>setModal(null)} onSave={updates=>handleEditSave(proj,updates)} />}
-      {modal?.type==="materialPlan" && proj && (
-        <MaterialPlanModal
-          project={proj}
-          extraRows={modal.type==="materialPlan" ? modal.extraRows : undefined}
+    <div style={{ background:"#f5f4f0", minHeight:"100vh" }}>
+      {modal?.type==="newProject" && (
+        <NewProjectWizardModal
           onClose={()=>setModal(null)}
-          onSaveBOM={bom=>handleSaveBOM(proj,bom)}
-          onRunForecast={bom=>handleRunForecast(proj,bom)}
+          onDone={()=>{ setModal(null); refreshProjects(); }}
         />
       )}
-      {modal?.type==="measurements" && proj && <MeasurementsModal project={proj} onClose={()=>setModal(null)} onAddToPlan={rows=>handleAddToPlan(proj,rows)} />}
-      {modal?.type==="reports"      && proj && <ReportsModal      project={proj} onClose={()=>setModal(null)} />}
-      {modal?.type==="forecast"     && proj && <ForecastModal     project={proj} onClose={()=>setModal(null)} />}
-      {modal?.type==="aiForecast"   && proj && <AIForecastModal   project={proj} repo={finRepo} onClose={()=>setModal(null)} />}
+      {modal?.type==="addCompletedProject" && (
+        <AddCompletedProjectWizardModal
+          onClose={()=>setModal(null)}
+          onDone={()=>{ setModal(null); refreshProjects(); }}
+        />
+      )}
+      {modal?.type==="workspace" && workspaceProject && (
+        <MeasurementsAndMaterialPlan
+          project={workspaceProject}
+          initialEditable={modal.editable}
+          onClose={()=>{ setModal(null); setRefreshKey(k=>k+1); }}
+          onProjectSaved={(updated)=>setFullProjects(prev=>prev.map(p=>p.id===updated.id?updated:p))}
+        />
+      )}
+      {modal?.type==="reports"      && proj && <ReportsModal project={proj} onClose={()=>setModal(null)} />}
+      {modal?.type==="forecast"     && proj && <ForecastModal project={proj} onClose={()=>setModal(null)} />}
+      {modal?.type==="repository"   && <FileRepositoryModal onClose={()=>setModal(null)} projects={fullProjects} />}
+      {modal?.type==="deleteConfirm" && (
+        <DeleteProjectModal
+          project={modal.project}
+          deleting={deleting}
+          onClose={()=>setModal(null)}
+          onConfirm={()=>handleDeleteProject(modal.project.id)}
+        />
+      )}
+      {modal?.type==="progress"     && proj && (
+        <ProgressTrackerModal
+          project={proj}
+          onClose={()=>setModal(null)}
+          onSaved={(updated) => {
+            setFullProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
+            setProjects(prev => prev.map(p => p.id === updated.id ? toProject(updated) : p));
+            setModal(null);
+          }}
+        />
+      )}
+      {modal?.type==="editProject" && (
+        <EditProjectModal
+          project={modal.fullProject}
+          onClose={()=>setModal(null)}
+          onSaved={(updated) => {
+            setFullProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
+            setProjects(prev => prev.map(p => p.id === updated.id ? toProject(updated) : p));
+          }}
+        />
+      )}
 
       <Header title="Projects" />
 
       <div style={{ padding:"1.25rem 1.5rem" }}>
+        {/* Page header */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.25rem" }}>
           <div>
-            <p style={{ fontWeight:800, fontSize:"1.4rem", color:"#111827" }}>Projects</p>
+            <p style={{ fontWeight:800, fontSize:"1.35rem", color:"#111827" }}>All Projects</p>
             <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>
-              {loading?"Loading…":`${projects.length} total · ${activeProjects.filter(p=>p.status==="ACTIVE").length} active · ${finRepo.length} in repository`}
+              {loading ? "Loading…" : view === "historical"
+                ? `${historicalProjects.length} historical record(s) — training data for the forecasting model`
+                : `${realProjects.length} projects · ${realProjects.filter(p=>p.status==="ACTIVE").length} active`}
             </p>
           </div>
-          <button onClick={()=>setModal({type:"choice"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>
-            <Plus style={{ width:15, height:15 }} /> New Project
-          </button>
+          <div style={{ display:"flex", gap:"0.625rem" }}>
+            {canCreate && (
+              <button suppressHydrationWarning onClick={()=>setModal({type:"repository"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>
+                <Upload style={{ width:14, height:14 }} /> Import Files
+              </button>
+            )}
+            {canCreate && (
+              <button suppressHydrationWarning onClick={()=>setModal({type:"addCompletedProject"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }} title="Backfill a finished project as historical data for the forecasting model">
+                <History style={{ width:14, height:14 }} /> Add Completed Project
+              </button>
+            )}
+            {canCreate && (
+              <button suppressHydrationWarning onClick={()=>setModal({type:"newProject"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>
+                <Plus style={{ width:15, height:15 }} /> New Project
+              </button>
+            )}
+          </div>
         </div>
 
-        <div style={{ display:"flex", gap:4, background:"#e5e7eb", borderRadius:8, padding:4, width:"fit-content", marginBottom:"1.25rem" }}>
-          {TABS.map(t=>(
-            <button key={t.id} onClick={()=>setPageTab(t.id)} style={{ padding:"6px 18px", borderRadius:6, fontSize:"0.875rem", fontWeight:pageTab===t.id?600:400, border:"none", cursor:"pointer", background:pageTab===t.id?"#fff":"transparent", color:pageTab===t.id?"#111827":"#6b7280", boxShadow:pageTab===t.id?"0 1px 3px rgba(0,0,0,0.1)":"none", transition:"all 0.15s" }}>
-              {t.label}{"count" in t && t.count !== undefined && <span style={{ marginLeft:5, fontSize:"0.62rem", background:pageTab===t.id?"#f97316":"#9ca3af", color:"#fff", borderRadius:999, padding:"1px 6px" }}>{t.count}</span>}
+        {/* Projects vs. Historical Data tabs — search applies to whichever is active */}
+        <div style={{ display:"flex", flexWrap:"wrap", justifyContent:"space-between", alignItems:"center", gap:"0.75rem", borderBottom:"1px solid #e5e7eb", marginBottom:"1.25rem" }}>
+          <div style={{ display:"flex" }}>
+            <button
+              suppressHydrationWarning
+              onClick={()=>setView("projects")}
+              style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem", background:"transparent",
+                fontWeight: view==="projects" ? 700 : 400, color: view==="projects" ? "#f97316" : "#9ca3af",
+                borderBottom: view==="projects" ? "2px solid #f97316" : "2px solid transparent" }}
+            >
+              Projects ({realProjects.length})
             </button>
-          ))}
+            <button
+              suppressHydrationWarning
+              onClick={()=>setView("historical")}
+              style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:"0.875rem", background:"transparent",
+                fontWeight: view==="historical" ? 700 : 400, color: view==="historical" ? "#f97316" : "#9ca3af",
+                borderBottom: view==="historical" ? "2px solid #f97316" : "2px solid transparent" }}
+            >
+              Historical Data ({historicalProjects.length})
+            </button>
+          </div>
+          <div style={{ position:"relative", width:260, maxWidth:"100%", marginBottom:8 }}>
+            <Search style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", width:14, height:14, color:"#9ca3af", pointerEvents:"none" }} />
+            <input
+              suppressHydrationWarning
+              value={projectSearch}
+              onChange={e=>setProjectSearch(e.target.value)}
+              placeholder="Search project name..."
+              style={{ width:"100%", boxSizing:"border-box", paddingLeft:32, paddingRight:10, paddingTop:8, paddingBottom:8, borderRadius:8, background:"#fff", border:"1px solid #e5e7eb", fontSize:"0.82rem", outline:"none", color:"#111827" }}
+            />
+          </div>
         </div>
 
-        {pageTab==="active" && (
-          loading ? (
-            <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>Loading projects…</div>
-          ) : activeProjects.length===0 ? (
-            <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>No active projects. Click &ldquo;New Project&rdquo; to get started.</div>
-          ) : (
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
-              {activeProjects.map(p=>(
-                <ProjectCard key={p.id} project={p}
-                  onMaterialPlan={()=>setModal({type:"materialPlan",project:p})}
-                  onMeasurements={()=>setModal({type:"measurements",project:p})}
-                  onReports={    ()=>setModal({type:"reports",      project:p})}
-                  onAIForecast={ ()=>setModal({type:"aiForecast",   project:p})}
-                  onEdit={       ()=>setModal({type:"edit",         project:p})}
-                />
-              ))}
-            </div>
-          )
-        )}
-
-        {pageTab==="finished" && (
-          <div style={{ display:"flex", flexDirection:"column", gap:"0.875rem" }}>
-            <div style={{ background:"#eef2ff", border:"1px solid #c7d2fe", borderRadius:10, padding:"0.75rem 1.25rem", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                <Archive style={{ width:15, height:15, color:"#6366f1" }} />
-                <p style={{ fontSize:"0.82rem", color:"#3730a3", fontWeight:600 }}>{finRepo.length} completed projects — AI forecasting reference</p>
-              </div>
-              <button onClick={()=>setModal({type:"addFinished"})} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid #6366f1", background:"#fff", color:"#6366f1", fontSize:"0.78rem", fontWeight:600, cursor:"pointer" }}>+ Add Project</button>
-            </div>
-            {finRepo.map(fp=><FinishedProjectCard key={fp.id} fp={fp} />)}
+        {/* Project grid */}
+        {loading ? (
+          <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>Loading projects…</div>
+        ) : loadError && visibleProjects.length === 0 ? (
+          <div style={{ padding:"3rem", textAlign:"center", color:"#ef4444" }}>
+            Couldn&apos;t reach the server — projects failed to load. Check your connection and try refreshing.
+          </div>
+        ) : visibleProjects.length === 0 ? (
+          <div style={{ padding:"3rem", textAlign:"center", color:"#9ca3af" }}>
+            {searchQuery
+              ? `No ${view === "historical" ? "historical records" : "projects"} match "${projectSearch.trim()}".`
+              : view === "historical" ? "No historical records yet. Click \"Add Completed Project\" to backfill one." : "No projects yet. Click \"+ New Project\" to get started."}
+          </div>
+        ) : (
+          // minmax(0, 1fr), not bare 1fr — a plain 1fr column has an implicit
+          // min size of "auto" (its content's min-content width), so a long
+          // project name/location could still force this grid wider than the
+          // viewport even with the flex-container fix in the dashboard layout.
+          <div style={{ display:"grid", gridTemplateColumns:"minmax(0, 1fr) minmax(0, 1fr)", gap:"1rem" }}>
+            {visibleProjects.map(p => (
+              <ProjectCard
+                key={p.id}
+                project={p}
+                refreshKey={refreshKey}
+                onView={()=>setModal({type:"workspace",projectId:p.id,editable:false})}
+                onMaterialPlan={()=>setModal({type:"workspace",projectId:p.id,editable:canEditProject(p)})}
+                onReports={()=>setModal({type:"reports",project:p})}
+                onProgress={()=>setModal({type:"progress",project:p})}
+                onDelete={()=>setModal({type:"deleteConfirm",project:p})}
+                onEditDetails={()=>{
+                  const full = fullProjects.find(fp => fp.id === p.id);
+                  if (full) setModal({type:"editProject", fullProject: full});
+                }}
+                canEdit={canEdit}
+                canDelete={canDelete}
+                canEditDetails={canEditProject(p)}
+                showProgress={showProgress}
+                viewOnly={viewOnly}
+              />
+            ))}
           </div>
         )}
-
-        {pageTab==="forecasting" && <ForecastingTab repo={finRepo} />}
       </div>
     </div>
   );

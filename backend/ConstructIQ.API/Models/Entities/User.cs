@@ -37,10 +37,42 @@ public class User
 
     public bool IsActive { get; set; } = true;
 
+    [MaxLength(255)]
+    public string? AvatarUrl { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastLogin  { get; set; }
 
+    [MaxLength(128)]
+    public string? PasswordResetToken { get; set; }
+    public DateTime? PasswordResetTokenExpiresAt { get; set; }
+
+    public bool MfaEnabled { get; set; } = false;
+
+    [MaxLength(64)] public string? PasswordChangeOtpHash { get; set; }
+    public DateTime? PasswordChangeExpiresAt { get; set; }
+    public DateTime? PasswordChangeRequestedAt { get; set; }
+    public int PasswordChangeAttempts { get; set; }
+    [MaxLength(64)] public string? PasswordChangeTokenId { get; set; }
+    // Rotated after credential changes and restores to revoke existing sessions.
+    [MaxLength(64)] public string? SecurityStamp { get; set; }
+
+    [MaxLength(10)]
+    public string? MfaCode { get; set; }
+    public DateTime? MfaCodeExpiresAt { get; set; }
+
+    [MaxLength(64)]
+    public string? MfaChallengeToken { get; set; }
+
+    // Set while an email-code challenge is outstanding for a device that
+    // isn't trusted yet; cleared (and the device recorded as trusted) once
+    // the code is verified. Null challenges — e.g. an already-trusted device
+    // re-verifying because MfaEnabled is on — never touch this.
+    [MaxLength(128)]
+    public string? PendingDeviceId { get; set; }
+
     public ICollection<Project> ManagedProjects { get; set; } = [];
     public ICollection<ActivityLog> ActivityLogs { get; set; } = [];
+    public ICollection<TrustedDevice> TrustedDevices { get; set; } = [];
 }

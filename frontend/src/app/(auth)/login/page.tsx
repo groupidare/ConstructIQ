@@ -1,150 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useAuthStore } from "@/store/authStore";
 import api from "@/lib/api";
-import type { LoginResponse } from "@/types/auth";
+import { getDeviceId } from "@/lib/auth";
+import type { LoginResponse, LoginSuccessResponse } from "@/types/auth";
 import toast from "react-hot-toast";
 import {
   Loader2, User, Lock, TrendingUp, Package as BoxIcon,
-  ShieldCheck, BarChart2, MapPin, Shield, Package, ShoppingCart, Info, X, AlertCircle,
+  ShieldCheck, BarChart2, MapPin, Shield, Package, ShoppingCart, Info,
+  Eye, EyeOff, KeyRound, ArrowLeft,
 } from "lucide-react";
-
-// ── Data Privacy & Security Notice Modal ─────────────────────────────────────
-
-type PrivacyTab = "policy" | "security" | "rights";
-
-const PRIVACY_TABS: { id: PrivacyTab; label: string; emoji: string }[] = [
-  { id: "policy",   label: "Data Privacy Policy",  emoji: "📋" },
-  { id: "security", label: "Security Measures",     emoji: "🛡️" },
-  { id: "rights",   label: "Your Rights",           emoji: "⚖️" },
-];
-
-const PRIVACY_CONTENT: Record<PrivacyTab, React.ReactNode> = {
-  policy: (
-    <div>
-      <h3 style={{ fontWeight:700, fontSize:"0.95rem", color:"#f1f5f9", marginBottom:"0.75rem" }}>
-        Data Privacy Act of 2012 (RA 10173) — Compliance Notice
-      </h3>
-      <p style={{ fontSize:"0.82rem", color:"#94a3b8", lineHeight:1.75, marginBottom:"1.25rem" }}>
-        You have the right to dispute inaccuracies in your personal data and have the information corrected or completed accordingly. The System Administrator shall consider the disputed personal data as non-existent until such time as appropriate modifications or corrections have been made.
-      </p>
-      <h4 style={{ color:"#f97316", fontWeight:700, fontSize:"0.88rem", marginBottom:"0.5rem" }}>Right to Privacy / Blocking</h4>
-      <p style={{ fontSize:"0.82rem", color:"#94a3b8", lineHeight:1.75, marginBottom:"1.25rem" }}>
-        You may request restriction or blocking of your personal data when it is no longer necessary for collection purposes or where content is withheld in an action. Certain data may be retained where required by law or as necessary for statistical research.
-      </p>
-      <h4 style={{ color:"#f97316", fontWeight:700, fontSize:"0.88rem", marginBottom:"0.5rem" }}>Right to Data Portability</h4>
-      <p style={{ fontSize:"0.82rem", color:"#94a3b8", lineHeight:1.75, marginBottom:"1.25rem" }}>
-        You have the right to obtain a copy of your personal data in a structured, commonly-used, machine-readable format if appropriate. You have the right to request direct transmission to another data provider, if feasible.
-      </p>
-      <h4 style={{ color:"#f97316", fontWeight:700, fontSize:"0.88rem", marginBottom:"0.5rem" }}>Right to Lodge a Complaint</h4>
-      <p style={{ fontSize:"0.82rem", color:"#94a3b8", lineHeight:1.75 }}>
-        If your rights have been violated you may lodge a complaint with the System Administrator or file a complaint with the courts or with the National Privacy Commission, whichever is applicable, under the prescribed procedures of the law. This right exists regardless of any other administrative or judicial remedy available.
-      </p>
-    </div>
-  ),
-  security: (
-    <div>
-      <h3 style={{ fontWeight:700, fontSize:"0.95rem", color:"#f1f5f9", marginBottom:"0.75rem" }}>
-        Your Rights Under RA 10173 (Data Privacy Act of 2012)
-      </h3>
-      <p style={{ fontSize:"0.82rem", color:"#94a3b8", lineHeight:1.75, marginBottom:"1.25rem" }}>
-        You have the right to be informed whether your personal data is being processed or not. This includes confirmation whether personal data pertaining to you shall be, are being, or have been processed (including the existence of automated decision-making and profiling), as well as the purposes of processing. You have the right to access, review, and obtain copies of personal data that is being processed; and/or to inquire about the identity of persons who have been provided copies of your personal data.
-      </p>
-      <h4 style={{ color:"#f97316", fontWeight:700, fontSize:"0.88rem", marginBottom:"0.5rem" }}>Right to Correction / Rectification</h4>
-      <p style={{ fontSize:"0.82rem", color:"#94a3b8", lineHeight:1.75, marginBottom:"1.25rem" }}>
-        You have the right to correct and update all your personal data and request corrections. The System Administrator will perform the requested changes within a timeframe specified in the data processing or storage agreement.
-      </p>
-      <h4 style={{ color:"#f97316", fontWeight:700, fontSize:"0.88rem", marginBottom:"0.5rem" }}>Right to Erasure / Blocking</h4>
-      <p style={{ fontSize:"0.82rem", color:"#94a3b8", lineHeight:1.75, marginBottom:"1.25rem" }}>
-        You may request deletion or blocking of your personal data when it is no longer necessary for collection purposes or where consent is withdrawn in an action. Data may still be retained where required by law. The right does not override legal, regulatory, or contractual restrictions.
-      </p>
-      <h4 style={{ color:"#f97316", fontWeight:700, fontSize:"0.88rem", marginBottom:"0.5rem" }}>Right to Data Portability</h4>
-      <p style={{ fontSize:"0.82rem", color:"#94a3b8", lineHeight:1.75 }}>
-        If you are a subject of a Data Privacy Notice → Security Policy, you ultimately consent to the collection and processing of all of your personal data in accordance with the NDPA and all relevant statutes, regulations, and guidelines. This consent is given freely and may be withdrawn at any time through a written request to the System Administrator.
-      </p>
-    </div>
-  ),
-  rights: (
-    <div>
-      <h3 style={{ fontWeight:700, fontSize:"0.95rem", color:"#f1f5f9", marginBottom:"0.75rem" }}>
-        Security Measures
-      </h3>
-      <p style={{ fontSize:"0.82rem", color:"#94a3b8", lineHeight:1.75, marginBottom:"1.25rem" }}>
-        Below are just some of our Data Privacy Notice → Security Policy measures in compliance with the law: We have implemented strong technical and organizational measures to protect your personal data.
-      </p>
-      <h4 style={{ color:"#f97316", fontWeight:700, fontSize:"0.88rem", marginBottom:"0.5rem" }}>Data Encryption</h4>
-      <p style={{ fontSize:"0.82rem", color:"#94a3b8", lineHeight:1.75, marginBottom:"1.25rem" }}>
-        To secure sensitive personal data — including, login credentials, PCAMs (Inventory management), financial data — encryption measures are employed for data "at rest" and during IT-PS transmission via encryption standards (such as TLS for data in transit and AES-256 for storage). Such data has been encrypted and stored in restricted, access-controlled cloud environments.
-      </p>
-      <h4 style={{ color:"#f97316", fontWeight:700, fontSize:"0.88rem", marginBottom:"0.5rem" }}>Access Controls</h4>
-      <p style={{ fontSize:"0.82rem", color:"#94a3b8", lineHeight:1.75, marginBottom:"1.25rem" }}>
-        Access to relevant resource and data is strictly limited by assigned authentication through role-based access controls (RBAC), ensuring that only authorized System Administrator such have permission to view or alter sensitive data. Authentication uses two-factor authentication to further secure administrative-level accounts and endpoints.
-      </p>
-      <h4 style={{ color:"#f97316", fontWeight:700, fontSize:"0.88rem", marginBottom:"0.5rem" }}>Audit Logging &amp; Monitoring</h4>
-      <p style={{ fontSize:"0.82rem", color:"#94a3b8", lineHeight:1.75 }}>
-        We conduct log monitoring to proactively capture unusual patterns, log-ins, configuration adjustments, user activity modifications — are recorded in tamper-evident audit logs. These logs undergo routine review to ensure timely identification of any abnormal behavior or potential security breaches, maintaining system integrity and regulatory compliance.
-      </p>
-    </div>
-  ),
-};
-
-function PrivacyModal({ initialTab, onClose }: { initialTab: PrivacyTab; onClose: () => void }) {
-  const [tab, setTab] = useState<PrivacyTab>(initialTab);
-  return (
-    <div
-      onClick={onClose}
-      style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:3000, display:"flex", alignItems:"center", justifyContent:"center", padding:"1rem" }}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{ background:"#1e2a3a", borderRadius:14, width:"100%", maxWidth:600, boxShadow:"0 24px 60px rgba(0,0,0,0.5)", overflow:"hidden", maxHeight:"90vh", display:"flex", flexDirection:"column" }}
-      >
-        {/* Header */}
-        <div style={{ padding:"1.1rem 1.25rem", display:"flex", alignItems:"center", gap:10, borderBottom:"1px solid rgba(255,255,255,0.08)" }}>
-          <div style={{ width:32, height:32, borderRadius:"50%", background:"rgba(249,115,22,0.2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-            <AlertCircle style={{ width:17, height:17, color:"#f97316" }} />
-          </div>
-          <span style={{ fontWeight:700, fontSize:"0.95rem", color:"#f1f5f9", flex:1 }}>Data Privacy &amp; Security Notice</span>
-          <button onClick={onClose} style={{ padding:"4px 12px", borderRadius:6, border:"1px solid rgba(255,255,255,0.15)", background:"transparent", color:"#94a3b8", fontSize:"0.78rem", cursor:"pointer" }}>Close</button>
-        </div>
-
-        {/* Tabs */}
-        <div style={{ display:"flex", borderBottom:"1px solid rgba(255,255,255,0.08)" }}>
-          {PRIVACY_TABS.map(t => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              style={{
-                flex:1, padding:"0.75rem 0.5rem", border:"none", background:"transparent",
-                color: tab === t.id ? "#f1f5f9" : "#64748b",
-                fontWeight: tab === t.id ? 700 : 500,
-                fontSize:"0.78rem", cursor:"pointer",
-                borderBottom: tab === t.id ? "2px solid #f97316" : "2px solid transparent",
-                transition:"all 0.15s",
-              }}
-            >
-              {t.emoji} {t.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Content */}
-        <div style={{ padding:"1.25rem", overflowY:"auto", flex:1 }}>
-          {PRIVACY_CONTENT[tab]}
-        </div>
-      </div>
-    </div>
-  );
-}
+import { PrivacyModal, type PrivacyTab } from "@/components/modals/PrivacyModal";
+import GoogleSignInButton from "@/components/auth/GoogleSignInButton";
 
 const ROLES = [
   { label: "Project Manager", value: "ProjectManager", icon: BarChart2 },
-  { label: "Site",            value: "SiteEngineer",   icon: MapPin    },
+  { label: "Engineer",            value: "SiteEngineer",   icon: MapPin    },
   { label: "Admin",           value: "Admin",           icon: Shield    },
   { label: "Warehouse",       value: "WarehousePersonnel", icon: Package },
   { label: "Procurement",     value: "ProcurementOfficer", icon: ShoppingCart },
@@ -163,8 +40,14 @@ export default function LoginPage() {
   const setAuth = useAuthStore((s) => s.setAuth);
   const [loading, setLoading]           = useState(false);
   const [selectedRole, setSelectedRole] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [privacyOpen, setPrivacyOpen]   = useState(false);
   const [privacyTab,  setPrivacyTab]    = useState<PrivacyTab>("policy");
+
+  const [mfaStep, setMfaStep] = useState<{ challengeToken: string; role: string } | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
+  const [resending, setResending] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
 
   const { register, handleSubmit, setValue, formState: { errors } } = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -174,6 +57,7 @@ export default function LoginPage() {
   const handleRoleSelect = (value: string) => {
     setSelectedRole(value);
     setValue("role", value, { shouldValidate: true });
+    setGoogleError(null);
   };
 
   const onSubmit = async (data: FormValues) => {
@@ -182,7 +66,15 @@ export default function LoginPage() {
       const res = await api.post<LoginResponse>("/auth/login", {
         username: data.username.trim(),
         password: data.password.trim(),
+        role: data.role,
+        deviceId: getDeviceId(),
       });
+
+      if (res.data.mfaRequired) {
+        setMfaStep({ challengeToken: res.data.challengeToken, role: data.role });
+        toast.success("Verification code sent to your email.");
+        return;
+      }
 
       if (res.data.user.role !== data.role) {
         toast.error(`Wrong role. Your account role is "${res.data.user.role}".`);
@@ -190,22 +82,103 @@ export default function LoginPage() {
       }
 
       setAuth(res.data.user, res.data.token);
-      toast.success(`Welcome back, ${res.data.user.firstName}!`);
-      router.push("/dashboard");
+      const displayName = res.data.user.role === "Admin" ? "Admin" : res.data.user.firstName;
+      toast.success(`Welcome back, ${displayName}!`);
+      router.push("/projects");
     } catch (error: unknown) {
-      if (typeof error === "object" && error !== null && "response" in error) {
-        const axiosError = error as { response?: { data?: { message?: string }; status?: number } };
-        const message = axiosError.response?.data?.message;
-        if (message) {
-          toast.error(message);
-        } else if (axiosError.response?.status === 401) {
-          toast.error("Invalid username or password.");
-        } else {
-          toast.error("Unable to login. Please check your connection and try again.");
-        }
-      } else {
-        toast.error("Unable to login. Please try again.");
+      reportLoginError(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyMfa = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!mfaStep) return;
+    setLoading(true);
+    try {
+      const res = await api.post<LoginSuccessResponse>("/auth/mfa/verify", {
+        challengeToken: mfaStep.challengeToken,
+        code: mfaCode.trim(),
+      });
+
+      if (res.data.user.role !== mfaStep.role) {
+        toast.error(`Wrong role. Your account role is "${res.data.user.role}".`);
+        setMfaStep(null);
+        setMfaCode("");
+        return;
       }
+
+      setAuth(res.data.user, res.data.token);
+      const displayName = res.data.user.role === "Admin" ? "Admin" : res.data.user.firstName;
+      toast.success(`Welcome back, ${displayName}!`);
+      router.push("/projects");
+    } catch (error: unknown) {
+      reportLoginError(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendMfa = async () => {
+    if (!mfaStep) return;
+    setResending(true);
+    try {
+      await api.post("/auth/mfa/resend", { challengeToken: mfaStep.challengeToken });
+      toast.success("Code resent.");
+    } catch (error: unknown) {
+      reportLoginError(error);
+    } finally {
+      setResending(false);
+    }
+  };
+
+  function loginErrorMessage(error: unknown): string {
+    if (typeof error === "object" && error !== null && "response" in error) {
+      const axiosError = error as { response?: { data?: { message?: string }; status?: number } };
+      const message = axiosError.response?.data?.message;
+      if (message) return message;
+      if (axiosError.response?.status === 401) return "Invalid username or password.";
+      return "Unable to login. Please check your connection and try again.";
+    }
+    return "Unable to login. Please try again.";
+  }
+
+  function reportLoginError(error: unknown) {
+    toast.error(loginErrorMessage(error));
+  }
+
+  const handleGoogleCredential = async (idToken: string) => {
+    setGoogleError(null);
+    if (!selectedRole) {
+      toast.error("Select your role before continuing with Google.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await api.post<LoginResponse>("/auth/google", { idToken, role: selectedRole, deviceId: getDeviceId() });
+
+      if (res.data.mfaRequired) {
+        setMfaStep({ challengeToken: res.data.challengeToken, role: selectedRole });
+        toast.success("Verification code sent to your email.");
+        return;
+      }
+
+      if (res.data.user.role !== selectedRole) {
+        setGoogleError(`Wrong role. Your account role is "${res.data.user.role}".`);
+        return;
+      }
+
+      setAuth(res.data.user, res.data.token);
+      const displayName = res.data.user.role === "Admin" ? "Admin" : res.data.user.firstName;
+      toast.success(`Welcome back, ${displayName}!`);
+      router.push("/projects");
+    } catch (error: unknown) {
+      // The Google Identity widget can repaint its iframe right after the
+      // callback fires, which was cutting an ordinary toast off after a
+      // single frame — this error needs to stay on screen until the user
+      // notices it, so it's shown as a persistent inline banner instead.
+      setGoogleError(loginErrorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -247,7 +220,7 @@ export default function LoginPage() {
           flexDirection: "column",
           justifyContent: "space-between",
           padding: "2.5rem",
-          backgroundImage: "url(/background.svg)",
+          backgroundImage: "url(/background.png)",
           backgroundSize: "cover",
           backgroundPosition: "center",
         }}
@@ -270,13 +243,11 @@ export default function LoginPage() {
                 display: "flex", alignItems: "center", justifyContent: "center",
                 flexShrink: 0, boxShadow: "0 4px 12px rgba(249,115,22,0.4)",
               }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/landlogo.svg" alt="ConstructIQ" style={{ width: 28, height: 28 }} />
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block" }}>
+                  <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                </svg>
               </div>
-              <div>
-                <p style={{ color: "#fff", fontWeight: 700, fontSize: "1.2rem", lineHeight: 1.2 }}>ConstructIQ</p>
-                <p style={{ color: "#93c5fd", fontSize: "0.75rem" }}>company name</p>
-              </div>
+              <p style={{ color: "#fff", fontWeight: 700, fontSize: "1.2rem", lineHeight: 1.2 }}>ConstructIQ</p>
             </div>
 
             {/* Headline */}
@@ -327,7 +298,85 @@ export default function LoginPage() {
           overflowY: "auto",
         }}>
           <div style={{ maxWidth: 360, margin: "0 auto", width: "100%" }}>
+          {mfaStep ? (
+            <Fragment key="mfa-verify">
+              {/* Header */}
+              <div style={{ marginBottom: "1.5rem" }}>
+                <h2 style={{ color: "#fb923c", fontWeight: 700, fontSize: "1.6rem", marginBottom: "0.25rem" }}>
+                  Verify it&apos;s you
+                </h2>
+                <p style={{ color: "#6b7280", fontSize: "0.875rem" }}>
+                  Enter the 6-digit code we emailed to your registered address.
+                </p>
+              </div>
 
+              <form onSubmit={handleVerifyMfa} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                <div>
+                  <label suppressHydrationWarning style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>
+                    Verification code
+                  </label>
+                  <div style={{ position: "relative" }}>
+                    <KeyRound style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", width: 16, height: 16, color: "#4b5563", pointerEvents: "none" }} />
+                    <input
+                      value={mfaCode}
+                      onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      suppressHydrationWarning
+                      autoFocus
+                      inputMode="numeric"
+                      placeholder="000000"
+                      style={{
+                        width: "100%", boxSizing: "border-box",
+                        paddingLeft: 40, paddingRight: 16, paddingTop: 10, paddingBottom: 10,
+                        borderRadius: 8, background: "#060e1e",
+                        border: "1px solid #1e3a5f", color: "#fff",
+                        fontSize: "1.1rem", letterSpacing: "0.3em", outline: "none",
+                      }}
+                      onFocus={e => (e.currentTarget.style.borderColor = "#3b82f6")}
+                      onBlur={e  => (e.currentTarget.style.borderColor = "#1e3a5f")}
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading || mfaCode.length !== 6}
+                  suppressHydrationWarning
+                  style={{
+                    width: "100%", padding: "12px",
+                    borderRadius: 8, border: "none",
+                    background: "#1a3a6b", color: "#fff",
+                    fontWeight: 700, fontSize: "0.95rem",
+                    cursor: (loading || mfaCode.length !== 6) ? "not-allowed" : "pointer",
+                    opacity: (loading || mfaCode.length !== 6) ? 0.6 : 1,
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                  }}
+                >
+                  {loading ? <Loader2 style={{ width: 18, height: 18, animation: "spin 1s linear infinite" }} /> : "Verify and sign in"}
+                </button>
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.75rem" }}>
+                  <button
+                    type="button"
+                    onClick={() => { setMfaStep(null); setMfaCode(""); }}
+                    suppressHydrationWarning
+                    style={{ display: "flex", alignItems: "center", gap: 4, color: "#9ca3af", background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", padding: 0 }}
+                  >
+                    <ArrowLeft style={{ width: 12, height: 12 }} /> Back to login
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleResendMfa}
+                    disabled={resending}
+                    suppressHydrationWarning
+                    style={{ color: "#fb923c", background: "none", border: "none", cursor: resending ? "not-allowed" : "pointer", fontSize: "0.75rem", padding: 0, opacity: resending ? 0.6 : 1 }}
+                  >
+                    {resending ? "Resending…" : "Resend code"}
+                  </button>
+                </div>
+              </form>
+            </Fragment>
+          ) : (
+            <Fragment key="login-form">
             {/* Header */}
             <div style={{ marginBottom: "1.5rem" }}>
               <h2 style={{ color: "#fb923c", fontWeight: 700, fontSize: "1.6rem", marginBottom: "0.25rem" }}>
@@ -340,7 +389,7 @@ export default function LoginPage() {
 
               {/* Email */}
               <div>
-                <label style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>
+                <label suppressHydrationWarning style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>
                   Email address
                 </label>
                 <div style={{ position: "relative" }}>
@@ -366,7 +415,7 @@ export default function LoginPage() {
 
               {/* Password */}
               <div>
-                <label style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>
+                <label suppressHydrationWarning style={{ display: "block", color: "#d1d5db", fontWeight: 600, fontSize: "0.875rem", marginBottom: "0.375rem" }}>
                   Password
                 </label>
                 <div style={{ position: "relative" }}>
@@ -374,12 +423,12 @@ export default function LoginPage() {
                   <input
                     {...register("password")}
                     suppressHydrationWarning
-                    type="password"
+                    type={showPassword ? "text" : "password"}
                     placeholder="••••••••••••••"
                     autoComplete="current-password"
                     style={{
                       width: "100%", boxSizing: "border-box",
-                      paddingLeft: 40, paddingRight: 16, paddingTop: 10, paddingBottom: 10,
+                      paddingLeft: 40, paddingRight: 40, paddingTop: 10, paddingBottom: 10,
                       borderRadius: 8, background: "#060e1e",
                       border: "1px solid #1e3a5f", color: "#fff",
                       fontSize: "0.875rem", outline: "none",
@@ -387,16 +436,19 @@ export default function LoginPage() {
                     onFocus={e => (e.currentTarget.style.borderColor = "#3b82f6")}
                     onBlur={e  => (e.currentTarget.style.borderColor = "#1e3a5f")}
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(s => !s)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    suppressHydrationWarning
+                    style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center" }}
+                  >
+                    {showPassword
+                      ? <EyeOff style={{ width: 16, height: 16, color: "#4b5563" }} />
+                      : <Eye style={{ width: 16, height: 16, color: "#4b5563" }} />}
+                  </button>
                 </div>
                 {errors.password && <p style={{ color: "#f87171", fontSize: "0.75rem", marginTop: 4 }}>{errors.password.message}</p>}
-              </div>
-
-              {/* Remember me */}
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input suppressHydrationWarning type="checkbox" id="remember" style={{ width: 14, height: 14, accentColor: "#f97316", cursor: "pointer" }} />
-                <label htmlFor="remember" style={{ color: "#9ca3af", fontSize: "0.75rem", cursor: "pointer", userSelect: "none" }}>
-                  Remember me
-                </label>
               </div>
 
               {/* Role Selection */}
@@ -412,6 +464,7 @@ export default function LoginPage() {
                         key={value}
                         type="button"
                         onClick={() => handleRoleSelect(value)}
+                        suppressHydrationWarning
                         style={{
                           display: "flex", alignItems: "center", gap: 6,
                           padding: "6px 12px", borderRadius: 999,
@@ -445,14 +498,14 @@ export default function LoginPage() {
                     id="terms"
                     style={{ marginTop: 2, width: 14, height: 14, accentColor: "#f97316", flexShrink: 0, cursor: "pointer" }}
                   />
-                  <label htmlFor="terms" style={{ color: "#9ca3af", fontSize: "0.75rem", cursor: "pointer", userSelect: "none", lineHeight: 1.5 }}>
+                  <label htmlFor="terms" suppressHydrationWarning style={{ color: "#9ca3af", fontSize: "0.75rem", cursor: "pointer", userSelect: "none", lineHeight: 1.5 }}>
                     I agree to the{" "}
-                    <button type="button" onClick={() => openPrivacy("rights")} style={{ color: "#fb923c", background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", padding: 0, fontFamily: "inherit", textDecoration: "none" }}
+                    <button type="button" onClick={() => openPrivacy("rights")} suppressHydrationWarning style={{ color: "#fb923c", background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", padding: 0, fontFamily: "inherit", textDecoration: "none" }}
                       onMouseEnter={e => (e.currentTarget.style.textDecoration = "underline")}
                       onMouseLeave={e => (e.currentTarget.style.textDecoration = "none")}>
                       Terms and Conditions
                     </button>{" "}and{" "}
-                    <button type="button" onClick={() => openPrivacy("policy")} style={{ color: "#fb923c", background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", padding: 0, fontFamily: "inherit", textDecoration: "none" }}
+                    <button type="button" onClick={() => openPrivacy("policy")} suppressHydrationWarning style={{ color: "#fb923c", background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", padding: 0, fontFamily: "inherit", textDecoration: "none" }}
                       onMouseEnter={e => (e.currentTarget.style.textDecoration = "underline")}
                       onMouseLeave={e => (e.currentTarget.style.textDecoration = "none")}>
                       Privacy Policy
@@ -466,6 +519,7 @@ export default function LoginPage() {
               <button
                 type="submit"
                 disabled={loading}
+                suppressHydrationWarning
                 style={{
                   width: "100%", padding: "12px",
                   borderRadius: 8, border: "none",
@@ -482,12 +536,40 @@ export default function LoginPage() {
                 {loading ? <Loader2 style={{ width: 18, height: 18, animation: "spin 1s linear infinite" }} /> : "Sign in to ConstructIQ"}
               </button>
 
+              {/* Google sign-in — same role check as above, for an existing admin-provisioned account */}
+              {process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID && (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0.25rem 0" }}>
+                    <div style={{ flex: 1, height: 1, background: "#1e3a5f" }} />
+                    <span style={{ color: "#4b5563", fontSize: "0.7rem", fontWeight: 600 }}>OR</span>
+                    <div style={{ flex: 1, height: 1, background: "#1e3a5f" }} />
+                  </div>
+                  <GoogleSignInButton onCredential={handleGoogleCredential} disabled={loading} />
+                  {googleError && (
+                    <div style={{
+                      display: "flex", alignItems: "flex-start", gap: 8,
+                      padding: "10px 12px", borderRadius: 8,
+                      background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)",
+                    }}>
+                      <span style={{ color: "#fca5a5", fontSize: "0.78rem", lineHeight: 1.4, flex: 1 }}>{googleError}</span>
+                      <button
+                        type="button"
+                        onClick={() => setGoogleError(null)}
+                        aria-label="Dismiss"
+                        suppressHydrationWarning
+                        style={{ background: "none", border: "none", color: "#fca5a5", cursor: "pointer", padding: 0, lineHeight: 1, fontSize: "1rem" }}
+                      >×</button>
+                    </div>
+                  )}
+                </>
+              )}
+
               {/* Links */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.75rem" }}>
-                <a href="#" style={{ color: "#fb923c", textDecoration: "none" }}>Forgot password?</a>
+                <Link href="/forgot-password" suppressHydrationWarning style={{ color: "#fb923c", textDecoration: "none" }}>Forgot password?</Link>
                 <span style={{ color: "#6b7280" }}>
                   Need Access?{" "}
-                  <a href="#" style={{ color: "#fb923c", textDecoration: "none" }}>Contact Admin</a>
+                  <a href="#" suppressHydrationWarning style={{ color: "#fb923c", textDecoration: "none" }}>Contact Admin</a>
                 </span>
               </div>
 
@@ -507,6 +589,8 @@ export default function LoginPage() {
               </div>
 
             </form>
+            </Fragment>
+          )}
           </div>
         </div>
       </div>

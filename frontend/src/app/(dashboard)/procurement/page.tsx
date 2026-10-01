@@ -1,91 +1,340 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
 import {
-  Clock, CheckCircle2, Truck, AlertTriangle,
-  ShoppingCart, Download, Plus, BookOpen, CheckSquare,
-  Send, History, X,
+  Clock, CheckCircle2, PackageCheck, AlertTriangle, Truck,
+  ShoppingCart, Download, Plus, Eye,
+  Send, History, X, Mail, Phone, Pencil, Camera, Upload, Check,
+  Wind, Droplets, CloudRain, ClipboardList, ChevronRight, ArrowRight,
+  Search, ArrowUpDown,
 } from "lucide-react";
+import { useWeatherStore } from "@/store/weatherStore";
+import { useAuthStore } from "@/store/authStore";
+import { RISK_VISUALS, RISK_VISUALS_DARK } from "@/lib/weather";
+import { computeWeatherAtRiskOrders } from "@/lib/deliveryRisk";
+import api from "@/lib/api";
+import { resolveUploadUrl } from "@/lib/avatar";
+
+// Formats an ISO date string as a short calendar date (e.g. "Sep 18").
+function formatShortDate(dateStr: string): string {
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// Formats an ISO/date-input value as "Sep 28, 2026" — the display format used
+// throughout the PO table.
+function toDisplayDate(dateStr: string): string {
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
 
 // ── Types & data ──────────────────────────────────────────────────────────────
 
-type POStatus = "PENDING" | "APPROVED" | "TRANSIT" | "DELIVERED" | "DELAYED";
+type POStatus = "PENDING" | "APPROVED" | "DELIVERY_IN_PROGRESS" | "DELIVERED" | "DELAYED";
 
-interface PO {
-  number: string;
-  material: string;
-  supplier: string;
+interface POMaterial {
+  name: string;
   qty: string;
-  amount: number;
-  status: POStatus;
-  expectedDate: string;
 }
 
+interface DeliveryBatch {
+  id: number;
+  batchNumber: number;
+  uploadedByName: string;
+  createdAt: string;
+  // One Delivery Receipt (null only for a pre-existing batch saved before
+  // this split existed) and one-or-more Proof of Delivery photos.
+  drFileUrl: string | null;
+  podPhotoUrls: string[];
+}
+
+interface PO {
+  id: number;
+  number: string;
+  projectId: number;
+  projectName: string;
+  supplierId: number;
+  supplier: string;
+  status: POStatus;
+  expectedDate: string;
+  materials: POMaterial[];
+  deliveryBatches: DeliveryBatch[];
+  hasEvaluation: boolean;
+  // The master PO document — uploaded once with the first delivery batch,
+  // reused by every later one. Null until the first batch is saved.
+  poFileUrl: string | null;
+}
+
+// DELAYED is never manually selectable — it's derived from the expected date
+// having passed while the order is still PENDING/APPROVED. DELIVERED isn't
+// offered here at all — only WarehousePersonnel can click it (see their own
+// dropdown further down), since they're the only ones who physically receive
+// the goods; Admin/ProjectManager/ProcurementOfficer manage the lifecycle up
+// through Approved and then just watch delivery progress read-only.
+const PO_STATUSES: POStatus[] = ["PENDING", "APPROVED"];
+
 const PO_STATUS_STYLE: Record<POStatus, { bg: string; color: string }> = {
-  PENDING:   { bg: "#fef3c7", color: "#b45309"  },
-  APPROVED:  { bg: "#dcfce7", color: "#15803d"  },
-  TRANSIT:   { bg: "#dbeafe", color: "#1d4ed8"  },
-  DELIVERED: { bg: "#f3f4f6", color: "#374151"  },
-  DELAYED:   { bg: "#fee2e2", color: "#dc2626"  },
+  PENDING:               { bg: "#fef3c7", color: "#b45309"  },
+  APPROVED:              { bg: "#dcfce7", color: "#15803d"  },
+  DELIVERY_IN_PROGRESS:  { bg: "#e0e7ff", color: "#4338ca"  },
+  DELIVERED:             { bg: "#f3f4f6", color: "#374151"  },
+  DELAYED:               { bg: "#fee2e2", color: "#dc2626"  },
 };
 
-const PURCHASE_ORDERS: PO[] = [
-  { number: "PO-2025-0841", material: "Ready-mix Concrete",         supplier: "Holcim Philippines",   qty: "50 m³",    amount: 240000, status: "PENDING",   expectedDate: "Jun 28, 2026" },
-  { number: "PO-2025-0842", material: "Portland Cement",            supplier: "Manila Cement Corp.",  qty: "500 bags", amount: 142500, status: "APPROVED",  expectedDate: "Jun 26, 2026" },
-  { number: "PO-2025-0843", material: "Deformed Steel Bars (12mm)", supplier: "National Steel PH",    qty: "300 pcs",  amount: 66000,  status: "TRANSIT",   expectedDate: "Jun 24, 2026" },
-  { number: "PO-2025-0844", material: "Coarse Gravel",              supplier: "PhilCon Aggregates",   qty: "40 m³",    amount: 58000,  status: "TRANSIT",   expectedDate: "Jun 24, 2026" },
-  { number: "PO-2025-0840", material: "G.I. Pipes (1-inch)",        supplier: "PolyCon Philippines",  qty: "50 m",     amount: 19000,  status: "DELIVERED", expectedDate: "Jun 20, 2026" },
-  { number: "PO-2025-0839", material: "Fine Aggregate (Sand)",      supplier: "PhilCon Aggregates",   qty: "30 m³",    amount: 36000,  status: "DELAYED",   expectedDate: "Jun 18, 2026" },
+const STATUS_SORT_ORDER: Record<POStatus, number> = { DELAYED: 0, PENDING: 1, APPROVED: 2, DELIVERY_IN_PROGRESS: 3, DELIVERED: 4 };
+
+// A non-delivered, not-yet-in-progress order becomes DELAYED the moment its
+// expected date passes — this is computed, never stored, so it can't drift
+// out of sync or be set by hand. Once delivery has actually started, the real
+// status is more useful than a stale "was this late" guess.
+function getEffectiveStatus(po: PO): POStatus {
+  if (po.status === "DELIVERED" || po.status === "DELIVERY_IN_PROGRESS") return po.status;
+  const expected = new Date(po.expectedDate).getTime();
+  if (!Number.isNaN(expected) && expected < Date.now()) return "DELAYED";
+  return po.status;
+}
+
+function statusLabel(s: POStatus): string {
+  return s.replace(/_/g, " ");
+}
+
+// The backend's PurchaseOrderStatus enum serializes as "Pending"/"Approved"/
+// "DeliveryInProgress"/"Delivered" — the frontend works in ALL-CAPS (with
+// underscores) everywhere else, so these two helpers are the only place that
+// conversion happens.
+function apiStatusToFrontend(s: string): POStatus {
+  if (s === "DeliveryInProgress") return "DELIVERY_IN_PROGRESS";
+  return s.toUpperCase() as POStatus;
+}
+function frontendStatusToApi(s: POStatus): string {
+  if (s === "DELIVERY_IN_PROGRESS") return "DeliveryInProgress";
+  return s.charAt(0) + s.slice(1).toLowerCase();
+}
+
+type SupplierBadge = "PREFERRED" | "ACTIVE";
+
+interface CategoryRatings {
+  price: number;
+  delivery: number;
+  quality: number;
+  accuracy: number;
+  responsiveness: number;
+}
+
+const RATING_CATEGORIES: { key: keyof CategoryRatings; label: string; short: string }[] = [
+  { key: "price",          label: "Price Competitiveness", short: "Price" },
+  { key: "delivery",       label: "Delivery Timeliness",   short: "Delivery" },
+  { key: "quality",        label: "Material Quality",      short: "Quality" },
+  { key: "accuracy",       label: "Order Accuracy",        short: "Accuracy" },
+  { key: "responsiveness", label: "Responsiveness",        short: "Response" },
 ];
 
-const TIMELINE_STEPS = [
-  { label: "PO Created",           date: "May 26",   done: true,  active: false },
-  { label: "Approval Review",      date: "May 26",   done: true,  active: false },
-  { label: "Supplier Confirmation",date: "May 27",   done: false, active: true  },
-  { label: "In Transit",           date: "May 28-29",done: false, active: false },
-  { label: "Delivery & Receiving", date: "May 30",   done: false, active: false },
-  { label: "Invoice Processing",   date: "Jun 2",    done: false, active: false },
-];
+function categoryAverage(ratings: CategoryRatings): number {
+  return (ratings.price + ratings.delivery + ratings.quality + ratings.accuracy + ratings.responsiveness) / 5;
+}
+
+// Display-only shape, hydrated from the backend's DeliveryEvaluationDto.
+interface DeliveryEvaluation {
+  photoUrls: string[];
+  ratings: CategoryRatings;
+  onTime: boolean;
+  actualLeadDays: number;
+  comments: string;
+  raterName: string;
+}
+
+// What the rating modal hands back up — the backend derives the rater from
+// the auth token, so no name is sent from the client. Photos aren't part of
+// this anymore — they're already on the PO's delivery batches by the time a
+// rating is submitted.
+interface RatingSubmission {
+  ratings: CategoryRatings;
+  onTime: boolean;
+  actualLeadDays: number;
+  comments: string;
+}
+
+interface SupplierHistoryEntry {
+  poNumber: string;
+  projectName: string;
+  date: string;
+  status: POStatus;
+  evaluation?: DeliveryEvaluation;
+}
+
+interface SupplierContact {
+  email: string;
+  phone: string;
+}
 
 interface Supplier {
+  id: number;
   initials: string;
   name: string;
   category: string;
   lead: string;
-  badge: "PREFERRED" | "ACTIVE" | "AT RISK";
   rating: number;
   deliveries: number;
-  onTime: number;
+  onTimePct: number;
   avatarBg: string;
+  contact: SupplierContact;
+  history: SupplierHistoryEntry[];
 }
 
-const SUPPLIERS: Supplier[] = [
-  { initials: "MC", name: "Manila Cement Corp.",      category: "Binders",    lead: "3-5 days", badge: "PREFERRED", rating: 4.8, deliveries: 24, onTime: 96, avatarBg: "#1e3154" },
-  { initials: "PA", name: "PhilCon Aggregates",       category: "Aggregates", lead: "2-4 days", badge: "PREFERRED", rating: 4.5, deliveries: 18, onTime: 92, avatarBg: "#1e3154" },
-  { initials: "NS", name: "National Steel PH",        category: "Steel",      lead: "5-7 days", badge: "ACTIVE",    rating: 4.2, deliveries: 31, onTime: 88, avatarBg: "#1e3154" },
-  { initials: "PP", name: "PolyCon Philippines",      category: "Plumbing",   lead: "3-5 days", badge: "PREFERRED", rating: 4.7, deliveries: 22, onTime: 94, avatarBg: "#1e3154" },
-];
+function initialsFor(name: string): string {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join("").toUpperCase() || "?";
+}
 
-const BADGE_STYLE: Record<"PREFERRED" | "ACTIVE" | "AT RISK", { bg: string; color: string }> = {
+// Preference tier is derived from performance, not hand-set — it stays honest
+// as new suppliers get auto-added with no track record yet.
+function getSupplierBadge(s: Supplier): SupplierBadge {
+  if (s.deliveries > 0 && s.rating >= 4.5 && s.onTimePct >= 90) return "PREFERRED";
+  return "ACTIVE";
+}
+
+const BADGE_STYLE: Record<SupplierBadge, { bg: string; color: string }> = {
   PREFERRED: { bg: "#dcfce7", color: "#15803d" },
   ACTIVE:    { bg: "#dbeafe", color: "#1d4ed8" },
-  "AT RISK": { bg: "#fee2e2", color: "#dc2626" },
 };
 
-const PERF_SUPPLIERS = [
-  { initials: "CS", name: "Cruz & Sons Hardware",       badge: "PREFERRED" as const, onTime: 96, lead: 3,  deliveries: 42, rating: 4.8, onTimePct: "#22c55e" },
-  { initials: "MC", name: "Metro Construction Supply",  badge: "ACTIVE"    as const, onTime: 88, lead: 5,  deliveries: 28, rating: 4.2, onTimePct: "#22c55e" },
-  { initials: "NM", name: "Northstar Materials",        badge: "AT RISK"   as const, onTime: 79, lead: 7,  deliveries: 15, rating: 3.9, onTimePct: "#f97316" },
-  { initials: "PS", name: "Pacific Steel Corp.",        badge: "PREFERRED" as const, onTime: 93, lead: 4,  deliveries: 31, rating: 4.6, onTimePct: "#22c55e" },
-];
+// Same ranking used by the Supplier Performance section — most preferred first.
+function sortSuppliersByPreference(suppliers: Supplier[]): Supplier[] {
+  return [...suppliers].sort((a, b) => b.rating - a.rating || b.onTimePct - a.onTimePct);
+}
+
+// ── API response shapes + mappers ────────────────────────────────────────────
+
+interface ApiPOMaterial { name: string; quantity: number; unit: string; }
+interface ApiDeliveryBatch {
+  id: number; batchNumber: number; uploadedByName: string; createdAt: string;
+  drFileUrl: string | null; podPhotoUrls: string[];
+}
+interface ApiPO {
+  id: number; number: string;
+  projectId: number; projectName: string;
+  supplierId: number; supplierName: string;
+  status: string; expectedDate: string;
+  materials: ApiPOMaterial[];
+  deliveryBatches: ApiDeliveryBatch[];
+  hasEvaluation: boolean;
+  poFileUrl: string | null;
+}
+interface ApiEvaluation {
+  priceRating: number; deliveryRating: number; qualityRating: number;
+  accuracyRating: number; responsivenessRating: number;
+  onTime: boolean; actualLeadDays: number; comments: string | null;
+  raterName: string; photoUrls: string[];
+}
+interface ApiHistoryEntry {
+  poNumber: string; projectName: string; status: string; expectedDate: string;
+  evaluation: ApiEvaluation | null;
+}
+interface ApiSupplier {
+  id: number; name: string; category: string; lead: string;
+  contactEmail: string | null; contactPhone: string | null;
+  rating: number; onTimePct: number; deliveries: number;
+  history: ApiHistoryEntry[];
+}
+
+function mapPO(a: ApiPO): PO {
+  return {
+    id: a.id, number: a.number,
+    projectId: a.projectId, projectName: a.projectName,
+    supplierId: a.supplierId, supplier: a.supplierName,
+    status: apiStatusToFrontend(a.status),
+    expectedDate: toDisplayDate(a.expectedDate),
+    materials: a.materials.map(m => ({ name: m.name, qty: `${Number(m.quantity)} ${m.unit}` })),
+    deliveryBatches: a.deliveryBatches.map(b => ({
+      id: b.id, batchNumber: b.batchNumber, uploadedByName: b.uploadedByName,
+      createdAt: b.createdAt, drFileUrl: b.drFileUrl, podPhotoUrls: b.podPhotoUrls,
+    })),
+    hasEvaluation: a.hasEvaluation,
+    poFileUrl: a.poFileUrl,
+  };
+}
+
+function mapEvaluation(e: ApiEvaluation): DeliveryEvaluation {
+  return {
+    photoUrls: e.photoUrls,
+    ratings: {
+      price: e.priceRating, delivery: e.deliveryRating, quality: e.qualityRating,
+      accuracy: e.accuracyRating, responsiveness: e.responsivenessRating,
+    },
+    onTime: e.onTime,
+    actualLeadDays: e.actualLeadDays,
+    comments: e.comments ?? "",
+    raterName: e.raterName,
+  };
+}
+
+function mapSupplier(a: ApiSupplier): Supplier {
+  return {
+    id: a.id, initials: initialsFor(a.name), name: a.name, category: a.category, lead: a.lead,
+    rating: a.rating, onTimePct: a.onTimePct, deliveries: a.deliveries, avatarBg: "#1e3154",
+    contact: { email: a.contactEmail ?? "", phone: a.contactPhone ?? "" },
+    history: a.history.map(h => ({
+      poNumber: h.poNumber, projectName: h.projectName, date: toDisplayDate(h.expectedDate),
+      status: apiStatusToFrontend(h.status),
+      evaluation: h.evaluation ? mapEvaluation(h.evaluation) : undefined,
+    })),
+  };
+}
+
+// ── Material Requests ─────────────────────────────────────────────────────────
+
+interface ProjectWithRequests {
+  projectId: number;
+  projectName: string;
+  pendingCount: number;
+}
+
+interface RequestRow {
+  id: number;
+  materialId: number;
+  materialName: string;
+  quantity: number;
+  unit: string;
+  requestedByName: string;
+}
+
+interface SuggestedSupplier {
+  id: number;
+  name: string;
+  rating: number;
+  onTimePct: number;
+  deliveries: number;
+  hasHistoryWithMaterial: boolean;
+}
+
+interface ApiProjectWithRequests { projectId: number; projectName: string; pendingCount: number; }
+interface ApiMaterialRequest {
+  id: number; materialId: number; materialName: string;
+  quantity: number; unit: string; requestedByName: string; createdAt: string;
+}
+interface ApiSuggestedSupplier {
+  id: number; name: string; rating: number; onTimePct: number; deliveries: number; hasHistoryWithMaterial: boolean;
+}
+interface ApiGeneratedResult {
+  purchaseOrders: unknown[];
+  requestPoNumbers: Record<number, string>;
+}
+
+function mapRequestRow(a: ApiMaterialRequest): RequestRow {
+  return {
+    id: a.id, materialId: a.materialId, materialName: a.materialName,
+    quantity: a.quantity, unit: a.unit, requestedByName: a.requestedByName,
+  };
+}
 
 // ── Export CSV ────────────────────────────────────────────────────────────────
 
 function exportPOs(orders: PO[]) {
-  const header = ["PO Number","Material","Supplier","Qty","Amount","Status","Expected Date"];
-  const rows = orders.map(p => [p.number, `"${p.material}"`, `"${p.supplier}"`, p.qty, p.amount, p.status, p.expectedDate].join(","));
+  const header = ["PO Number","Project Name","Supplier","Status","Expected Date","Materials"];
+  const rows = orders.map(p => [p.number, `"${p.projectName}"`, `"${p.supplier}"`, getEffectiveStatus(p), p.expectedDate, `"${p.materials.map(m => `${m.name} (${m.qty})`).join("; ")}"`].join(","));
   const csv = [header.join(","), ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
@@ -95,98 +344,496 @@ function exportPOs(orders: PO[]) {
   toast.success("Purchase orders exported");
 }
 
-// ── New PO Modal ──────────────────────────────────────────────────────────────
+// ── Requests Overlay Modal ───────────────────────────────────────────────────
+// Reviews every pending material request for one project: pick a supplier
+// per material (ranked by order history + rating, or type a new one), then
+// generate real purchase orders — one per unique supplier chosen, grouping
+// every material assigned to that supplier onto the same PO/number.
 
-const SUPPLIERS_LIST = ["Holcim Philippines", "Manila Cement Corp.", "National Steel PH", "PhilCon Aggregates", "PolyCon Philippines"];
+function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: {
+  projectId: number;
+  projectName: string;
+  onClose: () => void;
+  onGenerated: () => void;
+}) {
+  const [rows, setRows] = useState<RequestRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [suggestionsByMaterial, setSuggestionsByMaterial] = useState<Record<number, SuggestedSupplier[]>>({});
+  const [assignments, setAssignments] = useState<Record<number, string>>({});
+  const [expectedDate, setExpectedDate] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [poNumbers, setPoNumbers] = useState<Record<number, string>>({});
 
-function NewPOModal({ onClose, onAdd }: { onClose: () => void; onAdd: (po: PO) => void }) {
-  const [form, setForm] = useState({ material: "", supplier: SUPPLIERS_LIST[0], qty: "", unit: "bags", amount: "", expectedDate: "", notes: "" });
-  function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const { data } = await api.get<ApiMaterialRequest[]>(`/material-requests/project/${projectId}`);
+        const mapped = data.map(mapRequestRow);
+        setRows(mapped);
 
-  function handleSubmit() {
-    if (!form.material || !form.qty || !form.amount || !form.expectedDate) {
-      toast.error("Please fill in all required fields"); return;
+        const uniqueMaterialIds = [...new Set(mapped.map(r => r.materialId))];
+        const entries = await Promise.all(
+          uniqueMaterialIds.map(async id => {
+            const res = await api.get<ApiSuggestedSupplier[]>(`/material-requests/suggested-suppliers/${id}`);
+            return [id, res.data] as const;
+          })
+        );
+        setSuggestionsByMaterial(Object.fromEntries(entries));
+      } catch {
+        toast.error("Failed to load material requests.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [projectId]);
+
+  const generated = Object.keys(poNumbers).length > 0;
+  const allAssigned = rows.length > 0 && rows.every(r => assignments[r.id]?.trim());
+
+  async function handleGenerate() {
+    if (!expectedDate) { toast.error("Pick an expected delivery date."); return; }
+    if (!allAssigned) { toast.error("Choose a supplier for every material."); return; }
+    setGenerating(true);
+    try {
+      const { data } = await api.post<ApiGeneratedResult>("/material-requests/generate-pos", {
+        projectId,
+        expectedDate,
+        assignments: rows.map(r => ({ requestId: r.id, supplierName: assignments[r.id] })),
+      });
+      setPoNumbers(data.requestPoNumbers);
+      toast.success("Purchase order(s) generated.");
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to generate purchase orders.");
+    } finally {
+      setGenerating(false);
     }
-    const num = `PO-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9000) + 1000)}`;
-    onAdd({ number: num, material: form.material, supplier: form.supplier, qty: `${form.qty} ${form.unit}`, amount: Number(form.amount), status: "PENDING", expectedDate: form.expectedDate });
-    toast.success(`${num} created`);
+  }
+
+  function handleGoToPurchaseOrders() {
+    onGenerated();
     onClose();
   }
 
-  const inp = (label: string, key: string, type = "text", placeholder = "", required = true) => (
-    <div>
-      <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>
-        {label}{required && <span style={{ color: "#dc2626" }}> *</span>}
-      </label>
-      <input type={type} value={(form as Record<string, string>)[key]} onChange={e => set(key, e.target.value)} placeholder={placeholder}
-        style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 7, border: "1px solid #e5e7eb", fontSize: "0.85rem", outline: "none", color: "#111827" }}
-        onFocus={e => (e.currentTarget.style.borderColor = "#f97316")}
-        onBlur={e  => (e.currentTarget.style.borderColor = "#e5e7eb")}
-      />
-    </div>
-  );
+  const fieldStyle: React.CSSProperties = {
+    width: "100%", boxSizing: "border-box", padding: "7px 9px", borderRadius: 7,
+    border: "1px solid #e5e7eb", fontSize: "0.82rem", outline: "none", color: "#111827",
+  };
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 500, boxShadow: "0 24px 60px rgba(0,0,0,0.2)", maxHeight: "90vh", overflowY: "auto" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: 640, maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1.5rem 1.5rem 1rem", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ width: 38, height: 38, borderRadius: 10, background: "#fff7ed", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <ShoppingCart style={{ width: 18, height: 18, color: "#f97316" }} />
+              <ClipboardList style={{ width: 18, height: 18, color: "#f97316" }} />
             </div>
             <div>
-              <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>New Purchase Order</h2>
-              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>Fill in the details below</p>
+              <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>{projectName}</h2>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>Requested materials</p>
             </div>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-          {inp("Material", "material", "text", "e.g. Portland Cement")}
+        <div style={{ padding: "0 1.5rem", flex: 1, overflowY: "auto" }}>
+          {loading ? (
+            <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "2rem 0" }}>Loading requested materials…</p>
+          ) : (
+            <>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginBottom: "0.75rem" }}>
+                Supplier suggestions are ranked by past orders of that exact material first, then overall rating — or type a new supplier name.
+              </p>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
+                    {["MATERIAL", "UNIT", "QTY", "SUPPLIER", "PO #"].map(h => (
+                      <th key={h} style={{ padding: "6px 8px", textAlign: "left", fontSize: "0.62rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r, i) => {
+                    const suggestions = suggestionsByMaterial[r.materialId] ?? [];
+                    const poNumber = poNumbers[r.id];
+                    return (
+                      <tr key={r.id} style={{ borderBottom: i < rows.length - 1 ? "1px solid #f9fafb" : "none" }}>
+                        <td style={{ padding: "8px", fontSize: "0.82rem", fontWeight: 600, color: "#111827" }}>{r.materialName}</td>
+                        <td style={{ padding: "8px", fontSize: "0.78rem", color: "#6b7280" }}>{r.unit}</td>
+                        <td style={{ padding: "8px", fontSize: "0.78rem", color: "#6b7280" }}>{r.quantity}</td>
+                        <td style={{ padding: "8px", minWidth: 180 }}>
+                          {poNumber ? (
+                            <span style={{ fontSize: "0.8rem", color: "#111827" }}>{assignments[r.id]}</span>
+                          ) : (
+                            <>
+                              <input
+                                list={`suppliers-for-material-${r.materialId}`}
+                                value={assignments[r.id] ?? ""}
+                                onChange={e => setAssignments(prev => ({ ...prev, [r.id]: e.target.value }))}
+                                placeholder="Pick or type a supplier"
+                                style={fieldStyle}
+                              />
+                              <datalist id={`suppliers-for-material-${r.materialId}`}>
+                                {suggestions.map(s => <option key={s.id} value={s.name} />)}
+                              </datalist>
+                            </>
+                          )}
+                        </td>
+                        <td style={{ padding: "8px", fontSize: "0.8rem", fontWeight: 700, color: "#f97316", whiteSpace: "nowrap" }}>{poNumber ?? "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </>
+          )}
+        </div>
 
+        <div style={{ padding: "1rem 1.5rem 1.5rem", flexShrink: 0, borderTop: "1px solid #f3f4f6", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem" }}>
           <div>
-            <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>
-              Supplier <span style={{ color: "#dc2626" }}>*</span>
-            </label>
-            <select value={form.supplier} onChange={e => set("supplier", e.target.value)}
-              style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #e5e7eb", fontSize: "0.85rem", outline: "none", color: "#111827", appearance: "none" as const }}>
-              {SUPPLIERS_LIST.map(s => <option key={s}>{s}</option>)}
-            </select>
+            <label style={{ display: "block", fontSize: "0.68rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>Expected Delivery</label>
+            <input type="date" value={expectedDate} onChange={e => setExpectedDate(e.target.value)} disabled={generated}
+              style={{ ...fieldStyle, width: 170, opacity: generated ? 0.6 : 1 }} />
           </div>
+          {generated ? (
+            <button onClick={handleGoToPurchaseOrders} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 8, border: "none", background: "#111827", color: "#fff", fontWeight: 700, fontSize: "0.85rem", cursor: "pointer" }}>
+              Purchase Order <ArrowRight style={{ width: 14, height: 14 }} />
+            </button>
+          ) : (
+            <button onClick={handleGenerate} disabled={generating || loading || rows.length === 0} style={{
+              display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 8, border: "none",
+              background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.85rem",
+              cursor: (generating || loading || rows.length === 0) ? "not-allowed" : "pointer",
+              opacity: (generating || loading || rows.length === 0) ? 0.7 : 1,
+            }}>
+              {generating ? "Generating…" : "Generate P.O. Number"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "0.75rem" }}>
-            {inp("Quantity", "qty", "number", "e.g. 500")}
+// ── View PO Materials Modal ─────────────────────────────────────────────────
+
+function ViewPOModal({ po, onClose }: { po: PO; onClose: () => void }) {
+  const st = PO_STATUS_STYLE[po.status];
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 440, boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>
+          <div>
+            <p style={{ fontWeight: 800, fontSize: "1.05rem", color: "#f97316" }}>{po.number}</p>
+            <p style={{ fontSize: "0.82rem", color: "#111827", fontWeight: 600, marginTop: 2 }}>{po.projectName}</p>
+            <p style={{ fontSize: "0.75rem", color: "#9ca3af", marginTop: 2 }}>{po.supplier} · {po.expectedDate}</p>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
+        </div>
+
+        <span style={{ display: "inline-block", fontSize: "0.7rem", fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: st.bg, color: st.color, marginBottom: "1rem" }}>
+          · {po.status}
+        </span>
+
+        <p style={{ fontSize: "0.72rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", marginBottom: "0.5rem" }}>MATERIALS</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {po.materials.map((m, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#f9fafb", borderRadius: 8, padding: "10px 12px" }}>
+              <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "#111827" }}>{m.name}</span>
+              <span style={{ fontSize: "0.8rem", color: "#6b7280" }}>{m.qty}</span>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "1.5rem" }}>
+          <button onClick={onClose} style={{ padding: "9px 20px", borderRadius: 8, border: "none", background: "#111827", color: "#fff", fontSize: "0.875rem", fontWeight: 600, cursor: "pointer" }}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Contact Modal ────────────────────────────────────────────────────────────
+
+function ContactModal({ supplier, canEdit, onClose, onSave }: {
+  supplier: Supplier; canEdit: boolean; onClose: () => void; onSave: (contact: SupplierContact) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [email, setEmail] = useState(supplier.contact.email);
+  const [phone, setPhone] = useState(supplier.contact.phone);
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await onSave({ email: email.trim(), phone: phone.trim() });
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const fieldStyle = { width: "100%", boxSizing: "border-box" as const, padding: "8px 10px", borderRadius: 7, border: "1px solid #e5e7eb", fontSize: "0.85rem", outline: "none", color: "#111827" };
+  const hasContact = !!(supplier.contact.email || supplier.contact.phone);
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 420, boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+          <div>
+            <p style={{ fontWeight: 800, fontSize: "1rem", color: "#111827" }}>{supplier.name}</p>
+            <p style={{ fontSize: "0.75rem", color: "#9ca3af" }}>Contact information</p>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
+        </div>
+
+        {editing ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.875rem" }}>
             <div>
-              <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>Unit</label>
-              <select value={form.unit} onChange={e => set("unit", e.target.value)}
-                style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #e5e7eb", fontSize: "0.85rem", outline: "none", color: "#111827", appearance: "none" as const }}>
-                {["bags","pcs","m³","m","rolls","sheets"].map(u => <option key={u}>{u}</option>)}
-              </select>
+              <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>Email</label>
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="e.g. sales@supplier.ph" style={fieldStyle} />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>Phone</label>
+              <input type="text" value={phone} onChange={e => setPhone(e.target.value)} placeholder="e.g. +63 2 8555 0100" style={fieldStyle} />
+            </div>
+          </div>
+        ) : hasContact ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#f9fafb", borderRadius: 8, padding: "10px 12px" }}>
+              <Mail style={{ width: 15, height: 15, color: "#9ca3af", flexShrink: 0 }} />
+              <span style={{ fontSize: "0.85rem", color: "#111827" }}>{supplier.contact.email || "Not set"}</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#f9fafb", borderRadius: 8, padding: "10px 12px" }}>
+              <Phone style={{ width: 15, height: 15, color: "#9ca3af", flexShrink: 0 }} />
+              <span style={{ fontSize: "0.85rem", color: "#111827" }}>{supplier.contact.phone || "Not set"}</span>
+            </div>
+          </div>
+        ) : (
+          <div style={{ textAlign: "center", padding: "1.5rem 0" }}>
+            <p style={{ fontSize: "0.85rem", color: "#9ca3af" }}>No contact information saved yet.</p>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: "0.75rem", marginTop: "1.5rem" }}>
+          {editing ? (
+            <>
+              <button onClick={() => setEditing(false)} disabled={saving} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 600, fontSize: "0.875rem", cursor: "pointer" }}>Cancel</button>
+              <button onClick={handleSave} disabled={saving} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.875rem", cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.7 : 1 }}>
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </>
+          ) : canEdit ? (
+            <>
+              <button onClick={onClose} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 600, fontSize: "0.875rem", cursor: "pointer" }}>Close</button>
+              <button onClick={() => setEditing(true)} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#111827", color: "#fff", fontWeight: 600, fontSize: "0.875rem", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                {hasContact ? <><Pencil style={{ width: 13, height: 13 }} /> Edit Contact</> : <><Plus style={{ width: 13, height: 13 }} /> Add Contact Info</>}
+              </button>
+            </>
+          ) : (
+            <button onClick={onClose} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#111827", color: "#fff", fontWeight: 600, fontSize: "0.875rem", cursor: "pointer" }}>Close</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── History Modal ────────────────────────────────────────────────────────────
+
+function HistoryModal({ supplier, onClose, onViewRatings }: { supplier: Supplier; onClose: () => void; onViewRatings: () => void }) {
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 460, maxHeight: "80vh", overflowY: "auto", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
+          <div>
+            <p style={{ fontWeight: 800, fontSize: "1rem", color: "#111827" }}>{supplier.name}</p>
+            <p style={{ fontSize: "0.75rem", color: "#9ca3af" }}>Purchase order history</p>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
+        </div>
+
+        <button
+          onClick={onViewRatings}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.78rem", fontWeight: 600, cursor: "pointer", marginBottom: "1.25rem" }}
+        >
+          <Stars rating={supplier.rating} /> View rating summary &amp; feedback
+        </button>
+
+        {supplier.history.length === 0 ? (
+          <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "1.5rem 0" }}>No purchase orders yet.</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {[...supplier.history].reverse().map((h, i) => {
+              const st = PO_STATUS_STYLE[h.status];
+              return (
+                <div key={h.poNumber + i} style={{ background: "#f9fafb", borderRadius: 8, padding: "10px 12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div>
+                      <p style={{ fontSize: "0.8rem", fontWeight: 700, color: "#f97316" }}>{h.poNumber}</p>
+                      <p style={{ fontSize: "0.76rem", color: "#374151", marginTop: 1 }}>{h.projectName}</p>
+                      <p style={{ fontSize: "0.68rem", color: "#9ca3af", marginTop: 1 }}>{h.date}</p>
+                    </div>
+                    <span style={{ fontSize: "0.68rem", fontWeight: 700, padding: "3px 9px", borderRadius: 999, background: st.bg, color: st.color, whiteSpace: "nowrap" }}>
+                      · {h.status}
+                    </span>
+                  </div>
+                  {h.evaluation && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8, paddingTop: 8, borderTop: "1px solid #f0f0f0" }}>
+                      <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                        {h.evaluation.photoUrls.map((url, pi) => (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img key={pi} src={resolveUploadUrl(url) ?? url} alt="Proof of delivery" style={{ width: 36, height: 36, borderRadius: 6, objectFit: "cover" }} />
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <Stars rating={categoryAverage(h.evaluation.ratings)} />
+                      </div>
+                      <span style={{ fontSize: "0.68rem", fontWeight: 600, color: h.evaluation.onTime ? "#15803d" : "#dc2626" }}>
+                        {h.evaluation.onTime ? "On time" : "Delayed"} · {h.evaluation.actualLeadDays}d
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "1.5rem" }}>
+          <button onClick={onClose} style={{ padding: "9px 20px", borderRadius: 8, border: "none", background: "#111827", color: "#fff", fontSize: "0.875rem", fontWeight: 600, cursor: "pointer" }}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Supplier Rating Modal (overall + category breakdown + transaction history) ─
+
+function SupplierRatingModal({ supplier, onClose }: { supplier: Supplier; onClose: () => void }) {
+  const rated = supplier.history.filter((h): h is SupplierHistoryEntry & { evaluation: DeliveryEvaluation } => !!h.evaluation);
+
+  const categoryAverages: CategoryRatings = {
+    price: 0, delivery: 0, quality: 0, accuracy: 0, responsiveness: 0,
+  };
+  if (rated.length > 0) {
+    for (const c of RATING_CATEGORIES) {
+      categoryAverages[c.key] = rated.reduce((sum, h) => sum + h.evaluation.ratings[c.key], 0) / rated.length;
+    }
+  }
+
+  const avgLead = rated.length > 0 ? Math.round(rated.reduce((sum, h) => sum + h.evaluation.actualLeadDays, 0) / rated.length) : null;
+  const committed = committedLeadDays(supplier.lead);
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: 480, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "1.5rem 1.5rem 1rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ width: 44, height: 44, borderRadius: 10, background: supplier.avatarBg, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: "0.9rem", flexShrink: 0 }}>
+              {supplier.initials}
+            </div>
+            <div>
+              <p style={{ fontWeight: 800, fontSize: "1.05rem", color: "#111827" }}>{supplier.name}</p>
+              <p style={{ fontSize: "0.75rem", color: "#9ca3af", marginTop: 2 }}>{supplier.category} · {rated.length} evaluated transaction{rated.length !== 1 ? "s" : ""}</p>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
+        </div>
+
+        {/* Overall score + stats + category breakdown */}
+        <div style={{ background: "#f9fafb", padding: "1.25rem 1.5rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem", flexWrap: "wrap", gap: "1rem" }}>
+            <div>
+              <p style={{ fontSize: "2.4rem", fontWeight: 800, color: "#111827", lineHeight: 1 }}>{supplier.rating.toFixed(1)}</p>
+              <Stars rating={supplier.rating} />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "auto auto", columnGap: 28, rowGap: 6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <span style={{ fontSize: "0.75rem", color: "#6b7280" }}>On-Time Rate</span>
+                <span style={{ fontSize: "0.8rem", fontWeight: 700, color: "#16a34a" }}>{supplier.onTimePct}%</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <span style={{ fontSize: "0.75rem", color: "#6b7280" }}>Avg Lead</span>
+                <span style={{ fontSize: "0.8rem", fontWeight: 700, color: "#111827" }}>{avgLead !== null ? `${avgLead}d` : "—"}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <span style={{ fontSize: "0.75rem", color: "#6b7280" }}>Transactions</span>
+                <span style={{ fontSize: "0.8rem", fontWeight: 700, color: "#111827" }}>{rated.length}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <span style={{ fontSize: "0.75rem", color: "#6b7280" }}>Committed</span>
+                <span style={{ fontSize: "0.8rem", fontWeight: 700, color: "#111827" }}>{committed}d</span>
+              </div>
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-            {inp("Total Amount (₱)", "amount", "number", "e.g. 142500")}
-            {inp("Expected Delivery", "expectedDate", "text", "e.g. Jun 28, 2026")}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {RATING_CATEGORIES.map(c => (
+              <div key={c.key} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: "0.78rem", color: "#374151", width: 150, flexShrink: 0 }}>{c.label}</span>
+                <div style={{ flex: 1, height: 6, background: "#e5e7eb", borderRadius: 999, overflow: "hidden" }}>
+                  <div style={{ width: `${(categoryAverages[c.key] / 5) * 100}%`, height: "100%", background: "#f97316", borderRadius: 999 }} />
+                </div>
+                <span style={{ fontSize: "0.78rem", fontWeight: 700, color: "#111827", width: 28, textAlign: "right" }}>{categoryAverages[c.key].toFixed(1)}</span>
+              </div>
+            ))}
           </div>
 
-          <div>
-            <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>Notes <span style={{ color: "#9ca3af", fontWeight: 400 }}>(optional)</span></label>
-            <textarea value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="Any additional notes..."
-              rows={3}
-              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 7, border: "1px solid #e5e7eb", fontSize: "0.85rem", outline: "none", color: "#111827", resize: "vertical" as const }}
-              onFocus={e => (e.currentTarget.style.borderColor = "#f97316")}
-              onBlur={e  => (e.currentTarget.style.borderColor = "#e5e7eb")}
-            />
-          </div>
+          <p style={{ fontSize: "0.7rem", color: "#9ca3af", fontStyle: "italic", marginTop: 12 }}>
+            Aggregate score calculated exclusively from company-logged transaction evaluations.
+          </p>
         </div>
 
-        <div style={{ display: "flex", gap: "0.75rem", marginTop: "1.5rem" }}>
-          <button onClick={onClose} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 600, fontSize: "0.875rem", cursor: "pointer" }}>Cancel</button>
-          <button onClick={handleSubmit} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.875rem", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-            <Plus style={{ width: 14, height: 14 }} /> Create PO
-          </button>
+        {/* Transaction history */}
+        <div style={{ padding: "1.25rem 1.5rem 1.5rem" }}>
+          <p style={{ fontSize: "0.68rem", fontWeight: 800, color: "#9ca3af", letterSpacing: "0.08em", marginBottom: "0.75rem" }}>TRANSACTION HISTORY</p>
+          {rated.length === 0 ? (
+            <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "1.5rem 0" }}>No evaluated transactions yet.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {[...rated].reverse().map((h, i) => {
+                const avg = categoryAverage(h.evaluation.ratings);
+                return (
+                  <div key={h.poNumber + i} style={{ background: "#f9fafb", borderRadius: 10, padding: "0.9rem 1rem" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <p style={{ fontWeight: 700, fontSize: "0.85rem", color: "#111827" }}>{h.poNumber}</p>
+                      <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.72rem", fontWeight: 700, color: h.evaluation.onTime ? "#16a34a" : "#dc2626" }}>
+                        {h.evaluation.onTime ? <><CheckCircle2 style={{ width: 12, height: 12 }} /> On Time</> : <><AlertTriangle style={{ width: 12, height: 12 }} /> Delayed</>}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginTop: 2 }}>{h.date} · {h.evaluation.raterName}</p>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6, marginTop: 10 }}>
+                      {RATING_CATEGORIES.map(c => (
+                        <div key={c.key} style={{ textAlign: "center" }}>
+                          <Stars rating={h.evaluation.ratings[c.key]} />
+                          <p style={{ fontSize: "0.6rem", color: "#9ca3af", marginTop: 2 }}>{c.short}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+                      <span style={{ fontSize: "0.78rem", fontWeight: 700, color: "#111827" }}>★ {avg.toFixed(1)} avg</span>
+                      <span style={{ fontSize: "0.72rem", color: "#6b7280" }}>Lead: {h.evaluation.actualLeadDays}d (committed {committed}d)</span>
+                    </div>
+
+                    {h.evaluation.comments && (
+                      <div style={{ background: "#fff", borderRadius: 8, padding: "0.6rem 0.75rem", marginTop: 8 }}>
+                        <p style={{ fontSize: "0.76rem", color: "#374151", fontStyle: "italic" }}>&ldquo;{h.evaluation.comments}&rdquo;</p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", padding: "0 1.5rem 1.5rem" }}>
+          <button onClick={onClose} style={{ padding: "9px 20px", borderRadius: 8, border: "none", background: "#111827", color: "#fff", fontSize: "0.875rem", fontWeight: 600, cursor: "pointer" }}>Close</button>
         </div>
       </div>
     </div>
@@ -203,25 +850,694 @@ function Stars({ rating }: { rating: number }) {
   );
 }
 
+function StarPicker({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  return (
+    <span style={{ display: "inline-flex", gap: 4 }}>
+      {[1,2,3,4,5].map(i => (
+        <button
+          key={i}
+          type="button"
+          onClick={() => onChange(i)}
+          style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: i <= value ? "#f59e0b" : "#d1d5db", fontSize: "1.6rem", lineHeight: 1 }}
+        >★</button>
+      ))}
+    </span>
+  );
+}
+
+// ── Delivery Confirmation Modal (proof of delivery + supplier rating) ────────
+
+// Reads e.g. "3-5 days" -> 3, "4-6 days" -> 4, falls back to 5 for suppliers
+// with no established lead time yet (freshly auto-added ones).
+function committedLeadDays(lead: string): number {
+  const match = lead.match(/\d+/);
+  return match ? Number(match[0]) : 5;
+}
+
+const RATING_CATEGORY_SUBTITLES: Record<keyof CategoryRatings, string> = {
+  price:          "How competitive was their pricing compared to alternatives?",
+  delivery:       "How reliably did they meet the agreed delivery schedule?",
+  quality:        "How was the quality of the materials received?",
+  accuracy:       "Did they deliver the correct items and quantities?",
+  responsiveness: "How fast did they address service or supply updates?",
+};
+
+interface PhotoEntry { file: File; previewUrl: string; }
+
+// One file dropzone for a single required document (PO or DR) — distinct
+// from the POD grid below since these are typically a single scanned
+// document (often a PDF), not a set of photos of the goods themselves.
+function SingleFileDropzone({ label, accept, file, existingUrl, onPick, onClear }: {
+  label: string; accept: string; file: File | null; existingUrl?: string | null;
+  onPick: (f: File) => void; onClear: () => void;
+}) {
+  if (file) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, border: "1px solid #e5e7eb", borderRadius: 10, padding: "0.6rem 0.75rem", background: "#f9fafb" }}>
+        <span style={{ fontSize: "0.78rem", color: "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.name}</span>
+        <button onClick={onClear} title="Remove" style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", flexShrink: 0, display: "flex" }}>
+          <X style={{ width: 14, height: 14 }} />
+        </button>
+      </div>
+    );
+  }
+  if (existingUrl) {
+    return (
+      <a href={resolveUploadUrl(existingUrl) ?? existingUrl} target="_blank" rel="noopener noreferrer"
+        style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid #e5e7eb", borderRadius: 10, padding: "0.6rem 0.75rem", background: "#f9fafb", fontSize: "0.78rem", color: "#f97316", fontWeight: 600, textDecoration: "none" }}>
+        View uploaded {label}
+      </a>
+    );
+  }
+  return (
+    <label style={{
+      display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+      border: "2px dashed #e5e7eb", borderRadius: 10, padding: "0.75rem 1rem", cursor: "pointer", background: "#f9fafb",
+    }}>
+      <Upload style={{ width: 16, height: 16, color: "#9ca3af" }} />
+      <span style={{ fontSize: "0.78rem", color: "#6b7280" }}>Click to upload {label}</span>
+      <input type="file" accept={accept} onChange={e => { const f = e.target.files?.[0]; if (f) onPick(f); e.target.value = ""; }} style={{ display: "none" }} />
+    </label>
+  );
+}
+
+// ── Delivery Batch Overlay ───────────────────────────────────────────────────
+// Opened from the status dropdown/pill once a PO is Approved or already
+// DeliveryInProgress. Each batch needs a Delivery Receipt + at least one
+// Proof of Delivery photo; the Purchase Order file is only asked for once —
+// on the very first batch — and persists afterward as the PO's own master
+// document (see PurchaseOrder.PoFileUrl). "Save" persists the currently-
+// picked documents as one batch (a partial shipment) and the overlay stays
+// open so another batch can be added later. "Delivery Complete" saves
+// whatever's currently picked (if anything), then finalizes — it never
+// requires a rating, that's a separate step only WarehousePersonnel can do
+// (see RateSupplierModal).
+function DeliveryBatchModal({ po, onClose, onSaveBatch, onComplete }: {
+  po: PO;
+  onClose: () => void;
+  onSaveBatch: (payload: { poFile: File | null; drFile: File; podPhotos: File[] }) => Promise<void>;
+  onComplete: () => Promise<void>;
+}) {
+  const [poFile, setPoFile] = useState<File | null>(null);
+  const [drFile, setDrFile] = useState<File | null>(null);
+  const [podPhotos, setPodPhotos] = useState<PhotoEntry[]>([]);
+  const [expandedBatchId, setExpandedBatchId] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [completing, setCompleting] = useState(false);
+
+  const busy = saving || completing;
+  // The PO file is only required/shown once — the first batch, and only if
+  // nothing's been uploaded for it yet.
+  const needsPoFile = po.deliveryBatches.length === 0 && !po.poFileUrl;
+  const hasActiveInput = !!poFile || !!drFile || podPhotos.length > 0;
+
+  function handlePodSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
+    const nonImages = files.filter(f => !f.type.startsWith("image/"));
+    if (nonImages.length > 0) { toast.error("Please select image files only."); }
+    const entries = files.filter(f => f.type.startsWith("image/")).map(f => ({ file: f, previewUrl: URL.createObjectURL(f) }));
+    setPodPhotos(prev => [...prev, ...entries]);
+    e.target.value = "";
+  }
+
+  function handleRemovePodPhoto(index: number) {
+    setPodPhotos(prev => {
+      URL.revokeObjectURL(prev[index].previewUrl);
+      return prev.filter((_, i) => i !== index);
+    });
+  }
+
+  function clearActive() {
+    setPoFile(null);
+    setDrFile(null);
+    setPodPhotos(prev => { prev.forEach(p => URL.revokeObjectURL(p.previewUrl)); return []; });
+  }
+
+  function handleClose() {
+    clearActive();
+    onClose();
+  }
+
+  // Shared by Save and Complete (when it has to save pending input first) —
+  // same requirements the backend enforces, checked here so the error
+  // appears before a round trip instead of after.
+  function validateActive(): string | null {
+    if (needsPoFile && !poFile) return "Upload the Purchase Order file.";
+    if (!drFile) return "Upload the Delivery Receipt file.";
+    if (podPhotos.length === 0) return "Add at least one Proof of Delivery photo.";
+    return null;
+  }
+
+  async function handleSave() {
+    const err = validateActive();
+    if (err) { toast.error(err); return; }
+    setSaving(true);
+    try {
+      await onSaveBatch({ poFile: needsPoFile ? poFile : null, drFile: drFile!, podPhotos: podPhotos.map(p => p.file) });
+      clearActive();
+    } catch {
+      // Already toasted inside onSaveBatch (which rethrows only so
+      // clearActive() above is skipped on failure) — swallow here so it
+      // doesn't also surface as an unhandled rejection.
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleComplete() {
+    if (hasActiveInput) {
+      const err = validateActive();
+      if (err) { toast.error(err); return; }
+      setCompleting(true);
+      try {
+        await onSaveBatch({ poFile: needsPoFile ? poFile : null, drFile: drFile!, podPhotos: podPhotos.map(p => p.file) });
+        clearActive();
+        await onComplete();
+      } catch {
+        // Same reasoning as handleSave above.
+      } finally {
+        setCompleting(false);
+      }
+      return;
+    }
+    if (po.deliveryBatches.length === 0) {
+      toast.error("Add at least one delivery batch before completing delivery.");
+      return;
+    }
+    setCompleting(true);
+    try {
+      await onComplete();
+    } finally {
+      setCompleting(false);
+    }
+  }
+
+  const canComplete = hasActiveInput || po.deliveryBatches.length > 0;
+
+  return (
+    <div onClick={handleClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 480, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 38, height: 38, borderRadius: 10, background: "#fff7ed", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Camera style={{ width: 18, height: 18, color: "#f97316" }} />
+            </div>
+            <div>
+              <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>Proof of Delivery</h2>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{po.number} · {po.supplier}</p>
+            </div>
+          </div>
+          <button onClick={handleClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
+        </div>
+
+        <p style={{ fontSize: "0.82rem", color: "#374151", marginTop: 0, marginBottom: "1.1rem" }}>
+          {needsPoFile
+            ? "Upload the Purchase Order, Delivery Receipt, and Proof of Delivery photos, then click Save. Once everything has arrived, click Delivery Complete."
+            : "Upload the Delivery Receipt and Proof of Delivery photos for each batch as it arrives and click Save — you can come back and add another batch later. Once everything has arrived, click Delivery Complete."}
+        </p>
+
+        {/* Collapsed by default — each batch expands on click to show its
+            documents, rather than always rendering every photo from every
+            past batch at once. */}
+        {po.deliveryBatches.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: "1.1rem" }}>
+            {po.deliveryBatches.map(b => {
+              const expanded = expandedBatchId === b.id;
+              return (
+                <div key={b.id} style={{ border: "1px solid #f3f4f6", borderRadius: 10, padding: "0.6rem 0.75rem" }}>
+                  <button
+                    onClick={() => setExpandedBatchId(expanded ? null : b.id)}
+                    style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", background: "none", border: "none", padding: 0, cursor: "pointer" }}
+                  >
+                    <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                      <ChevronRight style={{ width: 13, height: 13, color: "#9ca3af", transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+                      <span style={{ fontSize: "0.78rem", fontWeight: 700, color: "#111827" }}>Batch {b.batchNumber}</span>
+                    </span>
+                    <span style={{ fontSize: "0.66rem", color: "#9ca3af" }}>{b.uploadedByName} · {toDisplayDate(b.createdAt)}</span>
+                  </button>
+                  {expanded && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+                      {b.batchNumber === 1 && po.poFileUrl && (
+                        <a href={resolveUploadUrl(po.poFileUrl) ?? po.poFileUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.75rem", color: "#f97316", fontWeight: 600 }}>
+                          View Purchase Order file
+                        </a>
+                      )}
+                      {b.drFileUrl && (
+                        <a href={resolveUploadUrl(b.drFileUrl) ?? b.drFileUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.75rem", color: "#f97316", fontWeight: 600 }}>
+                          View Delivery Receipt file
+                        </a>
+                      )}
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
+                        {b.podPhotoUrls.map((url, i) => (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img key={i} src={resolveUploadUrl(url) ?? url} alt={`Batch ${b.batchNumber} proof of delivery photo ${i + 1}`} style={{ width: "100%", height: 56, borderRadius: 6, objectFit: "cover" }} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.9rem" }}>
+          {po.deliveryBatches.length > 0 && (
+            <p style={{ fontWeight: 700, fontSize: "0.85rem", color: "#111827", margin: 0 }}>
+              Batch {po.deliveryBatches.length + 1}
+            </p>
+          )}
+
+          {needsPoFile && (
+            <div>
+              <label style={{ display: "block", fontSize: "0.72rem", fontWeight: 600, color: "#374151", marginBottom: 5 }}>1. Purchase Order (PO)</label>
+              <SingleFileDropzone label="PO file" accept="image/*,application/pdf" file={poFile} onPick={setPoFile} onClear={() => setPoFile(null)} />
+            </div>
+          )}
+
+          <div>
+            <label style={{ display: "block", fontSize: "0.72rem", fontWeight: 600, color: "#374151", marginBottom: 5 }}>
+              {needsPoFile ? "2. Delivery Receipt (DR / Photo)" : "Delivery Receipt (DR / Photo)"}
+            </label>
+            <SingleFileDropzone label="DR file" accept="image/*,application/pdf" file={drFile} onPick={setDrFile} onClear={() => setDrFile(null)} />
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: "0.72rem", fontWeight: 600, color: "#374151", marginBottom: 5 }}>
+              {needsPoFile ? "3. Proof of Delivery (POD / Photos)" : "Proof of Delivery (POD / Photos)"}
+            </label>
+            {podPhotos.length > 0 && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8 }}>
+                {podPhotos.map((p, i) => (
+                  <div key={i} style={{ position: "relative" }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={p.previewUrl} alt={`Proof of delivery ${i + 1}`} style={{ width: "100%", height: 90, borderRadius: 8, objectFit: "cover" }} />
+                    <button onClick={() => handleRemovePodPhoto(i)} title="Remove"
+                      style={{ position: "absolute", top: 4, right: 4, width: 20, height: 20, borderRadius: "50%", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <X style={{ width: 12, height: 12 }} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <label style={{
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
+              border: "2px dashed #e5e7eb", borderRadius: 12, padding: "1.25rem 1rem", cursor: "pointer", background: "#f9fafb",
+            }}>
+              <Upload style={{ width: 22, height: 22, color: "#9ca3af" }} />
+              <span style={{ fontSize: "0.8rem", color: "#6b7280" }}>{podPhotos.length > 0 ? "Add more photos" : "Click to upload photos"}</span>
+              <input type="file" accept="image/*" multiple onChange={handlePodSelected} style={{ display: "none" }} />
+            </label>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: "0.75rem", marginTop: "1.5rem" }}>
+          <button onClick={handleSave} disabled={!hasActiveInput || busy} style={{
+            flex: 1, padding: "10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff",
+            color: "#374151", fontWeight: 700, fontSize: "0.875rem",
+            cursor: hasActiveInput && !busy ? "pointer" : "not-allowed", opacity: hasActiveInput ? 1 : 0.6,
+          }}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+          <button onClick={handleComplete} disabled={!canComplete || busy} style={{
+            flex: 1, padding: "10px", borderRadius: 8, border: "none",
+            background: canComplete ? "#f97316" : "#fbd0a6", color: "#fff", fontWeight: 700, fontSize: "0.875rem",
+            cursor: canComplete && !busy ? "pointer" : "not-allowed",
+          }}>
+            {completing ? "Completing…" : "Delivery Complete"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Rate Supplier (WarehousePersonnel only) ─────────────────────────────────
+// Independent of however many delivery batches it took to get here — proof
+// of delivery already lives on the PO's batches, so this is rating-only.
+function RateSupplierModal({ po, supplier, onClose, onSubmit }: {
+  po: PO;
+  supplier: Supplier | undefined;
+  onClose: () => void;
+  onSubmit: (data: RatingSubmission) => Promise<void>;
+}) {
+  const [ratings, setRatings] = useState<CategoryRatings>({ price: 0, delivery: 0, quality: 0, accuracy: 0, responsiveness: 0 });
+  const [onTime, setOnTime] = useState<boolean | null>(null);
+  const [actualLeadDays, setActualLeadDays] = useState("");
+  const [comments, setComments] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  function setCategoryRating(key: keyof CategoryRatings, value: number) {
+    setRatings(prev => ({ ...prev, [key]: value }));
+  }
+
+  async function handleSubmit() {
+    const allRated = RATING_CATEGORIES.every(c => ratings[c.key] > 0);
+    if (!allRated || onTime === null || !actualLeadDays.trim()) {
+      toast.error("Please complete the delivery evaluation.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onSubmit({ ratings, onTime, actualLeadDays: Number(actualLeadDays), comments: comments.trim() });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const lead = committedLeadDays(supplier?.lead ?? "5");
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 460, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 38, height: 38, borderRadius: 10, background: "#fff7ed", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <CheckCircle2 style={{ width: 18, height: 18, color: "#f97316" }} />
+            </div>
+            <div>
+              <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>Rate the Supplier</h2>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{po.number} · {po.supplier}</p>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+          {RATING_CATEGORIES.map(c => (
+            <div key={c.key}>
+              <p style={{ fontWeight: 700, fontSize: "0.9rem", color: "#111827", marginBottom: 2 }}>{c.label}</p>
+              <p style={{ fontSize: "0.75rem", color: "#9ca3af", marginBottom: 8 }}>{RATING_CATEGORY_SUBTITLES[c.key]}</p>
+              <StarPicker value={ratings[c.key]} onChange={v => setCategoryRating(c.key, v)} />
+            </div>
+          ))}
+
+          <div>
+            <p style={{ fontWeight: 700, fontSize: "0.9rem", color: "#111827", marginBottom: 8 }}>Was delivery on time?</p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+              <button onClick={() => setOnTime(true)} style={{
+                padding: "10px", borderRadius: 8, cursor: "pointer", fontSize: "0.85rem", fontWeight: 600,
+                border: onTime === true ? "1.5px solid #15803d" : "1px solid #e5e7eb",
+                background: onTime === true ? "#dcfce7" : "#f9fafb",
+                color: onTime === true ? "#15803d" : "#6b7280",
+              }}>
+                <Check style={{ width: 13, height: 13, display: "inline", marginRight: 5, verticalAlign: "-2px" }} /> Yes, on time
+              </button>
+              <button onClick={() => setOnTime(false)} style={{
+                padding: "10px", borderRadius: 8, cursor: "pointer", fontSize: "0.85rem", fontWeight: 600,
+                border: onTime === false ? "1.5px solid #dc2626" : "1px solid #e5e7eb",
+                background: onTime === false ? "#fee2e2" : "#f9fafb",
+                color: onTime === false ? "#dc2626" : "#6b7280",
+              }}>
+                <X style={{ width: 13, height: 13, display: "inline", marginRight: 5, verticalAlign: "-2px" }} /> No, was delayed
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <p style={{ fontWeight: 700, fontSize: "0.9rem", color: "#111827", marginBottom: 8 }}>Actual Lead Time (Days)</p>
+            <input type="number" min={0} value={actualLeadDays} onChange={e => setActualLeadDays(e.target.value)} placeholder={`Committed: ${lead} days`}
+              style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: "1px solid #e5e7eb", fontSize: "0.85rem", outline: "none", color: "#111827" }}
+            />
+          </div>
+
+          <div>
+            <p style={{ fontWeight: 700, fontSize: "0.9rem", color: "#111827", marginBottom: 8 }}>Comments <span style={{ color: "#9ca3af", fontWeight: 400 }}>(optional)</span></p>
+            <textarea value={comments} onChange={e => setComments(e.target.value)} placeholder="Note quality, pricing, communication issues, etc."
+              rows={3}
+              style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: "1px solid #e5e7eb", fontSize: "0.85rem", outline: "none", color: "#111827", resize: "vertical" as const }}
+            />
+          </div>
+
+          <div style={{ background: "#f9fafb", borderRadius: 8, padding: "0.75rem 1rem" }}>
+            <p style={{ fontSize: "0.75rem", color: "#9ca3af", fontStyle: "italic" }}>
+              This evaluation is logged against <strong style={{ color: "#374151" }}>{po.number}</strong> and will contribute to{" "}
+              <strong style={{ color: "#374151" }}>{po.supplier}</strong>&apos;s aggregate performance score.
+            </p>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: "0.75rem", marginTop: "1.5rem" }}>
+          <button onClick={onClose} disabled={submitting} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 600, fontSize: "0.875rem", cursor: "pointer" }}>Cancel</button>
+          <button onClick={handleSubmit} disabled={submitting} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.875rem", cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1 }}>
+            {submitting ? "Submitting…" : "Submit"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ProcurementPage() {
-  const [tab,      setTab]      = useState<"po" | "suppliers">("po");
-  const [orders,   setOrders]   = useState<PO[]>(PURCHASE_ORDERS);
-  const [showNewPO, setShowNewPO] = useState(false);
+  const [tab,      setTab]      = useState<"po" | "requests" | "suppliers">("po");
+  const [orders,   setOrders]   = useState<PO[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [loading,  setLoading]  = useState(true);
 
-  function countByStatus(s: POStatus) { return orders.filter(p => p.status === s).length; }
+  const [viewingPOId, setViewingPOId] = useState<number | null>(null);
+  const [contactSupplierId, setContactSupplierId] = useState<number | null>(null);
+  const [historySupplierId, setHistorySupplierId] = useState<number | null>(null);
+  const [ratingSupplierId, setRatingSupplierId] = useState<number | null>(null);
+  const [deliveryPOId, setDeliveryPOId] = useState<number | null>(null);
+  const [ratingPOId, setRatingPOId] = useState<number | null>(null);
+  const [requestsProjects, setRequestsProjects] = useState<ProjectWithRequests[]>([]);
+  const [openRequestsProjectId, setOpenRequestsProjectId] = useState<number | null>(null);
+
+  // Suppliers tab search/sort — scoped to that tab only, doesn't touch the
+  // separate "Supplier Performance" top-5 ranking below it.
+  const [supplierSearch, setSupplierSearch] = useState("");
+  // Defaults to "preferred" — who the company actually orders from and
+  // trusts most, front and center, rather than an arbitrary alphabetical list.
+  const [supplierSort, setSupplierSort] = useState<"name" | "rating" | "preferred">("preferred");
+  const [supplierSortOpen, setSupplierSortOpen] = useState(false);
+
+  const viewingPO       = orders.find(o => o.id === viewingPOId) ?? null;
+  const contactSupplier = suppliers.find(s => s.id === contactSupplierId) ?? null;
+  const historySupplier = suppliers.find(s => s.id === historySupplierId) ?? null;
+  const ratingSupplier  = suppliers.find(s => s.id === ratingSupplierId) ?? null;
+  const deliveryPO = orders.find(o => o.id === deliveryPOId) ?? null;
+  const ratingPO   = orders.find(o => o.id === ratingPOId) ?? null;
+  const openRequestsProject = requestsProjects.find(p => p.projectId === openRequestsProjectId) ?? null;
+  const totalPendingRequests = requestsProjects.reduce((sum, p) => sum + p.pendingCount, 0);
+
+  const { user } = useAuthStore();
+  const role = user?.role ?? "SiteEngineer";
+  // Admin/ProcurementOfficer manage the PO lifecycle up through Approved —
+  // ProjectManager is view-only for Procurement. WarehousePersonnel is the
+  // only role that ever touches delivery — they're the ones physically
+  // receiving the goods, so they're the only ones who can click Delivered
+  // (save proof-of-delivery batches, then complete it) and the only ones who
+  // can rate the supplier afterward. The backend enforces both restrictions
+  // independently of this.
+  const canManagePOs = role === "Admin" || role === "ProcurementOfficer";
+  const canMarkDelivered = role === "WarehousePersonnel" || role === "Admin";
+  const canRate = role === "WarehousePersonnel" || role === "Admin";
+  const canEditContact = role === "ProcurementOfficer" || role === "Admin";
+
+  async function refetch() {
+    const [ordersRes, suppliersRes] = await Promise.all([
+      api.get<ApiPO[]>("/purchase-orders"),
+      api.get<ApiSupplier[]>("/suppliers"),
+    ]);
+    setOrders(ordersRes.data.map(mapPO));
+    setSuppliers(suppliersRes.data.map(mapSupplier));
+
+    // Isolated from the Promise.all above on purpose: a 403 here (roles that
+    // don't manage POs) must never take down orders/suppliers loading too,
+    // and the tab itself is already hidden for those roles regardless.
+    try {
+      const requestsRes = await api.get<ApiProjectWithRequests[]>("/material-requests/projects-with-pending");
+      setRequestsProjects(requestsRes.data);
+    } catch {
+      setRequestsProjects([]);
+    }
+  }
+
+  useEffect(() => {
+    refetch()
+      .catch(() => toast.error("Failed to load procurement data."))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleSaveContact(supplierId: number, contact: SupplierContact) {
+    const target = suppliers.find(s => s.id === supplierId);
+    const hadContact = !!(target?.contact.email || target?.contact.phone);
+    try {
+      await api.put(`/suppliers/${supplierId}/contact`, { email: contact.email || null, phone: contact.phone || null });
+      await refetch();
+      toast.success(hadContact ? "Contact info updated" : "Contact info added");
+    } catch {
+      toast.error("Failed to update contact info.");
+      throw new Error("save-contact-failed");
+    }
+  }
+
+  function countByStatus(s: POStatus) { return orders.filter(p => getEffectiveStatus(p) === s).length; }
+
+  const sortedOrders = useMemo(
+    () => [...orders].sort((a, b) => STATUS_SORT_ORDER[getEffectiveStatus(a)] - STATUS_SORT_ORDER[getEffectiveStatus(b)]),
+    [orders]
+  );
+
+  const filteredSuppliers = useMemo(() => {
+    const q = supplierSearch.trim().toLowerCase();
+    const matches = suppliers.filter(s =>
+      !q || s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q)
+    );
+    return [...matches].sort((a, b) => {
+      if (supplierSort === "rating") return b.rating - a.rating;
+      if (supplierSort === "preferred") {
+        // Who the company actually orders from, preferred ones first: real
+        // order volume (deliveries) leads, the formal PREFERRED badge (rating
+        // + on-time track record) breaks ties, rating itself after that.
+        const aPreferred = getSupplierBadge(a) === "PREFERRED" ? 1 : 0;
+        const bPreferred = getSupplierBadge(b) === "PREFERRED" ? 1 : 0;
+        return b.deliveries - a.deliveries || bPreferred - aPreferred || b.rating - a.rating;
+      }
+      return a.name.localeCompare(b.name);
+    });
+  }, [suppliers, supplierSearch, supplierSort]);
 
   const counts = {
     pending:   countByStatus("PENDING"),
     approved:  countByStatus("APPROVED"),
-    transit:   countByStatus("TRANSIT"),
+    delivered: countByStatus("DELIVERED"),
     delayed:   countByStatus("DELAYED"),
   };
 
+  // Progressing delivery (in-progress or delivered) always opens the batch
+  // overlay — neither status can be set by hand. Every other transition
+  // applies immediately.
+  async function handleStatusSelect(po: PO, status: POStatus) {
+    if ((status === "DELIVERY_IN_PROGRESS" || status === "DELIVERED") && po.status !== "DELIVERED") {
+      setDeliveryPOId(po.id);
+      return;
+    }
+    try {
+      await api.patch(`/purchase-orders/${po.id}/status`, { status: frontendStatusToApi(status) });
+      await refetch();
+      toast.success(`${po.number} marked ${status.toLowerCase()}`);
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to update status.");
+    }
+  }
+
+  async function handleSaveBatch(po: PO, payload: { poFile: File | null; drFile: File; podPhotos: File[] }) {
+    const form = new FormData();
+    if (payload.poFile) form.append("PoFile", payload.poFile);
+    form.append("DrFile", payload.drFile);
+    payload.podPhotos.forEach(f => form.append("PodPhotos", f));
+    try {
+      await api.post(`/purchase-orders/${po.id}/delivery-batches`, form, { headers: { "Content-Type": undefined } });
+      await refetch();
+      toast.success("Batch saved.");
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to save this batch.");
+      throw err;
+    }
+  }
+
+  async function handleCompleteDelivery(po: PO) {
+    try {
+      await api.post(`/purchase-orders/${po.id}/complete-delivery`, {});
+      await refetch();
+      setDeliveryPOId(null);
+      toast.success(`${po.number} marked delivered.`);
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to complete delivery.");
+    }
+  }
+
+  async function handleSubmitRating(po: PO, submission: RatingSubmission) {
+    try {
+      await api.post(`/purchase-orders/${po.id}/rate`, {
+        PriceRating: submission.ratings.price,
+        DeliveryRating: submission.ratings.delivery,
+        QualityRating: submission.ratings.quality,
+        AccuracyRating: submission.ratings.accuracy,
+        ResponsivenessRating: submission.ratings.responsiveness,
+        OnTime: submission.onTime,
+        ActualLeadDays: submission.actualLeadDays,
+        Comments: submission.comments || undefined,
+      });
+      await refetch();
+      setRatingPOId(null);
+      toast.success(`${po.supplier} rated.`);
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to submit delivery evaluation.");
+    }
+  }
+
+  // ── R4: weather-adjusted delivery risk ──────────────────────────────────
+  const snapshot = useWeatherStore(s => s.snapshot);
+  const daily    = useWeatherStore(s => s.daily);
+  const risk     = useWeatherStore(s => s.risk);
+
+  const atRiskOrders = useMemo(() => {
+    if (!risk || !snapshot) return [];
+    return computeWeatherAtRiskOrders(orders, risk.level, snapshot.conditionLabel);
+  }, [orders, risk, snapshot]);
+
+  if (loading) {
+    return (
+      <div style={{ background: "#f5f4f0", minHeight: "100vh" }}>
+        <Header title="Procurement" />
+        <div style={{ padding: "3rem", textAlign: "center", color: "#9ca3af", fontSize: "0.9rem" }}>Loading procurement data…</div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ background: "#f5f4f0" }}>
-      {showNewPO && <NewPOModal onClose={() => setShowNewPO(false)} onAdd={po => setOrders(prev => [po, ...prev])} />}
+      {viewingPO && <ViewPOModal po={viewingPO} onClose={() => setViewingPOId(null)} />}
+      {contactSupplier && (
+        <ContactModal
+          supplier={contactSupplier}
+          canEdit={canEditContact}
+          onClose={() => setContactSupplierId(null)}
+          onSave={contact => handleSaveContact(contactSupplier.id, contact)}
+        />
+      )}
+      {historySupplier && (
+        <HistoryModal
+          supplier={historySupplier}
+          onClose={() => setHistorySupplierId(null)}
+          onViewRatings={() => { setHistorySupplierId(null); setRatingSupplierId(historySupplier.id); }}
+        />
+      )}
+      {ratingSupplier && <SupplierRatingModal supplier={ratingSupplier} onClose={() => setRatingSupplierId(null)} />}
+      {deliveryPO && (
+        <DeliveryBatchModal
+          po={deliveryPO}
+          onClose={() => setDeliveryPOId(null)}
+          onSaveBatch={payload => handleSaveBatch(deliveryPO, payload)}
+          onComplete={() => handleCompleteDelivery(deliveryPO)}
+        />
+      )}
+      {ratingPO && (
+        <RateSupplierModal
+          po={ratingPO}
+          supplier={suppliers.find(s => s.id === ratingPO.supplierId)}
+          onClose={() => setRatingPOId(null)}
+          onSubmit={submission => handleSubmitRating(ratingPO, submission)}
+        />
+      )}
+      {openRequestsProject && (
+        <RequestsOverlayModal
+          projectId={openRequestsProject.projectId}
+          projectName={openRequestsProject.projectName}
+          onClose={() => setOpenRequestsProjectId(null)}
+          onGenerated={() => { refetch(); setTab("po"); }}
+        />
+      )}
       <Header title="Procurement" />
 
       <div style={{ padding: "1.25rem 1.5rem" }}>
@@ -229,10 +1545,10 @@ export default function ProcurementPage() {
         {/* ── 4 stat cards ─────────────────────────────────────────────────── */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "1rem", marginBottom: "1.5rem" }}>
           {[
-            { icon: Clock,        color: "#6b7280", bg: "#f3f4f6", label: "Pending POs",  value: counts.pending  },
-            { icon: CheckCircle2, color: "#16a34a", bg: "#dcfce7", label: "Approved POs", value: counts.approved },
-            { icon: Truck,        color: "#1d4ed8", bg: "#dbeafe", label: "In Transit",   value: counts.transit  },
-            { icon: AlertTriangle,color: "#dc2626", bg: "#fee2e2", label: "Delayed",      value: counts.delayed  },
+            { icon: Clock,        color: "#6b7280", bg: "#f3f4f6", label: "Pending POs",  value: counts.pending   },
+            { icon: CheckCircle2, color: "#16a34a", bg: "#dcfce7", label: "Approved POs", value: counts.approved  },
+            { icon: PackageCheck, color: "#1d4ed8", bg: "#dbeafe", label: "Delivered",    value: counts.delivered },
+            { icon: AlertTriangle,color: "#dc2626", bg: "#fee2e2", label: "Delayed",      value: counts.delayed   },
           ].map(s => {
             const Icon = s.icon;
             return (
@@ -247,127 +1563,342 @@ export default function ProcurementPage() {
           })}
         </div>
 
-        {/* ── Tabs ─────────────────────────────────────────────────────────── */}
-        <div style={{ display: "flex", gap: 4, background: "#e5e7eb", borderRadius: 8, padding: 4, width: "fit-content", marginBottom: "1.25rem" }}>
-          {([{ id: "po", label: "Purchase Orders" }, { id: "suppliers", label: "Suppliers" }] as const).map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)} style={{
-              padding: "6px 20px", borderRadius: 6, fontSize: "0.875rem",
-              fontWeight: tab === t.id ? 600 : 400, border: "none", cursor: "pointer",
-              background: tab === t.id ? "#fff" : "transparent",
-              color: tab === t.id ? "#111827" : "#6b7280",
-              boxShadow: tab === t.id ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
-              transition: "all 0.15s",
-            }}>{t.label}</button>
-          ))}
+        {/* ── Weather & Delivery Risk (R4) — visible above both tabs ─────────── */}
+        {snapshot && risk && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem", marginBottom: "1.5rem" }}>
+            <div style={{
+              background: RISK_VISUALS[risk.level].bg,
+              border: `1px solid ${RISK_VISUALS[risk.level].border}`,
+              borderRadius: 14, padding: "1rem 1.25rem",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: "1.6rem" }}>{snapshot.emoji}</span>
+                  <div>
+                    <p style={{ fontWeight: 700, fontSize: "0.9rem", color: "#111827" }}>
+                      {snapshot.tempC}°C · {snapshot.conditionLabel} — {snapshot.locationName}
+                    </p>
+                    <p style={{ fontSize: "0.75rem", color: "#6b7280", marginTop: 2 }}>{risk.advisory}</p>
+                  </div>
+                </div>
+                <span style={{
+                  fontSize: "0.68rem", fontWeight: 700, padding: "4px 12px", borderRadius: 999,
+                  background: RISK_VISUALS[risk.level].badgeBg, color: RISK_VISUALS[risk.level].badgeColor,
+                  textTransform: "uppercase", letterSpacing: "0.04em", whiteSpace: "nowrap",
+                }}>
+                  {risk.level} risk
+                </span>
+              </div>
+
+              {atRiskOrders.length > 0 && (
+                <div style={{ marginTop: "0.9rem", display: "flex", flexDirection: "column", gap: 6 }}>
+                  <p style={{ fontSize: "0.72rem", fontWeight: 700, color: "#374151" }}>
+                    {atRiskOrders.length} active purchase order{atRiskOrders.length > 1 ? "s" : ""} may be delayed — recommended reorder buffer applied:
+                  </p>
+                  {atRiskOrders.map(po => (
+                    <div key={po.number} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(255,255,255,0.6)", borderRadius: 8, padding: "6px 10px" }}>
+                      <span style={{ fontSize: "0.76rem", fontWeight: 600, color: "#111827" }}>{po.number} · {po.projectName} <span style={{ color: "#9ca3af", fontWeight: 400 }}>({po.supplier})</span></span>
+                      <span style={{ fontSize: "0.72rem", color: "#b45309", fontWeight: 600, whiteSpace: "nowrap" }}>+{po.bufferDays}d buffer</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Weather Impact — same live source as the Dashboard's card, laid out
+                landscape (one wide row) instead of a narrow stacked panel. */}
+            <div style={{ background: "#1a2235", borderRadius: 14, padding: "1rem 1.25rem", color: "#fff", display: "flex", alignItems: "center", gap: "1.25rem", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                <span style={{ fontSize: "1.8rem" }}>{snapshot.emoji}</span>
+                <div>
+                  <p style={{ fontWeight: 700, fontSize: "0.78rem", color: "#9ca3af" }}>Weather Impact</p>
+                  <p style={{ fontSize: "1.5rem", fontWeight: 800, lineHeight: 1.15 }}>{snapshot.tempC}°C <span style={{ fontSize: "0.75rem", fontWeight: 500, color: "#9ca3af" }}>{snapshot.conditionLabel}</span></p>
+                </div>
+              </div>
+
+              <div style={{ width: 1, alignSelf: "stretch", background: "rgba(255,255,255,0.1)", flexShrink: 0 }} />
+
+              <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
+                {[
+                  { label: "WIND",          val: `${snapshot.windKph} km/h`,             Icon: Wind },
+                  { label: "HUMIDITY",      val: `${snapshot.humidityPct}%`,             Icon: Droplets },
+                  { label: "PRECIPITATION", val: `${snapshot.precipitationMm} mm`,       Icon: CloudRain },
+                  { label: "RISK LEVEL",    val: risk.level.toUpperCase(),               Icon: AlertTriangle },
+                ].map(w => (
+                  <div key={w.label} style={{ background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: "0.4rem 0.6rem", minWidth: 92 }}>
+                    <p style={{ color: "#6b7280", fontSize: "0.58rem", fontWeight: 700, letterSpacing: "0.06em" }}>{w.label}</p>
+                    <p style={{ color: "#fff", fontSize: "0.76rem", fontWeight: 600, marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
+                      <w.Icon style={{ width: 11, height: 11 }} /> {w.val}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ width: 1, alignSelf: "stretch", background: "rgba(255,255,255,0.1)", flexShrink: 0 }} />
+
+              <div style={{ flex: "1 1 200px", background: RISK_VISUALS_DARK[risk.level].bg, border: `1px solid ${RISK_VISUALS_DARK[risk.level].border}`, borderRadius: 8, padding: "0.5rem 0.7rem" }}>
+                <p style={{ color: RISK_VISUALS_DARK[risk.level].text, fontSize: "0.7rem", lineHeight: 1.4 }}>
+                  {risk.level === "low" ? "✓ " : "⚠ "}{risk.advisory}
+                </p>
+              </div>
+
+              {daily.length > 0 && (
+                <>
+                  <div style={{ width: 1, alignSelf: "stretch", background: "rgba(255,255,255,0.1)", flexShrink: 0 }} />
+                  <div style={{ flexShrink: 0 }}>
+                    <p style={{ color: "#6b7280", fontSize: "0.6rem", fontWeight: 700, letterSpacing: "0.05em", marginBottom: "0.4rem" }}>5-DAY FORECAST</p>
+                    <div style={{ display: "flex", gap: "0.6rem" }}>
+                      {daily.map(d => (
+                        <div key={d.date} style={{ textAlign: "center" }}>
+                          <p style={{ color: "#6b7280", fontSize: "0.6rem" }}>{formatShortDate(d.date)}</p>
+                          <p style={{ fontSize: "0.9rem", margin: "2px 0" }}>{d.emoji}</p>
+                          <p style={{ color: "#fff", fontSize: "0.7rem", fontWeight: 600 }}>{d.maxTempC}°</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Tabs (+ Suppliers-only search/filter, floated right) ───────────── */}
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: "0.75rem", marginBottom: "1.25rem" }}>
+          <div style={{ display: "flex", gap: 4, background: "#e5e7eb", borderRadius: 8, padding: 4, width: "fit-content" }}>
+            {([
+              { id: "po", label: "Purchase Orders" },
+              ...(canManagePOs ? [{ id: "requests", label: "Requests" }] as const : []),
+              { id: "suppliers", label: "Suppliers" },
+            ] as const).map(t => (
+              <button key={t.id} onClick={() => setTab(t.id)} style={{
+                position: "relative",
+                padding: "6px 20px", borderRadius: 6, fontSize: "0.875rem",
+                fontWeight: tab === t.id ? 600 : 400, border: "none", cursor: "pointer",
+                background: tab === t.id ? "#fff" : "transparent",
+                color: tab === t.id ? "#111827" : "#6b7280",
+                boxShadow: tab === t.id ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                transition: "all 0.15s",
+              }}>
+                {t.label}
+                {t.id === "requests" && totalPendingRequests > 0 && (
+                  <span style={{
+                    position: "absolute", top: -6, right: -6,
+                    background: "#ef4444", color: "#fff", borderRadius: 999,
+                    minWidth: 18, height: 18, padding: "0 4px",
+                    fontSize: "0.65rem", fontWeight: 700, lineHeight: 1,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    boxShadow: "0 0 0 2px #e5e7eb",
+                  }}>
+                    {totalPendingRequests}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          {tab === "suppliers" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <div style={{ position: "relative", width: 220, maxWidth: "100%" }}>
+                <Search style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "#9ca3af", pointerEvents: "none" }} />
+                <input
+                  value={supplierSearch}
+                  onChange={e => setSupplierSearch(e.target.value)}
+                  placeholder="Search suppliers..."
+                  style={{ width: "100%", boxSizing: "border-box", paddingLeft: 32, paddingRight: 10, paddingTop: 8, paddingBottom: 8, borderRadius: 8, background: "#fff", border: "1px solid #e5e7eb", fontSize: "0.82rem", outline: "none", color: "#111827" }}
+                />
+              </div>
+              <div style={{ position: "relative" }}>
+                <button
+                  onClick={() => setSupplierSortOpen(o => !o)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8,
+                    border: "1px solid #e5e7eb", background: "#fff", color: "#374151",
+                    fontSize: "0.82rem", fontWeight: 500, cursor: "pointer", whiteSpace: "nowrap",
+                  }}
+                >
+                  <ArrowUpDown style={{ width: 14, height: 14 }} /> Sort: {supplierSort === "name" ? "Name" : supplierSort === "rating" ? "Rating" : "Preferred"}
+                </button>
+                {supplierSortOpen && (
+                  <>
+                    <div onClick={() => setSupplierSortOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                    <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50, width: 210, background: "#fff", borderRadius: 10, border: "1px solid #e5e7eb", boxShadow: "0 12px 30px rgba(0,0,0,0.12)", padding: "0.4rem" }}>
+                      {([
+                        { id: "preferred", label: "Preferred / Most Ordered" },
+                        { id: "name",      label: "Name (A–Z)" },
+                        { id: "rating",    label: "Rating (highest first)" },
+                      ] as const).map(opt => (
+                        <button
+                          key={opt.id}
+                          onClick={() => { setSupplierSort(opt.id); setSupplierSortOpen(false); }}
+                          style={{
+                            display: "block", width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 6, border: "none",
+                            background: supplierSort === opt.id ? "#fff7ed" : "transparent",
+                            color: supplierSort === opt.id ? "#f97316" : "#374151",
+                            fontSize: "0.8rem", fontWeight: supplierSort === opt.id ? 600 : 500, cursor: "pointer",
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ────────────────────────────────────────────────────────────────── */}
         {/* Tab: Purchase Orders                                               */}
         {/* ────────────────────────────────────────────────────────────────── */}
         {tab === "po" && (
-          <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start" }}>
-
-            {/* PO table */}
-            <div style={{ flex: 1, minWidth: 0, background: "#fff", borderRadius: 12, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <ShoppingCart style={{ width: 16, height: 16, color: "#f97316" }} />
-                  <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Purchase Orders</span>
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => setShowNewPO(true)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer" }}>
-                    <Plus style={{ width: 14, height: 14 }} /> New PO
-                  </button>
-                  <button onClick={() => exportPOs(orders)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", fontWeight: 500, cursor: "pointer" }}>
-                    <Download style={{ width: 14, height: 14 }} /> Export
-                  </button>
-                </div>
+          <div style={{ background: "#fff", borderRadius: 12, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <ShoppingCart style={{ width: 16, height: 16, color: "#f97316" }} />
+                <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Purchase Orders</span>
               </div>
-
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
-                    {["PO NUMBER","MATERIAL","SUPPLIER","QTY","AMOUNT","STATUS","EXPECTED DATE","ACTION"].map(h => (
-                      <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontSize: "0.65rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {orders.map((po, i) => {
-                    const st = PO_STATUS_STYLE[po.status];
-                    return (
-                      <tr key={po.number + i} style={{ borderBottom: i < orders.length - 1 ? "1px solid #f9fafb" : "none" }}>
-                        <td style={{ padding: "14px 12px" }}>
-                          <span style={{ fontWeight: 700, fontSize: "0.8rem", color: "#f97316" }}>{po.number}</span>
-                        </td>
-                        <td style={{ padding: "14px 12px" }}>
-                          <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#111827" }}>{po.material}</span>
-                        </td>
-                        <td style={{ padding: "14px 12px", fontSize: "0.78rem", color: "#6b7280" }}>{po.supplier}</td>
-                        <td style={{ padding: "14px 12px", fontSize: "0.8rem", color: "#374151", fontWeight: 500 }}>{po.qty}</td>
-                        <td style={{ padding: "14px 12px", fontSize: "0.82rem", fontWeight: 700, color: "#111827" }}>
-                          ₱{po.amount.toLocaleString()}
-                        </td>
-                        <td style={{ padding: "14px 12px" }}>
-                          <span style={{ fontSize: "0.7rem", fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: st.bg, color: st.color, whiteSpace: "nowrap" }}>
-                            · {po.status}
-                          </span>
-                        </td>
-                        <td style={{ padding: "14px 12px", fontSize: "0.78rem", color: "#6b7280", whiteSpace: "nowrap" }}>{po.expectedDate}</td>
-                        <td style={{ padding: "14px 12px" }}>
-                          <div style={{ display: "flex", gap: 10 }}>
-                            <button title="View" style={{ color: "#9ca3af", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-                              <BookOpen style={{ width: 15, height: 15 }} />
-                            </button>
-                            <button title="Approve" style={{ color: "#9ca3af", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-                              <CheckSquare style={{ width: 15, height: 15 }} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => exportPOs(sortedOrders)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", fontWeight: 500, cursor: "pointer" }}>
+                  <Download style={{ width: 14, height: 14 }} /> Export
+                </button>
+              </div>
             </div>
 
-            {/* PO Timeline */}
-            <div style={{ width: 240, flexShrink: 0, background: "#fff", borderRadius: 12, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "1.25rem" }}>
-                <Clock style={{ width: 15, height: 15, color: "#f97316" }} />
-                <span style={{ fontWeight: 700, fontSize: "0.9rem" }}>PO Timeline</span>
-              </div>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
+                  {["PO NUMBER","PROJECT NAME","SUPPLIER","STATUS","EXPECTED DATE","VIEW"].map(h => (
+                    <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontSize: "0.65rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedOrders.length === 0 ? (
+                  <tr><td colSpan={6} style={{ padding: "2rem 12px", textAlign: "center", color: "#9ca3af", fontSize: "0.85rem" }}>No purchase orders yet.</td></tr>
+                ) : sortedOrders.map((po, i) => {
+                  const status = getEffectiveStatus(po);
+                  const st = PO_STATUS_STYLE[status];
+                  return (
+                    <tr key={po.id} style={{ borderBottom: i < sortedOrders.length - 1 ? "1px solid #f9fafb" : "none" }}>
+                      <td style={{ padding: "14px 12px" }}>
+                        <span style={{ fontWeight: 700, fontSize: "0.8rem", color: "#f97316" }}>{po.number}</span>
+                      </td>
+                      <td style={{ padding: "14px 12px" }}>
+                        <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#111827" }}>{po.projectName}</span>
+                      </td>
+                      <td style={{ padding: "14px 12px", fontSize: "0.78rem", color: "#6b7280" }}>{po.supplier}</td>
+                      <td style={{ padding: "14px 12px" }}>
+                        {status === "DELIVERY_IN_PROGRESS" ? (
+                          // Neither role picks this from a dropdown twice — it's already
+                          // selected, so re-opening means clicking the pill to add another
+                          // batch or complete the delivery.
+                          canMarkDelivered ? (
+                            <button onClick={() => setDeliveryPOId(po.id)} title="Add another batch or complete delivery" style={{
+                              fontSize: "0.7rem", fontWeight: 700, padding: "3px 10px", borderRadius: 999,
+                              background: st.bg, color: st.color, border: "none", cursor: "pointer", whiteSpace: "nowrap",
+                            }}>
+                              · {statusLabel(status)}
+                            </button>
+                          ) : (
+                            <span style={{ fontSize: "0.7rem", fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: st.bg, color: st.color, whiteSpace: "nowrap" }}>
+                              · {statusLabel(status)}
+                            </span>
+                          )
+                        ) : status === "DELIVERED" ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: "0.7rem", fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: st.bg, color: st.color, whiteSpace: "nowrap" }}>
+                              · DELIVERED
+                            </span>
+                            {canRate && !po.hasEvaluation && (
+                              <button onClick={() => setRatingPOId(po.id)} title="Rate the supplier" style={{
+                                fontSize: "0.65rem", fontWeight: 700, padding: "3px 8px", borderRadius: 999,
+                                background: "#fff7ed", color: "#f97316", border: "1px solid #fed7aa", cursor: "pointer",
+                              }}>
+                                Rate
+                              </button>
+                            )}
+                          </div>
+                        ) : (canManagePOs || canMarkDelivered) ? (
+                          // Admin has both flags and gets a merged dropdown: PENDING/APPROVED
+                          // (set directly) plus DELIVERED (opens the proof-of-delivery overlay
+                          // rather than setting the status directly — the backend rejects a
+                          // direct PATCH to DeliveryInProgress/Delivered either way).
+                          <select
+                            value={status === "DELAYED" ? "DELAYED" : canManagePOs ? po.status : status}
+                            onChange={e => handleStatusSelect(po, e.target.value as POStatus)}
+                            title={status === "DELAYED" ? "Past its expected delivery date" : !canManagePOs ? "You can only mark this purchase order as delivered" : undefined}
+                            style={{
+                              fontSize: "0.7rem", fontWeight: 700, padding: "3px 8px", borderRadius: 999,
+                              background: st.bg, color: st.color, border: "none", cursor: "pointer", outline: "none",
+                              appearance: "none" as const,
+                            }}
+                          >
+                            {status === "DELAYED" && <option value="DELAYED" disabled hidden>DELAYED</option>}
+                            {canManagePOs
+                              ? PO_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)
+                              : <option value={status} disabled hidden>{statusLabel(status)}</option>}
+                            {canMarkDelivered && <option value="DELIVERED">DELIVERED</option>}
+                          </select>
+                        ) : (
+                          <span style={{ fontSize: "0.7rem", fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: st.bg, color: st.color, whiteSpace: "nowrap" }}>
+                            · {statusLabel(status)}
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ padding: "14px 12px", fontSize: "0.78rem", color: "#6b7280", whiteSpace: "nowrap" }}>{po.expectedDate}</td>
+                      <td style={{ padding: "14px 12px" }}>
+                        <button title="View materials" onClick={() => setViewingPOId(po.id)} style={{ color: "#9ca3af", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                          <Eye style={{ width: 16, height: 16 }} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
 
-              <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-                {TIMELINE_STEPS.map((step, i) => (
-                  <div key={step.label} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-                    {/* Dot + line */}
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
-                      <div style={{
-                        width: 14, height: 14, borderRadius: "50%", flexShrink: 0,
-                        background: step.done ? "#22c55e" : step.active ? "#f97316" : "#e5e7eb",
-                        border: step.done ? "2px solid #22c55e" : step.active ? "2px solid #f97316" : "2px solid #d1d5db",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        marginTop: 2,
-                      }}>
-                        {step.done && <span style={{ color: "#fff", fontSize: "0.5rem", fontWeight: 900 }}>✓</span>}
-                        {step.active && <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#fff" }} />}
-                      </div>
-                      {i < TIMELINE_STEPS.length - 1 && (
-                        <div style={{ width: 2, flex: 1, background: step.done ? "#22c55e" : "#e5e7eb", minHeight: 28, marginTop: 2 }} />
-                      )}
-                    </div>
+        {/* ────────────────────────────────────────────────────────────────── */}
+        {/* Tab: Requests — projects with pending material requests only;      */}
+        {/* a project with nothing outstanding simply doesn't appear.          */}
+        {/* ────────────────────────────────────────────────────────────────── */}
+        {tab === "requests" && (
+          <div style={{ background: "#fff", borderRadius: 12, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "1.25rem" }}>
+              <ClipboardList style={{ width: 16, height: 16, color: "#f97316" }} />
+              <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Material Requests</span>
+            </div>
 
-                    {/* Text */}
-                    <div style={{ paddingBottom: i < TIMELINE_STEPS.length - 1 ? "1rem" : 0 }}>
-                      <p style={{ fontSize: "0.8rem", fontWeight: step.active ? 700 : 500, color: step.done || step.active ? "#111827" : "#9ca3af" }}>{step.label}</p>
-                      <p style={{ fontSize: "0.67rem", color: "#9ca3af", marginTop: 1 }}>{step.date}</p>
+            {requestsProjects.length === 0 ? (
+              <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "2rem 0" }}>
+                No projects have pending material requests right now.
+              </p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {requestsProjects.map(p => (
+                  <button
+                    key={p.projectId}
+                    onClick={() => setOpenRequestsProjectId(p.projectId)}
+                    style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      width: "100%", padding: "14px 16px", borderRadius: 10, border: "none",
+                      background: "#f9fafb", cursor: "pointer", textAlign: "left",
+                    }}
+                  >
+                    <div>
+                      <p style={{ fontWeight: 700, fontSize: "0.88rem", color: "#111827" }}>{p.projectName}</p>
+                      <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginTop: 2 }}>
+                        {p.pendingCount} material{p.pendingCount !== 1 ? "s" : ""} requested
+                      </p>
                     </div>
-                  </div>
+                    <ChevronRight style={{ width: 16, height: 16, color: "#9ca3af" }} />
+                  </button>
                 ))}
               </div>
-            </div>
-
+            )}
           </div>
         )}
 
@@ -377,26 +1908,31 @@ export default function ProcurementPage() {
         {tab === "suppliers" && (
           <div>
 
-            {/* 2×2 Supplier cards */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1.25rem" }}>
-              {SUPPLIERS.map(s => {
-                const badge = BADGE_STYLE[s.badge];
-                return (
-                  <div key={s.name} style={{ background: "#fff", borderRadius: 14, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
+            {/* Supplier cards — fluid 1/2/3-column grid (min 300px per card,
+                naturally reflows with available width, including as the
+                sidebar collapses/expands, not just at fixed viewport
+                breakpoints) */}
+            {suppliers.length === 0 ? (
+              <div style={{ background: "#fff", borderRadius: 14, padding: "2rem", textAlign: "center", color: "#9ca3af", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
+                No suppliers yet — they&apos;re added automatically the first time you create a PO for them.
+              </div>
+            ) : filteredSuppliers.length === 0 ? (
+              <div style={{ background: "#fff", borderRadius: 14, padding: "2rem", textAlign: "center", color: "#9ca3af", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
+                No suppliers match your search/filter.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "1rem", marginBottom: "1.25rem" }}>
+                {filteredSuppliers.map(s => (
+                  <div key={s.id} style={{ background: "#fff", borderRadius: 14, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)", minWidth: 0 }}>
                     {/* Header */}
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <div style={{ width: 48, height: 48, borderRadius: 10, background: s.avatarBg, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: "0.875rem", flexShrink: 0 }}>
-                          {s.initials}
-                        </div>
-                        <div>
-                          <p style={{ fontWeight: 700, fontSize: "0.95rem", color: "#111827" }}>{s.name}</p>
-                          <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginTop: 2 }}>{s.category} · Lead: {s.lead}</p>
-                        </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: "1rem" }}>
+                      <div style={{ width: 48, height: 48, borderRadius: 10, background: s.avatarBg, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: "0.875rem", flexShrink: 0 }}>
+                        {s.initials}
                       </div>
-                      <span style={{ fontSize: "0.65rem", fontWeight: 700, padding: "3px 9px", borderRadius: 999, background: badge.bg, color: badge.color, whiteSpace: "nowrap" }}>
-                        · {s.badge}
-                      </span>
+                      <div>
+                        <p style={{ fontWeight: 700, fontSize: "0.95rem", color: "#111827" }}>{s.name}</p>
+                        <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginTop: 2 }}>{s.category} · Lead: {s.lead}</p>
+                      </div>
                     </div>
 
                     {/* 3 stat boxes */}
@@ -404,7 +1940,7 @@ export default function ProcurementPage() {
                       {[
                         { label: "Rating",     value: s.rating.toFixed(1) },
                         { label: "Deliveries", value: s.deliveries        },
-                        { label: "On-Time",    value: `${s.onTime}%`     },
+                        { label: "On-Time",    value: `${s.onTimePct}%`  },
                       ].map(b => (
                         <div key={b.label} style={{ background: "#f9fafb", borderRadius: 8, padding: "0.6rem", textAlign: "center" }}>
                           <p style={{ fontSize: "1rem", fontWeight: 700, color: "#111827" }}>{b.value}</p>
@@ -415,60 +1951,69 @@ export default function ProcurementPage() {
 
                     {/* Stars + buttons */}
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <button onClick={() => setRatingSupplierId(s.id)} title="View rating breakdown" style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
                         <Stars rating={s.rating} />
                         <span style={{ fontSize: "0.78rem", fontWeight: 600, color: "#374151" }}>{s.rating.toFixed(1)}</span>
-                      </div>
+                      </button>
                       <div style={{ display: "flex", gap: 6 }}>
-                        <button style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.75rem", fontWeight: 500, cursor: "pointer" }}>
+                        <button onClick={() => setContactSupplierId(s.id)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.75rem", fontWeight: 500, cursor: "pointer" }}>
                           <Send style={{ width: 12, height: 12 }} /> Contact
                         </button>
-                        <button style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.75rem", fontWeight: 500, cursor: "pointer" }}>
+                        <button onClick={() => setHistorySupplierId(s.id)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.75rem", fontWeight: 500, cursor: "pointer" }}>
                           <History style={{ width: 12, height: 12 }} /> History
                         </button>
                       </div>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-
-            {/* Supplier Performance */}
-            <div style={{ background: "#fff", borderRadius: 14, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
-              <p style={{ fontWeight: 700, fontSize: "0.95rem", color: "#111827", marginBottom: "1rem" }}>Supplier Performance</p>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "1rem" }}>
-                {PERF_SUPPLIERS.map(s => {
-                  const badge = BADGE_STYLE[s.badge];
-                  return (
-                    <div key={s.name} style={{ background: "#1e3154", borderRadius: 12, padding: "1.1rem" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.875rem" }}>
-                        <Truck style={{ width: 18, height: 18, color: "#94a3b8" }} />
-                        <span style={{ fontSize: "0.6rem", fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: badge.bg, color: badge.color }}>
-                          {s.badge}
-                        </span>
-                      </div>
-                      <p style={{ fontWeight: 700, fontSize: "0.85rem", color: "#fff", marginBottom: "0.75rem" }}>{s.name}</p>
-                      <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", marginBottom: "0.75rem" }}>
-                        {[
-                          { label: "On-Time Delivery", value: `${s.onTime}%`, color: s.onTimePct },
-                          { label: "Avg. Lead Time",   value: `${s.lead} days`, color: "#fff"    },
-                          { label: "Total Deliveries", value: String(s.deliveries), color: "#fff" },
-                        ].map(r => (
-                          <div key={r.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                            <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>{r.label}</span>
-                            <span style={{ fontSize: "0.78rem", fontWeight: 700, color: r.color }}>{r.value}</span>
-                          </div>
-                        ))}
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                        <Stars rating={s.rating} />
-                        <span style={{ fontSize: "0.72rem", color: "#94a3b8" }}>{s.rating.toFixed(1)}</span>
-                      </div>
-                    </div>
-                  );
-                })}
+                ))}
               </div>
-            </div>
+            )}
+
+            {/* Supplier Performance — top 5, ranked most to least preferred */}
+            {suppliers.length > 0 && (
+              <div style={{ background: "#fff", borderRadius: 14, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
+                <p style={{ fontWeight: 700, fontSize: "0.95rem", color: "#111827", marginBottom: "1rem" }}>Supplier Performance</p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem" }}>
+                  {sortSuppliersByPreference(suppliers)
+                    .slice(0, 5)
+                    .map((s, i) => {
+                      const badgeName = getSupplierBadge(s);
+                      const badge = BADGE_STYLE[badgeName];
+                      const onTimeColor = s.onTimePct >= 90 ? "#22c55e" : s.onTimePct >= 80 ? "#f97316" : "#ef4444";
+                      return (
+                        <div key={s.id} style={{ background: "#1e3154", borderRadius: 12, padding: "1.1rem", position: "relative" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.875rem" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <span style={{ fontSize: "0.68rem", fontWeight: 800, color: "#f97316" }}>#{i + 1}</span>
+                              <Truck style={{ width: 18, height: 18, color: "#94a3b8" }} />
+                            </div>
+                            <span style={{ fontSize: "0.6rem", fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: badge.bg, color: badge.color }}>
+                              {badgeName}
+                            </span>
+                          </div>
+                          <p style={{ fontWeight: 700, fontSize: "0.85rem", color: "#fff", marginBottom: "0.75rem" }}>{s.name}</p>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", marginBottom: "0.75rem" }}>
+                            {[
+                              { label: "On-Time Delivery", value: `${s.onTimePct}%`, color: onTimeColor },
+                              { label: "Avg. Lead Time",   value: s.lead,           color: "#fff"    },
+                              { label: "Total Deliveries", value: String(s.deliveries), color: "#fff" },
+                            ].map(r => (
+                              <div key={r.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                                <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>{r.label}</span>
+                                <span style={{ fontSize: "0.78rem", fontWeight: 700, color: r.color }}>{r.value}</span>
+                              </div>
+                            ))}
+                          </div>
+                          <button onClick={() => setRatingSupplierId(s.id)} title="View rating breakdown" style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                            <Stars rating={s.rating} />
+                            <span style={{ fontSize: "0.72rem", color: "#94a3b8" }}>{s.rating.toFixed(1)}</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
 
           </div>
         )}

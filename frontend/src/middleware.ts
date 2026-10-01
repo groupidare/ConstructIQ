@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const PUBLIC_ROUTES = ["/", "/login"];
+const PUBLIC_ROUTES = ["/", "/login", "/forgot-password", "/reset-password"];
 
 export function middleware(request: NextRequest) {
   const token = request.cookies.get("token")?.value;
@@ -11,7 +11,7 @@ export function middleware(request: NextRequest) {
   if (PUBLIC_ROUTES.includes(pathname)) {
     // Authenticated users visiting login → go to dashboard
     if (token && pathname === "/login") {
-      return NextResponse.redirect(new URL("/dashboard", request.url));
+      return NextResponse.redirect(new URL("/projects", request.url));
     }
     return NextResponse.next();
   }
@@ -24,5 +24,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!api|_next/static|_next/image|icons|manifest.json|favicon.ico).*)"],
+  matcher: ["/((?!api|_next/static|_next/image|icons|manifest.json|favicon.ico|.*\\..*).*)"],
 };

@@ -18,7 +18,27 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ForecastedMaterial>       ForecastedMaterials       => Set<ForecastedMaterial>();
     public DbSet<ProcurementRecommendation> ProcurementRecommendations => Set<ProcurementRecommendation>();
     public DbSet<PurchaseRequest>          PurchaseRequests          => Set<PurchaseRequest>();
+    public DbSet<RedistributionRequest>    RedistributionRequests    => Set<RedistributionRequest>();
+    public DbSet<WarehouseRequest>         WarehouseRequests         => Set<WarehouseRequest>();
+    public DbSet<HistoricalMaterialSupply> HistoricalMaterialSupplies => Set<HistoricalMaterialSupply>();
     public DbSet<ActivityLog>              ActivityLogs              => Set<ActivityLog>();
+    public DbSet<Measurement>              Measurements              => Set<Measurement>();
+    public DbSet<ProjectDocument>          ProjectDocuments          => Set<ProjectDocument>();
+    public DbSet<Notification>             Notifications             => Set<Notification>();
+    public DbSet<NotificationRead>         NotificationReads         => Set<NotificationRead>();
+    public DbSet<Supplier>                 Suppliers                 => Set<Supplier>();
+    public DbSet<PurchaseOrder>            PurchaseOrders            => Set<PurchaseOrder>();
+    public DbSet<PurchaseOrderMaterial>    PurchaseOrderMaterials    => Set<PurchaseOrderMaterial>();
+    public DbSet<DeliveryEvaluation>       DeliveryEvaluations       => Set<DeliveryEvaluation>();
+    public DbSet<DeliveryPhoto>            DeliveryPhotos            => Set<DeliveryPhoto>();
+    public DbSet<DeliveryBatch>            DeliveryBatches           => Set<DeliveryBatch>();
+    public DbSet<DeliveryBatchPhoto>       DeliveryBatchPhotos       => Set<DeliveryBatchPhoto>();
+    public DbSet<ProjectProgressUpdate>    ProjectProgressUpdates    => Set<ProjectProgressUpdate>();
+    public DbSet<ProjectProgressPhoto>     ProjectProgressPhotos     => Set<ProjectProgressPhoto>();
+    public DbSet<TrustedDevice>            TrustedDevices            => Set<TrustedDevice>();
+    public DbSet<WarehouseStockItem>       WarehouseStockItems       => Set<WarehouseStockItem>();
+    public DbSet<MaterialRequest>          MaterialRequests          => Set<MaterialRequest>();
+    public DbSet<BackupJobRun>             BackupJobRuns             => Set<BackupJobRun>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -26,6 +46,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         mb.Entity<User>().HasIndex(u => u.Username).IsUnique();
         mb.Entity<User>().HasIndex(u => u.Email).IsUnique();
+
+        mb.Entity<TrustedDevice>().HasIndex(d => new { d.UserId, d.DeviceId }).IsUnique();
+        mb.Entity<TrustedDevice>()
+            .HasOne(d => d.User)
+            .WithMany(u => u.TrustedDevices)
+            .HasForeignKey(d => d.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         mb.Entity<InventoryRecord>()
             .HasIndex(i => new { i.ProjectId, i.MaterialId })
@@ -55,10 +82,242 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasForeignKey(e => e.RecordedByUserId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        mb.Entity<ExcessWasteRecord>()
+            .HasOne(e => e.BOQItem)
+            .WithMany()
+            .HasForeignKey(e => e.BOQItemId)
+            .OnDelete(DeleteBehavior.SetNull);
+
         mb.Entity<ActivityLog>()
             .HasOne(a => a.User)
-            .WithMany()
+            .WithMany(u => u.ActivityLogs)
             .HasForeignKey(a => a.UserId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        // Cascade (not Restrict): a redistribution request between two projects
+        // has no meaning once either project is gone — deleting a project should
+        // be able to succeed outright, not be blocked by requests referencing it.
+        mb.Entity<RedistributionRequest>()
+            .HasOne(r => r.SourceProject)
+            .WithMany()
+            .HasForeignKey(r => r.SourceProjectId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<RedistributionRequest>()
+            .HasOne(r => r.TargetProject)
+            .WithMany()
+            .HasForeignKey(r => r.TargetProjectId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<RedistributionRequest>()
+            .HasOne(r => r.RequestedBy)
+            .WithMany()
+            .HasForeignKey(r => r.RequestedByUserId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<RedistributionRequest>()
+            .HasOne(r => r.ApprovedBy)
+            .WithMany()
+            .HasForeignKey(r => r.ApprovedByUserId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<RedistributionRequest>()
+            .HasOne(r => r.SourceExcessWasteRecord)
+            .WithMany()
+            .HasForeignKey(r => r.SourceExcessWasteRecordId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<WarehouseRequest>()
+            .HasOne(m => m.Project)
+            .WithMany()
+            .HasForeignKey(m => m.ProjectId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<WarehouseRequest>()
+            .HasOne(m => m.Material)
+            .WithMany()
+            .HasForeignKey(m => m.MaterialId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<WarehouseRequest>()
+            .HasOne(m => m.RequestedBy)
+            .WithMany()
+            .HasForeignKey(m => m.RequestedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<WarehouseRequest>()
+            .HasOne(m => m.ApprovedBy)
+            .WithMany()
+            .HasForeignKey(m => m.ApprovedByUserId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<HistoricalMaterialSupply>()
+            .HasOne(h => h.BOQItem)
+            .WithMany(b => b.HistoricalSupplies)
+            .HasForeignKey(h => h.BOQItemId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<HistoricalMaterialSupply>()
+            .HasOne(h => h.Supplier)
+            .WithMany()
+            .HasForeignKey(h => h.SupplierId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<Measurement>()
+            .HasOne(m => m.RecordedBy)
+            .WithMany()
+            .HasForeignKey(m => m.RecordedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<ProjectDocument>()
+            .HasOne(d => d.UploadedBy)
+            .WithMany()
+            .HasForeignKey(d => d.UploadedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<Notification>()
+            .HasOne(n => n.CreatedBy)
+            .WithMany()
+            .HasForeignKey(n => n.CreatedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // SetNull (not the default Cascade): ProjectId is nullable — Admin/system
+        // notifications already have no project, and a notification tied to a
+        // deleted project should simply lose that link, not vanish itself.
+        mb.Entity<Notification>()
+            .HasOne(n => n.Project)
+            .WithMany()
+            .HasForeignKey(n => n.ProjectId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<NotificationRead>()
+            .HasKey(r => new { r.NotificationId, r.UserId });
+
+        mb.Entity<NotificationRead>()
+            .HasOne(r => r.Notification)
+            .WithMany(n => n.Reads)
+            .HasForeignKey(r => r.NotificationId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<NotificationRead>()
+            .HasOne(r => r.User)
+            .WithMany()
+            .HasForeignKey(r => r.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<PurchaseOrder>()
+            .HasIndex(po => po.Number)
+            .IsUnique();
+
+        // Cascade: a PurchaseOrder (and its Materials/Evaluation/Photos, already
+        // Cascade below/by convention) is project-owned data — deleting the
+        // project should be able to succeed, not be blocked by its own POs.
+        mb.Entity<PurchaseOrder>()
+            .HasOne(po => po.Project)
+            .WithMany()
+            .HasForeignKey(po => po.ProjectId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<PurchaseOrder>()
+            .HasOne(po => po.Supplier)
+            .WithMany(s => s.PurchaseOrders)
+            .HasForeignKey(po => po.SupplierId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<PurchaseOrder>()
+            .HasOne(po => po.CreatedBy)
+            .WithMany()
+            .HasForeignKey(po => po.CreatedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<PurchaseOrder>()
+            .HasOne(po => po.Evaluation)
+            .WithOne(e => e.PurchaseOrder)
+            .HasForeignKey<DeliveryEvaluation>(e => e.PurchaseOrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<DeliveryEvaluation>()
+            .HasOne(e => e.RatedBy)
+            .WithMany()
+            .HasForeignKey(e => e.RatedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<DeliveryBatch>()
+            .HasOne(b => b.PurchaseOrder)
+            .WithMany(po => po.DeliveryBatches)
+            .HasForeignKey(b => b.PurchaseOrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<DeliveryBatch>()
+            .HasOne(b => b.UploadedBy)
+            .WithMany()
+            .HasForeignKey(b => b.UploadedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<ProjectProgressUpdate>()
+            .HasOne(u => u.Project)
+            .WithMany(p => p.ProgressUpdates)
+            .HasForeignKey(u => u.ProjectId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<ProjectProgressUpdate>()
+            .HasOne(u => u.UpdatedBy)
+            .WithMany()
+            .HasForeignKey(u => u.UpdatedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<ProjectProgressPhoto>()
+            .HasOne(ph => ph.ProjectProgressUpdate)
+            .WithMany(u => u.Photos)
+            .HasForeignKey(ph => ph.ProjectProgressUpdateId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<Supplier>()
+            .HasIndex(s => s.Name)
+            .IsUnique();
+
+        mb.Entity<PurchaseOrderMaterial>()
+            .HasOne(m => m.Material)
+            .WithMany()
+            .HasForeignKey(m => m.MaterialId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<PurchaseOrderMaterial>()
+            .HasOne(m => m.BOQItem)
+            .WithMany()
+            .HasForeignKey(m => m.BOQItemId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<PurchaseOrderMaterial>()
+            .HasOne(m => m.Phase)
+            .WithMany()
+            .HasForeignKey(m => m.PhaseId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        // Cascade: a project's material requests have no meaning once the
+        // project itself is gone — matches PurchaseOrder's own project FK.
+        mb.Entity<MaterialRequest>()
+            .HasOne(r => r.Project)
+            .WithMany()
+            .HasForeignKey(r => r.ProjectId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<MaterialRequest>()
+            .HasOne(r => r.Material)
+            .WithMany()
+            .HasForeignKey(r => r.MaterialId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<MaterialRequest>()
+            .HasOne(r => r.RequestedBy)
+            .WithMany()
+            .HasForeignKey(r => r.RequestedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<MaterialRequest>()
+            .HasOne(r => r.FulfilledByPurchaseOrder)
+            .WithMany()
+            .HasForeignKey(r => r.FulfilledByPurchaseOrderId)
             .OnDelete(DeleteBehavior.SetNull);
     }
 }

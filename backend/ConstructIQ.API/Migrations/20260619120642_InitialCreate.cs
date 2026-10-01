@@ -103,8 +103,7 @@ namespace ConstructIQ.API.Migrations
                         .Annotation("MySql:CharSet", "utf8mb4"),
                     IpAddress = table.Column<string>(type: "varchar(45)", maxLength: 45, nullable: true)
                         .Annotation("MySql:CharSet", "utf8mb4"),
-                    CreatedAt = table.Column<DateTime>(type: "datetime(6)", nullable: false),
-                    UserId1 = table.Column<int>(type: "int", nullable: true)
+                    CreatedAt = table.Column<DateTime>(type: "datetime(6)", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -115,11 +114,6 @@ namespace ConstructIQ.API.Migrations
                         principalTable: "Users",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.SetNull);
-                    table.ForeignKey(
-                        name: "FK_ActivityLogs_Users_UserId1",
-                        column: x => x.UserId1,
-                        principalTable: "Users",
-                        principalColumn: "Id");
                 })
                 .Annotation("MySql:CharSet", "utf8mb4");
 
@@ -529,11 +523,6 @@ namespace ConstructIQ.API.Migrations
                 name: "IX_ActivityLogs_UserId",
                 table: "ActivityLogs",
                 column: "UserId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_ActivityLogs_UserId1",
-                table: "ActivityLogs",
-                column: "UserId1");
 
             migrationBuilder.CreateIndex(
                 name: "IX_BOQItems_MaterialId",

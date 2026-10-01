@@ -1,55 +1,410 @@
 using ConstructIQ.API.Algorithms;
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Models.DTOs.Procurement;
+using ConstructIQ.API.Models.Entities;
 using ConstructIQ.API.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class RedistributionService(AppDbContext db) : IRedistributionService
+public class RedistributionService(AppDbContext db, INotificationService notifications) : IRedistributionService
 {
+    // Damaged/expired stock isn't safe to redistribute — only unused/overordered excess is.
+    private static readonly ExcessType[] ReusableExcessTypes = [ExcessType.Unused, ExcessType.Overordered];
+
     public async Task<IEnumerable<RedistributionRecommendationDto>> GetRecommendationsAsync()
     {
-        // Stored as procurement recommendations with notes containing redistribution data
-        // In a production scenario, add a dedicated RedistributionRecord entity
-        await Task.CompletedTask;
-        return [];
+        var requests = await db.RedistributionRequests
+            .Include(r => r.Material)
+            .Include(r => r.SourceProject)
+            .Include(r => r.TargetProject)
+            .Where(r => RedistributionStatuses.Active.Contains(r.Status))
+            .ToListAsync();
+
+        // Still-undecided requests always float to the top (newest first);
+        // once one is Approved it sinks to the bottom, most-recently-approved
+        // first. Sorted in-memory (not in the query) since the tie-break key
+        // itself differs per group (RequestedAt vs. ApprovedAt).
+        var ordered = requests
+            .OrderBy(r => RedistributionStatuses.Pending.Contains(r.Status) ? 0 : 1)
+            .ThenByDescending(r => RedistributionStatuses.Pending.Contains(r.Status) ? r.RequestedAt : (r.ApprovedAt ?? r.RequestedAt));
+
+        return ordered.Select(ToDto);
     }
 
     public async Task GenerateRecommendationsAsync()
     {
-        var excessPool = (await db.InventoryRecords
+        // Supply signal 1: current project-level excess inventory.
+        var inventoryExcess = await db.InventoryRecords
             .Include(r => r.Material)
-            .Where(r => r.ExcessQuantity > 0 && r.ExcessQuantity >= r.ReorderPoint)
-            .ToListAsync())
-            .Select(r => (r.ProjectId, r.MaterialId, r.ExcessQuantity, r.Material.UnitCost))
+            .Where(r => r.ExcessQuantity > 0)
+            .Select(r => new { r.ProjectId, r.MaterialId, Qty = r.ExcessQuantity, UnitCost = r.Material.UnitCost })
+            .ToListAsync();
+
+        // Supply signal 2: the excess/waste logs — only entries marked reusable and not damaged/expired.
+        var loggedExcess = await db.ExcessWasteRecords
+            .Where(r => r.IsReusable && ReusableExcessTypes.Contains(r.ExcessType))
+            .Select(r => new { r.ProjectId, r.MaterialId, Qty = r.Quantity, r.UnitCost })
+            .ToListAsync();
+
+        var excessPool = inventoryExcess
+            .Concat(loggedExcess)
+            .GroupBy(x => (x.ProjectId, x.MaterialId))
+            .Select(g => (
+                ProjectId: g.Key.ProjectId,
+                MaterialId: g.Key.MaterialId,
+                ExcessQty: g.Sum(x => x.Qty),
+                // Use the most specific price available: an actual logged excess cost over the catalog price.
+                UnitCost: g.Select(x => x.UnitCost).FirstOrDefault(c => c > 0)))
+            .Where(x => x.ExcessQty > 0)
             .ToList();
 
-        var demandPool = (await db.ProcurementRecommendations
+        var demandRows = await db.ProcurementRecommendations
             .Where(r => r.CurrentStock < r.ReorderPoint)
-            .ToListAsync())
-            .Select(r => (r.ProjectId, r.MaterialId, r.RecommendedQuantity))
+            .Select(r => new { r.ProjectId, r.MaterialId, r.RecommendedQuantity, r.UrgencyLevel })
+            .ToListAsync();
+
+        var demandPool = demandRows
+            .Select(r => (r.ProjectId, r.MaterialId, NeededQty: r.RecommendedQuantity))
             .ToList();
+
+        var urgencyByProjectMaterial = demandRows
+            .GroupBy(r => (r.ProjectId, r.MaterialId))
+            .ToDictionary(g => g.Key, g => g.Max(r => r.UrgencyLevel));
 
         var matches = RedistributionEngine.FindMatches(excessPool, demandPool);
 
+        var existingActiveKeys = (await db.RedistributionRequests
+            .Where(r => RedistributionStatuses.Active.Contains(r.Status))
+            .Select(r => new { r.MaterialId, r.SourceProjectId, r.TargetProjectId })
+            .ToListAsync())
+            .Select(r => (r.MaterialId, r.SourceProjectId, r.TargetProjectId))
+            .ToHashSet();
+
+        // Best-effort link back to the specific logged excess entry each match
+        // draws from, so the Excess Recording Log can show where it went — an
+        // aggregate match may not trace to one exact record, but usually does.
+        var linkedExcessRecordIds = (await db.RedistributionRequests
+            .Where(r => RedistributionStatuses.Active.Contains(r.Status) && r.SourceExcessWasteRecordId != null)
+            .Select(r => r.SourceExcessWasteRecordId!.Value)
+            .ToListAsync())
+            .ToHashSet();
+
+        var bestExcessRecordByKey = (await db.ExcessWasteRecords
+            .Where(r => r.IsReusable && ReusableExcessTypes.Contains(r.ExcessType))
+            .OrderByDescending(r => r.RecordedAt)
+            .ToListAsync())
+            .Where(r => !linkedExcessRecordIds.Contains(r.Id))
+            .GroupBy(r => (r.ProjectId, r.MaterialId))
+            .ToDictionary(g => g.Key, g => g.First());
+
         foreach (var match in matches)
         {
+            var key = (match.MaterialId, match.SourceProjectId, match.TargetProjectId);
+            if (existingActiveKeys.Contains(key)) continue;
+
             var sourceProject = await db.Projects.FindAsync(match.SourceProjectId);
             var targetProject = await db.Projects.FindAsync(match.TargetProjectId);
             var material      = await db.Materials.FindAsync(match.MaterialId);
-
             if (sourceProject is null || targetProject is null || material is null) continue;
 
-            // Log as an activity — dedicated entity would be added in next sprint
+            var unitCost = match.TransferQuantity > 0 ? match.EstimatedSavings / match.TransferQuantity : material.UnitCost;
+            var priority = urgencyByProjectMaterial.TryGetValue((match.TargetProjectId, match.MaterialId), out var urgency)
+                ? MapUrgencyToPriority(urgency)
+                : RedistributionPriority.Medium;
+
+            int? sourceExcessRecordId = null;
+            if (bestExcessRecordByKey.TryGetValue((match.SourceProjectId, match.MaterialId), out var excessRecord))
+            {
+                sourceExcessRecordId = excessRecord.Id;
+                bestExcessRecordByKey.Remove((match.SourceProjectId, match.MaterialId)); // one link per record per generation pass
+            }
+
+            db.RedistributionRequests.Add(new RedistributionRequest
+            {
+                MaterialId                = match.MaterialId,
+                SourceProjectId           = match.SourceProjectId,
+                SourceExcessWasteRecordId = sourceExcessRecordId,
+                TargetProjectId           = match.TargetProjectId,
+                Quantity                = match.TransferQuantity,
+                AvailableExcessAtSource = match.AvailableExcess,
+                NeededQuantityAtTarget  = match.NeededQuantity,
+                UnitCost                = unitCost,
+                EstimatedSavings        = match.EstimatedSavings,
+                Priority                = priority,
+                Status                  = RedistributionStatus.AiSuggested,
+                IsAiRecommended         = true,
+                Notes                   = $"AI-matched: {material.Name} excess at {sourceProject.Name} against a shortage at {targetProject.Name}.",
+                RequestedAt             = DateTime.UtcNow,
+            });
         }
 
         await db.SaveChangesAsync();
     }
 
+    // Approved is the terminal state for a transfer — there's no separate
+    // InTransit/Completed step. Approving one both flips its status AND
+    // actually moves the quantity: deducted from the source (the logged
+    // excess record it drew from, or the source project's InventoryRecord
+    // excess for an AI-batch match with no specific record link), so it
+    // immediately counts toward the target project's material need via
+    // GetReceivedQuantitiesAsync below.
     public async Task<bool> ApproveTransferAsync(int recommendationId, int userId)
     {
-        await Task.CompletedTask;
+        var request = await db.RedistributionRequests
+            .Include(r => r.SourceExcessWasteRecord)
+            .FirstOrDefaultAsync(r => r.Id == recommendationId);
+        if (request is null) return false;
+        if (request.Status is RedistributionStatus.Completed or RedistributionStatus.Rejected) return false;
+
+        request.Status           = RedistributionStatus.Approved;
+        request.ApprovedByUserId = userId;
+        request.ApprovedAt       = DateTime.UtcNow;
+
+        if (request.SourceExcessWasteRecord is not null)
+        {
+            var excess = request.SourceExcessWasteRecord;
+            excess.Quantity  = Math.Max(0, excess.Quantity - request.Quantity);
+            excess.TotalCost = excess.Quantity * excess.UnitCost;
+        }
+        else
+        {
+            var sourceInventory = await db.InventoryRecords
+                .FirstOrDefaultAsync(i => i.ProjectId == request.SourceProjectId && i.MaterialId == request.MaterialId);
+            if (sourceInventory is not null)
+                sourceInventory.ExcessQuantity = Math.Max(0, sourceInventory.ExcessQuantity - request.Quantity);
+        }
+
+        await db.SaveChangesAsync();
+        await NotifyBothPMsAsync(request, userId, NotificationKind.RedistributionApproved, "was approved and has been transferred.");
         return true;
     }
+
+    // Undoes an accidental approval — back to PendingApproval, not Rejected,
+    // since the recommendation itself is still valid and may be approved again.
+    public async Task<bool> CancelApprovalAsync(int recommendationId)
+    {
+        var request = await db.RedistributionRequests.FindAsync(recommendationId);
+        if (request is null || request.Status != RedistributionStatus.Approved) return false;
+
+        request.Status           = RedistributionStatus.PendingApproval;
+        request.ApprovedByUserId = null;
+        request.ApprovedAt       = null;
+
+        await db.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task<bool> RejectTransferAsync(int recommendationId, int userId)
+    {
+        var request = await db.RedistributionRequests
+            .Include(r => r.Material)
+            .FirstOrDefaultAsync(r => r.Id == recommendationId);
+        if (request is null) return false;
+        if (request.Status is RedistributionStatus.Completed or RedistributionStatus.Rejected) return false;
+
+        request.Status = RedistributionStatus.Rejected;
+
+        await db.SaveChangesAsync();
+
+        // ProjectId scopes this to exactly the source project's PM via GetMineAsync's join — no lookup needed.
+        await notifications.CreateForRoleAsync(UserRole.ProjectManager, NotificationKind.RedistributionRejected,
+            $"The redistribution request for {request.Material.Name} was rejected.", userId,
+            projectId: request.SourceProjectId, materialId: request.MaterialId, actionLink: "/redistribution");
+
+        return true;
+    }
+
+    public async Task<RedistributionRecommendationDto> CreateFromExcessRecordAsync(RedistributeFromExcessDto dto, int userId)
+    {
+        var record = await db.ExcessWasteRecords
+            .Include(e => e.Material)
+            .Include(e => e.Project)
+            .FirstOrDefaultAsync(e => e.Id == dto.ExcessWasteRecordId)
+            ?? throw new KeyNotFoundException("Excess/waste record not found.");
+
+        if (!record.IsReusable)
+            throw new InvalidOperationException("This record isn't marked reusable — damaged or expired material can't be redistributed.");
+
+        if (record.Quantity <= 0)
+            throw new InvalidOperationException("This excess entry has already been fully redistributed.");
+
+        var hasPendingRequest = await db.RedistributionRequests
+            .AnyAsync(r => r.SourceExcessWasteRecordId == record.Id && RedistributionStatuses.Pending.Contains(r.Status));
+        if (hasPendingRequest)
+            throw new InvalidOperationException("A redistribution request for this excess entry is already awaiting a decision.");
+
+        if (dto.TargetProjectId == record.ProjectId)
+            throw new InvalidOperationException("Source and target project can't be the same.");
+
+        var targetProject = await db.Projects.FindAsync(dto.TargetProjectId)
+            ?? throw new KeyNotFoundException("Target project not found.");
+
+        var quantity = dto.Quantity ?? record.Quantity;
+        if (quantity > record.Quantity)
+            throw new InvalidOperationException($"Only {record.Quantity} {record.Material.Unit} of this excess is logged.");
+
+        var demand = await db.ProcurementRecommendations
+            .Where(r => r.ProjectId == dto.TargetProjectId && r.MaterialId == record.MaterialId && r.CurrentStock < r.ReorderPoint)
+            .OrderByDescending(r => r.GeneratedAt)
+            .FirstOrDefaultAsync();
+
+        var request = new RedistributionRequest
+        {
+            MaterialId                = record.MaterialId,
+            SourceProjectId           = record.ProjectId,
+            SourceExcessWasteRecordId = record.Id,
+            TargetProjectId           = dto.TargetProjectId,
+            Quantity                = quantity,
+            AvailableExcessAtSource = record.Quantity,
+            NeededQuantityAtTarget  = demand?.RecommendedQuantity ?? quantity,
+            UnitCost                = record.UnitCost,
+            EstimatedSavings        = quantity * record.UnitCost,
+            Priority                = demand is not null ? MapUrgencyToPriority(demand.UrgencyLevel) : RedistributionPriority.Medium,
+            Status                  = RedistributionStatus.PendingApproval,
+            IsAiRecommended         = false,
+            Notes                   = dto.Notes ?? $"Manually redistributed from a logged excess record: {record.Material.Name} at {record.Project.Name}.",
+            RequestedByUserId       = userId,
+            RequestedAt             = DateTime.UtcNow,
+        };
+
+        db.RedistributionRequests.Add(request);
+        await db.SaveChangesAsync();
+
+        var saved = await db.RedistributionRequests
+            .Include(r => r.Material)
+            .Include(r => r.SourceProject)
+            .Include(r => r.TargetProject)
+            .FirstAsync(r => r.Id == request.Id);
+
+        await notifications.CreateForRoleAsync(UserRole.WarehousePersonnel, NotificationKind.RedistributionRequested,
+            $"{quantity} {record.Material.Unit} of {record.Material.Name} requested for transfer from {saved.SourceProject.Name} to {saved.TargetProject.Name} — awaiting your approval.",
+            userId, actionLink: "/redistribution");
+        await NotifyBothPMsAsync(saved, userId, NotificationKind.RedistributionRequested,
+            $"was submitted for transfer between {saved.SourceProject.Name} and {saved.TargetProject.Name}.");
+
+        return ToDto(saved);
+    }
+
+    // A single Notification row can only carry one ProjectId (and so scopes to
+    // exactly one PM via GetMineAsync's ownership join) — reaching both the
+    // source and target project's PM means writing two rows, not one.
+    private async Task NotifyBothPMsAsync(RedistributionRequest request, int actorUserId, NotificationKind kind, string messageSuffix)
+    {
+        var materialName = request.Material?.Name ?? (await db.Materials.FindAsync(request.MaterialId))?.Name ?? "Material";
+        await notifications.CreateForRoleAsync(UserRole.ProjectManager, kind,
+            $"Your redistribution request for {materialName} {messageSuffix}", actorUserId,
+            projectId: request.SourceProjectId, materialId: request.MaterialId, actionLink: "/redistribution");
+        await notifications.CreateForRoleAsync(UserRole.ProjectManager, kind,
+            $"A redistribution transfer for {materialName} {messageSuffix}", actorUserId,
+            projectId: request.TargetProjectId, materialId: request.MaterialId, actionLink: "/redistribution");
+    }
+
+    public async Task<IEnumerable<RedistributionTargetSuggestionDto>> SuggestTargetsAsync(int excessWasteRecordId)
+    {
+        var record = await db.ExcessWasteRecords
+            .Include(e => e.Material)
+            .Include(e => e.Project)
+            .FirstOrDefaultAsync(e => e.Id == excessWasteRecordId)
+            ?? throw new KeyNotFoundException("Excess/waste record not found.");
+
+        var candidateProjects = await db.Projects
+            .Where(p => p.Id != record.ProjectId
+                && p.Status != ProjectStatus.Completed
+                && p.Status != ProjectStatus.Cancelled)
+            .ToListAsync();
+
+        // Which candidates carry this exact material at all (BOQ or current
+        // inventory) — used to decide whether GetNetLeftToOrderAsync is even
+        // worth computing (zero for a project with no BOQ rows for it).
+        var usesThisMaterialProjectIds = (await db.BOQItems
+                .Where(b => b.MaterialId == record.MaterialId)
+                .Select(b => b.ProjectId)
+                .Distinct()
+                .ToListAsync())
+            .Concat(await db.InventoryRecords
+                .Where(i => i.MaterialId == record.MaterialId)
+                .Select(i => i.ProjectId)
+                .Distinct()
+                .ToListAsync())
+            .ToHashSet();
+
+        var suggestions = new List<RedistributionTargetSuggestionDto>();
+        foreach (var p in candidateProjects)
+        {
+            var usesMaterial = usesThisMaterialProjectIds.Contains(p.Id);
+            var sameType     = p.Type == record.Project.Type;
+            // The real, currently-outstanding BOQ need — the same figure the
+            // Material Plan tab's "left to order" subtext shows, not just a
+            // binary "has this material" flag.
+            var needed = usesMaterial
+                ? await ProcurementCapCalculator.GetNetLeftToOrderAsync(db, p.Id, record.MaterialId)
+                : 0;
+
+            // Real shortage is the strongest signal; "uses the material at
+            // all" and "same project type" are soft tie-breakers for
+            // candidates that don't (yet) have a quantified need.
+            var score = (int)Math.Min(needed, 1000) + (usesMaterial ? 50 : 0) + (sameType ? 10 : 0);
+
+            var reasons = new List<string>();
+            if (needed > 0)       reasons.Add($"Needs {needed:N2} {record.Material.Unit} more of {record.Material.Name}");
+            else if (usesMaterial) reasons.Add($"Already uses {record.Material.Name}");
+            if (sameType)         reasons.Add($"Same project type ({p.Type})");
+            if (reasons.Count == 0) reasons.Add("No strong match signal — general candidate only");
+
+            suggestions.Add(new RedistributionTargetSuggestionDto
+            {
+                ProjectId        = p.Id,
+                ProjectName      = p.Name,
+                UsesThisMaterial = usesMaterial,
+                SameProjectType  = sameType,
+                NeededQuantity   = needed,
+                MatchScore       = score,
+                MatchReason      = string.Join(" · ", reasons),
+            });
+        }
+
+        return suggestions.OrderByDescending(s => s.MatchScore).ToList();
+    }
+
+    // Total quantity a project has received via approved redistribution, per
+    // material — subtracted from Estimated Qty when capping how much more
+    // can be requested via Notify Procurement/Warehouse. Computed on demand
+    // (no separate ledger table): Approved is the terminal state, so this is
+    // simply every approved request targeting this project, summed by material.
+    public async Task<IEnumerable<ReceivedRedistributionDto>> GetReceivedQuantitiesAsync(int projectId) =>
+        await db.RedistributionRequests
+            .Where(r => r.TargetProjectId == projectId && r.Status == RedistributionStatus.Approved)
+            .GroupBy(r => r.MaterialId)
+            .Select(g => new ReceivedRedistributionDto { MaterialId = g.Key, TotalQuantity = g.Sum(r => r.Quantity) })
+            .ToListAsync();
+
+    private static RedistributionPriority MapUrgencyToPriority(UrgencyLevel urgency) => urgency switch
+    {
+        UrgencyLevel.Critical or UrgencyLevel.High => RedistributionPriority.High,
+        UrgencyLevel.Medium                        => RedistributionPriority.Medium,
+        _                                           => RedistributionPriority.Low,
+    };
+
+    private static RedistributionRecommendationDto ToDto(RedistributionRequest r) => new()
+    {
+        Id                = r.Id,
+        SourceMaterialId  = r.MaterialId,
+        MaterialName      = r.Material.Name,
+        Unit              = r.Material.Unit,
+        SourceProjectId   = r.SourceProjectId,
+        SourceProjectName = r.SourceProject.Name,
+        TargetProjectId   = r.TargetProjectId,
+        TargetProjectName = r.TargetProject.Name,
+        AvailableQuantity = r.AvailableExcessAtSource,
+        NeededQuantity    = r.NeededQuantityAtTarget,
+        TransferQuantity  = r.Quantity,
+        UnitCost          = r.UnitCost,
+        EstimatedSavings  = r.EstimatedSavings,
+        Priority          = r.Priority.ToString(),
+        Status            = r.Status.ToString(),
+        IsAiRecommended   = r.IsAiRecommended,
+        Notes             = r.Notes,
+        GeneratedAt       = r.RequestedAt,
+    };
 }

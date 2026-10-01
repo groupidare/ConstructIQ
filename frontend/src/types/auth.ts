@@ -13,19 +13,30 @@ export interface User {
   lastName: string;
   role: UserRole;
   isActive: boolean;
+  avatarUrl?: string | null;
+  mfaEnabled?: boolean;
   createdAt: string;
 }
 
 export interface LoginRequest {
   username: string;
   password: string;
+  deviceId?: string;
 }
 
-export interface LoginResponse {
+export interface MfaChallengeResponse {
+  mfaRequired: true;
+  challengeToken: string;
+}
+
+export interface LoginSuccessResponse {
+  mfaRequired?: false;
   token: string;
   user: User;
   expiresAt: string;
 }
+
+export type LoginResponse = MfaChallengeResponse | LoginSuccessResponse;
 
 export interface AuthState {
   user: User | null;

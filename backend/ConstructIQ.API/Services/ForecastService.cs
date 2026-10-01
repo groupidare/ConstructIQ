@@ -7,9 +7,9 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory) : IForecastService
+public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, ILogger<ForecastService> logger) : IForecastService
 {
-    public async Task<ForecastResponseDto> GenerateForecastAsync(ForecastRequestDto request)
+    public async Task<ForecastResponseDto> GenerateForecastAsync(ForecastRequestDto request, int userId)
     {
         var client = httpFactory.CreateClient("MLService");
 
@@ -21,41 +21,305 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory) : 
             planning_weeks= request.PlanningWeeks ?? 4,
         };
 
-        var response = await client.PostAsJsonAsync("/forecast/predict", payload);
-        response.EnsureSuccessStatusCode();
+        HttpResponseMessage response;
+        try
+        {
+            response = await client.PostAsJsonAsync("/forecast/predict", payload);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Forecast generation failed to reach the ML service for project {ProjectId}.", request.ProjectId);
+            throw new InvalidOperationException("Couldn't reach the forecasting service. Make sure it's running and try again.");
+        }
 
-        var mlResult = await response.Content.ReadFromJsonAsync<ForecastResponseDto>();
-        return mlResult!;
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync();
+            logger.LogError("Forecast generation failed for project {ProjectId}: {Status} {Body}", request.ProjectId, response.StatusCode, body);
+            throw new InvalidOperationException("Couldn't generate a forecast for this project right now. It usually means the model needs to be (re)trained, or this project doesn't have enough BOQ data yet.");
+        }
+
+        var mlResult = await response.Content.ReadFromJsonAsync<MlForecastResponseDto>();
+        if (mlResult is null)
+            throw new InvalidOperationException("The forecasting service returned an empty response.");
+
+        // The ML service is stateless — it computes and returns a result but never
+        // persists it. Without saving here, GetByProjectAsync (which is what the
+        // project card and a reopened Material Plan both read from) would always
+        // see an empty history, even though a forecast was just "successfully" run.
+        if (!Enum.TryParse<ForecastPeriod>(request.Period, true, out var period))
+            period = ForecastPeriod.Monthly;
+
+        var entity = new ForecastResult
+        {
+            ProjectId         = request.ProjectId,
+            PhaseId           = request.PhaseId,
+            Period            = period,
+            PlanningWeeks     = request.PlanningWeeks,
+            ModelAccuracy     = mlResult.ModelAccuracy,
+            GeneratedByUserId = userId,
+        };
+        foreach (var fm in mlResult.ForecastedMaterials)
+        {
+            if (!Enum.TryParse<RiskLevel>(fm.RiskLevel, true, out var risk))
+                risk = RiskLevel.Low;
+
+            entity.ForecastedMaterials.Add(new ForecastedMaterial
+            {
+                MaterialId         = fm.MaterialId,
+                Unit               = fm.Unit,
+                ForecastedQuantity = fm.ForecastedQuantity,
+                CurrentStock       = fm.CurrentStock,
+                Shortage           = fm.Shortage,
+                ReorderSuggestion  = fm.ReorderSuggestion,
+                RiskLevel          = risk,
+            });
+        }
+
+        db.ForecastResults.Add(entity);
+        await db.SaveChangesAsync();
+
+        var saved = await db.ForecastResults
+            .Include(f => f.ForecastedMaterials).ThenInclude(fm => fm.Material)
+            .FirstAsync(f => f.Id == entity.Id);
+
+        return ToDto(saved);
     }
 
     public async Task<IEnumerable<ForecastResponseDto>> GetByProjectAsync(int projectId)
     {
-        return await db.ForecastResults
+        var results = await db.ForecastResults
             .Include(f => f.ForecastedMaterials)
                 .ThenInclude(fm => fm.Material)
             .Where(f => f.ProjectId == projectId)
             .OrderByDescending(f => f.GeneratedAt)
-            .Select(f => new ForecastResponseDto
-            {
-                Id            = f.Id,
-                ProjectId     = f.ProjectId,
-                PhaseId       = f.PhaseId,
-                Period        = f.Period.ToString(),
-                GeneratedAt   = f.GeneratedAt,
-                ModelAccuracy = f.ModelAccuracy,
-                ForecastedMaterials = f.ForecastedMaterials.Select(fm => new ForecastedMaterialDto
-                {
-                    MaterialId         = fm.MaterialId,
-                    MaterialName       = fm.Material.Name,
-                    Unit               = fm.Material.Unit,
-                    ForecastedQuantity = fm.ForecastedQuantity,
-                    CurrentStock       = fm.CurrentStock,
-                    Shortage           = fm.Shortage,
-                    ReorderSuggestion  = fm.ReorderSuggestion,
-                    RiskLevel          = fm.RiskLevel.ToString(),
-                }).ToList(),
-            })
             .ToListAsync();
+
+        return results.Select(ToDto);
+    }
+
+    private static ForecastResponseDto ToDto(ForecastResult f) => new()
+    {
+        Id            = f.Id,
+        ProjectId     = f.ProjectId,
+        PhaseId       = f.PhaseId,
+        Period        = f.Period.ToString(),
+        GeneratedAt   = f.GeneratedAt,
+        ModelAccuracy = f.ModelAccuracy,
+        ForecastedMaterials = f.ForecastedMaterials.Select(fm => new ForecastedMaterialDto
+        {
+            MaterialId         = fm.MaterialId,
+            MaterialName       = fm.Material.Name,
+            Unit               = fm.Unit,
+            ForecastedQuantity = fm.ForecastedQuantity,
+            CurrentStock       = fm.CurrentStock,
+            Shortage           = fm.Shortage,
+            ReorderSuggestion  = fm.ReorderSuggestion,
+            RiskLevel          = fm.RiskLevel.ToString(),
+        }).ToList(),
+    };
+
+    public async Task<TrainModelsResponseDto> TrainModelsAsync()
+    {
+        var client = httpFactory.CreateClient("MLService");
+        var response = await client.PostAsync("/forecast/train", null);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync();
+            throw new InvalidOperationException($"Training failed: {body}");
+        }
+
+        var result = await response.Content.ReadFromJsonAsync<MlTrainModelsResponseDto>();
+        if (result is null)
+            throw new InvalidOperationException("The training service returned an empty response.");
+
+        return new TrainModelsResponseDto
+        {
+            SampleCount  = result.SampleCount,
+            RandomForest = result.RandomForest,
+            Xgboost      = result.Xgboost,
+        };
+    }
+
+    // "Top Forecasted Material Demand" panel (System Overview). Uses only
+    // saved ForecastedMaterial.ForecastedQuantity values - never a BOQ
+    // estimate/historical-average/stock figure. One latest eligible forecast
+    // per project (never summed across runs): the latest project-wide
+    // (PhaseId == null) forecast if one exists, otherwise the latest single
+    // phase forecast, flagged as phase-scoped rather than silently treated
+    // as full project coverage. Material identity is grouped by MaterialId
+    // alone - safe because Material.Name/Specification/Unit are fixed
+    // attributes of the catalog row (never vary per forecast), and this
+    // deployment's Materials table has no duplicate Name+Specification+Unit
+    // rows under different IDs (checked directly, not assumed) - so two
+    // different specs (e.g. 100mm vs 150mm hollow block) always carry
+    // different MaterialIds and are never merged. There is no stored forecast
+    // target-period interval (no ForecastPeriodStart/End field exists on
+    // ForecastResult), so this is presented as a snapshot of latest saved
+    // forecasts, not "this month's demand" - see GeneratedAt per contribution.
+    //
+    // Deliberately company-wide, not role-scoped by project ownership: unlike
+    // BOQService's per-project aggregations (which expose individual project
+    // figures), this panel only ever surfaces an aggregate top-5 ranking -
+    // every authenticated role sees the same company-wide numbers, by design.
+    //
+    // Default scope is Planning/Active, non-historical projects (the
+    // "operational" view). If NONE of those has ever had a forecast
+    // generated, this falls back to real, genuine forecast output from
+    // historical/completed reference projects rather than permanently
+    // showing an empty panel - never a substitute figure, still real saved
+    // ForecastedMaterial data, just from a different project set. The
+    // fallback is always disclosed via UsedHistoricalFallback, and
+    // EligibleProjectCount/ProjectsWithForecastCount/PhaseOnlyProjectCount
+    // keep describing the ACTIVE scope honestly even while fallback data is
+    // shown - they are never silently swapped for the fallback scope's own
+    // numbers, which live separately in HistoricalProjectsWithForecastCount.
+    public async Task<TopForecastedDemandDto> GetTopForecastedDemandAsync(string? unit)
+    {
+        var activeProjects = await db.Projects
+            .Where(p => !p.IsHistorical && (p.Status == ProjectStatus.Planning || p.Status == ProjectStatus.Active))
+            .Select(p => new ProjectRef(p.Id, p.Name))
+            .ToListAsync();
+
+        var result = await BuildTopDemandAsync(activeProjects, unit);
+        result.EligibleProjectCount = activeProjects.Count;
+        if (result.ProjectsWithForecastCount > 0) return result;
+
+        var historicalProjects = await db.Projects
+            .Where(p => p.IsHistorical)
+            .Select(p => new ProjectRef(p.Id, p.Name))
+            .ToListAsync();
+        if (historicalProjects.Count == 0) return result;
+
+        var fallback = await BuildTopDemandAsync(historicalProjects, unit);
+        if (fallback.ProjectsWithForecastCount == 0) return result;
+
+        fallback.HistoricalProjectsWithForecastCount = fallback.ProjectsWithForecastCount;
+        fallback.EligibleProjectCount = result.EligibleProjectCount;
+        fallback.ProjectsWithForecastCount = result.ProjectsWithForecastCount; // 0 - stays honest about the active scope
+        fallback.PhaseOnlyProjectCount = result.PhaseOnlyProjectCount;
+        fallback.UsedHistoricalFallback = true;
+        return fallback;
+    }
+
+    private readonly record struct ProjectRef(int Id, string Name);
+
+    // Shared core: given one set of projects (either the active scope or the
+    // historical fallback scope), picks the latest eligible forecast per
+    // project and builds the ranked-by-unit result. EligibleProjectCount is
+    // deliberately left unset here - the caller decides what it means for
+    // that particular call (see GetTopForecastedDemandAsync above).
+    private async Task<TopForecastedDemandDto> BuildTopDemandAsync(List<ProjectRef> projects, string? unit)
+    {
+        var result = new TopForecastedDemandDto();
+        var ids = projects.Select(p => p.Id).ToHashSet();
+        if (ids.Count == 0) return result;
+
+        // One query for every eligible project's forecast history (not one
+        // request per project) - avoids N+1 while still letting us pick the
+        // true latest per project below.
+        var forecasts = await db.ForecastResults
+            .Where(f => ids.Contains(f.ProjectId))
+            .Include(f => f.ForecastedMaterials).ThenInclude(fm => fm.Material)
+            .ToListAsync();
+
+        var projectNames = projects.ToDictionary(p => p.Id, p => p.Name);
+
+        var latestPerProject = new List<(ForecastResult Forecast, bool IsPhaseScoped)>();
+        foreach (var group in forecasts.GroupBy(f => f.ProjectId))
+        {
+            var projectWide = group.Where(f => f.PhaseId == null)
+                .OrderByDescending(f => f.GeneratedAt).ThenByDescending(f => f.Id)
+                .FirstOrDefault();
+            if (projectWide != null) { latestPerProject.Add((projectWide, false)); continue; }
+
+            var phaseLatest = group
+                .OrderByDescending(f => f.GeneratedAt).ThenByDescending(f => f.Id)
+                .FirstOrDefault();
+            if (phaseLatest != null) latestPerProject.Add((phaseLatest, true));
+        }
+
+        result.ProjectsWithForecastCount = latestPerProject.Count;
+        result.PhaseOnlyProjectCount = latestPerProject.Count(lp => lp.IsPhaseScoped);
+        if (latestPerProject.Count == 0) return result;
+
+        var rows = latestPerProject.SelectMany(lp => lp.Forecast.ForecastedMaterials
+            .Where(fm => fm.ForecastedQuantity > 0)
+            .Select(fm => new
+            {
+                fm.MaterialId,
+                fm.Material.Name,
+                fm.Material.Specification,
+                RawUnit = fm.Unit,
+                NormalizedUnit = NormalizeUnitLabel(fm.Unit),
+                fm.ForecastedQuantity,
+                ProjectId = lp.Forecast.ProjectId,
+                ProjectName = projectNames.GetValueOrDefault(lp.Forecast.ProjectId, string.Empty),
+                lp.Forecast.GeneratedAt,
+                Period = lp.Forecast.Period.ToString(),
+                lp.IsPhaseScoped,
+            })).ToList();
+
+        result.AvailableUnits = rows.Select(r => r.NormalizedUnit).Distinct().OrderBy(u => u).ToList();
+        if (result.AvailableUnits.Count == 0) return result;
+
+        var requestedUnit = unit is null ? null : NormalizeUnitLabel(unit);
+        var selectedUnit = requestedUnit != null && result.AvailableUnits.Contains(requestedUnit)
+            ? requestedUnit
+            // Deterministic default: unit with the most distinct materials
+            // carrying positive demand, tied broken alphabetically.
+            : rows.GroupBy(r => r.NormalizedUnit)
+                .Select(g => new { Unit = g.Key, MaterialCount = g.Select(r => r.MaterialId).Distinct().Count() })
+                .OrderByDescending(g => g.MaterialCount).ThenBy(g => g.Unit)
+                .Select(g => g.Unit)
+                .First();
+        result.SelectedUnit = selectedUnit;
+
+        result.Materials = rows.Where(r => r.NormalizedUnit == selectedUnit)
+            .GroupBy(r => r.MaterialId)
+            .Select(g => new TopForecastedMaterialDto
+            {
+                MaterialId = g.Key,
+                MaterialName = g.First().Name,
+                Specification = g.First().Specification,
+                Unit = g.First().RawUnit,
+                TotalForecastedQuantity = g.Sum(r => r.ForecastedQuantity),
+                ContributingProjectCount = g.Select(r => r.ProjectId).Distinct().Count(),
+                Contributions = g.Select(r => new ForecastContributionDto
+                {
+                    ProjectId = r.ProjectId,
+                    ProjectName = r.ProjectName,
+                    ForecastedQuantity = r.ForecastedQuantity,
+                    GeneratedAt = r.GeneratedAt,
+                    Period = r.Period,
+                    IsPhaseScoped = r.IsPhaseScoped,
+                }).OrderByDescending(c => c.ForecastedQuantity).ToList(),
+            })
+            .Where(m => m.TotalForecastedQuantity > 0)
+            .OrderByDescending(m => m.TotalForecastedQuantity)
+            .ThenBy(m => m.MaterialName).ThenBy(m => m.MaterialId)
+            .Take(5)
+            .ToList();
+
+        for (var i = 0; i < result.Materials.Count; i++) result.Materials[i].Rank = i + 1;
+
+        return result;
+    }
+
+    // "pc"/"pcs"/"piece"/"pieces" are the only known equivalent-label variants
+    // in this app (PURCHASE_UNITS already canonicalizes on "pc" elsewhere -
+    // see BOQService.PurchaseUnits / frontend PURCHASE_UNITS). Everything else
+    // is folded only by trim+case, matching topMaterialDemand.ts's existing
+    // normalize() convention - never a physical unit conversion.
+    private static string NormalizeUnitLabel(string? unit)
+    {
+        var lower = (unit ?? string.Empty).Trim().ToLowerInvariant();
+        return lower switch
+        {
+            "pcs" or "piece" or "pieces" => "pc",
+            _ => lower,
+        };
     }
 
     public async Task<ForecastAccuracyReportDto> GetAccuracyReportAsync(int projectId)
@@ -67,16 +331,28 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory) : 
             .Where(f => f.ProjectId == projectId)
             .ToListAsync();
 
+        // IsUsageConfirmed, not just ActualQuantity > 0 — an unconfirmed row's
+        // ActualQuantity is just its own estimate standing in (see
+        // BOQItem.IsUsageConfirmed), so including it here would partly measure
+        // the forecast against its own unrelated estimate rather than real
+        // observed usage.
         var boqItems = await db.BOQItems
             .Include(b => b.Material)
-            .Where(b => b.ProjectId == projectId && b.ActualQuantity > 0)
+            .Where(b => b.ProjectId == projectId && b.IsUsageConfirmed)
             .ToListAsync();
 
         var comparisons = boqItems.Select(b =>
         {
+            // Matched on unit as well as MaterialId — a single forecast run
+            // can now carry more than one entry per material (one per
+            // distinct unit actually forecasted; see ForecastedMaterial.Unit),
+            // so matching by MaterialId alone could pair this BOQ row against
+            // a forecast entry made in a different unit for the same material.
+            var effectiveUnit = !string.IsNullOrWhiteSpace(b.Unit) ? b.Unit : b.Material.Unit;
             var lastForecast = forecasts
                 .SelectMany(f => f.ForecastedMaterials)
-                .Where(fm => fm.MaterialId == b.MaterialId)
+                .Where(fm => fm.MaterialId == b.MaterialId
+                    && string.Equals(fm.Unit, effectiveUnit, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(fm => fm.Id)
                 .FirstOrDefault();
 
@@ -89,7 +365,7 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory) : 
             {
                 MaterialId         = b.MaterialId,
                 MaterialName       = b.Material.Name,
-                Unit               = b.Material.Unit,
+                Unit               = effectiveUnit,
                 ForecastedQuantity = forecasted,
                 ActualQuantity     = actual,
                 Variance           = variance,

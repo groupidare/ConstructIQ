@@ -52,6 +52,43 @@ public class PurchaseRequestDto
     public string?  Notes               { get; set; }
 }
 
+public class RedistributionTargetSuggestionDto
+{
+    public int      ProjectId                 { get; set; }
+    public string   ProjectName               { get; set; } = string.Empty;
+    // True when the candidate project already uses this exact material
+    // (appears in its BOQ or current inventory).
+    public bool     UsesThisMaterial          { get; set; }
+    public bool     SameProjectType           { get; set; }
+    // The project's real, currently-outstanding need for this material —
+    // Estimated Qty minus whatever's already been approved (redistribution/
+    // warehouse/PO), the same figure the Material Plan tab's "left to order"
+    // subtext shows. 0 when the project doesn't carry this material in its
+    // BOQ at all. See ProcurementCapCalculator.GetNetLeftToOrderAsync.
+    public decimal  NeededQuantity            { get; set; }
+    public int      MatchScore                { get; set; }
+    public string   MatchReason               { get; set; } = string.Empty;
+}
+
+// A material's total quantity received by a project via approved
+// redistribution — subtracted from Estimated Qty when capping how much more
+// can be requested via Notify Procurement/Warehouse.
+public class ReceivedRedistributionDto
+{
+    public int     MaterialId    { get; set; }
+    public decimal TotalQuantity { get; set; }
+}
+
+public class RedistributeFromExcessDto
+{
+    [Required] public int ExcessWasteRecordId { get; set; }
+    [Required] public int TargetProjectId     { get; set; }
+
+    // Defaults to the excess record's full logged quantity when omitted.
+    [Range(0.0001, double.MaxValue)] public decimal? Quantity { get; set; }
+    public string? Notes { get; set; }
+}
+
 public class RedistributionRecommendationDto
 {
     public int      Id                  { get; set; }
@@ -65,7 +102,11 @@ public class RedistributionRecommendationDto
     public decimal  AvailableQuantity   { get; set; }
     public decimal  NeededQuantity      { get; set; }
     public decimal  TransferQuantity    { get; set; }
+    public decimal  UnitCost            { get; set; }
     public decimal  EstimatedSavings    { get; set; }
+    public string   Priority            { get; set; } = string.Empty;
     public string   Status              { get; set; } = string.Empty;
+    public bool     IsAiRecommended     { get; set; }
+    public string?  Notes               { get; set; }
     public DateTime GeneratedAt         { get; set; }
 }

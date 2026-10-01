@@ -28,3 +28,19 @@ export function clearAuth(): void {
   removeToken();
   localStorage.removeItem("user");
 }
+
+const DEVICE_ID_KEY = "constructiq_device_id";
+
+// A random id persisted per-browser (not per-session) so the backend can tell
+// "this browser already passed a code challenge for this account" apart from
+// a genuinely new device — deliberately survives logout, since the point is
+// recognizing the device, not the session.
+export function getDeviceId(): string {
+  if (typeof window === "undefined") return "";
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(DEVICE_ID_KEY, id);
+  }
+  return id;
+}

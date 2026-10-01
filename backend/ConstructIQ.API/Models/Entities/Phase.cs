@@ -25,4 +25,5 @@ public class Phase
     public ICollection<BOQItem>           BOQItems           { get; set; } = [];
     public ICollection<MaterialMovement>  MaterialMovements  { get; set; } = [];
     public ICollection<ExcessWasteRecord> ExcessWasteRecords { get; set; } = [];
+    public ICollection<Measurement>       Measurements       { get; set; } = [];
 }

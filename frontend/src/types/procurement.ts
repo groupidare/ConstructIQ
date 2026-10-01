@@ -47,6 +47,37 @@ export interface PurchaseRequestCreateRequest {
   notes?: string;
 }
 
+export interface RedistributionTargetSuggestion {
+  projectId: number;
+  projectName: string;
+  // Does this project already use the exact material being redistributed
+  // (BOQ or current inventory)?
+  usesThisMaterial: boolean;
+  sameProjectType: boolean;
+  // Real, currently-outstanding BOQ need (Est. Qty minus what's already
+  // approved via redistribution/warehouse/PO) — the strongest ranking
+  // signal. 0 when the project doesn't carry this material at all.
+  neededQuantity: number;
+  matchScore: number;
+  matchReason: string;
+}
+
+export interface ReceivedRedistribution {
+  materialId: number;
+  totalQuantity: number;
+}
+
+export interface RedistributeFromExcessRequest {
+  excessWasteRecordId: number;
+  targetProjectId: number;
+  quantity?: number;
+  notes?: string;
+}
+
+export type RedistributionPriority = "Low" | "Medium" | "High";
+export type RedistributionStatus =
+  | "AiSuggested" | "PendingApproval" | "Approved" | "InTransit" | "Completed" | "Rejected";
+
 export interface RedistributionRecommendation {
   id: number;
   sourceMaterialId: number;
@@ -59,7 +90,11 @@ export interface RedistributionRecommendation {
   availableQuantity: number;
   neededQuantity: number;
   transferQuantity: number;
+  unitCost: number;
   estimatedSavings: number;
-  status: "Pending" | "Approved" | "Transferred" | "Rejected";
+  priority: RedistributionPriority;
+  status: RedistributionStatus;
+  isAiRecommended: boolean;
+  notes?: string;
   generatedAt: string;
 }

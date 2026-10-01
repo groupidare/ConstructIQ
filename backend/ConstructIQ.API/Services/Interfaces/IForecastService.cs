@@ -4,7 +4,9 @@ namespace ConstructIQ.API.Services.Interfaces;
 
 public interface IForecastService
 {
-    Task<ForecastResponseDto> GenerateForecastAsync(ForecastRequestDto request);
+    Task<ForecastResponseDto> GenerateForecastAsync(ForecastRequestDto request, int userId);
     Task<IEnumerable<ForecastResponseDto>> GetByProjectAsync(int projectId);
     Task<ForecastAccuracyReportDto> GetAccuracyReportAsync(int projectId);
+    Task<TrainModelsResponseDto> TrainModelsAsync();
+    Task<TopForecastedDemandDto> GetTopForecastedDemandAsync(string? unit);
 }

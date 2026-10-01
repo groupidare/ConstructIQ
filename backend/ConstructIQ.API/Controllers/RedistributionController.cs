@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using ConstructIQ.API.Models.DTOs.Procurement;
 using ConstructIQ.API.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -18,8 +19,12 @@ public class RedistributionController(IRedistributionService redistributionServi
     public async Task<IActionResult> GetRecommendations() =>
         Ok(await redistributionService.GetRecommendationsAsync());
 
+    // Regenerating the suggestion list and acting on it (approve/reject/
+    // cancel/create) are all real "manage" actions — ProjectManager's
+    // Redistribution access is view-only, so only Admin/WarehousePersonnel
+    // get these.
     [HttpPost("generate")]
-    [Authorize(Roles = "Admin,ProjectManager")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> Generate()
     {
         await redistributionService.GenerateRecommendationsAsync();
@@ -27,10 +32,62 @@ public class RedistributionController(IRedistributionService redistributionServi
     }
 
     [HttpPost("{id:int}/approve")]
-    [Authorize(Roles = "Admin,ProjectManager,WarehousePersonnel")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> Approve(int id)
     {
         var success = await redistributionService.ApproveTransferAsync(id, CurrentUserId);
         return success ? Ok(new { message = "Transfer approved." }) : NotFound();
+    }
+
+    [HttpPost("{id:int}/reject")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
+    public async Task<IActionResult> Reject(int id)
+    {
+        var success = await redistributionService.RejectTransferAsync(id, CurrentUserId);
+        return success ? Ok(new { message = "Transfer rejected." }) : NotFound();
+    }
+
+    [HttpPost("{id:int}/cancel-approval")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
+    public async Task<IActionResult> CancelApproval(int id)
+    {
+        var success = await redistributionService.CancelApprovalAsync(id);
+        return success ? Ok(new { message = "Approval cancelled." }) : NotFound();
+    }
+
+    [HttpGet("suggest-targets/{excessWasteRecordId:int}")]
+    public async Task<IActionResult> SuggestTargets(int excessWasteRecordId)
+    {
+        try
+        {
+            return Ok(await redistributionService.SuggestTargetsAsync(excessWasteRecordId));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+    }
+
+    [HttpGet("received/{projectId:int}")]
+    public async Task<IActionResult> GetReceived(int projectId) =>
+        Ok(await redistributionService.GetReceivedQuantitiesAsync(projectId));
+
+    [HttpPost("from-excess")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
+    public async Task<IActionResult> CreateFromExcess([FromBody] RedistributeFromExcessDto dto)
+    {
+        try
+        {
+            var created = await redistributionService.CreateFromExcessRecordAsync(dto, CurrentUserId);
+            return Ok(created);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 }

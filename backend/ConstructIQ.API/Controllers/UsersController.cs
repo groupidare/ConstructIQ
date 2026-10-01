@@ -11,8 +11,12 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
-public class UsersController(AppDbContext db) : ControllerBase
+public class UsersController(AppDbContext db, IWebHostEnvironment env, Services.Interfaces.INotificationService notifications) : ControllerBase
 {
+    private int CurrentUserId =>
+        int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+            ?? User.FindFirst("sub")?.Value ?? "0");
+
     [HttpGet]
     [Authorize(Roles = "Admin")]
     public async Task<IActionResult> GetAll()
@@ -29,6 +33,8 @@ public class UsersController(AppDbContext db) : ControllerBase
                 Role         = u.Role.ToString(),
                 IsActive     = u.IsActive,
                 PhoneNumber  = u.PhoneNumber,
+                AvatarUrl    = u.AvatarUrl,
+                MfaEnabled   = u.MfaEnabled,
                 CreatedAt    = u.CreatedAt,
                 LastLogin    = u.LastLogin,
                 ProjectCount = u.ManagedProjects.Count,
@@ -58,6 +64,10 @@ public class UsersController(AppDbContext db) : ControllerBase
         db.Users.Add(user);
         await db.SaveChangesAsync();
 
+        await notifications.CreateForRoleAsync(UserRole.Admin, NotificationKind.UserRegistered,
+            $"{user.FirstName} {user.LastName} ({user.Username}) was registered as {user.Role}.",
+            CurrentUserId, actionLink: "/admin/users");
+
         return Ok(new UserDto
         {
             Id           = user.Id,
@@ -68,6 +78,8 @@ public class UsersController(AppDbContext db) : ControllerBase
             Role         = user.Role.ToString(),
             IsActive     = user.IsActive,
             PhoneNumber  = user.PhoneNumber,
+            AvatarUrl    = user.AvatarUrl,
+            MfaEnabled   = user.MfaEnabled,
             CreatedAt    = user.CreatedAt,
             LastLogin    = user.LastLogin,
             ProjectCount = 0,
@@ -81,11 +93,15 @@ public class UsersController(AppDbContext db) : ControllerBase
         var user = await db.Users.FindAsync(id);
         if (user is null) return NotFound();
 
+        var newRole = Enum.Parse<UserRole>(dto.Role);
+        var roleChanged = user.Role != newRole;
+        var previousRole = user.Role;
+
         user.FirstName   = dto.FirstName;
         user.LastName    = dto.LastName;
         user.Email       = dto.Email;
         user.PhoneNumber = dto.PhoneNumber;
-        user.Role        = Enum.Parse<UserRole>(dto.Role);
+        user.Role        = newRole;
         user.IsActive    = dto.IsActive;
         user.UpdatedAt   = DateTime.UtcNow;
 
@@ -93,6 +109,12 @@ public class UsersController(AppDbContext db) : ControllerBase
             user.PasswordHash = PasswordHasher.Hash(dto.Password);
 
         await db.SaveChangesAsync();
+
+        if (roleChanged)
+            await notifications.CreateForRoleAsync(UserRole.Admin, NotificationKind.UserRoleChanged,
+                $"{user.FirstName} {user.LastName}'s role changed from {previousRole} to {newRole}.",
+                CurrentUserId, actionLink: "/admin/users");
+
         return Ok(new { message = "User updated." });
     }
 
@@ -121,6 +143,25 @@ public class UsersController(AppDbContext db) : ControllerBase
         return Ok(new { message = "User deleted." });
     }
 
+    // Minimal, scoped-down listing for the project-assignment dropdown — Admin,
+    // ProjectManager and SiteEngineer can all create/edit projects (a
+    // SiteEngineer needs this list too, since NewProjectWizard uses it to
+    // find and pre-select their own entry), but only Admin gets the full
+    // user roster above, so this exposes just enough (id + name) for picking
+    // a site engineer without opening up the rest of GetAll().
+    [HttpGet("site-engineers")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> GetSiteEngineers()
+    {
+        var engineers = await db.Users
+            .Where(u => u.Role == UserRole.SiteEngineer && u.IsActive)
+            .OrderBy(u => u.FirstName).ThenBy(u => u.LastName)
+            .Select(u => new { u.Id, u.FirstName, u.LastName })
+            .ToListAsync();
+
+        return Ok(engineers);
+    }
+
     [HttpGet("me")]
     public async Task<IActionResult> Me()
     {
@@ -142,10 +183,190 @@ public class UsersController(AppDbContext db) : ControllerBase
             Role         = user.Role.ToString(),
             IsActive     = user.IsActive,
             PhoneNumber  = user.PhoneNumber,
+            AvatarUrl    = user.AvatarUrl,
+            MfaEnabled   = user.MfaEnabled,
             CreatedAt    = user.CreatedAt,
             LastLogin    = user.LastLogin,
             ProjectCount = 0,
         });
+    }
+
+    // Self-service profile edit. Deliberately separate from Update(int id) above:
+    // that one is Admin-only and accepts Role/IsActive, which a user must never
+    // be able to set on themselves.
+    [HttpPut("me")]
+    public async Task<IActionResult> UpdateMe([FromBody] UpdateProfileDto dto)
+    {
+        var idClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                   ?? User.FindFirst("sub")?.Value;
+        if (!int.TryParse(idClaim, out var userId))
+            return Unauthorized();
+
+        var user = await db.Users.FindAsync(userId);
+        if (user is null) return NotFound();
+
+        if (string.IsNullOrWhiteSpace(dto.FirstName) || string.IsNullOrWhiteSpace(dto.LastName))
+            return BadRequest(new { message = "First name and last name are required." });
+
+        // Email is intentionally not user-editable here — it's the account's
+        // login identity, so changing it goes through an admin, not self-service.
+        user.FirstName   = dto.FirstName.Trim();
+        user.LastName    = dto.LastName.Trim();
+        user.PhoneNumber = dto.PhoneNumber;
+        user.UpdatedAt   = DateTime.UtcNow;
+
+        await db.SaveChangesAsync();
+
+        return Ok(new UserDto
+        {
+            Id           = user.Id,
+            Username     = user.Username,
+            Email        = user.Email,
+            FirstName    = user.FirstName,
+            LastName     = user.LastName,
+            Role         = user.Role.ToString(),
+            IsActive     = user.IsActive,
+            PhoneNumber  = user.PhoneNumber,
+            AvatarUrl    = user.AvatarUrl,
+            MfaEnabled   = user.MfaEnabled,
+            CreatedAt    = user.CreatedAt,
+            LastLogin    = user.LastLogin,
+            ProjectCount = 0,
+        });
+    }
+
+    // Toggles the caller's own MFA setting. Enabling takes effect immediately —
+    // no separate verification step — matching the rest of Settings' toggles;
+    // the emailed code only comes into play on the next login.
+    [HttpPut("me/mfa")]
+    public async Task<IActionResult> UpdateMyMfa([FromBody] UpdateMfaDto dto)
+    {
+        var idClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                   ?? User.FindFirst("sub")?.Value;
+        if (!int.TryParse(idClaim, out var userId))
+            return Unauthorized();
+
+        var user = await db.Users.FindAsync(userId);
+        if (user is null) return NotFound();
+
+        user.MfaEnabled        = dto.Enabled;
+        user.MfaCode           = null;
+        user.MfaCodeExpiresAt  = null;
+        user.MfaChallengeToken = null;
+        user.UpdatedAt         = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+
+        return Ok(new UserDto
+        {
+            Id           = user.Id,
+            Username     = user.Username,
+            Email        = user.Email,
+            FirstName    = user.FirstName,
+            LastName     = user.LastName,
+            Role         = user.Role.ToString(),
+            IsActive     = user.IsActive,
+            PhoneNumber  = user.PhoneNumber,
+            AvatarUrl    = user.AvatarUrl,
+            MfaEnabled   = user.MfaEnabled,
+            CreatedAt    = user.CreatedAt,
+            LastLogin    = user.LastLogin,
+            ProjectCount = 0,
+        });
+    }
+
+    private static readonly Dictionary<string, string> AllowedAvatarTypes = new()
+    {
+        ["image/jpeg"] = ".jpg",
+        ["image/png"]  = ".png",
+        ["image/webp"] = ".webp",
+    };
+    private const long MaxAvatarBytes = 5 * 1024 * 1024; // 5 MB
+
+    [HttpPost("me/avatar")]
+    public async Task<IActionResult> UploadMyAvatar(IFormFile file)
+    {
+        var idClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                   ?? User.FindFirst("sub")?.Value;
+        if (!int.TryParse(idClaim, out var userId))
+            return Unauthorized();
+
+        var user = await db.Users.FindAsync(userId);
+        if (user is null) return NotFound();
+
+        if (file is null || file.Length == 0)
+            return BadRequest(new { message = "No file uploaded." });
+
+        if (file.Length > MaxAvatarBytes)
+            return BadRequest(new { message = "Image must be 5MB or smaller." });
+
+        if (!AllowedAvatarTypes.TryGetValue(file.ContentType, out var ext))
+            return BadRequest(new { message = "Only JPEG, PNG, or WebP images are allowed." });
+
+        var avatarsDir = Path.Combine(env.WebRootPath, "uploads", "avatars");
+        Directory.CreateDirectory(avatarsDir);
+
+        // Delete the previous avatar file (if any) so uploads don't accumulate.
+        if (!string.IsNullOrWhiteSpace(user.AvatarUrl))
+        {
+            var oldPath = Path.Combine(env.WebRootPath, user.AvatarUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+            if (System.IO.File.Exists(oldPath))
+            {
+                try { System.IO.File.Delete(oldPath); } catch { /* best-effort cleanup */ }
+            }
+        }
+
+        var fileName = $"{userId}_{Guid.NewGuid():N}{ext}";
+        var savePath = Path.Combine(avatarsDir, fileName);
+        await using (var stream = System.IO.File.Create(savePath))
+            await file.CopyToAsync(stream);
+
+        user.AvatarUrl = $"/uploads/avatars/{fileName}";
+        user.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+
+        return Ok(new UserDto
+        {
+            Id           = user.Id,
+            Username     = user.Username,
+            Email        = user.Email,
+            FirstName    = user.FirstName,
+            LastName     = user.LastName,
+            Role         = user.Role.ToString(),
+            IsActive     = user.IsActive,
+            PhoneNumber  = user.PhoneNumber,
+            AvatarUrl    = user.AvatarUrl,
+            MfaEnabled   = user.MfaEnabled,
+            CreatedAt    = user.CreatedAt,
+            LastLogin    = user.LastLogin,
+            ProjectCount = 0,
+        });
+    }
+
+    [HttpDelete("me/avatar")]
+    public async Task<IActionResult> DeleteMyAvatar()
+    {
+        var idClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                   ?? User.FindFirst("sub")?.Value;
+        if (!int.TryParse(idClaim, out var userId))
+            return Unauthorized();
+
+        var user = await db.Users.FindAsync(userId);
+        if (user is null) return NotFound();
+
+        if (!string.IsNullOrWhiteSpace(user.AvatarUrl))
+        {
+            var oldPath = Path.Combine(env.WebRootPath, user.AvatarUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+            if (System.IO.File.Exists(oldPath))
+            {
+                try { System.IO.File.Delete(oldPath); } catch { /* best-effort cleanup */ }
+            }
+        }
+
+        user.AvatarUrl = null;
+        user.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+
+        return Ok(new { message = "Avatar removed." });
     }
 }
 
@@ -159,6 +380,8 @@ public record UserDto
     public string   Role         { get; init; } = "";
     public bool     IsActive     { get; init; }
     public string?  PhoneNumber  { get; init; }
+    public string?  AvatarUrl    { get; init; }
+    public bool     MfaEnabled   { get; init; }
     public DateTime CreatedAt    { get; init; }
     public DateTime? LastLogin   { get; init; }
     public int      ProjectCount { get; init; }
@@ -185,3 +408,11 @@ public record UpdateUserDto(
 );
 
 public record UpdateStatusDto(bool IsActive);
+
+public record UpdateMfaDto(bool Enabled);
+
+public record UpdateProfileDto(
+    string FirstName,
+    string LastName,
+    string? PhoneNumber = null
+);
