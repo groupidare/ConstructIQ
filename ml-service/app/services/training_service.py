@@ -11,14 +11,16 @@ from app.ml import random_forest, xgboost_model
 # have real actual-usage figures entered without every phase being marked Completed.
 # LEFT JOIN phases: a BOQ row without a phase assigned still has a usable target.
 #
-# Target quantity: ActualQuantity when it's been explicitly backfilled (> 0), else
-# — only for IsHistorical projects — EstimatedQuantity. Historical/backfilled
-# projects have no separate "actual usage" entry step in the UI (the Material Plan
-# shows their BOQ+PO data read-only); for that workflow, EstimatedQuantity already
-# *is* the real record of what a completed project used, not a forward-looking
-# plan, so it's a legitimate training target. For a genuine (non-historical)
-# completed project, EstimatedQuantity is still just the original plan, so it's
-# deliberately excluded there — only a real ActualQuantity entry counts.
+# Target quantity: ActualQuantity, filtered to BOQItems.IsUsageConfirmed = 1 only
+# (backend-computed — see BOQItem.IsUsageConfirmed). A row's ActualQuantity is
+# only ever a genuine figure when it's confirmed: a real ExcessWasteRecord was
+# logged against it, or a human actually typed a number while backfilling a
+# historical project. An unconfirmed row's ActualQuantity is just its own
+# EstimatedQuantity silently standing in (nothing was ever logged/entered) —
+# training on that teaches the model to predict the estimate from the estimate,
+# which is circular, not signal. Previously this query treated any IsHistorical
+# row's EstimatedQuantity as if it were a confirmed actual by default; that's
+# exactly the ambiguity IsUsageConfirmed now makes explicit instead of guessing.
 #
 # supplier_lead_time_days is a correlated scalar subquery, not a JOIN+GROUP BY —
 # a BOQ row can match several PurchaseOrderMaterial rows (multiple deliveries of
@@ -31,8 +33,13 @@ _TRAINING_SQL = text("""
         m.Name       AS material_name,
         m.Unit       AS unit,
         m.UnitCost   AS unit_cost,
-        bi.EstimatedQuantity AS boq_quantity,
-        CASE WHEN bi.ActualQuantity > 0 THEN bi.ActualQuantity ELSE bi.EstimatedQuantity END AS actual_used,
+        -- EstimatedPurchaseQuantity when set, else EstimatedQuantity — the same
+        -- baseline ActualQuantity was itself computed against (see BOQService/
+        -- ExcessWasteService), not always bi.EstimatedQuantity alone. Using the
+        -- raw BOQ estimate here while ActualQuantity was derived from the
+        -- purchase-unit baseline would train on two numbers in different units.
+        COALESCE(bi.EstimatedPurchaseQuantity, bi.EstimatedQuantity) AS boq_quantity,
+        bi.ActualQuantity AS actual_used,
         COALESCE(ir.AvailableQuantity, 0) AS current_stock,
         COALESCE(ir.ExcessQuantity, 0)    AS excess_quantity,
         COALESCE(ir.WastedQuantity, 0)    AS wasted_quantity,
@@ -44,19 +51,19 @@ _TRAINING_SQL = text("""
         COALESCE(ph.ProgressPercent, 100) AS progress_percent,
         COALESCE((
             SELECT AVG(de.ActualLeadDays)
-            FROM purchaseordermaterials pom
-            JOIN purchaseorders po ON po.Id = pom.PurchaseOrderId AND po.Status = 2
-            JOIN deliveryevaluations de ON de.PurchaseOrderId = po.Id
+            FROM PurchaseOrderMaterials pom
+            JOIN PurchaseOrders po ON po.Id = pom.PurchaseOrderId AND po.Status = 2
+            JOIN DeliveryEvaluations de ON de.PurchaseOrderId = po.Id
             WHERE pom.BOQItemId = bi.Id
                OR (pom.BOQItemId IS NULL AND pom.MaterialId = bi.MaterialId
                    AND (pom.PhaseId = bi.PhaseId OR (pom.PhaseId IS NULL AND bi.PhaseId IS NULL)))
         ), 7) AS supplier_lead_time_days
-    FROM boqitems bi
-    JOIN materials m ON m.Id = bi.MaterialId
-    JOIN projects p  ON p.Id = bi.ProjectId AND p.Status = 3
-    LEFT JOIN phases ph ON ph.Id = bi.PhaseId
-    LEFT JOIN inventoryrecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
-    WHERE bi.ActualQuantity > 0 OR (p.IsHistorical = 1 AND bi.EstimatedQuantity > 0)
+    FROM BOQItems bi
+    JOIN Materials m ON m.Id = bi.MaterialId
+    JOIN Projects p  ON p.Id = bi.ProjectId AND p.Status = 3
+    LEFT JOIN Phases ph ON ph.Id = bi.PhaseId
+    LEFT JOIN InventoryRecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
+    WHERE bi.IsUsageConfirmed = 1
 """)
 
 

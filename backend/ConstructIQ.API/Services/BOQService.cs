@@ -80,11 +80,25 @@ public class BOQService(AppDbContext db) : IBOQService
             // fallback (row.specification || row.newMaterialName) so what's
             // shown before saving matches what survives a reload.
             entity.Specification     = !string.IsNullOrWhiteSpace(item.Specification) ? item.Specification : item.NewMaterialName;
-            entity.EstimatedQuantity = item.EstimatedQuantity;
-            entity.CoverageArea      = BOQUnitRules.IsAreaUnit(unitForRow) ? item.EstimatedQuantity : null;
-            entity.ActualQuantity    = item.ActualQuantity ?? 0;
+            // Material quantities are always whole units in practice (you can't
+            // order 0.7 of a bag of cement) — rounded here, at the single save
+            // choke point every row passes through regardless of where it came
+            // from (manual entry, BOQ scan, or the historical-estimate average).
+            entity.EstimatedQuantity = Math.Round(item.EstimatedQuantity, 0, MidpointRounding.AwayFromZero);
+            entity.CoverageArea      = BOQUnitRules.IsAreaUnit(unitForRow) ? entity.EstimatedQuantity : null;
+            entity.ActualQuantity    = Math.Round(item.ActualQuantity ?? 0, 0, MidpointRounding.AwayFromZero);
+            // A real number here (the historical-backfill Actual Qty entry —
+            // the only place a human still types this) confirms it. Never
+            // downgrade to false on a save that simply didn't carry one —
+            // e.g. re-saving the Material Plan after editing an unrelated
+            // field must not erase a confirmation ExcessWasteService already
+            // established for this same row from real logged records.
+            if (item.ActualQuantity is > 0)
+                entity.IsUsageConfirmed = true;
             entity.Notes             = item.Notes;
-            entity.EstimatedPurchaseQuantity = item.EstimatedPurchaseQuantity;
+            entity.EstimatedPurchaseQuantity = item.EstimatedPurchaseQuantity.HasValue
+                ? Math.Round(item.EstimatedPurchaseQuantity.Value, 0, MidpointRounding.AwayFromZero)
+                : null;
             entity.EstimatedPurchaseUnit     = item.EstimatedPurchaseUnit;
 
             // RequestedQuantity is now a display-only running total (Notify
@@ -94,14 +108,17 @@ public class BOQService(AppDbContext db) : IBOQService
             // shouldn't be able to claim more was ever asked for than the
             // row's own estimate. Only gated on increases: a legitimate
             // decrease (e.g. correcting a typo) should never be blocked.
+            var requestedQuantity = item.RequestedQuantity.HasValue
+                ? Math.Round(item.RequestedQuantity.Value, 0, MidpointRounding.AwayFromZero)
+                : (decimal?)null;
             var previousRequested = entity.RequestedQuantity ?? 0;
-            if (item.RequestedQuantity.HasValue && item.RequestedQuantity.Value > previousRequested)
+            if (requestedQuantity.HasValue && requestedQuantity.Value > previousRequested)
             {
-                var estimatedTotal = item.EstimatedPurchaseQuantity ?? item.EstimatedQuantity;
-                if (item.RequestedQuantity.Value > estimatedTotal)
+                var estimatedTotal = entity.EstimatedPurchaseQuantity ?? entity.EstimatedQuantity;
+                if (requestedQuantity.Value > estimatedTotal)
                     throw new InvalidOperationException($"Requested quantity for this row can't exceed its own estimate of {estimatedTotal}.");
             }
-            entity.RequestedQuantity         = item.RequestedQuantity;
+            entity.RequestedQuantity         = requestedQuantity;
             entity.UpdatedAt         = DateTime.UtcNow;
 
             saved.Add(entity);
@@ -129,7 +146,7 @@ public class BOQService(AppDbContext db) : IBOQService
                         PoNumber     = line.PoNumber,
                         MaterialName = line.MaterialName,
                         Unit         = line.Unit,
-                        Quantity     = line.Quantity,
+                        Quantity     = Math.Round(line.Quantity, 0, MidpointRounding.AwayFromZero),
                     });
                 }
                 await db.SaveChangesAsync();
@@ -257,6 +274,7 @@ public class BOQService(AppDbContext db) : IBOQService
         EstimatedQuantity = b.EstimatedQuantity,
         CoverageArea      = b.CoverageArea,
         ActualQuantity    = b.ActualQuantity,
+        IsUsageConfirmed  = b.IsUsageConfirmed,
         Notes             = b.Notes,
         CreatedAt         = b.CreatedAt,
         HistoricalSupply  = b.HistoricalSupplies.Select(h => new HistoricalSupplyResponseDto
@@ -396,7 +414,7 @@ public class BOQService(AppDbContext db) : IBOQService
 
         return new HistoricalEstimateResponseDto
         {
-            EstimatedQuantity = Math.Round(avgQty, 2),
+            EstimatedQuantity = Math.Round(avgQty, 0, MidpointRounding.AwayFromZero),
             Unit = unit,
             MatchCount = matches.Count,
         };
@@ -511,8 +529,20 @@ public class BOQService(AppDbContext db) : IBOQService
 
         var rows = await query.ToListAsync();
 
+        // Only the latest forecast run per (project, phase-scope) — otherwise
+        // re-running a forecast for the same project/phase just adds its
+        // quantities on top of the previous run's instead of replacing them,
+        // so running it 3 times in a month would show ~3x the real total.
+        // Mirrors the same latest-run-only rule GetTopForecastedDemandAsync
+        // already applies to its own panel.
+        var latestResultIdPerScope = rows
+            .GroupBy(fm => (fm.ForecastResult.ProjectId, fm.ForecastResult.PhaseId))
+            .Select(g => g.OrderByDescending(fm => fm.ForecastResult.GeneratedAt).ThenByDescending(fm => fm.ForecastResultId).First().ForecastResultId)
+            .ToHashSet();
+        rows = rows.Where(fm => latestResultIdPerScope.Contains(fm.ForecastResultId)).ToList();
+
         return rows
-            .GroupBy(fm => (fm.MaterialId, Unit: fm.Material.Unit, Month: new DateTime(fm.ForecastResult.GeneratedAt.Year, fm.ForecastResult.GeneratedAt.Month, 1)))
+            .GroupBy(fm => (fm.MaterialId, Unit: fm.Unit, Month: new DateTime(fm.ForecastResult.GeneratedAt.Year, fm.ForecastResult.GeneratedAt.Month, 1)))
             .ToDictionary(g => g.Key, g => g.Sum(fm => fm.ForecastedQuantity));
     }
 

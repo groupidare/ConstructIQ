@@ -29,6 +29,11 @@ export interface BOQItemRow {
   estimatedQuantity: number;
   // Only entered for historical/completed projects backfilling training data.
   actualQuantity?: number;
+  // Server-computed, read-only — true only when actualQuantity is a genuine
+  // logged/entered figure (a real Excess/Waste record, or a human-typed
+  // historical backfill), false when it's just the estimate standing in
+  // because nothing was ever confirmed. Never sent to the backend on save.
+  isUsageConfirmed?: boolean;
   notes?: string;
   historicalSupply?: HistoricalSupplyLine[];
   // Predicted procurement qty/unit for new projects — suggested from
@@ -86,6 +91,9 @@ export interface BOQItem {
   unit: string;
   estimatedQuantity: number;
   actualQuantity: number;
+  // See BOQItemRow — same confirmed/inferred signal, carried through on the
+  // plain response type too.
+  isUsageConfirmed: boolean;
   notes?: string;
   historicalSupply?: HistoricalSupplyLine[];
   estimatedPurchaseQuantity?: number;

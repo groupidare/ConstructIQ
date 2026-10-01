@@ -32,6 +32,14 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
 
     public async Task<ExcessWasteResponseDto> CreateAsync(ExcessWasteCreateDto dto, int userId)
     {
+        // Material quantities are always whole units in practice — rounded
+        // once here so the validation check below, the saved record, and the
+        // inventory/ActualQuantity updates all agree on the same number
+        // (rounding only at the save point further down could let the
+        // validation check pass against an unrounded value that then rounds
+        // up past the baseline it was just checked against).
+        dto.Quantity = Math.Round(dto.Quantity, 0, MidpointRounding.AwayFromZero);
+
         int materialId;
         if (dto.MaterialId.HasValue)
             materialId = dto.MaterialId.Value;
@@ -119,7 +127,10 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
             var totalLogged = await db.ExcessWasteRecords
                 .Where(e => e.BOQItemId == boqItem.Id)
                 .SumAsync(e => e.Quantity);
-            boqItem.ActualQuantity = Math.Max(0, baseline - totalLogged);
+            boqItem.ActualQuantity = Math.Round(Math.Max(0, baseline - totalLogged), 0, MidpointRounding.AwayFromZero);
+            // A record was just added above, so a real log now definitely
+            // exists for this line — this value is observed, not assumed.
+            boqItem.IsUsageConfirmed = true;
             boqItem.UpdatedAt = DateTime.UtcNow;
             await db.SaveChangesAsync();
         }
@@ -252,6 +263,26 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
 
         await db.SaveChangesAsync();
 
+        // Editing a record's own Quantity changes the Excess+Waste total it
+        // contributes, so the BOQ line's derived ActualQuantity was going
+        // stale here before (only Create/Delete recomputed it) — recompute it
+        // the same way those two already do.
+        if (record.BOQItemId.HasValue)
+        {
+            var boqItem = await db.BOQItems.FindAsync(record.BOQItemId.Value);
+            if (boqItem is not null)
+            {
+                var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
+                var totalLogged = await db.ExcessWasteRecords
+                    .Where(e => e.BOQItemId == boqItem.Id)
+                    .SumAsync(e => e.Quantity);
+                boqItem.ActualQuantity = Math.Round(Math.Max(0, baseline - totalLogged), 0, MidpointRounding.AwayFromZero);
+                boqItem.IsUsageConfirmed = true;
+                boqItem.UpdatedAt = DateTime.UtcNow;
+                await db.SaveChangesAsync();
+            }
+        }
+
         var saved = await db.ExcessWasteRecords
             .Include(e => e.Project).Include(e => e.Phase)
             .Include(e => e.Material).Include(e => e.RecordedBy)
@@ -292,10 +323,15 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         if (boqItem is not null)
         {
             var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
-            var totalLogged = await db.ExcessWasteRecords
+            var remaining = await db.ExcessWasteRecords
                 .Where(e => e.BOQItemId == boqItem.Id)
-                .SumAsync(e => e.Quantity);
-            boqItem.ActualQuantity = Math.Max(0, baseline - totalLogged);
+                .ToListAsync();
+            var totalLogged = remaining.Sum(e => e.Quantity);
+            boqItem.ActualQuantity = Math.Round(Math.Max(0, baseline - totalLogged), 0, MidpointRounding.AwayFromZero);
+            // Deleting the last remaining record against this line means
+            // nothing real is logged anymore — back to unconfirmed, not a
+            // silently-still-trusted figure.
+            boqItem.IsUsageConfirmed = remaining.Count > 0;
             boqItem.UpdatedAt = DateTime.UtcNow;
             await db.SaveChangesAsync();
         }

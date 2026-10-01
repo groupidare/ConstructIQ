@@ -93,8 +93,12 @@ export default function ProjectForecastingPage() {
                 </tr>
               </thead>
               <tbody>
+                {/* key includes unit, not just materialId — one forecast can
+                    now carry more than one entry per material (one per
+                    distinct unit forecasted), which would otherwise collide
+                    on a bare materialId key. */}
                 {latest.forecastedMaterials?.map(m => (
-                  <Tr key={m.materialId}>
+                  <Tr key={`${m.materialId}-${m.unit}`}>
                     <Td className="font-medium">{m.materialName}</Td>
                     <Td>{m.unit}</Td>
                     <Td>{m.forecastedQuantity.toLocaleString()}</Td>

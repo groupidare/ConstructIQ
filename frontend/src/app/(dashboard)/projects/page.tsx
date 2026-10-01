@@ -24,7 +24,7 @@ import type { ExcessWasteRecord } from "@/types/excess";
 import type { ExcessAnalyticsSummary } from "@/types/excess";
 import type { RedistributionRecommendation } from "@/types/procurement";
 import type { PurchaseOrder } from "@/types/purchaseOrder";
-import type { ForecastResult } from "@/types/forecast";
+import type { ForecastResult, ForecastedMaterial } from "@/types/forecast";
 import {
   Plus, MapPin, Calendar, Users, FileText, X, Eye, Pencil,
   Upload, FolderOpen, Trash2, Search, BarChart3, Camera, Activity, History, ExternalLink, File as FileIcon,
@@ -372,8 +372,11 @@ function FileRepositoryModal({ onClose, projects }: { onClose:()=>void; projects
 
 function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void }) {
   const [type, setType] = useState("Material Usage");
-  const [from, setFrom] = useState(new Date("2026-05-01"));
-  const [to,   setTo]   = useState(new Date("2026-06-01"));
+  // Relative to "now" (not a fixed date) so this default never goes stale —
+  // a hardcoded past range meant every report silently came back empty once
+  // enough time had passed, unless the user thought to change the dates first.
+  const [from, setFrom] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 3); return d; });
+  const [to,   setTo]   = useState(() => new Date());
   const [fmt,  setFmt]  = useState(".PDF");
   const [generating, setGenerating] = useState(false);
   const sel: React.CSSProperties = { ...inp, cursor:"pointer", appearance:"none" as React.CSSProperties["appearance"] };
@@ -837,7 +840,12 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
   // quantity (neither a historicalSupply delivery nor BOQItem.ActualQuantity)
   // — shown as "—" rather than silently standing in for the estimate, so a
   // viewer can tell forecast-validation signal from filler at a glance.
-  const [aiPredicted, setAiPredicted] = useState<{ material:string; estimated:number; actual?:number; unit:string }[]>([]);
+  // Genuine ML output from the project's latest saved forecast run (GET
+  // /forecast/project/:id, newest first) — never the historical-average
+  // heuristic (topMaterialDemand), which has never been touched by the ML
+  // pipeline despite ranking similarly. Empty when no forecast has been run
+  // yet for this project; never silently substituted with something else.
+  const [aiPredicted, setAiPredicted] = useState<ForecastedMaterial[]>([]);
   const [topDemand, setTopDemand]     = useState<{ material:string; estimated:number; actual?:number; unit:string }[]>([]);
   const [excessStock, setExcessStock]     = useState(0);
   const [redistributed, setRedistributed] = useState(0);
@@ -875,20 +883,41 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
       .then(([{ data: boqItems }, { data: records }]) => {
         if (cancelled) return;
         setMaterialsCount(boqItems.length);
-        // Ranking/grouping lives in topMaterialDemand (lib/topMaterialDemand.ts):
-        // groups BOQ rows by materialId+specification+unit (so two rows that
-        // happen to share a catalog Material but describe different physical
-        // items never collapse into one display entry), and only trusts a
-        // row's ActualQuantity as real "actual usage" when a genuine
+        // Historical projects are training data, not a forecast target
+        // themselves (see Material Plan's "Materials by Demand" panel) —
+        // ranked by real recorded demand instead of a forecast. Ranking/
+        // grouping lives in topMaterialDemand (lib/topMaterialDemand.ts):
+        // groups BOQ rows by materialId+specification+unit, and only trusts
+        // a row's ActualQuantity as real "actual usage" when a genuine
         // ExcessWasteRecord was logged against it (recordedIds) — otherwise
         // it's undefined ("—" in the UI), never silently substituted with
         // the estimate.
-        const recordedIds = new Set(records.flatMap(r => r.boqItemId == null ? [] : [r.boqItemId]));
-        const ranked = topMaterialDemand(boqItems, project.isHistorical, recordedIds);
-        if (project.isHistorical) setTopDemand(ranked);
-        else setAiPredicted(ranked);
+        if (project.isHistorical) {
+          const recordedIds = new Set(records.flatMap(r => r.boqItemId == null ? [] : [r.boqItemId]));
+          setTopDemand(topMaterialDemand(boqItems, project.isHistorical, recordedIds));
+        }
       })
       .catch(() => {});
+
+    // Non-historical ("AI Predicted") comes from this project's own latest
+    // saved forecast run — genuine Random Forest + XGBoost ensemble output,
+    // never the historical-average heuristic above (which, despite ranking
+    // similarly, has never been touched by the ML pipeline). Empty when no
+    // forecast has been generated for this project yet.
+    if (!project.isHistorical) {
+      api.get<ForecastResult[]>(`/forecast/project/${project.id}`)
+        .then(({ data }) => {
+          if (cancelled) return;
+          const latest = data[0];
+          const top5 = (latest?.forecastedMaterials ?? [])
+            .slice()
+            .sort((a, b) => b.forecastedQuantity - a.forecastedQuantity)
+            .slice(0, 5);
+          setAiPredicted(top5);
+        })
+        .catch(() => {});
+    }
+
     return () => { cancelled = true; };
   }, [project.id, project.status, project.isHistorical, refreshKey]);
 
@@ -950,13 +979,13 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
         ) : (
           <>
             {aiPredicted.length === 0 ? (
-              <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#7c3aed" }}>AI Predicted: —</span>
+              <span style={{ fontSize:"0.7rem", fontWeight:600, color:"#7c3aed" }}>AI Predicted: — (no forecast run yet)</span>
             ) : (
               <>
                 <span style={{ fontSize:"0.65rem", fontWeight:700, color:"#7c3aed", marginBottom: 1 }}>Top 5 AI Predicted</span>
                 {aiPredicted.map((m, i) => (
                   <span key={i} style={{ fontSize:"0.68rem", fontWeight:500, color:"#7c3aed" }}>
-                    {i + 1}. {m.material} - Est: {m.estimated.toLocaleString()} {m.unit} / Actual: {m.actual != null ? `${m.actual.toLocaleString()} ${m.unit}` : "—"}
+                    {i + 1}. {m.materialName} - Forecast: {m.forecastedQuantity.toLocaleString()} {m.unit}
                   </span>
                 ))}
               </>

@@ -130,6 +130,11 @@ public static class DbInitializer
 
         var totalLogged = excessQty + wasteQty;
         boq.ActualQuantity = Math.Max(0, liveBaseline - totalLogged);
+        // Only genuinely confirmed when a record was actually added above —
+        // totalLogged can be 0 without any record existing at all (both
+        // excessQty and wasteQty rolled 0), and that case must look the same
+        // as any other unconfirmed row, not masquerade as observed seed data.
+        boq.IsUsageConfirmed = totalLogged > 0;
         boq.UpdatedAt = now;
 
         var inventory = await context.InventoryRecords

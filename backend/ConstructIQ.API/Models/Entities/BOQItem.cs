@@ -41,6 +41,17 @@ public class BOQItem
     [Column(TypeName = "decimal(18,4)")]
     public decimal ActualQuantity { get; set; } = 0;
 
+    // True only when ActualQuantity reflects a genuine signal — either a real
+    // ExcessWasteRecord logged against this line (ExcessWasteService recomputes
+    // this alongside ActualQuantity on every create/update/delete) or a real
+    // number typed in during historical backfill (BOQService.BulkSaveAsync).
+    // False means ActualQuantity is just the estimate standing in because
+    // nothing was ever confirmed — e.g. ProjectService's completion fallback
+    // for a line nobody ever logged Excess/Waste against. Lets ML training and
+    // the Accuracy Report tell "observed" apart from "assumed" instead of
+    // treating both as equally real ground truth.
+    public bool IsUsageConfirmed { get; set; } = false;
+
     // Predicted procurement quantity for new (non-historical) projects — in a
     // real purchasable container unit (pc/bag/sheet/...), distinct from
     // EstimatedQuantity/Unit above which are often an area/length measure

@@ -41,6 +41,13 @@ public class ForecastedMaterial
     public int MaterialId { get; set; }
     public Material Material { get; set; } = null!;
 
+    // The BOQ row's own unit this prediction was made in — NOT always the
+    // same as Material.Unit. A material can legitimately be estimated in
+    // different units across BOQ rows (sq.m for one wall, l.m for a pipe
+    // run), so the same MaterialId can appear more than once in one
+    // ForecastResult, once per distinct unit actually forecasted.
+    [MaxLength(50)] public string Unit { get; set; } = string.Empty;
+
     [Column(TypeName = "decimal(18,4)")] public decimal ForecastedQuantity { get; set; }
     [Column(TypeName = "decimal(18,4)")] public decimal CurrentStock       { get; set; }
     [Column(TypeName = "decimal(18,4)")] public decimal Shortage           { get; set; }

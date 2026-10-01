@@ -77,7 +77,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   function boqItemToRow(b: BOQItem): BOQItemRow {
     return {
       id: b.id, phaseId: b.phaseId, primarySection: b.primarySection, subCategory: b.subCategory,
-      specification: b.specification, materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, notes: b.notes,
+      specification: b.specification, materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, isUsageConfirmed: b.isUsageConfirmed, notes: b.notes,
       historicalSupply: b.historicalSupply,
       estimatedPurchaseQuantity: b.estimatedPurchaseQuantity, estimatedPurchaseUnit: b.estimatedPurchaseUnit,
       requestedQuantity: b.requestedQuantity,
@@ -115,9 +115,9 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     setUploadingBlueprint(true);
     try {
       await uploadDocument(file, 'Blueprint');
-      toast.success('Blueprint uploaded.');
+      toast.success('File uploaded.');
     } catch {
-      toast.error('Failed to upload blueprint.');
+      toast.error('Failed to upload file.');
     } finally {
       setUploadingBlueprint(false);
     }

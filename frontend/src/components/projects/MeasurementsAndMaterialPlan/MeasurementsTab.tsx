@@ -59,23 +59,23 @@ export default function MeasurementsTab({
         />
       )}
 
-      <p style={{ fontSize: '0.65rem', fontWeight: 700, color: '#9ca3af', letterSpacing: '0.08em', marginBottom: '0.5rem' }}>BLUEPRINT / PDF</p>
+      <p style={{ fontSize: '0.65rem', fontWeight: 700, color: '#9ca3af', letterSpacing: '0.08em', marginBottom: '0.5rem' }}>PROJECT FILES</p>
       {editable && (
         <div
           onClick={() => fileInputRef.current?.click()}
           style={{ border: '2px dashed #e5e7eb', borderRadius: 10, padding: '1.1rem', textAlign: 'center', marginBottom: '0.75rem', cursor: 'pointer', background: '#fafafa' }}
         >
-          <input ref={fileInputRef} type="file" accept=".pdf,.dwg,.png,.jpg,.jpeg" onChange={handleFilePicked} style={{ display: 'none' }} />
+          <input ref={fileInputRef} type="file" accept=".pdf,.dwg,.png,.jpg,.jpeg,.xlsx,.xls,.csv" onChange={handleFilePicked} style={{ display: 'none' }} />
           <div style={{ width: 36, height: 36, borderRadius: 10, background: '#fff7ed', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 0.5rem' }}>
             <Upload style={{ width: 16, height: 16, color: '#f97316' }} />
           </div>
-          <p style={{ fontSize: '0.8rem', fontWeight: 600, color: '#374151' }}>{uploading ? 'Uploading…' : 'Upload Blueprint'}</p>
-          <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginTop: 2 }}>PDF, DWG, PNG, JPG — max 25 MB</p>
+          <p style={{ fontSize: '0.8rem', fontWeight: 600, color: '#374151' }}>{uploading ? 'Uploading…' : 'Upload Files'}</p>
+          <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginTop: 2 }}>Blueprints, BOQs, POs, or other project documents — PDF, DWG, PNG, JPG, XLSX — max 25 MB</p>
         </div>
       )}
 
       {blueprints.length === 0 ? (
-        <p style={{ fontSize: '0.72rem', color: '#d1d5db', padding: '0.5rem 0' }}>No blueprint uploaded yet.</p>
+        <p style={{ fontSize: '0.72rem', color: '#d1d5db', padding: '0.5rem 0' }}>No files uploaded yet.</p>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: '1rem' }}>
           {blueprints.map(doc => (
@@ -114,7 +114,7 @@ export default function MeasurementsTab({
       )}
 
       <p style={{ fontSize: '0.68rem', color: '#9ca3af', lineHeight: 1.4 }}>
-        Blueprints are stored here for viewing and reference. If a file also contains a Bill of Quantities or Purchase Order table, use &quot;Scan &amp; Fill Rows&quot; to extract it into the Material Plan tab the same way as a BOQ upload.
+        Files are stored here for viewing and reference — blueprints and drawings are not scanned for measurements. If a file also contains a Bill of Quantities or Purchase Order table, use &quot;Scan &amp; Fill Rows&quot; to extract it into the Material Plan tab the same way as a BOQ upload.
       </p>
     </div>
   );

@@ -23,11 +23,20 @@ export interface ReportSourceData {
 function inRange(dateStr: string | undefined | null, from: Date, to: Date): boolean {
   if (!dateStr) return false;
   const t = parseServerDate(dateStr).getTime();
-  return t >= from.getTime() && t <= to.getTime();
+  // A date-only "To" picker parses to midnight (00:00) of that day, which
+  // would silently exclude every record from later that same day — end of
+  // day instead, so picking "today" actually includes today.
+  const endOfTo = new Date(to.getFullYear(), to.getMonth(), to.getDate(), 23, 59, 59, 999).getTime();
+  return t >= from.getTime() && t <= endOfTo;
 }
 
+// Material quantities are always whole units in practice — matches the
+// rounding already enforced where these values are saved (BOQService.cs,
+// forecasting_service.py). This is a display-layer backstop for any value
+// that reaches a report without having passed through that save point
+// (e.g. older rows saved before that fix, or fields computed elsewhere).
 function num(n: number | undefined | null): number {
-  return Math.round(((n ?? 0) + Number.EPSILON) * 100) / 100;
+  return Math.round(n ?? 0);
 }
 
 // Unlike POs/excess records/forecasts, a BOQ item has no "usage date" of its
@@ -44,11 +53,19 @@ export function buildMaterialUsageTable(items: BOQItem[]): ReportTable {
       i.materialName,
       i.unit,
       num(i.estimatedQuantity),
+      // estimatedQuantity (above) is the scanned/measured total — what the
+      // Material Plan screen itself labels "Total Area/Qty". The purchase
+      // estimate is a separate field (estimatedPurchaseQuantity, in its own
+      // unit) that this report previously omitted entirely while mislabeling
+      // the column above as "Est. Qty" — both are included here now, each
+      // under the same name the Material Plan screen already uses for it.
+      num(i.estimatedPurchaseQuantity),
+      i.estimatedPurchaseUnit ?? "—",
       num(i.actualQuantity),
       num(i.requestedQuantity),
     ]);
   return {
-    columns: ["Section", "Sub-Category", "Material", "Unit", "Est. Qty", "Actual Qty", "Requested Qty"],
+    columns: ["Section", "Sub-Category", "Material", "Unit", "Total Area/Qty", "Est. Purchase Qty", "Purchase Unit", "Actual Qty", "Requested Qty"],
     rows,
   };
 }
@@ -76,14 +93,12 @@ export function buildExcessAnalyticsTable(records: ExcessWasteRecord[], from: Da
       r.excessType,
       num(r.quantity),
       r.unit,
-      num(r.unitCost),
-      num(r.totalCost),
       `${num(r.excessPercent)}%`,
       r.isReusable ? "Yes" : "No",
       r.redistributionStatus ?? "—",
     ]);
   return {
-    columns: ["Material", "Type", "Quantity", "Unit", "Unit Cost", "Total Cost", "Excess %", "Reusable", "Redistribution"],
+    columns: ["Material", "Type", "Quantity", "Unit", "Excess %", "Reusable", "Redistribution"],
     rows,
   };
 }

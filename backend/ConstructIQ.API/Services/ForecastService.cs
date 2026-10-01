@@ -67,6 +67,7 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
             entity.ForecastedMaterials.Add(new ForecastedMaterial
             {
                 MaterialId         = fm.MaterialId,
+                Unit               = fm.Unit,
                 ForecastedQuantity = fm.ForecastedQuantity,
                 CurrentStock       = fm.CurrentStock,
                 Shortage           = fm.Shortage,
@@ -109,7 +110,7 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
         {
             MaterialId         = fm.MaterialId,
             MaterialName       = fm.Material.Name,
-            Unit               = fm.Material.Unit,
+            Unit               = fm.Unit,
             ForecastedQuantity = fm.ForecastedQuantity,
             CurrentStock       = fm.CurrentStock,
             Shortage           = fm.Shortage,
@@ -250,8 +251,8 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
                 fm.MaterialId,
                 fm.Material.Name,
                 fm.Material.Specification,
-                RawUnit = fm.Material.Unit,
-                NormalizedUnit = NormalizeUnitLabel(fm.Material.Unit),
+                RawUnit = fm.Unit,
+                NormalizedUnit = NormalizeUnitLabel(fm.Unit),
                 fm.ForecastedQuantity,
                 ProjectId = lp.Forecast.ProjectId,
                 ProjectName = projectNames.GetValueOrDefault(lp.Forecast.ProjectId, string.Empty),
@@ -330,16 +331,28 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
             .Where(f => f.ProjectId == projectId)
             .ToListAsync();
 
+        // IsUsageConfirmed, not just ActualQuantity > 0 — an unconfirmed row's
+        // ActualQuantity is just its own estimate standing in (see
+        // BOQItem.IsUsageConfirmed), so including it here would partly measure
+        // the forecast against its own unrelated estimate rather than real
+        // observed usage.
         var boqItems = await db.BOQItems
             .Include(b => b.Material)
-            .Where(b => b.ProjectId == projectId && b.ActualQuantity > 0)
+            .Where(b => b.ProjectId == projectId && b.IsUsageConfirmed)
             .ToListAsync();
 
         var comparisons = boqItems.Select(b =>
         {
+            // Matched on unit as well as MaterialId — a single forecast run
+            // can now carry more than one entry per material (one per
+            // distinct unit actually forecasted; see ForecastedMaterial.Unit),
+            // so matching by MaterialId alone could pair this BOQ row against
+            // a forecast entry made in a different unit for the same material.
+            var effectiveUnit = !string.IsNullOrWhiteSpace(b.Unit) ? b.Unit : b.Material.Unit;
             var lastForecast = forecasts
                 .SelectMany(f => f.ForecastedMaterials)
-                .Where(fm => fm.MaterialId == b.MaterialId)
+                .Where(fm => fm.MaterialId == b.MaterialId
+                    && string.Equals(fm.Unit, effectiveUnit, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(fm => fm.Id)
                 .FirstOrDefault();
 
@@ -352,7 +365,7 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
             {
                 MaterialId         = b.MaterialId,
                 MaterialName       = b.Material.Name,
-                Unit               = b.Material.Unit,
+                Unit               = effectiveUnit,
                 ForecastedQuantity = forecasted,
                 ActualQuantity     = actual,
                 Variance           = variance,

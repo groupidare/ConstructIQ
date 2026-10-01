@@ -332,7 +332,17 @@ export default function MaterialPlanTab({
 
       {isCompleted && (
         <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '0.625rem 0.875rem', marginBottom: '1rem', fontSize: '0.72rem', color: '#9a3412' }}>
-          This project is marked Completed — fill in <strong>Actual Qty</strong> per material below. This is what trains the forecasting model on real usage.
+          {isHistorical
+            // Historical backfills have no live Excess/Waste trail to derive
+            // usage from (nothing was ever logged against something that
+            // already happened) — typing the real figure here is the only
+            // genuine source, so this is the one place manual entry is correct.
+            ? <>This is a historical project — fill in <strong>Actual Qty</strong> per material below from your real records. This is what trains the forecasting model on real usage.</>
+            // Live projects derive this automatically from logged Excess/Waste
+            // against each line — no manual entry. A line with nothing ever
+            // logged against it shows its estimate instead, marked "inferred"
+            // rather than presented as a confirmed figure.
+            : <>Actual Qty below is calculated automatically from logged Excess/Waste per material. Rows marked <strong>inferred</strong> have nothing logged yet, so they show the estimate instead of a confirmed figure.</>}
         </div>
       )}
 
@@ -356,8 +366,13 @@ export default function MaterialPlanTab({
                   <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
                 ))}
               </div>
+              {/* key includes unit, not just materialId — the same material
+                  can now appear twice in one forecast (once per distinct
+                  unit actually forecasted; see ForecastedMaterial.Unit on
+                  the backend), which would otherwise collide on a bare
+                  materialId key. */}
               {forecastedMaterials.map(fm => (
-                <div key={fm.materialId} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.7fr)', gap: 4, padding: '7px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center' }}>
+                <div key={`${fm.materialId}-${fm.unit}`} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.7fr)', gap: 4, padding: '7px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center' }}>
                   <span style={{ fontSize: '0.76rem', color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fm.materialName}</span>
                   <span style={{ fontSize: '0.76rem', color: '#374151' }}>{fm.forecastedQuantity.toLocaleString()} {fm.unit}</span>
                   <span style={{ fontSize: '0.76rem', color: '#6b7280' }}>{fm.currentStock.toLocaleString()} {fm.unit}</span>
@@ -556,7 +571,11 @@ export default function MaterialPlanTab({
                   )}
                   <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
-                  {isCompleted && (
+                  {isCompleted && isHistorical && (
+                    // The one legitimate manual-entry path — a historical
+                    // backfill has no live Excess/Waste trail to derive this
+                    // from, so a real human-typed figure is the only genuine
+                    // source. See the banner above and BOQItem.IsUsageConfirmed.
                     <input
                       disabled={!editable}
                       type="number"
@@ -565,6 +584,19 @@ export default function MaterialPlanTab({
                       placeholder="Actual used"
                       style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', background: '#fff7ed', borderColor: '#fed7aa' }}
                     />
+                  )}
+                  {isCompleted && !isHistorical && (
+                    // Read-only — auto-derived from logged Excess/Waste
+                    // (ExcessWasteService), never hand-typed for a live
+                    // project. "inferred" means nothing has been logged
+                    // against this line yet, so the figure shown is just the
+                    // estimate, not an observed one.
+                    <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '4px 6px' }} title={r.isUsageConfirmed ? 'Calculated from logged Excess/Waste' : 'Nothing logged yet for this line — showing the estimate'}>
+                      <span style={{ fontSize: '0.76rem', color: '#374151' }}>{r.actualQuantity || 0}</span>
+                      {!r.isUsageConfirmed && (
+                        <span style={{ fontSize: '0.6rem', color: '#b45309', fontStyle: 'italic' }}>inferred</span>
+                      )}
+                    </div>
                   )}
                   <select
                     disabled={!editable}
@@ -774,7 +806,7 @@ export default function MaterialPlanTab({
               <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.6fr) minmax(0,0.6fr) minmax(0,0.7fr) auto', gap: 6, marginBottom: 6, alignItems: 'center' }}>
                 <input value={r.name} onChange={e => updatePoDraftRow(i, { name: e.target.value })} placeholder="Material name" style={{ ...inp, padding: '5px 8px', fontSize: '0.76rem' }} />
                 <input value={r.unit} onChange={e => updatePoDraftRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '5px 8px', fontSize: '0.76rem' }} />
-                <input type="number" value={r.quantity || ''} onChange={e => updatePoDraftRow(i, { quantity: parseFloat(e.target.value) || 0 })} placeholder="Qty ordered" style={{ ...inp, padding: '5px 8px', fontSize: '0.76rem' }} />
+                <input type="number" step="1" value={r.quantity || ''} onChange={e => updatePoDraftRow(i, { quantity: Math.round(parseFloat(e.target.value)) || 0 })} placeholder="Qty ordered" style={{ ...inp, padding: '5px 8px', fontSize: '0.76rem' }} />
                 <button onClick={() => removePoDraftRow(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 2 }}>
                   <Trash2 style={{ width: 13, height: 13 }} />
                 </button>

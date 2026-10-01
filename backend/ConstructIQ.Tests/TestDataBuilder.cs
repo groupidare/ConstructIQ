@@ -1,5 +1,6 @@
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Models.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.Tests;
 
@@ -118,9 +119,15 @@ public static class TestDataBuilder
 
     public static async Task AddForecastedMaterialAsync(AppDbContext db, int forecastResultId, int materialId, decimal quantity)
     {
+        // Defaults to the catalog Material's own unit — same fallback used in
+        // production (ForecastService/forecasting_service) when a row has no
+        // unit of its own. Without this, every test fixture defaulted to ""
+        // for Unit, which no longer matches the real unit on whatever it's
+        // being compared against now that both sides key on it.
+        var unit = await db.Materials.Where(m => m.Id == materialId).Select(m => m.Unit).FirstOrDefaultAsync() ?? string.Empty;
         db.ForecastedMaterials.Add(new ForecastedMaterial
         {
-            ForecastResultId = forecastResultId, MaterialId = materialId,
+            ForecastResultId = forecastResultId, MaterialId = materialId, Unit = unit,
             ForecastedQuantity = quantity, CurrentStock = 0, Shortage = 0, ReorderSuggestion = 0,
             RiskLevel = RiskLevel.Low,
         });

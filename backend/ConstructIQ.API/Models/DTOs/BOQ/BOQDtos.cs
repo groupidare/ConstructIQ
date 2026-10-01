@@ -68,6 +68,10 @@ public class BOQItemResponseDto
     // never accepted from the client on save, see BOQItemUpsertDto.
     public decimal? CoverageArea     { get; set; }
     public decimal  ActualQuantity    { get; set; }
+    // True only when ActualQuantity is a genuine logged/entered figure, not
+    // the estimate silently standing in for "nothing was ever confirmed" —
+    // see BOQItem.IsUsageConfirmed.
+    public bool     IsUsageConfirmed  { get; set; }
     public string?  Notes             { get; set; }
     public DateTime CreatedAt         { get; set; }
     public List<HistoricalSupplyResponseDto> HistoricalSupply { get; set; } = [];

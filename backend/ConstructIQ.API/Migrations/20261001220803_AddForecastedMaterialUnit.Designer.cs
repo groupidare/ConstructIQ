@@ -4,6 +4,7 @@ using ConstructIQ.API.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ConstructIQ.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261001220803_AddForecastedMaterialUnit")]
+    partial class AddForecastedMaterialUnit
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -94,9 +97,6 @@ namespace ConstructIQ.API.Migrations
 
                     b.Property<decimal>("EstimatedUnitCost")
                         .HasColumnType("decimal(18,2)");
-
-                    b.Property<bool>("IsUsageConfirmed")
-                        .HasColumnType("tinyint(1)");
 
                     b.Property<int>("MaterialId")
                         .HasColumnType("int");

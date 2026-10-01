@@ -12,7 +12,7 @@ import Button from '@/components/ui/Button';
 import Spinner from '@/components/ui/Spinner';
 import Modal from '@/components/ui/Modal';
 import { Table, Th, Td, Tr } from '@/components/ui/Table';
-import { formatCurrency, formatDate } from '@/lib/utils';
+import { formatDate } from '@/lib/utils';
 import type { Project } from '@/types/project';
 import type { ExcessWasteCreateRequest } from '@/types/excess';
 
@@ -62,11 +62,9 @@ export default function ExcessAnalyticsProjectPage() {
       </div>
 
       {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 gap-4">
           {[
-            { label: 'Total Excess Cost',    value: formatCurrency(summary.totalExcessCost) },
             { label: 'Total Excess Qty',     value: summary.totalExcessQuantity.toLocaleString() },
-            { label: 'Reusable Value',       value: formatCurrency(summary.reusableValue) },
             { label: 'Materials Affected',   value: summary.excessByMaterial?.length ?? 0 },
           ].map(({ label, value }) => (
             <Card key={label}>
@@ -88,8 +86,6 @@ export default function ExcessAnalyticsProjectPage() {
                 <Th>Material</Th>
                 <Th>Type</Th>
                 <Th>Quantity</Th>
-                <Th>Unit Cost</Th>
-                <Th>Total Cost</Th>
                 <Th>Excess %</Th>
                 <Th>Reusable</Th>
                 <Th>Phase</Th>
@@ -102,8 +98,6 @@ export default function ExcessAnalyticsProjectPage() {
                   <Td className="font-medium">{r.materialName}</Td>
                   <Td><Badge variant={r.excessType === 'Damaged' ? 'danger' : 'warning'}>{r.excessType}</Badge></Td>
                   <Td>{r.quantity.toLocaleString()} {r.unit}</Td>
-                  <Td>{formatCurrency(r.unitCost)}</Td>
-                  <Td className="font-medium text-red-600">{formatCurrency(r.totalCost)}</Td>
                   <Td>{r.excessPercent.toFixed(1)}%</Td>
                   <Td><Badge variant={r.isReusable ? 'success' : 'default'}>{r.isReusable ? 'Yes' : 'No'}</Badge></Td>
                   <Td>{r.phaseName || '—'}</Td>
@@ -130,15 +124,9 @@ export default function ExcessAnalyticsProjectPage() {
               {['Unused','Damaged','Expired','Overordered'].map(t => <option key={t}>{t}</option>)}
             </select>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Quantity</label>
-              <input className="input" type="number" step="0.01" onChange={e => setForm(f => ({ ...f, quantity: +e.target.value }))} />
-            </div>
-            <div>
-              <label className="label">Unit Cost (₱)</label>
-              <input className="input" type="number" step="0.01" onChange={e => setForm(f => ({ ...f, unitCost: +e.target.value }))} />
-            </div>
+          <div>
+            <label className="label">Quantity</label>
+            <input className="input" type="number" step="1" onChange={e => setForm(f => ({ ...f, quantity: Math.round(+e.target.value) }))} />
           </div>
           <div className="flex items-center gap-2">
             <input type="checkbox" id="reusable" onChange={e => setForm(f => ({ ...f, isReusable: e.target.checked }))} />

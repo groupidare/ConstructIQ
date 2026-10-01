@@ -224,7 +224,14 @@ public class ProjectService(AppDbContext db, IWebHostEnvironment env, IWeatherGe
                 foreach (var b in boqItems)
                 {
                     if (!loggedSet.Contains(b.Id))
+                    {
                         b.ActualQuantity = b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity;
+                        // Nobody ever confirmed this — the estimate is just
+                        // standing in because silence is the best signal
+                        // available. Flagged, not presented as observed data;
+                        // see BOQItem.IsUsageConfirmed.
+                        b.IsUsageConfirmed = false;
+                    }
                 }
             }
         }

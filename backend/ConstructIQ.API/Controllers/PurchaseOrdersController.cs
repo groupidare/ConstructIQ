@@ -94,7 +94,8 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env, 
                 .Select(m => new PurchaseOrderMaterial
                 {
                     Name = m.Name.Trim(),
-                    Quantity = m.Quantity,
+                    // Material quantities are always whole units in practice.
+                    Quantity = Math.Round(m.Quantity, 0, MidpointRounding.AwayFromZero),
                     Unit = m.Unit,
                     MaterialId = m.MaterialId ?? (materialMatches.TryGetValue(m.Name.Trim().ToLower(), out var id) ? id : null),
                     PhaseId = m.PhaseId,
