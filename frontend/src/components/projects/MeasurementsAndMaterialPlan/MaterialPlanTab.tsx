@@ -473,7 +473,13 @@ export default function MaterialPlanTab({
           </div>
         )}
 
-        <div style={{ display: isHistorical ? 'none' : 'block', overflowX: 'auto' }}>
+        {/* Hidden only while a historical project is still locked (view-only)
+            — this is the grid with the actual Actual Qty input (see its
+            isCompleted && isHistorical branch below), so hiding it whenever
+            isHistorical regardless of the edit toggle (the old rule, from
+            when historical projects could never be edited at all) silently
+            defeated the very point of toggling Editing back on for one. */}
+        <div style={{ display: (isHistorical && !editable) ? 'none' : 'block', overflowX: 'auto' }}>
         <div style={{ minWidth: 980 }}>
         <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
           {(isCompleted
