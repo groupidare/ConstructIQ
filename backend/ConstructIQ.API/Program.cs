@@ -63,6 +63,13 @@ builder.Services.AddHttpClient("MLService", client =>
         client.DefaultRequestHeaders.Add("X-API-Key", mlApiKey);
 });
 builder.Services.AddHostedService<MlServiceKeepAliveService>();
+builder.Services.AddHttpClient("Resend", client =>
+{
+    client.BaseAddress = new Uri("https://api.resend.com/");
+    var resendKey = builder.Configuration["RESEND_API_KEY"];
+    if (!string.IsNullOrWhiteSpace(resendKey))
+        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", resendKey);
+});
 builder.Services.AddHttpClient("GoogleSheets", client =>
 {
     client.BaseAddress = new Uri("https://sheets.googleapis.com/");
