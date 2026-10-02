@@ -92,7 +92,13 @@ export default function MaterialPlanTab({
   // rather than a flexible fr column — a flexible share there left visible
   // dead space between the icons and the row's right edge; Material
   // Specification's own flexible share absorbs whatever that frees up.
-  const columnsTemplate = isCompleted
+  // Historical rows drop Purchase Unit/Est. Qty/Alerts entirely — all three
+  // are forward-looking procurement fields (what to order next, requested
+  // via the Alerts buttons) that don't apply to a project that already
+  // happened; only Actual Qty is a meaningful field to fill in there.
+  const columnsTemplate = isHistorical
+    ? 'minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr)'
+    : isCompleted
     ? 'minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr) 96px'
     : 'minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.6fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr) 96px';
   const [parsingId, setParsingId] = useState<number | null>(null);
@@ -482,7 +488,9 @@ export default function MaterialPlanTab({
         <div style={{ display: (isHistorical && !editable) ? 'none' : 'block', overflowX: 'auto' }}>
         <div style={{ minWidth: 980 }}>
         <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-          {(isCompleted
+          {(isHistorical
+            ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'ACTUAL QTY']
+            : isCompleted
             ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'ACTUAL QTY', 'UNIT', 'EST. QTY', 'ALERTS']
             : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'UNIT', 'EST. QTY', 'ALERTS']
           ).map((h, idx) => (
@@ -604,6 +612,7 @@ export default function MaterialPlanTab({
                       )}
                     </div>
                   )}
+                  {!isHistorical && <>
                   <select
                     disabled={!editable}
                     value={r.estimatedPurchaseUnit ?? ''}
@@ -697,6 +706,7 @@ export default function MaterialPlanTab({
                       </button>
                     )}
                   </div>
+                  </>}
                 </div>
               );
             })
