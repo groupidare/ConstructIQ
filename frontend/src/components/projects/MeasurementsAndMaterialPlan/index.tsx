@@ -40,13 +40,18 @@ export default function MeasurementsAndMaterialPlan({ project, onClose, initialE
               <p style={{ fontSize: '0.78rem', color: '#9ca3af', marginTop: 2 }}>{project.name}</p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              {project.isHistorical ? (
+              {/* Defaults to locked on open either way (see initialEditable
+                  above) — historical projects just get a "Historical" label
+                  alongside the same toggle, instead of a dead end with no way
+                  back into editing at all. Needed for going back to backfill
+                  Actual Qty that was missed during the original scan/creation
+                  step — the whole point of a historical project existing. */}
+              {project.isHistorical && (
                 <span style={{ padding: '6px 12px', borderRadius: 999, background: '#f3f4f6', color: '#6b7280', fontSize: '0.72rem', fontWeight: 600 }}>
-                  Historical — View only
+                  Historical
                 </span>
-              ) : (
-                <EditToggle editable={state.editable} onToggle={() => state.setEditable(e => !e)} />
               )}
+              <EditToggle editable={state.editable} onToggle={() => state.setEditable(e => !e)} />
               <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af' }}><X style={{ width: 20, height: 20 }} /></button>
             </div>
           </div>
