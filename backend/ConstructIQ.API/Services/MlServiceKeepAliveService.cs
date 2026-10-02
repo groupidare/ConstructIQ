@@ -15,19 +15,29 @@ public class MlServiceKeepAliveService(IHttpClientFactory httpFactory, ILogger<M
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(Interval);
+        // PeriodicTimer only fires *after* the first interval elapses, which
+        // would leave ml-service un-pinged (and so still cold, or going cold)
+        // for the first 10 minutes after every backend deploy/restart — ping
+        // once immediately here so that gap doesn't exist.
+        await PingAsync(stoppingToken);
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
-            try
-            {
-                var client = httpFactory.CreateClient("MLService");
-                await client.GetAsync("/health", stoppingToken);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // Best-effort — a failed ping here should never crash the
-                // backend; it just means ml-service stays cold a bit longer.
-                logger.LogWarning(ex, "ml-service keep-alive ping failed.");
-            }
+            await PingAsync(stoppingToken);
+        }
+    }
+
+    private async Task PingAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            var client = httpFactory.CreateClient("MLService");
+            await client.GetAsync("/health", stoppingToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Best-effort — a failed ping here should never crash the
+            // backend; it just means ml-service stays cold a bit longer.
+            logger.LogWarning(ex, "ml-service keep-alive ping failed.");
         }
     }
 }
