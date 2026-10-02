@@ -33,6 +33,19 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  // Next.js client-side page transitions (clicking a <Link>) fetch an RSC
+  // payload as e.g. "/admin/settings?_rsc=xyz" — not a "navigate" request,
+  // so it used to fall into the cache-first branch below. That payload is
+  // dynamic, auth-dependent page content (can legitimately be a redirect to
+  // "/" if whoever triggered the very first prefetch wasn't logged in yet),
+  // not a static asset — caching it forever meant a stale first-ever response
+  // (e.g. an unauthenticated redirect) got replayed on every later click,
+  // regardless of actual login state. Always go to the network for these.
+  if (url.searchParams.has("_rsc")) {
+    event.respondWith(fetch(request));
+    return;
+  }
+
   // Static assets (hashed build chunks, icons, fonts): cache-first.
   event.respondWith(
     caches.match(request).then((cached) => {
