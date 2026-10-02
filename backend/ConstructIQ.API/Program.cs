@@ -53,6 +53,14 @@ builder.Services.AddHostedService<WeatherWatcherService>();
 builder.Services.AddHttpClient("MLService", client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["ML_SERVICE_URL"] ?? "http://localhost:8000");
+    // ml-service runs as a public Web Service (Render's free tier has no
+    // Private Service option), so this proves the request actually came from
+    // this backend rather than an arbitrary caller — see ml-service's
+    // app/utils/auth.py, which only enforces this when ML_API_KEY is set
+    // (unset for local dev, where there's nothing public to protect).
+    var mlApiKey = builder.Configuration["ML_API_KEY"];
+    if (!string.IsNullOrWhiteSpace(mlApiKey))
+        client.DefaultRequestHeaders.Add("X-API-Key", mlApiKey);
 });
 builder.Services.AddHostedService<MlServiceKeepAliveService>();
 builder.Services.AddHttpClient("GoogleSheets", client =>
