@@ -54,6 +54,7 @@ builder.Services.AddHttpClient("MLService", client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["ML_SERVICE_URL"] ?? "http://localhost:8000");
 });
+builder.Services.AddHostedService<MlServiceKeepAliveService>();
 builder.Services.AddHttpClient("GoogleSheets", client =>
 {
     client.BaseAddress = new Uri("https://sheets.googleapis.com/");
@@ -95,6 +96,11 @@ app.UseMiddleware<ActivityLoggingMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// Unauthenticated on purpose — an external uptime monitor (BetterStack etc.)
+// needs to hit this without credentials to keep the free-tier instance from
+// idling out, which otherwise resets the container's filesystem on wake-up.
+app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "ConstructIQ API" }));
 
 // Apply pending migrations and seed admin user
 using (var scope = app.Services.CreateScope())
