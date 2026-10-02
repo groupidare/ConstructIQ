@@ -28,15 +28,14 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 USER nextjs
-# Render always injects its own PORT (10000) into the container at runtime,
-# overriding whatever this image's own ENV PORT sets — and routes external
-# traffic to whatever port EXPOSE declares, not to PORT's actual value. Since
-# the standalone server.js reads process.env.PORT to decide what to bind to,
-# leaving EXPOSE/PORT at Next.js's usual 3000 here meant the app ended up
-# listening on 10000 (Render's injected value) while Render's proxy kept
-# routing to 3000 — a permanent 502 on every request, nothing ever listening
-# on the port being proxied to. Matching both to Render's actual port closes
-# that mismatch regardless of which value technically "wins".
+# Matches Render's own injected PORT (it sets this regardless of what this
+# image declares, and routes external traffic there).
 EXPOSE 10000
 ENV PORT=10000
+# The standalone server defaults to binding only to localhost inside the
+# container unless told otherwise — fine for a request originating inside
+# the same container, but Render's proxy connects from outside it, so every
+# request 502'd even though the app logged "Ready"/"live" and never crashed.
+# 0.0.0.0 makes it accept connections on any interface, not just loopback.
+ENV HOSTNAME="0.0.0.0"
 CMD ["node", "server.js"]
