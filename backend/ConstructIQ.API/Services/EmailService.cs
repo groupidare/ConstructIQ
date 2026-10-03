@@ -10,11 +10,14 @@ namespace ConstructIQ.API.Services;
 // rather than refusing them, so SmtpClient just hung until .NET's own ~100s
 // timeout fired — every login effectively froze for almost two minutes before
 // failing anyway. HTTPS (443) is never blocked this way, so Resend's REST API
-// is used instead. Sends from Resend's shared "onboarding@resend.dev" sender,
-// which works without owning/verifying a custom domain first.
+// is used instead.
 public class EmailService(IHttpClientFactory httpFactory, IConfiguration config, ILogger<EmailService> logger) : IEmailService
 {
-    private const string FromAddress = "onboarding@resend.dev";
+    // Falls back to Resend's shared sandbox sender — works with no domain
+    // setup, but only delivers to the email on the Resend account itself, not
+    // to real app users. RESEND_FROM_ADDRESS should be set to an address on a
+    // verified custom domain (e.g. noreply@constructiq.cfd) for real delivery.
+    private string FromAddress => config["RESEND_FROM_ADDRESS"] ?? "onboarding@resend.dev";
 
     private record ResendRequest(
         [property: JsonPropertyName("from")] string From,
