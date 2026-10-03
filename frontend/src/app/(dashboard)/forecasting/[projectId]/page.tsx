@@ -101,14 +101,19 @@ export default function ProjectForecastingPage() {
                   <Tr key={`${m.materialId}-${m.unit}`}>
                     <Td className="font-medium">{m.materialName}</Td>
                     <Td>{m.unit}</Td>
-                    <Td>{m.forecastedQuantity.toLocaleString()}</Td>
+                    {/* Always round up, never down — under-displaying a forecast
+                        could read as "that's enough" when it isn't. Comparisons
+                        below still use the raw values, so a difference too small
+                        to survive rounding (e.g. 3337.4 vs 3337.0) still shows
+                        the right color even if both display the same whole number. */}
+                    <Td>{Math.ceil(m.forecastedQuantity).toLocaleString()}</Td>
                     <Td className={m.currentStock < m.forecastedQuantity ? 'text-red-600 font-medium' : ''}>
-                      {m.currentStock.toLocaleString()}
+                      {Math.ceil(m.currentStock).toLocaleString()}
                     </Td>
                     <Td className={m.shortage > 0 ? 'text-red-600 font-medium' : 'text-gray-400'}>
-                      {m.shortage > 0 ? m.shortage.toLocaleString() : '—'}
+                      {m.shortage > 0 ? Math.ceil(m.shortage).toLocaleString() : '—'}
                     </Td>
-                    <Td>{m.reorderSuggestion > 0 ? m.reorderSuggestion.toLocaleString() : '—'}</Td>
+                    <Td>{m.reorderSuggestion > 0 ? Math.ceil(m.reorderSuggestion).toLocaleString() : '—'}</Td>
                     <Td><Badge variant={riskVariant[m.riskLevel]}>{m.riskLevel}</Badge></Td>
                   </Tr>
                 ))}

@@ -310,7 +310,7 @@ export default function DashboardPage() {
                               <div key={c.projectId} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "3px 0", fontSize: "0.66rem", color: "#6b7280" }}>
                                 <span>{c.projectName}{c.isPhaseScoped ? " (phase-scoped)" : ""}</span>
                                 <span style={{ whiteSpace: "nowrap" }}>
-                                  {c.forecastedQuantity.toLocaleString(undefined, { maximumFractionDigits: 2 })} {m.unit} · {parseUtc(c.generatedAt).toLocaleDateString()} · {c.period}
+                                  {Math.ceil(c.forecastedQuantity).toLocaleString()} {m.unit} · {parseUtc(c.generatedAt).toLocaleDateString()} · {c.period}
                                 </span>
                               </div>
                             ))}

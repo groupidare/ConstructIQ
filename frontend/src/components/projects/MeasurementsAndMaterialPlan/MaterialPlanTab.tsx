@@ -380,9 +380,9 @@ export default function MaterialPlanTab({
               {forecastedMaterials.map(fm => (
                 <div key={`${fm.materialId}-${fm.unit}`} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.7fr)', gap: 4, padding: '7px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center' }}>
                   <span style={{ fontSize: '0.76rem', color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fm.materialName}</span>
-                  <span style={{ fontSize: '0.76rem', color: '#374151' }}>{fm.forecastedQuantity.toLocaleString()} {fm.unit}</span>
-                  <span style={{ fontSize: '0.76rem', color: '#6b7280' }}>{fm.currentStock.toLocaleString()} {fm.unit}</span>
-                  <span style={{ fontSize: '0.76rem', color: fm.shortage > 0 ? '#ef4444' : '#6b7280' }}>{fm.shortage > 0 ? fm.shortage.toLocaleString() : '—'}</span>
+                  <span style={{ fontSize: '0.76rem', color: '#374151' }}>{Math.ceil(fm.forecastedQuantity).toLocaleString()} {fm.unit}</span>
+                  <span style={{ fontSize: '0.76rem', color: '#6b7280' }}>{Math.ceil(fm.currentStock).toLocaleString()} {fm.unit}</span>
+                  <span style={{ fontSize: '0.76rem', color: fm.shortage > 0 ? '#ef4444' : '#6b7280' }}>{fm.shortage > 0 ? Math.ceil(fm.shortage).toLocaleString() : '—'}</span>
                   <span style={{
                     fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, width: 'fit-content',
                     background: fm.riskLevel === 'Critical' ? '#fee2e2' : fm.riskLevel === 'High' ? '#ffedd5' : fm.riskLevel === 'Medium' ? '#fef3c7' : '#dcfce7',

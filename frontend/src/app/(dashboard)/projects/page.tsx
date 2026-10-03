@@ -985,7 +985,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
                 <span style={{ fontSize:"0.65rem", fontWeight:700, color:"#7c3aed", marginBottom: 1 }}>Top 5 AI Predicted</span>
                 {aiPredicted.map((m, i) => (
                   <span key={i} style={{ fontSize:"0.68rem", fontWeight:500, color:"#7c3aed" }}>
-                    {i + 1}. {m.materialName} - Forecast: {m.forecastedQuantity.toLocaleString()} {m.unit}
+                    {i + 1}. {m.materialName} - Forecast: {Math.ceil(m.forecastedQuantity).toLocaleString()} {m.unit}
                   </span>
                 ))}
               </>
