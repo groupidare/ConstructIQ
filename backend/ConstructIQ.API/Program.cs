@@ -63,6 +63,7 @@ builder.Services.AddHttpClient("MLService", client =>
         client.DefaultRequestHeaders.Add("X-API-Key", mlApiKey);
 });
 builder.Services.AddHostedService<MlServiceKeepAliveService>();
+builder.Services.AddHostedService<DbKeepAliveService>();
 builder.Services.AddHttpClient("Resend", client =>
 {
     client.BaseAddress = new Uri("https://api.resend.com/");
