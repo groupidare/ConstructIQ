@@ -200,6 +200,8 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
 
             headers = [str(c or "").strip().lower() for c in table[header_row]]
 
+            # Substring match, not exact - real headers are often "Installation
+            # Scope Unit"/"Unit of Measure", never the bare word alone.
             unit_col    = next((i for i, h in enumerate(headers) if "unit" in h or h == "um" or "uom" in h), None)
             # "qty"/"quantity"/"total area" are treated as strong, unambiguous
             # signals (checked first); "scope"/"area" alone are a weaker
