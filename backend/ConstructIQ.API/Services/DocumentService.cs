@@ -119,9 +119,15 @@ public class DocumentService(
             throw new InvalidOperationException("The parser returned an empty response.");
 
         var materialNames = mlResponse.Items.Select(i => i.MaterialName.Trim().ToLower()).Distinct().ToList();
-        var matches = await db.Materials
+        // GroupBy + First, not ToDictionaryAsync: the catalog can hold two rows whose
+        // names differ only by case/whitespace (e.g. two "PPR Water Pipe, 20mm dia. x
+        // 4m" entries) — ToDictionaryAsync throws ArgumentException on that duplicate
+        // key instead of just picking one, which took down this endpoint in production.
+        var matches = (await db.Materials
             .Where(m => materialNames.Contains(m.Name.Trim().ToLower()))
-            .ToDictionaryAsync(m => m.Name.Trim().ToLower(), m => m.Id);
+            .ToListAsync())
+            .GroupBy(m => m.Name.Trim().ToLower())
+            .ToDictionary(g => g.Key, g => g.First().Id);
 
         return new DocumentParseResultDto
         {
@@ -179,18 +185,24 @@ public class DocumentService(
             throw new InvalidOperationException("The parser returned an empty response.");
 
         var materialNames = mlResponse.Items.Select(i => i.MaterialName.Trim().ToLower()).Distinct().ToList();
-        var materialMatches = await db.Materials
+        // GroupBy + First, not ToDictionaryAsync — see the identical comment in
+        // ParseAsync above; same collision risk applies to both lookups here.
+        var materialMatches = (await db.Materials
             .Where(m => materialNames.Contains(m.Name.Trim().ToLower()))
-            .ToDictionaryAsync(m => m.Name.Trim().ToLower(), m => m.Id);
+            .ToListAsync())
+            .GroupBy(m => m.Name.Trim().ToLower())
+            .ToDictionary(g => g.Key, g => g.First().Id);
 
         var supplierNames = mlResponse.Items
             .Where(i => !string.IsNullOrWhiteSpace(i.SupplierName))
             .Select(i => i.SupplierName!.Trim().ToLower())
             .Distinct()
             .ToList();
-        var supplierMatches = await db.Suppliers
+        var supplierMatches = (await db.Suppliers
             .Where(s => supplierNames.Contains(s.Name.Trim().ToLower()))
-            .ToDictionaryAsync(s => s.Name.Trim().ToLower(), s => s.Id);
+            .ToListAsync())
+            .GroupBy(s => s.Name.Trim().ToLower())
+            .ToDictionary(g => g.Key, g => g.First().Id);
 
         return new PoParseResultDto
         {
