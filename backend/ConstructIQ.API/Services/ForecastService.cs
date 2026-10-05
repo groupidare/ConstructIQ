@@ -9,6 +9,14 @@ namespace ConstructIQ.API.Services;
 
 public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, ILogger<ForecastService> logger) : IForecastService
 {
+    // Notes prefix marking a ForecastResult as a historical project's
+    // leave-one-project-out evaluation (predicted by a model fitted WITHOUT
+    // that project's own rows — see SaveEvaluationForecastsAsync), not an
+    // ordinary Generate Forecast run. Matched with StartsWith: the Notes may
+    // carry an explanation after it (see MlProjectEvaluationDto.Note).
+    // BOQService's Forecasting chart prefers these for backfilled projects.
+    public const string LeaveOneProjectOutMarker = "Leave-one-project-out evaluation";
+
     public async Task<ForecastResponseDto> GenerateForecastAsync(ForecastRequestDto request, int userId)
     {
         var client = httpFactory.CreateClient("MLService");
@@ -83,7 +91,20 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
             .Include(f => f.ForecastedMaterials).ThenInclude(fm => fm.Material)
             .FirstAsync(f => f.Id == entity.Id);
 
-        return ToDto(saved);
+        // Per-row predictions are passed straight through (not persisted) —
+        // the Material Plan's Run Forecast fills each live row's empty
+        // Est. Qty with ITS OWN prediction from these, not its material's
+        // total from ForecastedMaterials.
+        var dto = ToDto(saved);
+        dto.LineForecasts = mlResult.LineForecasts.Select(l => new ForecastedLineDto
+        {
+            BOQItemId          = l.BOQItemId,
+            MaterialId         = l.MaterialId,
+            Unit               = l.Unit,
+            ForecastedQuantity = l.ForecastedQuantity,
+            PurchaseUnitKnown  = l.PurchaseUnitKnown,
+        }).ToList();
+        return dto;
     }
 
     public async Task<IEnumerable<ForecastResponseDto>> GetByProjectAsync(int projectId)
@@ -134,12 +155,71 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
         if (result is null)
             throw new InvalidOperationException("The training service returned an empty response.");
 
+        await SaveEvaluationForecastsAsync(result.Evaluations);
+
         return new TrainModelsResponseDto
         {
             SampleCount  = result.SampleCount,
             RandomForest = result.RandomForest,
             Xgboost      = result.Xgboost,
         };
+    }
+
+    // Persists each historical project's leave-one-project-out evaluation
+    // (computed during training by the ML service, which never writes to the
+    // DB itself) as that project's evaluation ForecastResult — replacing the
+    // previous evaluation for the same project, so retraining never piles up
+    // stale ones. Only ever runs as part of TrainModelsAsync.
+    private async Task SaveEvaluationForecastsAsync(List<MlProjectEvaluationDto> evaluations)
+    {
+        if (evaluations.Count == 0) return;
+
+        var projectIds = evaluations.Select(e => e.ProjectId).Distinct().ToList();
+        var existingProjectIds = (await db.Projects
+                .Where(p => projectIds.Contains(p.Id))
+                .Select(p => p.Id)
+                .ToListAsync())
+            .ToHashSet();
+
+        var previous = await db.ForecastResults
+            .Where(f => projectIds.Contains(f.ProjectId) && f.Notes != null && f.Notes.StartsWith(LeaveOneProjectOutMarker))
+            .ToListAsync();
+        var previousIds = previous.Select(f => f.Id).ToList();
+        db.ForecastedMaterials.RemoveRange(await db.ForecastedMaterials
+            .Where(fm => previousIds.Contains(fm.ForecastResultId))
+            .ToListAsync());
+        db.ForecastResults.RemoveRange(previous);
+
+        foreach (var evaluation in evaluations.Where(e => existingProjectIds.Contains(e.ProjectId)))
+        {
+            var entity = new ForecastResult
+            {
+                ProjectId = evaluation.ProjectId,
+                PhaseId   = null,
+                Period    = ForecastPeriod.Monthly,
+                Notes     = string.IsNullOrWhiteSpace(evaluation.Note)
+                    ? $"{LeaveOneProjectOutMarker} — predicted by a model trained without this project's own rows."
+                    : $"{LeaveOneProjectOutMarker} — {evaluation.Note}",
+            };
+            foreach (var fm in evaluation.ForecastedMaterials)
+            {
+                if (!Enum.TryParse<RiskLevel>(fm.RiskLevel, true, out var risk))
+                    risk = RiskLevel.Low;
+                entity.ForecastedMaterials.Add(new ForecastedMaterial
+                {
+                    MaterialId         = fm.MaterialId,
+                    Unit               = fm.Unit,
+                    ForecastedQuantity = fm.ForecastedQuantity,
+                    CurrentStock       = fm.CurrentStock,
+                    Shortage           = fm.Shortage,
+                    ReorderSuggestion  = fm.ReorderSuggestion,
+                    RiskLevel          = risk,
+                });
+            }
+            db.ForecastResults.Add(entity);
+        }
+
+        await db.SaveChangesAsync();
     }
 
     // "Top Forecasted Material Demand" panel (System Overview). Uses only

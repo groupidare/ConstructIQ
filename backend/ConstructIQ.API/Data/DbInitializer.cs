@@ -1,3 +1,4 @@
+using ConstructIQ.API.Algorithms;
 using ConstructIQ.API.Models.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -220,5 +221,48 @@ public static class DbInitializer
         context.ForecastResults.RemoveRange(fakeResults);
         await context.SaveChangesAsync();
         Console.WriteLine($"[Seed] Removed {fakeResults.Count} fabricated historical forecast(s) — only real model output remains.");
+    }
+
+    // One-off: applies BOQService.BulkSaveAsync's historical purchase-unit
+    // rule to rows saved before it existed — each historical BOQ row's
+    // EstimatedPurchaseQuantity/Unit becomes the sum/unit of its own PO lines
+    // (HistoricalMaterialSupply) when they share one unit, else both null
+    // (CompletedProjectDemandRules.ResolveHistoricalPurchase). Exactly what
+    // re-saving each historical Material Plan would now do, without anyone
+    // having to. Run via `dotnet run --backfill-historical-purchase-units`
+    // (see Program.cs); safe to re-run — a row already matching the rule is
+    // left untouched and not reported.
+    public static async Task BackfillHistoricalPurchaseUnitsAsync(AppDbContext context)
+    {
+        var rows = await context.BOQItems
+            .Include(b => b.Project)
+            .Include(b => b.HistoricalSupplies)
+            .Where(b => b.Project.IsHistorical)
+            .ToListAsync();
+
+        var changed = 0;
+        foreach (var row in rows)
+        {
+            var resolved = CompletedProjectDemandRules.ResolveHistoricalPurchase(
+                row.HistoricalSupplies.Select(h => ((string?)h.Unit, h.Quantity)));
+            var newQuantity = resolved?.Quantity;
+            var newUnit = resolved?.Unit;
+            if (row.EstimatedPurchaseQuantity == newQuantity && row.EstimatedPurchaseUnit == newUnit)
+                continue;
+
+            Console.WriteLine(
+                $"[Backfill] {row.Project.Name} — BOQ item #{row.Id} \"{row.Specification}\" " +
+                $"({row.EstimatedQuantity} {row.Unit}): purchase " +
+                $"{row.EstimatedPurchaseQuantity?.ToString() ?? "—"} {row.EstimatedPurchaseUnit ?? ""} → " +
+                $"{newQuantity?.ToString() ?? "—"} {newUnit ?? ""}" +
+                (resolved is null ? $" (cleared: {(row.HistoricalSupplies.Count == 0 ? "no PO lines" : "PO lines not all in one unit with a positive total")})" : string.Empty));
+            row.EstimatedPurchaseQuantity = newQuantity;
+            row.EstimatedPurchaseUnit = newUnit;
+            row.UpdatedAt = DateTime.UtcNow;
+            changed++;
+        }
+
+        await context.SaveChangesAsync();
+        Console.WriteLine($"[Backfill] Checked {rows.Count} historical BOQ row(s); updated {changed}.");
     }
 }

@@ -22,11 +22,21 @@ _PRIMARY_SECTION_INDEX = {name: i + 1 for i, name in enumerate(PRIMARY_SECTIONS)
 # can trivially back out actual_used from usage_rate * days_into_phase). Fixed
 # by dropping actual_used entirely and redefining usage_rate from boq_quantity
 # (the estimate, legitimately known before the actual is) instead.
+#
+# boq_quantity is the BOQ measure (sq.m/l.m/...) while the target is actual
+# usage in the PURCHASE unit (pcs/bag/box/...), and nothing else here says
+# which material a row is — so material_ratio (that material's median
+# actual ÷ boq_quantity, see material_ratios.py) and ratio_estimate
+# (boq_quantity × material_ratio, the plain conversion) carry the
+# material-specific scale the models otherwise couldn't learn. Adding them
+# changes the column count, so models trained before this need retraining
+# (random_forest/xgboost_model.predict fall back to ratio_estimate until then).
 FEATURE_COLS = [
     "boq_quantity", "current_stock", "excess_quantity",
     "wasted_quantity", "primary_section_encoded", "coverage_area",
     "project_type_encoded", "days_into_phase", "phase_duration_days",
     "progress_percent", "supplier_lead_time_days", "planned_usage_rate",
+    "material_ratio", "ratio_estimate",
 ]
 
 
@@ -37,10 +47,14 @@ def build_feature_vector(record: dict[str, Any]) -> dict[str, float]:
     Expected keys in `record`:
         boq_quantity, current_stock, excess_quantity, wasted_quantity,
         primary_section, coverage_area, project_type_encoded, days_into_phase,
-        phase_duration_days, progress_percent, supplier_lead_time_days
+        phase_duration_days, progress_percent, supplier_lead_time_days,
+        material_ratio (set by material_ratios.attach / attach_out_of_project;
+        1.0 if absent)
     """
     primary_section_encoded = _PRIMARY_SECTION_INDEX.get(record.get("primary_section", ""), 0)
     days_into_phase = float(record.get("days_into_phase", 0))
+    boq_quantity = float(record.get("boq_quantity", 0))
+    material_ratio = float(record.get("material_ratio", 1.0))
 
     return {
         "boq_quantity":            float(record.get("boq_quantity", 0)),
@@ -55,6 +69,8 @@ def build_feature_vector(record: dict[str, Any]) -> dict[str, float]:
         "progress_percent":        float(record.get("progress_percent", 0)),
         "supplier_lead_time_days": float(record.get("supplier_lead_time_days", 7)),
         "planned_usage_rate":      float(record.get("boq_quantity", 0)) / max(days_into_phase, 1),
+        "material_ratio":          material_ratio,
+        "ratio_estimate":          boq_quantity * material_ratio,
     }
 
 

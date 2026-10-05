@@ -4,8 +4,8 @@ import os
 from datetime import datetime, date
 
 from dotenv import load_dotenv
-from app.models.schemas import ForecastRequest, ForecastResponse, ForecastedMaterial, RiskLevel
-from app.ml import random_forest, xgboost_model
+from app.models.schemas import ForecastRequest, ForecastResponse, ForecastedMaterial, ForecastedLine, RiskLevel
+from app.ml import random_forest, xgboost_model, material_ratios
 from app.ml.model_evaluator import ensemble_predict, classify_risk
 
 # Loaded here (not just in main.py) so DB access works from any entrypoint —
@@ -26,21 +26,29 @@ def get_engine() -> Engine:
     return create_engine(url, pool_recycle=300, connect_args=connect_args)
 
 
-def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> list[dict]:
+def fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> list[dict]:
     phase_filter = "AND bi.PhaseId = :phase_id" if phase_id else ""
     sql = text(f"""
         SELECT
+            bi.Id        AS boq_item_id,
             m.Id         AS material_id,
             m.Name       AS material_name,
-            -- Must match training_service.py's own EstimatedPurchaseUnit-first
-            -- preference — the model is trained on boq_quantity in purchase
-            -- units (pcs/bags/etc.) when available, so predicting from the
-            -- raw BOQ unit (e.g. sq.m) here would feed it a different scale
-            -- than it learned on. Falls back to the BOQ row's own unit, then
-            -- the catalog unit, only when no purchase unit was ever set.
-            COALESCE(NULLIF(bi.EstimatedPurchaseUnit, ''), NULLIF(bi.Unit, ''), m.Unit) AS unit,
+            -- The row's purchase unit (pcs/bag/box/...) when it has one —
+            -- the unit the models predict in (see training_service.py's
+            -- target). Final output unit is decided in Python
+            -- (material_ratios.resolve_output_unit): this, else the
+            -- material's most common training unit, else boq_unit below.
+            NULLIF(TRIM(bi.EstimatedPurchaseUnit), '') AS purchase_unit,
+            -- The BOQ row's own unit, not the catalog Material's default
+            -- unit, unless the row has none — the unit boq_quantity is in.
+            COALESCE(NULLIF(bi.Unit, ''), m.Unit) AS boq_unit,
             m.UnitCost   AS unit_cost,
-            COALESCE(bi.EstimatedPurchaseQuantity, bi.EstimatedQuantity) AS boq_quantity,
+            -- The BOQ measure (sq.m/l.m/...), exactly as training_service.py
+            -- feeds it — NOT EstimatedPurchaseQuantity. On a live project
+            -- that's the very Est. Qty this forecast is about to fill in, and
+            -- on a historical one it's the PO total (≈ the answer); the
+            -- models are trained on the BOQ quantity known at planning time.
+            bi.EstimatedQuantity AS boq_quantity,
             COALESCE(bi.ActualQuantity, 0) AS actual_used,
             COALESCE(ir.AvailableQuantity, 0) AS current_stock,
             COALESCE(ir.ExcessQuantity, 0) AS excess_quantity,
@@ -68,7 +76,7 @@ def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> lis
         LEFT JOIN InventoryRecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
         WHERE bi.ProjectId = :project_id
         {phase_filter}
-        GROUP BY m.Id, bi.Id, bi.Unit, bi.EstimatedQuantity, bi.ActualQuantity, ir.AvailableQuantity,
+        GROUP BY m.Id, bi.Id, bi.Unit, bi.EstimatedPurchaseUnit, bi.EstimatedQuantity, bi.ActualQuantity, ir.AvailableQuantity,
                  ir.ExcessQuantity, ir.WastedQuantity, bi.PrimarySection, bi.CoverageArea, p.Type,
                  ph.StartDate, ph.EndDate, p.StartDate, p.TargetEndDate, ph.ProgressPercent
     """)
@@ -82,46 +90,47 @@ def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> lis
     return [dict(r) for r in rows]
 
 
-def run_forecast(request: ForecastRequest) -> ForecastResponse:
-    engine  = get_engine()
-    records = _fetch_records(engine, request.project_id, request.phase_id)
-
-    if not records:
-        return ForecastResponse(
-            project_id=request.project_id,
-            phase_id=request.phase_id,
-            period=request.period.value,
-            model_accuracy=None,
-            forecasted_materials=[],
-        )
-
-    rf_preds  = random_forest.predict(records)
-    xgb_preds = xgboost_model.predict(records)
-    preds     = ensemble_predict(rf_preds, xgb_preds)
-
+def build_response(
+    project_id: int, phase_id: int | None, period: str,
+    records: list[dict], preds, table: dict,
+) -> ForecastResponse:
+    """Shapes one prediction per BOQ row into the API response — shared by
+    run_forecast (persisted models) and training_service's leave-one-
+    project-out evaluations (fold models), so both come out identically."""
     # One prediction per BOQ line item (each carries its own section/phase/
     # coverage-area features), but the same material commonly shows up on
     # more than one line (e.g. CHB used for both "Exterior Wall" and
-    # "Interior Partition") — collapse those into one entry per material_id
-    # here so the API's contract (material_id/material_name, no line-item
-    # identifier at all) actually holds, instead of silently returning
-    # duplicate material_ids that predicted totals apart and duplicate rows
-    # downstream (React key collisions, doubled-looking numbers in the UI).
+    # "Interior Partition") — collapse those into one entry per material
+    # here, as the forecasted_materials contract has always been.
     #
-    # Grouped by (material_id, unit) rather than material_id alone — a BOQ
-    # row's unit can legitimately differ from another row of the same
-    # material (sq.m for one wall, l.m for a pipe run of the same CHB/pipe
-    # material). Summing those raw quantities together under one label would
-    # silently combine incompatible units into a single meaningless number;
-    # keeping them as separate entries means each one only ever sums
-    # same-unit quantities.
+    # Grouped by (material_id, output unit) rather than material_id alone —
+    # two rows of the same material can still predict in different units
+    # (one row's own purchase unit is "box", another's "pc"). Summing those
+    # together under one label would silently combine incompatible units
+    # into a single meaningless number. The unit is folded the same way the
+    # backend folds it (pc/pcs/piece/pieces, case, whitespace) so label
+    # variants of one unit don't split into separate entries.
+    #
+    # line_forecasts keeps the same predictions un-collapsed, one per BOQ
+    # row (boq_item_id), for callers that need a row's own figure — e.g.
+    # filling a live row's Est. Qty with ITS prediction, not the material's
+    # total repeated on every row of that material.
     by_material: dict[tuple[int, str], ForecastedMaterial] = {}
+    line_forecasts: list[ForecastedLine] = []
     for i, record in enumerate(records):
-        qty      = float(max(preds[i], 0))
-        stock    = float(record["current_stock"])
+        qty         = float(max(preds[i], 0))
+        stock       = float(record["current_stock"])
         material_id = record["material_id"]
-        unit        = record["unit"]
-        key = (material_id, unit)
+        unit        = material_ratios.resolve_output_unit(table, record)
+        key = (material_id, material_ratios.normalize_unit(unit))
+
+        line_forecasts.append(ForecastedLine(
+            boq_item_id         = record["boq_item_id"],
+            material_id         = material_id,
+            unit                = unit,
+            forecasted_quantity = round(qty),
+            purchase_unit_known = material_ratios.has_purchase_unit(table, record),
+        ))
 
         existing = by_material.get(key)
         if existing is not None:
@@ -152,9 +161,34 @@ def run_forecast(request: ForecastRequest) -> ForecastResponse:
         fm.reorder_suggestion  = round(fm.reorder_suggestion)
 
     return ForecastResponse(
-        project_id=request.project_id,
-        phase_id=request.phase_id,
-        period=request.period.value,
+        project_id=project_id,
+        phase_id=phase_id,
+        period=period,
         model_accuracy=None,
         forecasted_materials=forecasted_materials,
+        line_forecasts=line_forecasts,
     )
+
+
+def run_forecast(request: ForecastRequest) -> ForecastResponse:
+    engine  = get_engine()
+    records = fetch_records(engine, request.project_id, request.phase_id)
+
+    if not records:
+        return ForecastResponse(
+            project_id=request.project_id,
+            phase_id=request.phase_id,
+            period=request.period.value,
+            model_accuracy=None,
+            forecasted_materials=[],
+        )
+
+    # The same ratio table the persisted models were trained against.
+    table = material_ratios.load()
+    material_ratios.attach(records, table)
+
+    rf_preds  = random_forest.predict(records)
+    xgb_preds = xgboost_model.predict(records)
+    preds     = ensemble_predict(rf_preds, xgb_preds)
+
+    return build_response(request.project_id, request.phase_id, request.period.value, records, preds, table)

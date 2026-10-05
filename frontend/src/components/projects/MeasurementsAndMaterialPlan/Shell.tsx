@@ -15,6 +15,7 @@ import { useProjects } from '@/hooks/useProjects';
 import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
 import type { Project, ProjectType } from '@/types/project';
 import type { BOQItem, BOQItemRow } from '@/types/boq';
+import { PURCHASE_UNITS } from '@/types/boq';
 import type { PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import MeasurementsTab from './MeasurementsTab';
 import MaterialPlanTab from './MaterialPlanTab';
@@ -318,41 +319,85 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     }
   }
 
+  // The AI's unit comes from real PO data, so it can be any spelling of a
+  // unit ("PCS", "pieces") — folded onto the Est. Qty unit dropdown's own
+  // option (same pc/pcs/piece/pieces folding the backend uses) so the
+  // dropdown can actually show it. A unit with no dropdown option at all
+  // returns undefined: the row then gets the historical-average suggestion,
+  // which is limited to those same units server-side (BOQService.PurchaseUnits).
+  function toPurchaseUnitOption(unit: string): string | undefined {
+    const lower = unit.trim().toLowerCase();
+    const folded = lower === 'pcs' || lower === 'piece' || lower === 'pieces' ? 'pc' : lower;
+    return (PURCHASE_UNITS as readonly string[]).find(u => u === folded);
+  }
+
   async function handleRunForecast() {
     setForecasting(true);
     try {
-      // Est. Qty/Unit are a historical-average SUGGESTION, not something to
-      // fill in behind the user's back while they're still scanning/editing -
-      // they stay blank until this point. Filling them in is part of what
-      // "running a forecast" does, not a background side-effect of typing,
-      // so a value the user set manually (estimatePurchaseManuallySet) is
-      // still never overwritten.
-      const materialNameById = new Map(boqItems.map(b => [b.materialId, b.materialName]));
-      const filledRows = project.isHistorical ? boqRows : await Promise.all(boqRows.map(async row => {
-        if (row.estimatePurchaseManuallySet) return row;
-        const section = (row.primarySection || '').trim();
-        const spec = (row.specification || row.newMaterialName || (row.materialId ? materialNameById.get(row.materialId) : undefined) || '').trim();
-        if (!section || !spec) return row;
-        try {
-          const result = await getHistoricalEstimate(section, spec, projectType);
-          if (result.estimatedQuantity == null || !result.unit) return row;
-          return { ...row, estimatedPurchaseQuantity: result.estimatedQuantity, estimatedPurchaseUnit: result.unit };
-        } catch {
-          return row; // no historical match available - stays blank, not an error
-        }
-      }));
-
       // Run Forecast should reflect exactly what's on screen — save any
-      // reviewed/edited BOQ rows (plus the estimates just filled in above)
-      // first so a forecast never silently runs against stale (or missing)
-      // data just because "Save Material Plan" wasn't clicked separately.
-      if (filledRows.length > 0) {
-        const saved = await saveBoqItems(filledRows);
-        setBoqRows(saved.map(boqItemToRow));
-      } else {
-        setBoqRows(filledRows);
+      // reviewed/edited BOQ rows first so a forecast never silently runs
+      // against stale (or missing) data just because "Save Material Plan"
+      // wasn't clicked separately. Also gives every new row the id its
+      // per-row prediction comes back keyed by.
+      //
+      // A row the user deliberately cleared Est. Qty on is remembered by id
+      // before saving (the client-only estimatePurchaseManuallySet flag
+      // doesn't survive the save's refetch) — a manual value is never
+      // overwritten, an intentionally blank one included.
+      const manuallySetIds = new Set(boqRows.filter(r => r.estimatePurchaseManuallySet && r.id != null).map(r => r.id!));
+      let rows = boqRows;
+      if (rows.length > 0) {
+        const saved = await saveBoqItems(rows);
+        rows = saved.map(boqItemToRow);
+        setBoqRows(rows);
       }
-      await generateForecast({ projectId: project.id, period: 'Monthly', planningWeeks: 4 });
+      const forecast = await generateForecast({ projectId: project.id, period: 'Monthly', planningWeeks: 4 });
+
+      // Est. Qty/Unit stay blank until this point — filling them in is part
+      // of what "running a forecast" does, never a background side-effect
+      // of typing. Each still-empty row gets the AI's prediction for THAT
+      // row (actual usage in its purchase unit), not its material's total.
+      // Only when the AI has no usable prediction for a row (none returned,
+      // zero, or only in the BOQ's own measurement unit because no purchase
+      // unit is known for that material yet) does the historical-average
+      // suggestion stand in. A row with any value already in Est. Qty — or
+      // one the user cleared themselves — is left exactly as it is.
+      // Historical projects record what was actually bought instead (their
+      // PO lines, set server-side), so nothing is filled there.
+      if (!project.isHistorical && rows.length > 0) {
+        const lineByBoqItemId = new Map((forecast.lineForecasts ?? []).map(l => [l.boqItemId, l]));
+        const materialNameById = new Map(boqItems.map(b => [b.materialId, b.materialName]));
+        let changed = false;
+        const filledRows = await Promise.all(rows.map(async row => {
+          if (row.estimatedPurchaseQuantity != null || (row.id != null && manuallySetIds.has(row.id))) return row;
+
+          const line = row.id != null ? lineByBoqItemId.get(row.id) : undefined;
+          const lineUnit = line ? toPurchaseUnitOption(line.unit) : undefined;
+          if (line && line.purchaseUnitKnown && line.forecastedQuantity > 0 && lineUnit) {
+            changed = true;
+            return { ...row, estimatedPurchaseQuantity: line.forecastedQuantity, estimatedPurchaseUnit: lineUnit };
+          }
+
+          const section = (row.primarySection || '').trim();
+          const spec = (row.specification || row.newMaterialName || (row.materialId ? materialNameById.get(row.materialId) : undefined) || '').trim();
+          if (!section || !spec) return row;
+          try {
+            const result = await getHistoricalEstimate(section, spec, projectType);
+            if (result.estimatedQuantity == null || !result.unit) return row;
+            changed = true;
+            return { ...row, estimatedPurchaseQuantity: result.estimatedQuantity, estimatedPurchaseUnit: result.unit };
+          } catch {
+            return row; // no historical match available - stays blank, not an error
+          }
+        }));
+
+        // Persisted like any other Material Plan edit.
+        if (changed) {
+          const saved = await saveBoqItems(filledRows);
+          setBoqRows(saved.map(boqItemToRow));
+        }
+      }
+
       toast.success('Material plan saved and forecast generated.');
       setTab('materialPlan');
     } catch (error) {

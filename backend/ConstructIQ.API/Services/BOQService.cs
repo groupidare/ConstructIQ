@@ -20,30 +20,39 @@ public class BOQService(AppDbContext db) : IBOQService
     // every completed project's lines, so one query per item here would be
     // real N+1). Same BOQItemId-then-Material/Phase fallback match, same
     // "delivered, else plan estimate" baseline per item.
+    //
+    // Both matches are scoped to the BOQ line's own project: a Delivered PO
+    // line only ever counts toward a BOQ line of the project that PO was
+    // raised for. The Material/Phase fallback used to match on material
+    // alone, so an unlinked delivery of the same material to ANY other
+    // project (both with no phase) was summed into this line's baseline.
+    // The direct-BOQItemId path is guarded the same way, because
+    // PurchaseOrdersController.LinkMaterial doesn't itself check that the
+    // linked BOQ item belongs to the PO's project.
     private async Task<Dictionary<int, decimal>> GetDeliveredBaselinesAsync(List<BOQItem> items)
     {
         var boqItemIds = items.Select(b => b.Id).ToHashSet();
         var byDirectId = await db.PurchaseOrderMaterials
             .Where(pom => pom.PurchaseOrder.Status == PurchaseOrderStatus.Delivered
-                && pom.BOQItemId != null && boqItemIds.Contains(pom.BOQItemId.Value))
+                && pom.BOQItemId != null && boqItemIds.Contains(pom.BOQItemId.Value)
+                && pom.PurchaseOrder.ProjectId == pom.BOQItem!.ProjectId)
             .GroupBy(pom => pom.BOQItemId!.Value)
             .Select(g => new { BOQItemId = g.Key, Total = g.Sum(p => p.Quantity) })
             .ToDictionaryAsync(g => g.BOQItemId, g => g.Total);
 
-        var fallbackMaterialIds = items
-            .Where(b => !byDirectId.ContainsKey(b.Id))
-            .Select(b => b.MaterialId)
-            .Distinct()
-            .ToList();
-        var fallbackTotals = new Dictionary<(int MaterialId, int? PhaseId), decimal>();
+        var fallbackItems = items.Where(b => !byDirectId.ContainsKey(b.Id)).ToList();
+        var fallbackMaterialIds = fallbackItems.Select(b => b.MaterialId).Distinct().ToList();
+        var fallbackProjectIds = fallbackItems.Select(b => b.ProjectId).Distinct().ToList();
+        var fallbackTotals = new Dictionary<(int ProjectId, int MaterialId, int? PhaseId), decimal>();
         if (fallbackMaterialIds.Count > 0)
         {
             var rows = await db.PurchaseOrderMaterials
                 .Where(pom => pom.PurchaseOrder.Status == PurchaseOrderStatus.Delivered
-                    && pom.BOQItemId == null && pom.MaterialId != null && fallbackMaterialIds.Contains(pom.MaterialId.Value))
-                .Select(pom => new { pom.MaterialId, pom.PhaseId, pom.Quantity })
+                    && pom.BOQItemId == null && pom.MaterialId != null && fallbackMaterialIds.Contains(pom.MaterialId.Value)
+                    && fallbackProjectIds.Contains(pom.PurchaseOrder.ProjectId))
+                .Select(pom => new { pom.PurchaseOrder.ProjectId, pom.MaterialId, pom.PhaseId, pom.Quantity })
                 .ToListAsync();
-            foreach (var g in rows.GroupBy(r => (r.MaterialId!.Value, r.PhaseId)))
+            foreach (var g in rows.GroupBy(r => (r.ProjectId, r.MaterialId!.Value, r.PhaseId)))
                 fallbackTotals[g.Key] = g.Sum(r => r.Quantity);
         }
 
@@ -52,7 +61,7 @@ public class BOQService(AppDbContext db) : IBOQService
         {
             var delivered = byDirectId.TryGetValue(item.Id, out var direct)
                 ? direct
-                : fallbackTotals.GetValueOrDefault((item.MaterialId, item.PhaseId), 0);
+                : fallbackTotals.GetValueOrDefault((item.ProjectId, item.MaterialId, item.PhaseId), 0);
             result[item.Id] = delivered > 0 ? delivered : (item.EstimatedPurchaseQuantity ?? item.EstimatedQuantity);
         }
         return result;
@@ -139,6 +148,35 @@ public class BOQService(AppDbContext db) : IBOQService
             // from (manual entry, BOQ scan, or the historical-estimate average).
             entity.EstimatedQuantity = Math.Round(item.EstimatedQuantity, 0, MidpointRounding.AwayFromZero);
             entity.CoverageArea      = BOQUnitRules.IsAreaUnit(unitForRow) ? entity.EstimatedQuantity : null;
+
+            // A historical row's purchase quantity/unit is never typed — it's
+            // what was actually bought, i.e. the sum of this row's own real PO
+            // lines when they're all in one unit (e.g. 130 sq.m of CHB wall →
+            // 2,368 pcs). That's the unit its Actual Qty is typed in, so it's
+            // also the baseline the plausibility check below compares against
+            // and the unit the Forecasting chart/ML model see for this row.
+            // Mixed units or no PO lines → both stay null and the row stays in
+            // its BOQ unit. Taken from this save's lines when it carries them
+            // (same rounding they're stored with below), else from the lines
+            // already on file for this row.
+            (decimal Quantity, string Unit)? historicalPurchase = null;
+            if (project.IsHistorical)
+            {
+                var poLines = item.HistoricalSupply is not null
+                    ? item.HistoricalSupply
+                        .Select(l => ((string?)l.Unit, Math.Round(l.Quantity, 0, MidpointRounding.AwayFromZero)))
+                        .ToList()
+                    : entity.Id != 0
+                        ? (await db.HistoricalMaterialSupplies
+                                .Where(h => h.BOQItemId == entity.Id)
+                                .Select(h => new { h.Unit, h.Quantity })
+                                .ToListAsync())
+                            .Select(h => ((string?)h.Unit, h.Quantity))
+                            .ToList()
+                        : [];
+                historicalPurchase = CompletedProjectDemandRules.ResolveHistoricalPurchase(poLines);
+            }
+
             // Rejected at the point of entry, not just flagged later in a
             // report — a bare typed-in Actual Qty is the one place a human
             // can enter literally any number, and a wrong-unit or extra-digit
@@ -147,7 +185,9 @@ public class BOQService(AppDbContext db) : IBOQService
             // GetReconciledBoqItemsAsync already flags with, kept in sync.
             if (item.ActualQuantity is > 0)
             {
-                var plausibilityBaseline = item.EstimatedPurchaseQuantity ?? item.EstimatedQuantity;
+                var plausibilityBaseline = project.IsHistorical
+                    ? historicalPurchase?.Quantity ?? item.EstimatedQuantity
+                    : item.EstimatedPurchaseQuantity ?? item.EstimatedQuantity;
                 if (plausibilityBaseline > 0 && item.ActualQuantity.Value > plausibilityBaseline * ImplausibleActualMultiplier)
                     throw new InvalidOperationException(
                         $"Actual Qty ({item.ActualQuantity.Value}) for \"{item.Specification ?? item.NewMaterialName ?? "this row"}\" is {Math.Round(item.ActualQuantity.Value / plausibilityBaseline, 1)}x the estimated {plausibilityBaseline} — likely a wrong unit or an extra digit. Double-check the figure before saving.");
@@ -162,10 +202,18 @@ public class BOQService(AppDbContext db) : IBOQService
             if (item.ActualQuantity is > 0)
                 entity.IsUsageConfirmed = true;
             entity.Notes             = item.Notes;
-            entity.EstimatedPurchaseQuantity = item.EstimatedPurchaseQuantity.HasValue
-                ? Math.Round(item.EstimatedPurchaseQuantity.Value, 0, MidpointRounding.AwayFromZero)
-                : null;
-            entity.EstimatedPurchaseUnit     = item.EstimatedPurchaseUnit;
+            if (project.IsHistorical)
+            {
+                entity.EstimatedPurchaseQuantity = historicalPurchase?.Quantity;
+                entity.EstimatedPurchaseUnit     = historicalPurchase?.Unit;
+            }
+            else
+            {
+                entity.EstimatedPurchaseQuantity = item.EstimatedPurchaseQuantity.HasValue
+                    ? Math.Round(item.EstimatedPurchaseQuantity.Value, 0, MidpointRounding.AwayFromZero)
+                    : null;
+                entity.EstimatedPurchaseUnit     = item.EstimatedPurchaseUnit;
+            }
 
             // RequestedQuantity is a display-only running total of every
             // Notify Procurement/Warehouse click for this row (the real
@@ -669,7 +717,15 @@ public class BOQService(AppDbContext db) : IBOQService
     //  - Finished in the app: the original forecast, made BEFORE it finished
     //    (CompletedProjectDemandRules.SelectForecastRuns).
     //  - Backfilled: the model's evaluation on that project, any run date
-    //    (CompletedProjectDemandRules.SelectHistoricalForecastRows).
+    //    (CompletedProjectDemandRules.SelectHistoricalForecastRows). When the
+    //    project has a leave-one-project-out evaluation run (saved by
+    //    ForecastService on every training run — a model fitted WITHOUT this
+    //    project's rows, so a genuine out-of-sample figure), only its latest
+    //    one counts, and every ordinary Generate Forecast run on it is
+    //    ignored: those come from a model that already trained on this very
+    //    project's actuals. Decided per project from the unfiltered run list,
+    //    so the material/unit filters below can't make an ordinary run
+    //    reappear for a material the evaluation simply didn't cover.
     private async Task<Dictionary<(int MaterialId, string Unit, DateTime Month), PredictedTotal>> GetMonthlyPredictedTotalsAsync(
         IReadOnlyDictionary<int, CompletedProject> completed, int? materialId, string? unit)
     {
@@ -677,9 +733,19 @@ public class BOQService(AppDbContext db) : IBOQService
 
         var runs = await db.ForecastResults
             .Where(f => projectIds.Contains(f.ProjectId))
-            .Select(f => new { f.Id, f.ProjectId, f.PhaseId, f.GeneratedAt, IsSeeded = f.Notes == DbInitializer.ForecastSeedMarker })
+            .Select(f => new
+            {
+                f.Id, f.ProjectId, f.PhaseId, f.GeneratedAt,
+                IsSeeded = f.Notes == DbInitializer.ForecastSeedMarker,
+                IsEvaluation = f.Notes != null && f.Notes.StartsWith(ForecastService.LeaveOneProjectOutMarker),
+            })
             .ToListAsync();
         var runById = runs.ToDictionary(r => r.Id);
+
+        var evaluationRunByProject = runs
+            .Where(r => r.IsEvaluation && completed[r.ProjectId].IsBackfilled)
+            .GroupBy(r => r.ProjectId)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(r => r.GeneratedAt).ThenByDescending(r => r.Id).First().Id);
 
         var liveRunIds = runs
             .Where(r => !completed[r.ProjectId].IsBackfilled)
@@ -689,7 +755,9 @@ public class BOQService(AppDbContext db) : IBOQService
                 completed[g.Key].CompletedAt))
             .ToHashSet();
         var runIds = runs
-            .Where(r => completed[r.ProjectId].IsBackfilled || liveRunIds.Contains(r.Id))
+            .Where(r => completed[r.ProjectId].IsBackfilled
+                ? !evaluationRunByProject.TryGetValue(r.ProjectId, out var evaluationRunId) || r.Id == evaluationRunId
+                : liveRunIds.Contains(r.Id))
             .Select(r => r.Id)
             .ToList();
 

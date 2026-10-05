@@ -140,4 +140,25 @@ public class CompletedProjectDemandRulesTests
     {
         Assert.Equal(expected, CompletedProjectDemandRules.NormalizeUnit(raw));
     }
+
+    [Fact] // A historical row's PO lines in one unit (any pc/pcs/PC spelling) sum into its purchase quantity, first line's spelling kept.
+    public void ResolveHistoricalPurchase_SingleUnit_SumsLines()
+    {
+        var resolved = CompletedProjectDemandRules.ResolveHistoricalPurchase([(" pcs", 2000m), ("PC", 300m), ("pieces", 68m)]);
+        Assert.Equal<(decimal, string)?>((2368m, "pcs"), resolved);
+    }
+
+    [Fact] // Lines in different units can't be summed — no purchase quantity at all.
+    public void ResolveHistoricalPurchase_MixedUnits_ReturnsNull()
+    {
+        Assert.Null(CompletedProjectDemandRules.ResolveHistoricalPurchase([("pcs", 100m), ("bag", 5m)]));
+    }
+
+    [Fact] // No PO lines (or only unitless/zero ones) → the row stays in its BOQ unit.
+    public void ResolveHistoricalPurchase_NoUsableLines_ReturnsNull()
+    {
+        Assert.Null(CompletedProjectDemandRules.ResolveHistoricalPurchase([]));
+        Assert.Null(CompletedProjectDemandRules.ResolveHistoricalPurchase([(" ", 10m)]));
+        Assert.Null(CompletedProjectDemandRules.ResolveHistoricalPurchase([("pcs", 0m)]));
+    }
 }

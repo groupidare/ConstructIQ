@@ -172,4 +172,16 @@ if (args.Contains("--seed-forecasts"))
     return;
 }
 
+// One-off: gives existing historical BOQ rows the purchase quantity/unit of
+// their own PO lines (see DbInitializer.BackfillHistoricalPurchaseUnitsAsync).
+// Opt-in only — `dotnet run --backfill-historical-purchase-units` runs it,
+// prints every row it changed, and exits.
+if (args.Contains("--backfill-historical-purchase-units"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await ConstructIQ.API.Data.DbInitializer.BackfillHistoricalPurchaseUnitsAsync(db);
+    return;
+}
+
 app.Run();

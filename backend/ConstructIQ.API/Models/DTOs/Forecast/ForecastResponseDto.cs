@@ -23,6 +23,22 @@ public class ForecastResponseDto
     public DateTime GeneratedAt { get; set; }
     public decimal? ModelAccuracy { get; set; }
     public List<ForecastedMaterialDto> ForecastedMaterials { get; set; } = [];
+    // Per-BOQ-row predictions behind ForecastedMaterials (which sums them per
+    // material+unit). Only filled on the response to a Generate Forecast
+    // call, straight from the ML service — never persisted, so always empty
+    // when reading saved forecast history (GetByProjectAsync).
+    public List<ForecastedLineDto> LineForecasts { get; set; } = [];
+}
+
+public class ForecastedLineDto
+{
+    public int     BOQItemId          { get; set; }
+    public int     MaterialId         { get; set; }
+    public string  Unit               { get; set; } = string.Empty;
+    public decimal ForecastedQuantity { get; set; }
+    // False when Unit is just the row's BOQ unit (no purchase unit known for
+    // this row/material) — see MlForecastedLineDto.PurchaseUnitKnown.
+    public bool    PurchaseUnitKnown  { get; set; }
 }
 
 public class ForecastedMaterialDto
@@ -47,6 +63,19 @@ public class MlForecastResponseDto
     public string  Period        { get; set; } = string.Empty;
     [JsonPropertyName("model_accuracy")]        public decimal? ModelAccuracy { get; set; }
     [JsonPropertyName("forecasted_materials")]  public List<MlForecastedMaterialDto> ForecastedMaterials { get; set; } = [];
+    [JsonPropertyName("line_forecasts")]        public List<MlForecastedLineDto> LineForecasts { get; set; } = [];
+}
+
+public class MlForecastedLineDto
+{
+    [JsonPropertyName("boq_item_id")]          public int     BOQItemId          { get; set; }
+    [JsonPropertyName("material_id")]          public int     MaterialId         { get; set; }
+    public string  Unit               { get; set; } = string.Empty;
+    [JsonPropertyName("forecasted_quantity")]  public decimal ForecastedQuantity { get; set; }
+    // False when the ML service only had the row's BOQ unit to label this
+    // prediction with (no purchase unit on the row, material never seen in
+    // training). Defaults to true for an older ML service that never sends it.
+    [JsonPropertyName("purchase_unit_known")]  public bool    PurchaseUnitKnown  { get; set; } = true;
 }
 
 public class MlForecastedMaterialDto
@@ -104,4 +133,17 @@ public class MlTrainModelsResponseDto
     [JsonPropertyName("sample_count")]  public int             SampleCount  { get; set; }
     [JsonPropertyName("random_forest")] public ModelMetricsDto RandomForest { get; set; } = new();
     [JsonPropertyName("xgboost")]       public ModelMetricsDto Xgboost      { get; set; } = new();
+    [JsonPropertyName("evaluations")]   public List<MlProjectEvaluationDto> Evaluations { get; set; } = [];
+}
+
+// One historical project's leave-one-project-out evaluation forecast — see
+// training_service.py's _leave_one_project_out and ForecastService.
+// SaveEvaluationForecastsAsync.
+public class MlProjectEvaluationDto
+{
+    [JsonPropertyName("project_id")]           public int     ProjectId { get; set; }
+    // Set when the evaluation couldn't use a model fitted on other projects
+    // (too few other rows, or none at all) — says what stood in instead.
+    [JsonPropertyName("note")]                 public string? Note      { get; set; }
+    [JsonPropertyName("forecasted_materials")] public List<MlForecastedMaterialDto> ForecastedMaterials { get; set; } = [];
 }

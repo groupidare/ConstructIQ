@@ -34,12 +34,30 @@ class ForecastedMaterial(BaseModel):
     risk_level:           RiskLevel
 
 
+class ForecastedLine(BaseModel):
+    """One BOQ row's own prediction (actual usage, in `unit` — the row's
+    purchase unit when it has one). forecasted_materials sums these per
+    (material, unit); this keeps them per row."""
+    boq_item_id:          int
+    material_id:          int
+    unit:                 str
+    forecasted_quantity:  float
+    # False when `unit` is only the row's BOQ unit (no purchase unit on the
+    # row, material never seen in training) — the figure is then not a
+    # known purchase-unit quantity, and callers filling a purchase-unit
+    # Est. Qty should not use it.
+    purchase_unit_known:  bool = True
+
+
 class ForecastResponse(BaseModel):
     project_id:           int
     phase_id:             Optional[int]
     period:               str
     model_accuracy:       Optional[float]
     forecasted_materials: list[ForecastedMaterial]
+    # Optional/additive — older callers that only read forecasted_materials
+    # are unaffected.
+    line_forecasts:       list[ForecastedLine] = []
 
 
 class DocumentParseRequest(BaseModel):

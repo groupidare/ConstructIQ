@@ -21,8 +21,8 @@ public static class CompletedProjectDemandRules
     // The unit a BOQ line's quantity is actually in: its purchase unit when
     // the purchase-unit baseline is the one in use (pass null otherwise),
     // else the row's own unit, else the catalog Material's unit — the same
-    // row-unit-first order the ML service forecasts in
-    // (COALESCE(NULLIF(bi.Unit, ''), m.Unit)).
+    // purchase-unit-first order the ML service labels its forecasts with
+    // (see forecasting_service.py's _resolve_output_unit).
     public static string ResolveBoqLineUnit(string? purchaseUnit, string? rowUnit, string materialUnit) =>
         !string.IsNullOrWhiteSpace(purchaseUnit) ? purchaseUnit.Trim()
         : !string.IsNullOrWhiteSpace(rowUnit) ? rowUnit.Trim()
@@ -81,6 +81,28 @@ public static class CompletedProjectDemandRules
                 return real.Where(r => r.ForecastResultId == latestRunId).ToList();
             })
             .ToList();
+
+    // A historical BOQ row's purchase quantity/unit, taken from its own real
+    // PO lines (HistoricalMaterialSupply) — e.g. a 130 sq.m CHB wall bought
+    // as 2,368 pcs. Only when every line is in the same unit (folded the
+    // same way as NormalizeUnit, so "pc"/"pcs"/"PCS " count as one) is the
+    // sum a meaningful quantity; mixed units, no lines, or no usable unit/
+    // quantity at all → null, and the row simply stays in its BOQ unit.
+    // The unit is kept as the first line's own spelling (trimmed), never
+    // rewritten to the folded form.
+    public static (decimal Quantity, string Unit)? ResolveHistoricalPurchase(IEnumerable<(string? Unit, decimal Quantity)> poLines)
+    {
+        var lines = poLines.ToList();
+        if (lines.Count == 0) return null;
+
+        var units = lines.Select(l => NormalizeUnit(l.Unit)).Distinct().ToList();
+        if (units.Count != 1 || units[0].Length == 0) return null;
+
+        var total = lines.Sum(l => l.Quantity);
+        if (total <= 0) return null;
+
+        return (total, lines[0].Unit!.Trim());
+    }
 
     // Same label folding ForecastService.NormalizeUnitLabel uses — trim + case,
     // plus the pc/pcs/piece/pieces variants — so a forecast row's unit joins

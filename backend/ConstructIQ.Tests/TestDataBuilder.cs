@@ -156,4 +156,30 @@ public static class TestDataBuilder
         });
         await db.SaveChangesAsync();
     }
+
+    // One Delivered PO line on its own new PO — linked to a BOQ item when
+    // boqItemId is given, else the unlinked Material/Phase-fallback kind.
+    public static async Task<PurchaseOrderMaterial> CreateDeliveredPoLineAsync(AppDbContext db, int projectId, int createdByUserId,
+        int materialId, decimal quantity, int? boqItemId = null, int? phaseId = null, string unit = "pcs")
+    {
+        var supplier = new Supplier { Name = "Supplier " + Guid.NewGuid().ToString("N")[..8] };
+        db.Suppliers.Add(supplier);
+        await db.SaveChangesAsync();
+
+        var line = new PurchaseOrderMaterial
+        {
+            Name = "PO line", Quantity = quantity, Unit = unit,
+            MaterialId = materialId, BOQItemId = boqItemId, PhaseId = phaseId,
+        };
+        db.PurchaseOrders.Add(new PurchaseOrder
+        {
+            Number = "PO-" + Guid.NewGuid().ToString("N")[..10],
+            ProjectId = projectId, SupplierId = supplier.Id,
+            Status = PurchaseOrderStatus.Delivered,
+            ExpectedDate = DateTime.UtcNow, CreatedByUserId = createdByUserId,
+            Materials = [line],
+        });
+        await db.SaveChangesAsync();
+        return line;
+    }
 }

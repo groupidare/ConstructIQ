@@ -377,10 +377,18 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
     // back to the plan estimate only when nothing's been delivered yet, so a
     // historical/backfilled line without matching POs still gets a usable
     // baseline instead of 0.
+    //
+    // Only PO lines of this BOQ line's own project count, on both the direct
+    // BOQItemId match and the Material/Phase fallback — the fallback used to
+    // match on material alone, pulling in unlinked deliveries of the same
+    // material to every other project. (A direct link can't be trusted to be
+    // same-project on its own either: PurchaseOrdersController.LinkMaterial
+    // doesn't check it.) Kept in sync with BOQService.GetDeliveredBaselinesAsync.
     private async Task<decimal> GetDeliveredBaselineAsync(BOQItem boqItem)
     {
         var delivered = await db.PurchaseOrderMaterials
-            .Where(pom => pom.PurchaseOrder.Status == PurchaseOrderStatus.Delivered)
+            .Where(pom => pom.PurchaseOrder.Status == PurchaseOrderStatus.Delivered
+                && pom.PurchaseOrder.ProjectId == boqItem.ProjectId)
             .Where(pom => pom.BOQItemId == boqItem.Id
                 || (pom.BOQItemId == null && pom.MaterialId == boqItem.MaterialId
                     && (pom.PhaseId == boqItem.PhaseId || (pom.PhaseId == null && boqItem.PhaseId == null))))

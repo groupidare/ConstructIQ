@@ -96,10 +96,15 @@ export default function MaterialPlanTab({
   // are forward-looking procurement fields (what to order next, requested
   // via the Alerts buttons) that don't apply to a project that already
   // happened; only Actual Qty is a meaningful field to fill in there.
-  // A completed project (historical or not) always shows the unified
-  // Material Quantity / Estimated Quantity (AI-predicted) / Actual Quantity
-  // scheme — the live procurement columns (Purchase Unit, Est. Qty, Alerts)
-  // only make sense while there's still something left to order.
+  // A completed project shows three quantity columns instead — the live
+  // procurement columns (Purchase Unit, Est. Qty, Alerts) only make sense
+  // while there's still something left to order:
+  //  - historical: Total Area/Qty (BOQ measure) / Material Quantity (what
+  //    its PO lines actually bought) / Actual Quantity (typed, purchase unit)
+  //  - completed through the app: Material Quantity (delivered) / Estimated
+  //    Quantity (the row's own Est. Qty) / Actual Quantity (derived)
+  // Every quantity carries its unit, since a row's BOQ measure (sq.m) and
+  // its purchase quantities (pcs) are in different units.
   const columnsTemplate = isCompleted
     ? 'minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.7fr)'
     : 'minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.6fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr) 96px';
@@ -267,16 +272,30 @@ export default function MaterialPlanTab({
     return { est, actual };
   }, [rows, isCompleted]);
 
-  // Historical grid's "Estimated Quantity" column = the real AI-predicted
-  // quantity for this row's material, from the latest Run Forecast on this
-  // project (the same forecastedMaterials already shown in the Forecasted
-  // Material Demand panel for live projects) — never a stored/typed number.
-  // Blank ("—") until Run Forecast has actually been clicked at least once.
-  const aiPredictedByMaterial = useMemo(() => {
-    const map = new Map<number, number>();
-    forecastedMaterials.forEach(fm => map.set(fm.materialId, (map.get(fm.materialId) ?? 0) + fm.forecastedQuantity));
-    return map;
-  }, [forecastedMaterials]);
+  // A historical row's "Material Quantity": what was actually bought for it —
+  // the sum of its own PO lines when they're all in one unit (pc/pcs/piece/
+  // pieces, case and whitespace folded the same way the backend does), in
+  // that unit. Same rule BOQService.BulkSaveAsync stores as the row's
+  // EstimatedPurchaseQuantity/Unit on save; recomputed here from the lines
+  // themselves so a freshly scanned, not-yet-saved row shows it too. Mixed
+  // units or no PO lines → null ("—"), and the row stays in its BOQ unit.
+  function historicalPurchase(r: BOQItemRow): { quantity: number; unit: string } | null {
+    const lines = r.historicalSupply;
+    if (!lines) {
+      return r.estimatedPurchaseQuantity != null && r.estimatedPurchaseUnit
+        ? { quantity: r.estimatedPurchaseQuantity, unit: r.estimatedPurchaseUnit }
+        : null;
+    }
+    const fold = (u?: string) => {
+      const lower = (u ?? '').trim().toLowerCase();
+      return lower === 'pcs' || lower === 'piece' || lower === 'pieces' ? 'pc' : lower;
+    };
+    if (lines.length === 0) return null;
+    const units = new Set(lines.map(l => fold(l.unit)));
+    if (units.size !== 1 || units.has('')) return null;
+    const quantity = lines.reduce((sum, l) => sum + Math.round(l.quantity || 0), 0);
+    return quantity > 0 ? { quantity, unit: lines[0].unit.trim() } : null;
+  }
 
   // A newly-scanned material has no InventoryRecord yet (that only exists
   // once stock is actually recorded), so inventory alone can't name it —
@@ -519,7 +538,9 @@ export default function MaterialPlanTab({
         <div style={{ minWidth: 980 }}>
         <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
           {(isCompleted
-            ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'MATERIAL QUANTITY', 'ESTIMATED QUANTITY', 'ACTUAL QUANTITY']
+            ? isHistorical
+              ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'TOTAL AREA/QTY', 'MATERIAL QUANTITY', 'ACTUAL QUANTITY']
+              : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'MATERIAL QUANTITY', 'ESTIMATED QUANTITY', 'ACTUAL QUANTITY']
             : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'UNIT', 'EST. QTY', 'ALERTS']
           ).map((h, idx) => (
             <span key={`${h}-${idx}`} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
@@ -618,26 +639,55 @@ export default function MaterialPlanTab({
                   {!isCompleted && (
                     <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   )}
-                  {/* "Material Quantity": for a historical row it IS the
-                      editable BOQ-estimated total (estimatedQuantity), same
-                      field as the live grid's Total Area/Qty, just relabeled.
-                      For a project completed through the app, it's the real,
-                      server-computed delivered total — read-only, never the
-                      plan estimate. For a still-live project, it's the same
-                      editable Total Area/Qty input as always. */}
-                  {isCompleted && !isHistorical ? (
-                    <span style={{ fontSize: '0.76rem', color: '#374151' }}>{(r.materialQuantity ?? 0).toLocaleString()}</span>
-                  ) : (
+                  {/* Live (not completed) project: the editable Total Area/Qty
+                      input as always (its unit is the UNIT column before it). */}
+                  {!isCompleted && (
                     <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   )}
-                  {isCompleted && (
+                  {/* Historical row: "Total Area/Qty" is the BOQ measurement
+                      (e.g. 130 sq.m of wall), still editable, with its unit;
+                      "Material Quantity" is what was actually bought for it
+                      (its PO lines' total, e.g. 2,368 pcs) — real recorded
+                      data, read-only, never an AI figure. There's no
+                      Estimated Quantity column: nothing about a project that
+                      already happened is still an estimate. */}
+                  {isCompleted && isHistorical && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', minWidth: 0 }} />
+                      <span style={{ fontSize: '0.7rem', color: '#6b7280', whiteSpace: 'nowrap' }}>{r.unit || ''}</span>
+                    </div>
+                  )}
+                  {isCompleted && isHistorical && (() => {
+                    const purchase = historicalPurchase(r);
+                    return (
+                      <span
+                        title={purchase ? 'Total of this row\'s purchase order lines' : 'No purchase order lines in a single unit for this row'}
+                        style={{ fontSize: '0.76rem', color: purchase ? '#374151' : '#d1d5db' }}
+                      >
+                        {purchase ? `${purchase.quantity.toLocaleString()} ${purchase.unit}` : '—'}
+                      </span>
+                    );
+                  })()}
+                  {/* Project completed through the app: "Material Quantity" is
+                      the real, server-computed delivered total (read-only,
+                      never the plan estimate); "Estimated Quantity" is THIS
+                      row's own Est. Qty (filled from the AI's per-row
+                      prediction on Run Forecast, or set manually) — never a
+                      per-material forecast total repeated on every row of
+                      that material. Both are in the row's purchase unit. */}
+                  {isCompleted && !isHistorical && (
+                    <span style={{ fontSize: '0.76rem', color: '#374151' }}>
+                      {(r.materialQuantity ?? 0).toLocaleString()} {r.estimatedPurchaseQuantity != null ? (r.estimatedPurchaseUnit ?? r.unit ?? '') : (r.unit ?? '')}
+                    </span>
+                  )}
+                  {isCompleted && !isHistorical && (
                     <span
-                      title="AI-predicted quantity from the latest Run Forecast on this project"
-                      style={{ fontSize: '0.76rem', color: aiPredictedByMaterial.has(r.materialId ?? -1) ? '#374151' : '#d1d5db' }}
+                      title="This row's Est. Qty — the AI's prediction for it from Run Forecast, unless set manually"
+                      style={{ fontSize: '0.76rem', color: r.estimatedPurchaseQuantity != null ? '#374151' : '#d1d5db' }}
                     >
-                      {r.materialId && aiPredictedByMaterial.has(r.materialId)
-                        ? Math.ceil(aiPredictedByMaterial.get(r.materialId)!).toLocaleString()
-                        : '— (run forecast)'}
+                      {r.estimatedPurchaseQuantity != null
+                        ? `${Math.ceil(r.estimatedPurchaseQuantity).toLocaleString()} ${r.estimatedPurchaseUnit ?? r.unit ?? ''}`
+                        : '—'}
                     </span>
                   )}
                   {isCompleted && isHistorical && (
@@ -645,12 +695,15 @@ export default function MaterialPlanTab({
                     // backfill has no live Excess/Waste trail to derive this
                     // from, so a real human-typed figure is the only genuine
                     // source. See the banner above and BOQItem.IsUsageConfirmed.
+                    // Typed in the row's purchase unit (what its PO lines were
+                    // bought in — e.g. pcs, not the BOQ's sq.m) when it has
+                    // one; the placeholder says which.
                     <input
                       disabled={!editable}
                       type="number"
                       value={r.actualQuantity || ''}
                       onChange={e => updateRow(i, { actualQuantity: parseFloat(e.target.value) || 0 })}
-                      placeholder="Actual used"
+                      placeholder={`Actual used (${historicalPurchase(r)?.unit ?? r.unit ?? 'qty'})`}
                       style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', background: '#fff7ed', borderColor: '#fed7aa' }}
                     />
                   )}
@@ -661,7 +714,9 @@ export default function MaterialPlanTab({
                     // against this line yet, so the figure shown is just the
                     // estimate, not an observed one.
                     <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '4px 6px' }} title={r.isUsageConfirmed ? 'Calculated from logged Excess/Waste' : 'Nothing logged yet for this line — showing the estimate'}>
-                      <span style={{ fontSize: '0.76rem', color: '#374151' }}>{r.actualQuantity || 0}</span>
+                      <span style={{ fontSize: '0.76rem', color: '#374151' }}>
+                        {r.actualQuantity || 0} {r.estimatedPurchaseQuantity != null ? (r.estimatedPurchaseUnit ?? r.unit ?? '') : (r.unit ?? '')}
+                      </span>
                       {!r.isUsageConfirmed && (
                         <span style={{ fontSize: '0.6rem', color: '#b45309', fontStyle: 'italic' }}>inferred</span>
                       )}
