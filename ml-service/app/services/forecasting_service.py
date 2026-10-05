@@ -32,14 +32,15 @@ def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> lis
         SELECT
             m.Id         AS material_id,
             m.Name       AS material_name,
-            -- The BOQ row's own unit, not the catalog Material's default unit
-            -- (bi.Unit) — a material can legitimately be estimated in
-            -- different units across rows (e.g. sq.m for one wall, l.m for
-            -- a pipe run), per BOQItem's own Unit field. Falls back to the
-            -- catalog unit only when a row has none of its own.
-            COALESCE(NULLIF(bi.Unit, ''), m.Unit) AS unit,
+            -- Must match training_service.py's own EstimatedPurchaseUnit-first
+            -- preference — the model is trained on boq_quantity in purchase
+            -- units (pcs/bags/etc.) when available, so predicting from the
+            -- raw BOQ unit (e.g. sq.m) here would feed it a different scale
+            -- than it learned on. Falls back to the BOQ row's own unit, then
+            -- the catalog unit, only when no purchase unit was ever set.
+            COALESCE(NULLIF(bi.EstimatedPurchaseUnit, ''), NULLIF(bi.Unit, ''), m.Unit) AS unit,
             m.UnitCost   AS unit_cost,
-            bi.EstimatedQuantity AS boq_quantity,
+            COALESCE(bi.EstimatedPurchaseQuantity, bi.EstimatedQuantity) AS boq_quantity,
             COALESCE(bi.ActualQuantity, 0) AS actual_used,
             COALESCE(ir.AvailableQuantity, 0) AS current_stock,
             COALESCE(ir.ExcessQuantity, 0) AS excess_quantity,

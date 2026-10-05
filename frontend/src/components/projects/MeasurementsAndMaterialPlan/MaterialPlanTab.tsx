@@ -96,10 +96,12 @@ export default function MaterialPlanTab({
   // are forward-looking procurement fields (what to order next, requested
   // via the Alerts buttons) that don't apply to a project that already
   // happened; only Actual Qty is a meaningful field to fill in there.
-  const columnsTemplate = isHistorical
-    ? 'minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr)'
-    : isCompleted
-    ? 'minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.5fr) minmax(0,0.7fr) 96px'
+  // A completed project (historical or not) always shows the unified
+  // Material Quantity / Estimated Quantity (AI-predicted) / Actual Quantity
+  // scheme — the live procurement columns (Purchase Unit, Est. Qty, Alerts)
+  // only make sense while there's still something left to order.
+  const columnsTemplate = isCompleted
+    ? 'minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.7fr)'
     : 'minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.6fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr) 96px';
   const [parsingId, setParsingId] = useState<number | null>(null);
 
@@ -264,6 +266,17 @@ export default function MaterialPlanTab({
     });
     return { est, actual };
   }, [rows, isCompleted]);
+
+  // Historical grid's "Estimated Quantity" column = the real AI-predicted
+  // quantity for this row's material, from the latest Run Forecast on this
+  // project (the same forecastedMaterials already shown in the Forecasted
+  // Material Demand panel for live projects) — never a stored/typed number.
+  // Blank ("—") until Run Forecast has actually been clicked at least once.
+  const aiPredictedByMaterial = useMemo(() => {
+    const map = new Map<number, number>();
+    forecastedMaterials.forEach(fm => map.set(fm.materialId, (map.get(fm.materialId) ?? 0) + fm.forecastedQuantity));
+    return map;
+  }, [forecastedMaterials]);
 
   // A newly-scanned material has no InventoryRecord yet (that only exists
   // once stock is actually recorded), so inventory alone can't name it —
@@ -505,10 +518,8 @@ export default function MaterialPlanTab({
         <div style={{ display: (isHistorical && !editable) ? 'none' : 'block', overflowX: 'auto' }}>
         <div style={{ minWidth: 980 }}>
         <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-          {(isHistorical
-            ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'ACTUAL QTY']
-            : isCompleted
-            ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'ACTUAL QTY', 'UNIT', 'EST. QTY', 'ALERTS']
+          {(isCompleted
+            ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'MATERIAL QUANTITY', 'ESTIMATED QUANTITY', 'ACTUAL QUANTITY']
             : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'UNIT', 'EST. QTY', 'ALERTS']
           ).map((h, idx) => (
             <span key={`${h}-${idx}`} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
@@ -604,8 +615,31 @@ export default function MaterialPlanTab({
                   ) : (
                     <input disabled={!editable} value={r.specification || r.newMaterialName || ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material specification" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   )}
-                  <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
-                  <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                  {!isCompleted && (
+                    <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                  )}
+                  {/* "Material Quantity": for a historical row it IS the
+                      editable BOQ-estimated total (estimatedQuantity), same
+                      field as the live grid's Total Area/Qty, just relabeled.
+                      For a project completed through the app, it's the real,
+                      server-computed delivered total — read-only, never the
+                      plan estimate. For a still-live project, it's the same
+                      editable Total Area/Qty input as always. */}
+                  {isCompleted && !isHistorical ? (
+                    <span style={{ fontSize: '0.76rem', color: '#374151' }}>{(r.materialQuantity ?? 0).toLocaleString()}</span>
+                  ) : (
+                    <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                  )}
+                  {isCompleted && (
+                    <span
+                      title="AI-predicted quantity from the latest Run Forecast on this project"
+                      style={{ fontSize: '0.76rem', color: aiPredictedByMaterial.has(r.materialId ?? -1) ? '#374151' : '#d1d5db' }}
+                    >
+                      {r.materialId && aiPredictedByMaterial.has(r.materialId)
+                        ? Math.ceil(aiPredictedByMaterial.get(r.materialId)!).toLocaleString()
+                        : '— (run forecast)'}
+                    </span>
+                  )}
                   {isCompleted && isHistorical && (
                     // The one legitimate manual-entry path — a historical
                     // backfill has no live Excess/Waste trail to derive this
@@ -633,7 +667,7 @@ export default function MaterialPlanTab({
                       )}
                     </div>
                   )}
-                  {!isHistorical && <>
+                  {!isCompleted && <>
                   <select
                     disabled={!editable}
                     value={r.estimatedPurchaseUnit ?? ''}

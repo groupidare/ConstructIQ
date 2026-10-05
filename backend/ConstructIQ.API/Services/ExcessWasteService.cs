@@ -66,22 +66,21 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
             ? dto.Quantity / boqItem.EstimatedQuantity * 100
             : 0;
 
-        // Validated against the same baseline ActualQuantity itself already
-        // uses (EstimatedPurchaseQuantity when set, else EstimatedQuantity) —
-        // not the Forecasting chart's EstimatedQuantity-only baseline, which
-        // is often a different, non-convertible unit (e.g. bags vs. sq.m) and
-        // would wrongly reject entries that are legitimate today. Rejected
-        // outright rather than silently clamped, so an over-limit entry never
-        // enters the log at all.
+        // Validated against what was actually delivered (falling back to the
+        // estimate only if nothing's been marked Delivered yet) instead of
+        // the original plan — a project that genuinely over-procured can log
+        // Excess+Waste past its original estimate without this rejecting a
+        // real entry. Rejected outright rather than silently clamped, so an
+        // over-limit entry never enters the log at all.
         if (boqItem is not null)
         {
-            var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
+            var baseline = await GetDeliveredBaselineAsync(boqItem);
             var alreadyLogged = await db.ExcessWasteRecords
                 .Where(e => e.BOQItemId == boqItem.Id)
                 .SumAsync(e => (decimal?)e.Quantity) ?? 0;
             if (alreadyLogged + dto.Quantity > baseline)
                 throw new InvalidOperationException(
-                    $"This entry would bring total logged Excess+Waste to {alreadyLogged + dto.Quantity} {(boqItem.EstimatedPurchaseUnit ?? boqItem.Unit ?? "")}, exceeding the estimated {baseline} — reduce the quantity or review this BOQ item's estimate.");
+                    $"This entry would bring total logged Excess+Waste to {alreadyLogged + dto.Quantity} {(boqItem.EstimatedPurchaseUnit ?? boqItem.Unit ?? "")}, exceeding the {baseline} delivered (or estimated, if nothing's been delivered yet) — reduce the quantity or confirm the delivery was recorded.");
         }
 
         var record = new ExcessWasteRecord
@@ -116,14 +115,15 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
 
         await db.SaveChangesAsync();
 
-        // Actual usage = what was estimated minus everything logged as
-        // waste/excess against this exact BOQ line so far (across however
-        // many entries) — the whole point of tying this to a real BOQItemId
-        // instead of just a material name. Clamped at 0: logging more excess
-        // than was ever estimated doesn't make sense as a negative "used".
+        // Actual usage = what was actually delivered minus everything logged
+        // as waste/excess against this exact BOQ line so far — grounded in
+        // real receipts rather than the plan, so it can legitimately exceed
+        // the original estimate when a project over-procured. Clamped at 0:
+        // logging more excess than was ever delivered doesn't make sense as
+        // a negative "used".
         if (boqItem is not null)
         {
-            var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
+            var baseline = await GetDeliveredBaselineAsync(boqItem);
             var totalLogged = await db.ExcessWasteRecords
                 .Where(e => e.BOQItemId == boqItem.Id)
                 .SumAsync(e => e.Quantity);
@@ -246,13 +246,13 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
             var boqItem = await db.BOQItems.FindAsync(record.BOQItemId.Value);
             if (boqItem is not null)
             {
-                var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
+                var baseline = await GetDeliveredBaselineAsync(boqItem);
                 var loggedByOthers = await db.ExcessWasteRecords
                     .Where(e => e.BOQItemId == boqItem.Id && e.Id != id)
                     .SumAsync(e => (decimal?)e.Quantity) ?? 0;
                 if (loggedByOthers + dto.Quantity > baseline)
                     throw new InvalidOperationException(
-                        $"This change would bring total logged Excess+Waste to {loggedByOthers + dto.Quantity} {(boqItem.EstimatedPurchaseUnit ?? boqItem.Unit ?? "")}, exceeding the estimated {baseline}.");
+                        $"This change would bring total logged Excess+Waste to {loggedByOthers + dto.Quantity} {(boqItem.EstimatedPurchaseUnit ?? boqItem.Unit ?? "")}, exceeding the {baseline} delivered (or estimated, if nothing's been delivered yet).");
             }
         }
 
@@ -272,7 +272,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
             var boqItem = await db.BOQItems.FindAsync(record.BOQItemId.Value);
             if (boqItem is not null)
             {
-                var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
+                var baseline = await GetDeliveredBaselineAsync(boqItem);
                 var totalLogged = await db.ExcessWasteRecords
                     .Where(e => e.BOQItemId == boqItem.Id)
                     .SumAsync(e => e.Quantity);
@@ -322,7 +322,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
 
         if (boqItem is not null)
         {
-            var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
+            var baseline = await GetDeliveredBaselineAsync(boqItem);
             var remaining = await db.ExcessWasteRecords
                 .Where(e => e.BOQItemId == boqItem.Id)
                 .ToListAsync();
@@ -369,6 +369,23 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         db.Materials.Add(material);
         await db.SaveChangesAsync();
         return material.Id;
+    }
+
+    // "Delivered" PO quantity for this BOQ line, same BOQItemId-then-Material/Phase
+    // fallback match training_service.py's supplier_lead_time_days subquery
+    // uses — a real, observed receipt rather than the original plan. Falls
+    // back to the plan estimate only when nothing's been delivered yet, so a
+    // historical/backfilled line without matching POs still gets a usable
+    // baseline instead of 0.
+    private async Task<decimal> GetDeliveredBaselineAsync(BOQItem boqItem)
+    {
+        var delivered = await db.PurchaseOrderMaterials
+            .Where(pom => pom.PurchaseOrder.Status == PurchaseOrderStatus.Delivered)
+            .Where(pom => pom.BOQItemId == boqItem.Id
+                || (pom.BOQItemId == null && pom.MaterialId == boqItem.MaterialId
+                    && (pom.PhaseId == boqItem.PhaseId || (pom.PhaseId == null && boqItem.PhaseId == null))))
+            .SumAsync(pom => (decimal?)pom.Quantity) ?? 0;
+        return delivered > 0 ? delivered : (boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity);
     }
 
     public async Task<ExcessAnalyticsSummaryDto> GetSummaryAsync(int projectId)

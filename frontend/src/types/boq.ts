@@ -68,6 +68,9 @@ export interface BOQItemRow {
   // netLeftToOrder, as the request dialog's actual quantity cap, or the
   // dialog can invite a quantity the backend will then reject.
   remainingRequestable?: number;
+  // "Material Quantity" for a completed project — null until completion
+  // (not finalized yet). See BOQItemResponseDto.MaterialQuantity.
+  materialQuantity?: number;
 }
 
 export interface HistoricalSupplyLine {
@@ -104,6 +107,7 @@ export interface BOQItem {
   netLeftToOrder?: number;
   warehouseApproved?: boolean;
   remainingRequestable?: number;
+  materialQuantity?: number;
   createdAt: string;
 }
 

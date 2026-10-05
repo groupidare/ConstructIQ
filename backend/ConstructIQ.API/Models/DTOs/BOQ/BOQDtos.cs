@@ -97,6 +97,14 @@ public class BOQItemResponseDto
     // approved against it either. See
     // ProcurementCapCalculator.GetRemainingRequestableForProjectAsync.
     public decimal  RemainingRequestable { get; set; }
+    // "Material Quantity" for the restructured Material Plan grid — null
+    // for a project still in progress (not finalized yet). For a historical
+    // backfill, equals EstimatedQuantity (the BOQ total — there's no live
+    // delivery trail to total instead). For a project completed through the
+    // app, the real delivered total (Purchase Orders marked Delivered,
+    // falling back to the plan estimate only if nothing was ever delivered)
+    // — see BOQService.GetDeliveredBaselinesAsync.
+    public decimal? MaterialQuantity { get; set; }
 }
 
 public class HistoricalEstimateResponseDto
