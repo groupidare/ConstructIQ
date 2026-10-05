@@ -129,11 +129,15 @@ export default function MaterialPlanTab({
     const { index, max, unit } = requestPrompt;
     const qty = parseFloat(requestPromptQty);
     if (!qty || qty <= 0) { toast.error('Enter a quantity greater than zero.'); return; }
-    // Hard cap: Quantity to request <= Net Left to Order, always — the
-    // action buttons stay clickable even once a row is fully covered (so
-    // they're never hidden/swapped for a badge), but the modal never lets
-    // the actual request exceed what's really still needed.
-    if (qty > max) { toast.error(`Cannot request more than ${max.toLocaleString()} ${unit} — that's all this row still needs.`); return; }
+    // Warehouse is a hard cap — it can only release what the row still
+    // needs. Procurement isn't: any positive quantity goes through, and
+    // anything past the remaining estimate is an intentional additional
+    // order (breakage, design change, buffer) that the backend flags as
+    // such rather than rejects.
+    if (requestPrompt.kind === 'WarehouseCheck' && qty > max) {
+      toast.error(`Cannot request more than ${max.toLocaleString()} ${unit} — that's all this row still needs.`);
+      return;
+    }
 
     const row = rows[index];
     setSubmittingRequest(true);
@@ -151,6 +155,8 @@ export default function MaterialPlanTab({
         const remainder = (row.estimatedPurchaseQuantity ?? 0) - totalRequested;
         toast.success(remainder > 0
           ? `Requested ${qty.toLocaleString()} ${unit}. ${remainder.toLocaleString()} ${unit} still remaining.`
+          : remainder < 0
+          ? `Requested ${qty.toLocaleString()} ${unit}. ${(-remainder).toLocaleString()} ${unit} over the estimate.`
           : `Requested ${qty.toLocaleString()} ${unit}. Fully covered.`);
       } catch {
         toast.error('Request sent, but saving the updated Bill of Quantities failed — click Save Material Plan to retry.');
@@ -298,7 +304,18 @@ export default function MaterialPlanTab({
               {requestPrompt.kind === 'ProcurementOrder' ? 'Notify Procurement' : 'Notify Warehouse'}
             </p>
             <p style={{ fontSize: '0.78rem', color: '#6b7280', marginBottom: '1rem' }}>{requestPrompt.materialName}</p>
-            <label style={{ ...lbl, fontSize: '0.68rem' }}>Quantity to request (up to {requestPrompt.max.toLocaleString()} {requestPrompt.unit})</label>
+            {requestPrompt.kind === 'ProcurementOrder' ? (
+              <>
+                <label style={{ ...lbl, fontSize: '0.68rem' }}>Quantity to request</label>
+                <p style={{ fontSize: '0.68rem', color: requestPrompt.max > 0 ? '#6b7280' : '#b45309', marginTop: 2 }}>
+                  {requestPrompt.max > 0
+                    ? `Suggested remaining: ${requestPrompt.max.toLocaleString()} ${requestPrompt.unit}`
+                    : 'Estimated requirement fulfilled. Entering a value will request additional overage stock.'}
+                </p>
+              </>
+            ) : (
+              <label style={{ ...lbl, fontSize: '0.68rem' }}>Quantity to request (up to {requestPrompt.max.toLocaleString()} {requestPrompt.unit})</label>
+            )}
             <div style={{ display: 'flex', gap: 8, marginTop: 4, marginBottom: '1.25rem' }}>
               <input
                 type="number"
@@ -549,6 +566,10 @@ export default function MaterialPlanTab({
               // approved against this row (net < the full estimate) — never
               // for a still-Pending request, and never with nothing requested.
               const showLeftToOrder = hasPurchaseEstimate && netLeftToOrder < purchaseQty;
+              // Additional procurement orders can push the running requested
+              // total past the estimate — shown alongside "0 left to order"
+              // rather than as a negative balance.
+              const overEstimate = hasPurchaseEstimate ? Math.max(0, (r.requestedQuantity ?? 0) - purchaseQty) : 0;
               return (
                 <div key={i} style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40 }}>
                   {editable ? (
@@ -638,21 +659,23 @@ export default function MaterialPlanTab({
                       placeholder="Est. qty"
                       style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }}
                     />
-                    {showLeftToOrder && (
+                    {(showLeftToOrder || overEstimate > 0) && (
                       <p style={{
                         position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 2,
                         fontSize: '0.6rem', color: '#f97316', fontWeight: 600,
                         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                       }}>
-                        {netLeftToOrder.toLocaleString()} left to order
+                        {overEstimate > 0
+                          ? `0 left to order · +${overEstimate.toLocaleString()} over estimate`
+                          : `${netLeftToOrder.toLocaleString()} left to order`}
                       </p>
                     )}
                   </div>
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'flex-end', paddingRight: 2 }}>
                     {/* Action buttons always stay visible — never swapped for
                         a "Done" badge, even once the estimate is fully
-                        covered (though at that point Net Left to Order is 0,
-                        so the request dialog's own cap blocks submitting). */}
+                        covered: Procurement can still take an additional
+                        order past it (Warehouse's own cap still applies). */}
                     <button
                       disabled={!canRequestProcurement}
                       onClick={() => {
@@ -664,9 +687,9 @@ export default function MaterialPlanTab({
                         !editable || isCompleted || !r.materialId ? undefined
                           : !hasPurchaseEstimate ? 'Run Forecast first to set an estimated quantity'
                           : !r.warehouseApproved ? 'Procurement unlocks once Warehouse approves a check for this material'
-                          : toOrder <= 0 ? 'Nothing left to order — fully covered by approved redistribution/warehouse/PO quantity'
-                          : remainingRequestable <= 0 ? 'A request for this material is already pending — wait for it to be fulfilled before asking again'
-                          : `Notify procurement — order up to ${Math.min(toOrder, remainingRequestable)} ${purchaseUnit}`
+                          : toOrder <= 0 ? 'Estimate fulfilled — notify procurement to request additional stock'
+                          : remainingRequestable <= 0 ? 'Already requested in full — notify procurement to request additional stock'
+                          : `Notify procurement — ${Math.min(toOrder, remainingRequestable)} ${purchaseUnit} suggested`
                       }
                       style={{
                         width: 24, height: 24, borderRadius: 6, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center',

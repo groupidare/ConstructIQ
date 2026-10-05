@@ -101,23 +101,16 @@ public class BOQService(AppDbContext db) : IBOQService
                 : null;
             entity.EstimatedPurchaseUnit     = item.EstimatedPurchaseUnit;
 
-            // RequestedQuantity is now a display-only running total (Notify
-            // Procurement/Warehouse enforce the real cap at the point of
-            // request, against MaterialRequests/WarehouseRequests directly —
-            // not against this counter). Still a basic sanity bound: it
-            // shouldn't be able to claim more was ever asked for than the
-            // row's own estimate. Only gated on increases: a legitimate
-            // decrease (e.g. correcting a typo) should never be blocked.
+            // RequestedQuantity is a display-only running total of every
+            // Notify Procurement/Warehouse click for this row (the real
+            // checks happen at the point of request, against
+            // MaterialRequests/WarehouseRequests directly). Not bounded by
+            // the row's estimate: Notify Procurement accepts intentional
+            // additional orders beyond it, and this total has to be able to
+            // record them.
             var requestedQuantity = item.RequestedQuantity.HasValue
                 ? Math.Round(item.RequestedQuantity.Value, 0, MidpointRounding.AwayFromZero)
                 : (decimal?)null;
-            var previousRequested = entity.RequestedQuantity ?? 0;
-            if (requestedQuantity.HasValue && requestedQuantity.Value > previousRequested)
-            {
-                var estimatedTotal = entity.EstimatedPurchaseQuantity ?? entity.EstimatedQuantity;
-                if (requestedQuantity.Value > estimatedTotal)
-                    throw new InvalidOperationException($"Requested quantity for this row can't exceed its own estimate of {estimatedTotal}.");
-            }
             entity.RequestedQuantity         = requestedQuantity;
             entity.UpdatedAt         = DateTime.UtcNow;
 

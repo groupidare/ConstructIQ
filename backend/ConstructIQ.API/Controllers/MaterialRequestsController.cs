@@ -38,9 +38,13 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         var material = await db.Materials.FindAsync(dto.MaterialId);
         if (material is null) return BadRequest(new { message = "Material not found." });
 
+        // No upper cap — a site can deliberately order beyond the BOQ
+        // estimate (breakage, a design change, a buffer). Anything past the
+        // remaining requestable balance is accepted as an intentional
+        // additional order, and flagged as such to Procurement rather than
+        // rejected. Notify Warehouse keeps its own cap (WarehouseRequestService).
         var remaining = await ProcurementCapCalculator.GetRemainingRequestableAsync(db, dto.ProjectId, dto.MaterialId);
-        if (dto.Quantity > remaining)
-            return BadRequest(new { message = $"Cannot request more than {remaining} {material.Unit} — that exceeds the estimated need minus what's already been redistributed in and requested." });
+        var isAdditional = dto.Quantity > remaining;
 
         var request = new MaterialRequest
         {
@@ -55,10 +59,12 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         await db.SaveChangesAsync();
 
         await notifications.CreateForRoleAsync(UserRole.ProcurementOfficer, NotificationKind.ProcurementRequestSubmitted,
-            $"{project.Name} requested {dto.Quantity} {request.Unit} of {material.Name}.",
+            isAdditional
+                ? $"{project.Name} requested {dto.Quantity} {request.Unit} of {material.Name} — an additional order beyond the estimate."
+                : $"{project.Name} requested {dto.Quantity} {request.Unit} of {material.Name}.",
             CurrentUserId, projectId: dto.ProjectId, materialId: dto.MaterialId, actionLink: "/procurement");
 
-        return Ok(new { id = request.Id });
+        return Ok(new { id = request.Id, isAdditional });
     }
 
     // Authoritative "how much more can still be requested" per material in
