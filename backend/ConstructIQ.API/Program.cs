@@ -23,7 +23,12 @@ var connStr = $"Server={builder.Configuration["DB_HOST"] ?? "localhost"};" +
               $"SslMode={builder.Configuration["DB_SSL_MODE"] ?? "Preferred"};";
 
 builder.Services.AddDbContext<AppDbContext>(opts =>
-    opts.UseMySql(connStr, new MySqlServerVersion(new Version(8, 0, 0))));
+    opts.UseMySql(connStr, new MySqlServerVersion(new Version(8, 0, 0)), mysql =>
+        // A brief connection blip to Aiven (network hiccup, not a real
+        // outage) used to surface as a raw 500 straight to the user instead
+        // of just quietly retrying — this is EF Core's own built-in retry
+        // policy for exactly that class of transient failure.
+        mysql.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorNumbersToAdd: null)));
 
 // ── JWT Authentication ───────────────────────────────────────────────────────
 builder.Services.AddConstructIqSecurity(builder.Configuration);
