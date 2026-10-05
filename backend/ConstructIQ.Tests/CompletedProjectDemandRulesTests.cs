@@ -123,6 +123,15 @@ public class CompletedProjectDemandRulesTests
     }
 
     [Theory]
+    [InlineData("bag", "pcs", "sq.m", "bag")]  // purchase-unit baseline in use
+    [InlineData(null,  "pcs", "sq.m", "pcs")]  // row's own unit beats the catalog unit
+    [InlineData(null,  " ",   "sq.m", "sq.m")] // no row unit, catalog unit
+    public void ResolveBoqLineUnit_PurchaseThenRowThenCatalog(string? purchaseUnit, string? rowUnit, string materialUnit, string expected)
+    {
+        Assert.Equal(expected, CompletedProjectDemandRules.ResolveBoqLineUnit(purchaseUnit, rowUnit, materialUnit));
+    }
+
+    [Theory]
     [InlineData(" PCS ", "pc")]
     [InlineData("Pieces", "pc")]
     [InlineData("Bag", "bag")]

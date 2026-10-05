@@ -18,6 +18,16 @@ public static class CompletedProjectDemandRules
 
     public static DateTime ToMonth(DateTime date) => new(date.Year, date.Month, 1);
 
+    // The unit a BOQ line's quantity is actually in: its purchase unit when
+    // the purchase-unit baseline is the one in use (pass null otherwise),
+    // else the row's own unit, else the catalog Material's unit — the same
+    // row-unit-first order the ML service forecasts in
+    // (COALESCE(NULLIF(bi.Unit, ''), m.Unit)).
+    public static string ResolveBoqLineUnit(string? purchaseUnit, string? rowUnit, string materialUnit) =>
+        !string.IsNullOrWhiteSpace(purchaseUnit) ? purchaseUnit.Trim()
+        : !string.IsNullOrWhiteSpace(rowUnit) ? rowUnit.Trim()
+        : materialUnit;
+
     public readonly record struct ForecastRun(int ForecastResultId, int? PhaseId, DateTime GeneratedAt);
 
     // Which of one project's forecast runs count toward its AI Predicted

@@ -188,6 +188,45 @@ public class MonthlyDemandSummaryTests(DatabaseFixture fixture)
         Assert.Equal(136, summary[0].AiPredicted); // 92 + 44
     }
 
+    [Fact] // A row estimated in pcs against a catalog entry in sq.m charts under pcs — the same unit its forecast is in.
+    public async Task RowUnitDiffersFromCatalogUnit_ActualAndForecastShareTheRowUnit()
+    {
+        await using var db = fixture.CreateContext();
+        var user = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, user.Id, status: ProjectStatus.Completed, isHistorical: true,
+            startDate: new DateTime(2024, 1, 10), targetEndDate: new DateTime(2024, 8, 31));
+        var material = await TestDataBuilder.CreateMaterialAsync(db, unit: "sq.m");
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 1000, unit: "pcs", actualQuantity: 1073);
+        var run = await TestDataBuilder.CreateForecastResultAsync(db, project.Id, new DateTime(2026, 9, 1));
+        await TestDataBuilder.AddForecastedMaterialAsync(db, run.Id, material.Id, 1050, unit: "pcs");
+
+        var boqService = new BOQService(db);
+        var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, "pcs")).ToList();
+        Assert.Single(summary);
+        Assert.Equal(1073, summary[0].ActualUsage);
+        Assert.Equal(1050, summary[0].AiPredicted);
+        Assert.Empty(await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, "sq.m"));
+    }
+
+    [Fact] // A forecast row with no unit (seeded) takes the unit of the project's own BOQ line for that material.
+    public async Task UnitlessForecastRow_UsesTheProjectsBoqLineUnit()
+    {
+        await using var db = fixture.CreateContext();
+        var user = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, user.Id, status: ProjectStatus.Completed, isHistorical: true,
+            startDate: new DateTime(2024, 1, 10), targetEndDate: new DateTime(2024, 8, 31));
+        var material = await TestDataBuilder.CreateMaterialAsync(db, unit: "sq.m");
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 1000, unit: "pcs", actualQuantity: 950);
+        var run = await TestDataBuilder.CreateForecastResultAsync(db, project.Id, new DateTime(2025, 3, 15), notes: ConstructIQ.API.Data.DbInitializer.ForecastSeedMarker);
+        await TestDataBuilder.AddForecastedMaterialAsync(db, run.Id, material.Id, 980, unit: "");
+
+        var boqService = new BOQService(db);
+        var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, "pcs")).ToList();
+        Assert.Single(summary);
+        Assert.Equal(950, summary[0].ActualUsage);
+        Assert.Equal(980, summary[0].AiPredicted);
+    }
+
     [Fact] // An unrelated active project's forecast never inflates a completed project's AI Predicted figure.
     public async Task Prediction_FromActiveProject_IsNotCounted()
     {

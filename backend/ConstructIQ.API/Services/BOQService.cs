@@ -514,17 +514,19 @@ public class BOQService(AppDbContext db) : IBOQService
         {
             var project = completed[boqItem.ProjectId];
 
-            // The baseline and unit a record's Quantity is actually
-            // denominated in — the exact same precedence the Record
-            // Excess/Waste picker (GetPendingBOQItemsAsync) and
-            // BOQItem.ActualQuantity already use as ground truth, so the
-            // figure computed here is always unit-consistent with what was
-            // logged, never mixed with the item's separate EstimatedQuantity/
-            // Unit when a purchase-unit baseline was the one actually used.
+            // The baseline a record's Quantity is actually denominated in —
+            // the same precedence BOQItem.ActualQuantity already uses as
+            // ground truth — labelled with the unit THAT quantity is in:
+            // the purchase unit when the purchase-unit baseline is the one
+            // used, otherwise the BOQ row's own unit, never the catalog
+            // Material's default unit (which can differ — a row of blocks
+            // estimated in pcs against a catalog entry in sq.m). Same row-
+            // unit-first rule the ML service forecasts in, so a line's
+            // Actual Usage and its forecast always land on the same unit.
             var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
-            var effectiveUnit = !string.IsNullOrWhiteSpace(boqItem.EstimatedPurchaseUnit)
-                ? boqItem.EstimatedPurchaseUnit
-                : boqItem.Material.Unit;
+            var effectiveUnit = CompletedProjectDemandRules.ResolveBoqLineUnit(
+                boqItem.EstimatedPurchaseQuantity.HasValue ? boqItem.EstimatedPurchaseUnit : null,
+                boqItem.Unit, boqItem.Material.Unit);
             if (unit is not null && CompletedProjectDemandRules.NormalizeUnit(effectiveUnit) != CompletedProjectDemandRules.NormalizeUnit(unit))
                 continue;
 
@@ -611,12 +613,43 @@ public class BOQService(AppDbContext db) : IBOQService
             .ToListAsync();
         var materialNames = rows.GroupBy(r => r.MaterialId).ToDictionary(g => g.Key, g => g.First().MaterialName);
 
-        // A row with no unit of its own was forecast in the catalog
-        // Material's unit — same fallback ForecastService applies.
+        // A forecast row with no unit of its own (DbInitializer's seeded
+        // rows never set one) was made from that project's BOQ line for the
+        // material, so it's in that line's unit — taken from the project's
+        // own BOQ lines when they all agree on one, else the catalog
+        // Material's unit.
+        var unitlessKeys = rows.Where(r => string.IsNullOrWhiteSpace(r.Unit))
+            .Select(r => (runById[r.ForecastResultId].ProjectId, r.MaterialId))
+            .ToHashSet();
+        var lineUnitByProjectMaterial = new Dictionary<(int ProjectId, int MaterialId), string>();
+        if (unitlessKeys.Count > 0)
+        {
+            var unitlessProjectIds = unitlessKeys.Select(k => k.ProjectId).Distinct().ToList();
+            var unitlessMaterialIds = unitlessKeys.Select(k => k.MaterialId).Distinct().ToList();
+            var lines = await db.BOQItems
+                .Where(b => unitlessProjectIds.Contains(b.ProjectId) && unitlessMaterialIds.Contains(b.MaterialId))
+                .Select(b => new { b.ProjectId, b.MaterialId, b.EstimatedPurchaseQuantity, b.EstimatedPurchaseUnit, b.Unit, MaterialUnit = b.Material.Unit })
+                .ToListAsync();
+            foreach (var g in lines.GroupBy(b => (b.ProjectId, b.MaterialId)))
+            {
+                var lineUnits = g
+                    .Select(b => CompletedProjectDemandRules.ResolveBoqLineUnit(
+                        b.EstimatedPurchaseQuantity.HasValue ? b.EstimatedPurchaseUnit : null, b.Unit, b.MaterialUnit))
+                    .GroupBy(CompletedProjectDemandRules.NormalizeUnit)
+                    .ToList();
+                if (lineUnits.Count == 1)
+                    lineUnitByProjectMaterial[g.Key] = lineUnits[0].First();
+            }
+        }
+
+        string RowUnit(int projectId, int materialId, string? rowUnit, string materialUnit) =>
+            !string.IsNullOrWhiteSpace(rowUnit) ? rowUnit.Trim()
+            : lineUnitByProjectMaterial.GetValueOrDefault((projectId, materialId), materialUnit);
+
         var candidates = rows
             .Select(r => (ProjectId: runById[r.ForecastResultId].ProjectId, Row: new CompletedProjectDemandRules.ForecastRow(
                 r.ForecastResultId, runById[r.ForecastResultId].GeneratedAt, runById[r.ForecastResultId].IsSeeded,
-                r.MaterialId, string.IsNullOrWhiteSpace(r.Unit) ? r.MaterialUnit : r.Unit.Trim(), r.ForecastedQuantity)))
+                r.MaterialId, RowUnit(runById[r.ForecastResultId].ProjectId, r.MaterialId, r.Unit, r.MaterialUnit), r.ForecastedQuantity)))
             .Where(c => unit is null || CompletedProjectDemandRules.NormalizeUnit(c.Row.Unit) == CompletedProjectDemandRules.NormalizeUnit(unit))
             .ToList();
 
@@ -691,13 +724,15 @@ public class BOQService(AppDbContext db) : IBOQService
     {
         var completed = await GetCompletedProjectsAsync(userId, role);
         var (valid, _) = await GetReconciledBoqItemsAsync(completed, null, null);
+        // Grouped on the folded unit (same as the chart's own series), so
+        // "pcs"/"PC " never show up as two separate dropdown entries.
         return valid
-            .GroupBy(r => (r.MaterialId, r.Unit))
+            .GroupBy(r => (r.MaterialId, Unit: CompletedProjectDemandRules.NormalizeUnit(r.Unit)))
             .Select(g => new MaterialOptionDto
             {
                 MaterialId = g.Key.MaterialId,
                 MaterialName = g.First().MaterialName,
-                Unit = g.Key.Unit,
+                Unit = g.First().Unit,
                 TotalHistoricalDemand = g.Sum(r => r.ActualUsage),
             })
             .OrderByDescending(m => m.TotalHistoricalDemand)
