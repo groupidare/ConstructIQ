@@ -144,6 +144,50 @@ public class MonthlyDemandSummaryTests(DatabaseFixture fixture)
         Assert.Equal(75, summary[0].AiPredicted);
     }
 
+    [Fact] // A backfilled project's forecast counts even though it was run after the project's end date.
+    public async Task BackfilledProject_PredictionCountsWhateverItsRunDate()
+    {
+        await using var db = fixture.CreateContext();
+        var user = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, user.Id, status: ProjectStatus.Completed, isHistorical: true,
+            startDate: new DateTime(2024, 1, 10), targetEndDate: new DateTime(2024, 8, 31));
+        var material = await TestDataBuilder.CreateMaterialAsync(db);
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 100, actualQuantity: 95);
+        var older = await TestDataBuilder.CreateForecastResultAsync(db, project.Id, new DateTime(2026, 9, 1));
+        await TestDataBuilder.AddForecastedMaterialAsync(db, older.Id, material.Id, 80);
+        var latest = await TestDataBuilder.CreateForecastResultAsync(db, project.Id, new DateTime(2026, 10, 1));
+        await TestDataBuilder.AddForecastedMaterialAsync(db, latest.Id, material.Id, 98);
+
+        var boqService = new BOQService(db);
+        var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null)).ToList();
+        Assert.Single(summary);
+        Assert.Equal("2024-08", summary[0].Month);
+        Assert.Equal(95, summary[0].ActualUsage);
+        Assert.Equal(98, summary[0].AiPredicted); // latest real run only, not 80 + 98
+    }
+
+    [Fact] // Seeded forecasts (one per BOQ line) on a backfilled project are all summed.
+    public async Task BackfilledProject_SeededForecastsPerLine_AreSummed()
+    {
+        await using var db = fixture.CreateContext();
+        var user = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, user.Id, status: ProjectStatus.Completed, isHistorical: true,
+            startDate: new DateTime(2024, 1, 10), targetEndDate: new DateTime(2024, 8, 31));
+        var material = await TestDataBuilder.CreateMaterialAsync(db);
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 100, actualQuantity: 90);
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 50, actualQuantity: 45);
+        var lineA = await TestDataBuilder.CreateForecastResultAsync(db, project.Id, new DateTime(2025, 3, 15), notes: ConstructIQ.API.Data.DbInitializer.ForecastSeedMarker);
+        await TestDataBuilder.AddForecastedMaterialAsync(db, lineA.Id, material.Id, 92);
+        var lineB = await TestDataBuilder.CreateForecastResultAsync(db, project.Id, new DateTime(2025, 5, 15), notes: ConstructIQ.API.Data.DbInitializer.ForecastSeedMarker);
+        await TestDataBuilder.AddForecastedMaterialAsync(db, lineB.Id, material.Id, 44);
+
+        var boqService = new BOQService(db);
+        var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null)).ToList();
+        Assert.Single(summary);
+        Assert.Equal(135, summary[0].ActualUsage);
+        Assert.Equal(136, summary[0].AiPredicted); // 92 + 44
+    }
+
     [Fact] // An unrelated active project's forecast never inflates a completed project's AI Predicted figure.
     public async Task Prediction_FromActiveProject_IsNotCounted()
     {

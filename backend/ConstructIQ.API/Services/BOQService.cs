@@ -425,7 +425,10 @@ public class BOQService(AppDbContext db) : IBOQService
         int MaterialId, string MaterialName, string Unit, DateTime ReportingMonth,
         decimal EstimatedQuantity, decimal ExcessTotal, decimal WasteTotal, decimal ActualUsage);
 
-    private record CompletedProject(string Name, DateTime CompletedAt);
+    // IsBackfilled: entered via "Add Completed Project" rather than finished
+    // through the app — told apart by never having logged a 100% progress
+    // update (IsHistorical alone can't, ProjectService sets it for both).
+    private record CompletedProject(string Name, DateTime CompletedAt, bool IsBackfilled);
 
     private sealed class PredictedTotal
     {
@@ -460,8 +463,13 @@ public class BOQService(AppDbContext db) : IBOQService
 
         return projects.ToDictionary(
             p => p.Id,
-            p => new CompletedProject(p.Name, CompletedProjectDemandRules.ResolveCompletionDate(
-                firstFullProgressAt.TryGetValue(p.Id, out var at) ? at : null, p.TargetEndDate)));
+            p =>
+            {
+                DateTime? fullAt = firstFullProgressAt.TryGetValue(p.Id, out var at) ? at : null;
+                return new CompletedProject(p.Name,
+                    CompletedProjectDemandRules.ResolveCompletionDate(fullAt, p.TargetEndDate),
+                    IsBackfilled: fullAt is null);
+            });
     }
 
     // Shared core of every Forecasting-chart endpoint below: every BOQItem of
@@ -563,11 +571,14 @@ public class BOQService(AppDbContext db) : IBOQService
     // entered, at best auto-suggested from a historical-average heuristic;
     // see GetHistoricalEstimateAsync — it has never been touched by the ML
     // pipeline). Only for the same completed projects the Actual Usage side
-    // covers, only from runs made BEFORE each project finished, and placed in
-    // that project's completion month — so each month's AI Predicted figure
-    // always comes from the same projects as its Actual Usage, never from
-    // unrelated projects that merely ran a forecast that month. Which of a
-    // project's runs count: see CompletedProjectDemandRules.SelectForecastRuns.
+    // covers, placed in each project's completion month — so each month's AI
+    // Predicted figure always comes from the same projects as its Actual
+    // Usage, never from unrelated projects that merely ran a forecast that
+    // month. Which forecasts count depends on how the project got here:
+    //  - Finished in the app: the original forecast, made BEFORE it finished
+    //    (CompletedProjectDemandRules.SelectForecastRuns).
+    //  - Backfilled: the model's evaluation on that project, any run date
+    //    (CompletedProjectDemandRules.SelectHistoricalForecastRows).
     private async Task<Dictionary<(int MaterialId, string Unit, DateTime Month), PredictedTotal>> GetMonthlyPredictedTotalsAsync(
         IReadOnlyDictionary<int, CompletedProject> completed, int? materialId, string? unit)
     {
@@ -575,18 +586,21 @@ public class BOQService(AppDbContext db) : IBOQService
 
         var runs = await db.ForecastResults
             .Where(f => projectIds.Contains(f.ProjectId))
-            .Select(f => new { f.Id, f.ProjectId, f.PhaseId, f.GeneratedAt })
+            .Select(f => new { f.Id, f.ProjectId, f.PhaseId, f.GeneratedAt, IsSeeded = f.Notes == DbInitializer.ForecastSeedMarker })
             .ToListAsync();
+        var runById = runs.ToDictionary(r => r.Id);
 
-        var projectIdByRunId = runs
+        var liveRunIds = runs
+            .Where(r => !completed[r.ProjectId].IsBackfilled)
             .GroupBy(r => r.ProjectId)
-            .SelectMany(g => CompletedProjectDemandRules
-                .SelectForecastRuns(
-                    g.Select(r => new CompletedProjectDemandRules.ForecastRun(r.Id, r.PhaseId, r.GeneratedAt)),
-                    completed[g.Key].CompletedAt)
-                .Select(runId => (RunId: runId, ProjectId: g.Key)))
-            .ToDictionary(x => x.RunId, x => x.ProjectId);
-        var runIds = projectIdByRunId.Keys.ToList();
+            .SelectMany(g => CompletedProjectDemandRules.SelectForecastRuns(
+                g.Select(r => new CompletedProjectDemandRules.ForecastRun(r.Id, r.PhaseId, r.GeneratedAt)),
+                completed[g.Key].CompletedAt))
+            .ToHashSet();
+        var runIds = runs
+            .Where(r => completed[r.ProjectId].IsBackfilled || liveRunIds.Contains(r.Id))
+            .Select(r => r.Id)
+            .ToList();
 
         var rowsQuery = db.ForecastedMaterials.Where(fm => runIds.Contains(fm.ForecastResultId));
         if (materialId.HasValue)
@@ -595,22 +609,31 @@ public class BOQService(AppDbContext db) : IBOQService
         var rows = await rowsQuery
             .Select(fm => new { fm.ForecastResultId, fm.MaterialId, fm.Unit, MaterialName = fm.Material.Name, MaterialUnit = fm.Material.Unit, fm.ForecastedQuantity })
             .ToListAsync();
+        var materialNames = rows.GroupBy(r => r.MaterialId).ToDictionary(g => g.Key, g => g.First().MaterialName);
+
+        // A row with no unit of its own was forecast in the catalog
+        // Material's unit — same fallback ForecastService applies.
+        var candidates = rows
+            .Select(r => (ProjectId: runById[r.ForecastResultId].ProjectId, Row: new CompletedProjectDemandRules.ForecastRow(
+                r.ForecastResultId, runById[r.ForecastResultId].GeneratedAt, runById[r.ForecastResultId].IsSeeded,
+                r.MaterialId, string.IsNullOrWhiteSpace(r.Unit) ? r.MaterialUnit : r.Unit.Trim(), r.ForecastedQuantity)))
+            .Where(c => unit is null || CompletedProjectDemandRules.NormalizeUnit(c.Row.Unit) == CompletedProjectDemandRules.NormalizeUnit(unit))
+            .ToList();
+
+        var selected = candidates
+            .GroupBy(c => c.ProjectId)
+            .SelectMany(g => completed[g.Key].IsBackfilled
+                ? CompletedProjectDemandRules.SelectHistoricalForecastRows(g.Select(c => c.Row)).Select(row => (ProjectId: g.Key, Row: row))
+                : g.AsEnumerable());
 
         var totals = new Dictionary<(int MaterialId, string Unit, DateTime Month), PredictedTotal>();
-        foreach (var row in rows)
+        foreach (var (projectId, row) in selected)
         {
-            // A row with no unit of its own was forecast in the catalog
-            // Material's unit — same fallback ForecastService applies.
-            var rowUnit = string.IsNullOrWhiteSpace(row.Unit) ? row.MaterialUnit : row.Unit.Trim();
-            if (unit is not null && CompletedProjectDemandRules.NormalizeUnit(rowUnit) != CompletedProjectDemandRules.NormalizeUnit(unit))
-                continue;
-
-            var projectId = projectIdByRunId[row.ForecastResultId];
-            var key = (row.MaterialId, CompletedProjectDemandRules.NormalizeUnit(rowUnit),
+            var key = (row.MaterialId, CompletedProjectDemandRules.NormalizeUnit(row.Unit),
                 CompletedProjectDemandRules.ToMonth(completed[projectId].CompletedAt));
             if (!totals.TryGetValue(key, out var total))
-                totals[key] = total = new PredictedTotal { MaterialName = row.MaterialName, Unit = rowUnit };
-            total.Quantity += row.ForecastedQuantity;
+                totals[key] = total = new PredictedTotal { MaterialName = materialNames[row.MaterialId], Unit = row.Unit };
+            total.Quantity += row.Quantity;
             total.ProjectIds.Add(projectId);
         }
         return totals;
@@ -620,8 +643,9 @@ public class BOQService(AppDbContext db) : IBOQService
     // every material if none is selected), completed projects only. Actual
     // Usage is a monthly TOTAL (sum, not average) of every completed
     // project's BOQ lines whose completion month falls in that bucket; AI
-    // Predicted is the monthly total of those same projects' pre-completion
-    // forecasts for the same material+unit. Either side is null — never
+    // Predicted is the monthly total of those same projects' forecasts for
+    // the same material+unit (see GetMonthlyPredictedTotalsAsync for which
+    // forecasts count). Either side is null — never
     // zero — when nothing that month has that figure.
     public async Task<IEnumerable<MonthlyDemandSummaryDto>> GetMonthlyDemandSummaryAsync(int userId, string role, int? materialId, string? unit)
     {

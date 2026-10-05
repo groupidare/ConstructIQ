@@ -114,7 +114,8 @@ public class HistoricalEstimateResponseDto
 // (whichever the record was actually logged against), or BOQItem.
 // ActualQuantity for lines with no record. AI Predicted is the real ML
 // model's own output (ForecastedMaterial.ForecastedQuantity) for those same
-// projects, from runs made before each project finished. Either side is null
+// projects: the original forecast for a project finished in the app, the
+// model's evaluation for a backfilled one. Either side is null
 // when nothing that month has that particular figure — never a fabricated
 // zero, and the frontend must render this as a gap, not interpolate across it.
 public class MonthlyDemandSummaryDto

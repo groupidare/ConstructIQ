@@ -1,6 +1,7 @@
 using ConstructIQ.API.Algorithms;
 using Xunit;
 using Run = ConstructIQ.API.Algorithms.CompletedProjectDemandRules.ForecastRun;
+using Row = ConstructIQ.API.Algorithms.CompletedProjectDemandRules.ForecastRow;
 
 namespace ConstructIQ.Tests;
 
@@ -81,6 +82,44 @@ public class CompletedProjectDemandRulesTests
     {
         var runs = new[] { new Run(1, null, new DateTime(2026, 8, 1)) };
         Assert.Empty(CompletedProjectDemandRules.SelectForecastRuns(runs, Completion));
+    }
+
+    [Fact]
+    public void SelectHistoricalForecastRows_RealRunsIgnoreDate_LatestRunPerMaterialWins()
+    {
+        var rows = new[]
+        {
+            new Row(1, new DateTime(2026, 9, 1),  false, 10, "sq.m", 80),
+            new Row(2, new DateTime(2026, 10, 1), false, 10, "sq.m", 90), // latest run covering material 10
+            new Row(1, new DateTime(2026, 9, 1),  false, 11, "bag",  40), // only run 1 covers material 11
+        };
+        var selected = CompletedProjectDemandRules.SelectHistoricalForecastRows(rows);
+        Assert.Equal(2, selected.Count);
+        Assert.Contains(selected, r => r.MaterialId == 10 && r.Quantity == 90);
+        Assert.Contains(selected, r => r.MaterialId == 11 && r.Quantity == 40);
+    }
+
+    [Fact]
+    public void SelectHistoricalForecastRows_SeededOnly_SumsEveryLine()
+    {
+        var rows = new[]
+        {
+            new Row(1, new DateTime(2025, 3, 15), true, 10, "sq.m", 30),
+            new Row(2, new DateTime(2025, 5, 15), true, 10, "sq.m", 20),
+        };
+        Assert.Equal(50, CompletedProjectDemandRules.SelectHistoricalForecastRows(rows).Sum(r => r.Quantity));
+    }
+
+    [Fact]
+    public void SelectHistoricalForecastRows_RealRunBeatsSeeded()
+    {
+        var rows = new[]
+        {
+            new Row(1, new DateTime(2025, 3, 15), true,  10, "sq.m", 30),
+            new Row(2, new DateTime(2024, 1, 1),  false, 10, "SQ.M ", 70),
+        };
+        var selected = CompletedProjectDemandRules.SelectHistoricalForecastRows(rows);
+        Assert.Equal(70, Assert.Single(selected).Quantity);
     }
 
     [Theory]

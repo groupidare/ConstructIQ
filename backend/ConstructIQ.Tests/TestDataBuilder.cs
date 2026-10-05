@@ -98,9 +98,9 @@ public static class TestDataBuilder
         return record;
     }
 
-    public static async Task<ForecastResult> CreateForecastResultAsync(AppDbContext db, int projectId, DateTime generatedAt, int? phaseId = null)
+    public static async Task<ForecastResult> CreateForecastResultAsync(AppDbContext db, int projectId, DateTime generatedAt, int? phaseId = null, string? notes = null)
     {
-        var result = new ForecastResult { ProjectId = projectId, PhaseId = phaseId, Period = ForecastPeriod.Monthly, GeneratedAt = generatedAt };
+        var result = new ForecastResult { ProjectId = projectId, PhaseId = phaseId, Period = ForecastPeriod.Monthly, GeneratedAt = generatedAt, Notes = notes };
         db.ForecastResults.Add(result);
         await db.SaveChangesAsync();
         return result;

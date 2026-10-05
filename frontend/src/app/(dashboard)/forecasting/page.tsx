@@ -149,7 +149,7 @@ export default function ForecastingPage() {
                 <span style={{ fontWeight: 700, fontSize: "1rem" }}>AI Material Demand Forecast</span>
               </div>
               <p style={{ color: "#9ca3af", fontSize: "0.72rem", marginTop: 3 }}>
-                AI Predicted uses forecasts made before each project finished.
+                Completed projects demand over time: compares Actual Usage against original AI forecasts (live projects) and model evaluations (historical projects).
               </p>
             </div>
             {materials.length > 0 && (
