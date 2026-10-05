@@ -250,12 +250,16 @@ export default function MaterialPlanTab({
     [rows],
   );
 
-  // Same ranking, but over every saved BOQ row (not just the single top one) —
-  // feeds the historical-only "Materials by Demand" list below.
+  // Every saved BOQ row (not just the single top one), ranked by what was
+  // actually purchased for it — feeds the historical-only "Materials by
+  // Demand" list below. Its quantity/unit are the row's purchase-order
+  // quantity/unit (EstimatedPurchaseQuantity/Unit, set server-side from its
+  // PO lines — e.g. 2,368 pcs), never the BOQ area measure (130 sq.m). Rows
+  // with no single-unit PO total have no purchase quantity and sort last.
   const rowsByDemand = useMemo(() => {
     if (!isHistorical) return [];
-    const effectiveQty = (r: BOQItemRow) => ((r.actualQuantity ?? 0) > 0 ? (r.actualQuantity as number) : r.estimatedQuantity);
-    return linkableBoqRows.slice().sort((a, b) => effectiveQty(b) - effectiveQty(a));
+    const purchaseQty = (r: BOQItemRow) => (r.estimatedPurchaseUnit?.trim() ? (r.estimatedPurchaseQuantity ?? -1) : -1);
+    return linkableBoqRows.slice().sort((a, b) => purchaseQty(b) - purchaseQty(a));
   }, [isHistorical, linkableBoqRows]);
 
   // Totals by unit — rows mix incompatible units (sq.m, pc, l.m, set...), so a
@@ -995,13 +999,13 @@ export default function MaterialPlanTab({
 
       {/* Historical projects have no Purchase Orders to reconcile against (that
           section is hidden for them above) — instead, rank the BOQ itself by
-          demand, using the same effective-qty rule as the project card and
-          the Forecasted Material Demand panel above. */}
+          what was purchased for each row, in its purchase-order unit (see
+          rowsByDemand). */}
       {isCompleted && isHistorical && (
         <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', marginTop: '1.5rem' }}>
           <div style={{ padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
             <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>Materials by Demand</p>
-            <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>Every material in the uploaded BOQ, ranked by demand/usage (highest first).</p>
+            <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>Every material in the uploaded BOQ, ranked by purchased quantity (highest first), in its purchase order unit.</p>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2fr) minmax(0,1fr) minmax(0,0.8fr)', gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
@@ -1014,12 +1018,16 @@ export default function MaterialPlanTab({
             <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>Save the Bill of Quantities above first.</p>
           ) : (
             rowsByDemand.map(r => {
-              const qty = (r.actualQuantity ?? 0) > 0 ? r.actualQuantity : r.estimatedQuantity;
+              // Purchase-order quantity/unit only — no PO unit means no
+              // purchase quantity to show either ("—" / "N/A"), rather than
+              // falling back to the BOQ area figure under a misleading unit.
+              const purchaseUnit = r.estimatedPurchaseUnit?.trim();
+              const qty = purchaseUnit ? r.estimatedPurchaseQuantity : undefined;
               return (
                 <div key={r.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2fr) minmax(0,1fr) minmax(0,0.8fr)', gap: 4, padding: '7px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center' }}>
                   <span style={{ fontSize: '0.76rem', color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{materialLabel(r)}</span>
-                  <span style={{ fontSize: '0.76rem', fontWeight: 600, color: '#111827' }}>{qty?.toLocaleString()}</span>
-                  <span style={{ fontSize: '0.76rem', color: '#6b7280' }}>{r.unit}</span>
+                  <span style={{ fontSize: '0.76rem', fontWeight: 600, color: qty != null ? '#111827' : '#d1d5db' }}>{qty != null ? qty.toLocaleString() : '—'}</span>
+                  <span style={{ fontSize: '0.76rem', color: purchaseUnit ? '#6b7280' : '#d1d5db' }}>{purchaseUnit || 'N/A'}</span>
                 </div>
               );
             })
