@@ -19,6 +19,12 @@ public class RedistributionController(IRedistributionService redistributionServi
     public async Task<IActionResult> GetRecommendations() =>
         Ok(await redistributionService.GetRecommendationsAsync());
 
+    // Full history (includes Completed/Rejected) for reporting — the base
+    // GET above stays active-only for the live Redistribution page.
+    [HttpGet("history")]
+    public async Task<IActionResult> GetAllRecommendations() =>
+        Ok(await redistributionService.GetAllRecommendationsAsync());
+
     // Regenerating the suggestion list and acting on it (approve/reject/
     // cancel/create) are all real "manage" actions — ProjectManager's
     // Redistribution access is view-only, so only Admin/WarehousePersonnel

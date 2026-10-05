@@ -5,12 +5,17 @@ import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
 import api from "@/lib/api";
 import { useWeatherStore } from "@/store/weatherStore";
+import { useAuthStore } from "@/store/authStore";
+import { formatDate } from "@/lib/utils";
+import type { ReportTable } from "@/lib/reportTables";
+import { buildProcurementSummaryTable } from "@/lib/reportTables";
 import type { Project } from "@/types/project";
 import type { WarehouseStockItem } from "@/types/warehouseStock";
 import type { WarehouseRequest } from "@/types/warehouseRequest";
 import type { ExcessWasteRecord } from "@/types/excess";
-import type { ForecastResult, RiskLevel } from "@/types/forecast";
+import type { ForecastResult, RiskLevel, ForecastAccuracyReport } from "@/types/forecast";
 import type { RedistributionRecommendation, RedistributionStatus } from "@/types/procurement";
+import type { PurchaseOrder } from "@/types/purchaseOrder";
 import {
   LayoutDashboard, TrendingUp, Package, ShoppingCart,
   Trash2, FolderKanban, Network,
@@ -41,6 +46,16 @@ const REPORTS: Report[] = [
   { id: "system",      title: "System Overview",   desc: "Cross-system snapshot — projects, stock, orders, weather",    icon: LayoutDashboard, category: "Overview"   },
 ];
 
+// Mirrors the shape returned by GET /v1/activity-logs (see
+// components/auth/ActivityLogView.tsx) — only the fields this report uses.
+interface ActivityLog {
+  id: number;
+  userDisplay: string;
+  action: string;
+  details?: string;
+  createdAt: string;
+}
+
 // ── Per-report view data (computed live from real API data) ─────────────────
 
 interface ReportViewData {
@@ -51,6 +66,10 @@ interface ReportViewData {
   healthTitle: string;
   health: { label: string; pct: string; color: string }[];
   aiInsight: string;
+  // Full underlying detail — the actual lists/records behind the summary
+  // stats above, not just aggregates. Rendered as real tables in both the
+  // View modal and the exported PDF.
+  detailTables: { title: string; table: ReportTable }[];
 }
 
 function pct(count: number, total: number): number {
@@ -62,7 +81,12 @@ function avg(nums: number[]): number {
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
-
+// Material/money quantities are always whole units in practice in this
+// system (see BOQService.cs, forecasting_service.py) — a display-layer
+// backstop, same convention lib/reportTables.ts already uses.
+function num(n: number | undefined | null): number {
+  return Math.round(n ?? 0);
+}
 const PROJECT_STATUS_COLORS: Record<string, string> = {
   Active: "#22c55e", Planning: "#f97316", OnHold: "#f59e0b", Completed: "#9ca3af", Cancelled: "#ef4444",
 };
@@ -75,6 +99,19 @@ function buildProjectsData(projects: Project[]): ReportViewData {
   const allPhases = real.flatMap(p => p.phases);
   const avgProgress = avg(allPhases.map(ph => ph.progressPercent));
   const active = byStatus.get("Active") ?? 0;
+
+  // Every project, including historical ones (flagged) — the report is
+  // meant to be a comprehensive record, not just the live board.
+  const projectsTable: ReportTable = {
+    columns: ["Name", "Type", "Status", "Progress %", "Location", "Project Manager", "Site Engineer/PIC", "Start Date", "Target End Date", "Historical"],
+    rows: projects.map(p => [
+      p.name, p.type, p.status,
+      `${num(avg(p.phases.map(ph => ph.progressPercent)))}%`,
+      p.location, p.projectManagerName, p.siteEngineerName ?? "—",
+      formatDate(p.startDate), formatDate(p.targetEndDate),
+      p.isHistorical ? "Yes" : "No",
+    ]),
+  };
 
   return {
     subtitle: `${real.length} project(s) tracked`,
@@ -92,6 +129,7 @@ function buildProjectsData(projects: Project[]): ReportViewData {
     aiInsight: real.length === 0
       ? "No projects tracked yet — create a project to start seeing real progress data here."
       : `${active} of ${real.length} project(s) are active, averaging ${avgProgress.toFixed(0)}% phase completion.`,
+    detailTables: [{ title: "All Projects", table: projectsTable }],
   };
 }
 
@@ -100,6 +138,19 @@ function buildInventoryData(items: WarehouseStockItem[], requests: WarehouseRequ
   const pendingRequests = requests.filter(r => r.status === "Pending").length;
   const lastSynced = items.length > 0 ? items[0].syncedAt : null;
   const topItems = [...items].sort((a, b) => b.balance - a.balance).slice(0, 8);
+
+  const stockTable: ReportTable = {
+    columns: ["Material", "Unit", "Balance", "Last Synced"],
+    rows: items.map(i => [i.materialName, i.unit, num(i.balance), i.syncedAt ? formatDate(i.syncedAt) : "—"]),
+  };
+  const requestsTable: ReportTable = {
+    columns: ["Project", "Material", "Requested Qty", "Approved Qty", "Status", "Requested By", "Approved By"],
+    rows: requests.map(r => [
+      r.projectName, r.materialName, num(r.requestedQuantity),
+      r.approvedQuantity != null ? num(r.approvedQuantity) : "—",
+      r.status, r.requestedBy, r.approvedBy ?? "—",
+    ]),
+  };
 
   return {
     subtitle: lastSynced ? `Last synced ${new Date(lastSynced).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" })}` : "Not synced yet",
@@ -118,25 +169,57 @@ function buildInventoryData(items: WarehouseStockItem[], requests: WarehouseRequ
     aiInsight: items.length === 0
       ? "No warehouse stock data yet — sync the warehouse sheet from the Inventory page."
       : `${zeroStock} item(s) are at zero balance and may need reordering. ${pendingRequests} warehouse request(s) are awaiting approval.`,
+    detailTables: [
+      { title: "Full Warehouse Stock", table: stockTable },
+      { title: "Warehouse Requests", table: requestsTable },
+    ],
   };
 }
 
 const RISK_COLORS: Record<RiskLevel, string> = { Low: "#22c55e", Medium: "#f59e0b", High: "#f97316", Critical: "#ef4444" };
 
-function buildForecastingData(forecasts: ForecastResult[]): ReportViewData {
+function buildForecastingData(
+  forecasts: ForecastResult[],
+  accuracyReports: ForecastAccuracyReport[],
+  projects: Project[],
+): ReportViewData {
   const materials = forecasts.flatMap(f => f.forecastedMaterials);
   const riskCounts = new Map<RiskLevel, number>([["Low", 0], ["Medium", 0], ["High", 0], ["Critical", 0]]);
   for (const m of materials) riskCounts.set(m.riskLevel, (riskCounts.get(m.riskLevel) ?? 0) + 1);
   const shortageRisks = (riskCounts.get("High") ?? 0) + (riskCounts.get("Critical") ?? 0);
-  const accuracies = forecasts.map(f => f.modelAccuracy).filter((a): a is number => a != null);
-  const avgAccuracy = accuracies.length > 0 ? avg(accuracies) : null;
+
+  // Real accuracy, not the forecast run's own ModelAccuracy field (the
+  // ml-service never sets it) — /forecast/accuracy/{id} compares each
+  // confirmed-actual BOQ row against the project's forecast directly.
+  // Only projects with at least one confirmed comparison count toward the
+  // average; a project with a forecast but no confirmed usage yet
+  // contributes nothing (there's genuinely nothing to score it against).
+  const withComparisons = accuracyReports.filter(a => a.comparisons.length > 0);
+  const avgAccuracy = withComparisons.length > 0 ? avg(withComparisons.map(a => a.overallAccuracy)) : null;
+
+  const projectName = (id: number) => projects.find(p => p.id === id)?.name ?? `Project #${id}`;
+
+  const comparisonTable: ReportTable = {
+    columns: ["Project", "Material", "Forecasted Qty", "Actual Qty", "Variance", "Variance %", "Accuracy %"],
+    rows: withComparisons.flatMap(a => a.comparisons.map(c => [
+      a.projectName, c.materialName, num(c.forecastedQuantity), num(c.actualQuantity),
+      num(c.variance), `${num(c.variancePercent)}%`, `${num(c.accuracyPercent)}%`,
+    ])),
+  };
+  const forecastDetailTable: ReportTable = {
+    columns: ["Project", "Material", "Forecasted Qty", "Current Stock", "Shortage", "Risk Level", "Reorder Suggestion"],
+    rows: forecasts.flatMap(f => f.forecastedMaterials.map(m => [
+      projectName(f.projectId), m.materialName, num(m.forecastedQuantity), num(m.currentStock),
+      num(m.shortage), m.riskLevel, num(m.reorderSuggestion),
+    ])),
+  };
 
   return {
     subtitle: `${forecasts.length} project forecast(s) · most recent run per project`,
     stats: [
       { label: "PROJECTS FORECASTED", value: String(forecasts.length), sub: "Most recent run each" },
       { label: "SHORTAGE RISKS",      value: String(shortageRisks),    sub: "High + Critical materials" },
-      { label: "MODEL ACCURACY",      value: avgAccuracy != null ? `${avgAccuracy.toFixed(1)}%` : "—", sub: avgAccuracy != null ? "Avg across forecasts" : "No accuracy data yet" },
+      { label: "MODEL ACCURACY",      value: avgAccuracy != null ? `${avgAccuracy.toFixed(1)}%` : "—", sub: avgAccuracy != null ? `Avg across ${withComparisons.length} project(s) with confirmed usage` : "No confirmed actual usage yet to score against" },
     ],
     chartTitle: "Forecasted Materials by Risk Level",
     chartData: Array.from(riskCounts.entries()).map(([name, value]) => ({ name, value })),
@@ -147,6 +230,10 @@ function buildForecastingData(forecasts: ForecastResult[]): ReportViewData {
     aiInsight: forecasts.length === 0
       ? "No forecasts have been generated yet — run a forecast from a project's Material Plan tab."
       : `${shortageRisks} material(s) across ${forecasts.length} project(s) are at High or Critical shortage risk and may need reordering soon.`,
+    detailTables: [
+      { title: "Predicted vs. Actual Usage", table: comparisonTable },
+      { title: "Current Forecast Detail", table: forecastDetailTable },
+    ],
   };
 }
 
@@ -173,6 +260,20 @@ function buildExcessData(records: ExcessWasteRecord[]): ReportViewData {
   const byType = new Map<string, number>();
   for (const r of records) byType.set(r.excessType, (byType.get(r.excessType) ?? 0) + 1);
 
+  // Excess (reusable surplus) first, highest-impact first — waste
+  // (non-reusable) still included, just lower priority in the ordering.
+  const excessTable: ReportTable = {
+    columns: ["Project", "Material", "Type", "Quantity", "Unit", "Excess %", "Reusable", "Redistribution", "Recorded By", "Recorded At"],
+    rows: [...records]
+      .sort((a, b) => Number(b.isReusable) - Number(a.isReusable) || b.excessPercent - a.excessPercent)
+      .map(r => [
+        r.projectName, r.materialName, r.excessType, num(r.quantity), r.unit,
+        `${num(r.excessPercent)}%`,
+        r.isReusable ? "Yes" : "No", r.redistributionStatus ?? "—",
+        r.recordedBy, formatDate(r.recordedAt),
+      ]),
+  };
+
   return {
     subtitle: `${records.length} excess/waste record(s) across ${byProject.size} project(s)`,
     stats: [
@@ -189,6 +290,7 @@ function buildExcessData(records: ExcessWasteRecord[]): ReportViewData {
     aiInsight: records.length === 0
       ? "No excess or waste has been recorded yet."
       : `Waste rate is running at ${totalWasteRate.toFixed(1)}%. ${reusableMaterialsCount} distinct material(s) are flagged reusable and are good redistribution candidates.`,
+    detailTables: [{ title: "Excess & Waste Records (excess prioritized)", table: excessTable }],
   };
 }
 
@@ -197,6 +299,8 @@ const REDISTRIBUTION_APPROVABLE: RedistributionStatus[] = ["AiSuggested", "Pendi
 const PRIORITY_COLORS: Record<string, string> = { Low: "#22c55e", Medium: "#f59e0b", High: "#ef4444" };
 
 function buildRedistributionData(items: RedistributionRecommendation[]): ReportViewData {
+  // items here is the FULL history (see /redistribution/history) — includes
+  // Completed and Rejected, which the live Redistribution page never shows.
   const active = items.filter(r => REDISTRIBUTION_ACTIVE.includes(r.status));
   const approvable = items.filter(r => REDISTRIBUTION_APPROVABLE.includes(r.status));
   const deadStockCount = new Set(items.map(r => `${r.sourceProjectId}-${r.sourceMaterialId}`)).size;
@@ -205,6 +309,15 @@ function buildRedistributionData(items: RedistributionRecommendation[]): ReportV
   for (const r of items) byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
   const byPriority = new Map<string, number>([["Low", 0], ["Medium", 0], ["High", 0]]);
   for (const r of items) byPriority.set(r.priority, (byPriority.get(r.priority) ?? 0) + 1);
+
+  const redisTable: ReportTable = {
+    columns: ["Material", "Source Project", "Target Project", "Available Qty", "Needed Qty", "Transfer Qty", "Priority", "Status", "AI-Recommended", "Generated At"],
+    rows: items.map(r => [
+      r.materialName, r.sourceProjectName, r.targetProjectName,
+      num(r.availableQuantity), num(r.neededQuantity), num(r.transferQuantity),
+      r.priority, r.status, r.isAiRecommended ? "Yes" : "No", formatDate(r.generatedAt),
+    ]),
+  };
 
   return {
     subtitle: `${items.length} recommendation(s) · ${deadStockCount} dead-stock item(s)`,
@@ -222,24 +335,32 @@ function buildRedistributionData(items: RedistributionRecommendation[]): ReportV
     aiInsight: items.length === 0
       ? "No redistribution opportunities detected yet."
       : `${approvable.length} recommendation(s) are awaiting approval across ${deadStockCount} dead-stock item(s).`,
+    detailTables: [{ title: "Redistribution Log — All Statuses", table: redisTable }],
   };
 }
 
-interface ApiPO { id: number; status: string; expectedDate: string; }
 interface ApiSupplier { id: number; name: string; rating: number; onTimePct: number; deliveries: number; }
 
-function poEffectiveStatus(po: ApiPO): string {
+function poEffectiveStatus(po: PurchaseOrder): string {
   if (po.status === "Delivered" || po.status === "DeliveryInProgress") return po.status;
   return new Date(po.expectedDate).getTime() < Date.now() ? "Delayed" : po.status;
 }
 function isPreferredSupplier(s: ApiSupplier): boolean {
   return s.deliveries > 0 && s.rating >= 4.5 && s.onTimePct >= 90;
 }
-const PO_STATUS_COLORS: Record<string, string> = {
-  Pending: "#b45309", Approved: "#15803d", DeliveryInProgress: "#4338ca", Delivered: "#374151", Delayed: "#dc2626",
-};
 
-function buildProcurementData(orders: ApiPO[], suppliers: ApiSupplier[]): ReportViewData {
+// Wide-open range so buildProcurementSummaryTable (lib/reportTables.ts,
+// already built for the per-project date-filtered report) includes every
+// order regardless of date instead of duplicating that builder here.
+const ALL_TIME_FROM = new Date(2000, 0, 1);
+const ALL_TIME_TO   = new Date(2100, 0, 1);
+
+function buildProcurementData(
+  orders: PurchaseOrder[],
+  suppliers: ApiSupplier[],
+  weatherRisk: string | null,
+  weatherAdvisory: string | null,
+): ReportViewData {
   const byStatus = new Map<string, number>([["Pending", 0], ["Approved", 0], ["DeliveryInProgress", 0], ["Delivered", 0], ["Delayed", 0]]);
   for (const po of orders) {
     const s = poEffectiveStatus(po);
@@ -248,6 +369,16 @@ function buildProcurementData(orders: ApiPO[], suppliers: ApiSupplier[]): Report
   const delayed = byStatus.get("Delayed") ?? 0;
   const avgOnTime = avg(suppliers.map(s => s.onTimePct));
   const preferredCount = suppliers.filter(isPreferredSupplier).length;
+
+  const poTable = buildProcurementSummaryTable(orders, ALL_TIME_FROM, ALL_TIME_TO);
+  const supplierTable: ReportTable = {
+    columns: ["Supplier", "Rating", "On-Time %", "Deliveries", "Preferred"],
+    rows: suppliers.map(s => [s.name, s.rating.toFixed(1), `${num(s.onTimePct)}%`, s.deliveries, isPreferredSupplier(s) ? "Yes" : "No"]),
+  };
+
+  const weatherNote = weatherAdvisory
+    ? ` Current weather conditions (${weatherRisk ?? "unknown"} risk): ${weatherAdvisory} — factor this into supplier lead-time expectations on top of each supplier's own on-time history below.`
+    : "";
 
   return {
     subtitle: `${orders.length} purchase order(s) · ${suppliers.length} supplier(s)`,
@@ -263,22 +394,51 @@ function buildProcurementData(orders: ApiPO[], suppliers: ApiSupplier[]): Report
       { label: "Preferred", pct: `${pct(preferredCount, suppliers.length)}%`, color: "#22c55e" },
       { label: "Active",    pct: `${pct(suppliers.length - preferredCount, suppliers.length)}%`, color: "#3b82f6" },
     ],
-    aiInsight: orders.length === 0
+    aiInsight: (orders.length === 0
       ? "No purchase orders yet."
-      : `${delayed} PO(s) are past their expected delivery date. ${preferredCount} of ${suppliers.length} supplier(s) qualify as Preferred (4.5+ rating, 90%+ on-time).`,
+      : `${delayed} PO(s) are past their expected delivery date. ${preferredCount} of ${suppliers.length} supplier(s) qualify as Preferred (4.5+ rating, 90%+ on-time).`) + weatherNote,
+    detailTables: [
+      { title: "Purchase Orders (by material line)", table: poTable },
+      { title: "Suppliers", table: supplierTable },
+    ],
   };
 }
 
 function buildSystemData(
-  projects: Project[], stockItems: WarehouseStockItem[], orders: ApiPO[],
+  projects: Project[], stockItems: WarehouseStockItem[], orders: PurchaseOrder[],
   redistribution: RedistributionRecommendation[], excessRecords: ExcessWasteRecord[],
   weatherRisk: string | null, weatherAdvisory: string | null,
+  activityLogs: ActivityLog[], isAdmin: boolean,
 ): ReportViewData {
   const real = projects.filter(p => !p.isHistorical);
   const active = real.filter(p => p.status === "Active").length;
   const zeroStock = stockItems.filter(i => i.balance <= 0).length;
   const activePOs = orders.filter(po => poEffectiveStatus(po) !== "Delivered").length;
   const activeRedistribution = redistribution.filter(r => REDISTRIBUTION_ACTIVE.includes(r.status)).length;
+
+  const summaryTable: ReportTable = {
+    columns: ["Domain", "Key Metric", "Value"],
+    rows: [
+      ["Projects", "Active", String(active)],
+      ["Projects", "Total Tracked", String(real.length)],
+      ["Inventory", "Zero-Stock Items", String(zeroStock)],
+      ["Procurement", "Open Purchase Orders", String(activePOs)],
+      ["Excess Analytics", "Records Logged", String(excessRecords.length)],
+      ["Redistribution", "Active Opportunities", String(activeRedistribution)],
+      ["Weather", "Current Risk", weatherRisk ?? "—"],
+    ],
+  };
+  const activityTable: ReportTable = isAdmin
+    ? {
+        columns: ["Time", "User", "Action", "Details"],
+        rows: activityLogs.length > 0
+          ? activityLogs.map(l => [formatDate(l.createdAt), l.userDisplay, l.action, l.details ?? "—"])
+          : [["—", "—", "No activity recorded yet", "—"]],
+      }
+    : {
+        columns: ["Note"],
+        rows: [["Activity logs are only included in this report when generated by a System Administrator."]],
+      };
 
   return {
     subtitle: "Live cross-system snapshot",
@@ -304,6 +464,10 @@ function buildSystemData(
     aiInsight: weatherAdvisory
       ? `${weatherAdvisory} ${activePOs} purchase order(s) are still open and ${zeroStock} stock item(s) are at zero balance.`
       : `${active} of ${real.length} project(s) are active. ${activePOs} purchase order(s) are still open and ${zeroStock} stock item(s) are at zero balance.`,
+    detailTables: [
+      { title: "Cross-System Summary", table: summaryTable },
+      { title: "Recent Activity Log (latest 100)", table: activityTable },
+    ],
   };
 }
 
@@ -318,7 +482,7 @@ function esc(value: string | number): string {
   return String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
-function generatePDF(report: Report, data: ReportViewData) {
+function generatePDF(report: Report, data: ReportViewData, userName: string) {
   const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -339,9 +503,13 @@ function generatePDF(report: Report, data: ReportViewData) {
     .section { margin-bottom:20px; }
     .section-title { font-size:13px; font-weight:700; color:#374151; margin-bottom:12px; }
     .health-row { display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid #f3f4f6; font-size:12px; }
-    .ai-box { background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:14px; margin-top:24px; font-size:12px; color:#92400e; line-height:1.6; }
+    .ai-box { background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:14px; margin-top:24px; margin-bottom:24px; font-size:12px; color:#92400e; line-height:1.6; }
+    .detail-table { width:100%; border-collapse:collapse; font-size:10px; }
+    .detail-table th { background:#f9fafb; text-align:left; padding:6px 8px; border-bottom:2px solid #e5e7eb; color:#374151; white-space:nowrap; }
+    .detail-table td { padding:5px 8px; border-bottom:1px solid #f3f4f6; color:#374151; }
+    .detail-table tr { page-break-inside:avoid; }
     .footer { margin-top:32px; padding-top:12px; border-top:1px solid #e5e7eb; font-size:11px; color:#9ca3af; display:flex; justify-content:space-between; }
-    @media print { body { padding:20px; } }
+    @media print { body { padding:20px; } .section { page-break-inside:auto; } }
   </style>
 </head>
 <body>
@@ -365,8 +533,18 @@ function generatePDF(report: Report, data: ReportViewData) {
   <div class="ai-box">
     <strong>⚡ Insight:</strong><br>${esc(data.aiInsight)}
   </div>
+  ${data.detailTables.map(dt => `
+  <div class="section">
+    <div class="section-title">${esc(dt.title)}</div>
+    <table class="detail-table">
+      <thead><tr>${dt.table.columns.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>
+      <tbody>${dt.table.rows.length > 0
+        ? dt.table.rows.map(row => `<tr>${row.map(v => `<td>${esc(v)}</td>`).join("")}</tr>`).join("")
+        : `<tr><td colspan="${dt.table.columns.length}">No data available.</td></tr>`}</tbody>
+    </table>
+  </div>`).join("")}
   <div class="footer">
-    <span>Generated by ConstructIQ · ${new Date().toLocaleDateString("en-PH", { year:"numeric", month:"long", day:"numeric" })}</span>
+    <span>Generated by ${esc(userName)} · ${new Date().toLocaleDateString("en-PH", { year:"numeric", month:"long", day:"numeric" })}</span>
     <span>Confidential — For internal use only</span>
   </div>
 </body>
@@ -384,7 +562,7 @@ function generatePDF(report: Report, data: ReportViewData) {
 
 // ── Generate Report modal ─────────────────────────────────────────────────────
 
-function GenerateModal({ report, data, onClose }: { report: Report; data: ReportViewData; onClose: () => void }) {
+function GenerateModal({ report, data, userName, onClose }: { report: Report; data: ReportViewData; userName: string; onClose: () => void }) {
   const [format,    setFormat]    = useState(".PDF");
   const [generated, setGenerated] = useState(false);
 
@@ -396,7 +574,7 @@ function GenerateModal({ report, data, onClose }: { report: Report; data: Report
 
   function handleGenerate() {
     setGenerated(true);
-    setTimeout(() => { generatePDF(report, data); onClose(); }, 600);
+    setTimeout(() => { generatePDF(report, data, userName); onClose(); }, 600);
   }
 
   return (
@@ -414,7 +592,7 @@ function GenerateModal({ report, data, onClose }: { report: Report; data: Report
             </select>
           </div>
           <div style={{ background: "#f9fafb", borderRadius: 8, padding: "0.75rem 1rem" }}>
-            <p style={{ fontSize: "0.72rem", color: "#6b7280" }}>This will export the current live summary for {report.title} — the same numbers shown in the View panel.</p>
+            <p style={{ fontSize: "0.72rem", color: "#6b7280" }}>This will export the full {report.title} report — summary stats plus the complete underlying detail, attributed to you ({userName}).</p>
           </div>
         </div>
         <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end", marginTop: "1.5rem" }}>
@@ -428,12 +606,42 @@ function GenerateModal({ report, data, onClose }: { report: Report; data: Report
   );
 }
 
+// ── Shared detail-table renderer (View modal) ────────────────────────────────
+
+function DetailTableSection({ title, table }: { title: string; table: ReportTable }) {
+  return (
+    <div style={{ marginBottom: "1.25rem" }}>
+      <p style={{ fontSize: "0.8rem", fontWeight: 700, color: "#374151", marginBottom: "0.5rem" }}>{title}</p>
+      <div style={{ overflowX: "auto", border: "1px solid #e5e7eb", borderRadius: 8, maxHeight: 280, overflowY: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.72rem" }}>
+          <thead>
+            <tr>
+              {table.columns.map(c => (
+                <th key={c} style={{ textAlign: "left", padding: "6px 10px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb", color: "#6b7280", fontWeight: 600, whiteSpace: "nowrap", position: "sticky", top: 0 }}>{c}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {table.rows.length === 0 ? (
+              <tr><td colSpan={table.columns.length} style={{ padding: "10px 10px", color: "#d1d5db" }}>No data available.</td></tr>
+            ) : table.rows.map((row, i) => (
+              <tr key={i}>
+                {row.map((v, j) => <td key={j} style={{ padding: "6px 10px", borderTop: "1px solid #f3f4f6", color: "#374151", whiteSpace: "nowrap" }}>{v}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ── View Report modal ─────────────────────────────────────────────────────────
 
-function ViewModal({ report, data, lastUpdated, onClose }: { report: Report; data: ReportViewData; lastUpdated: Date | null; onClose: () => void }) {
+function ViewModal({ report, data, lastUpdated, userName, onClose }: { report: Report; data: ReportViewData; lastUpdated: Date | null; userName: string; onClose: () => void }) {
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "1rem" }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 640, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 780, maxWidth: "95vw", maxHeight: "90vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -446,7 +654,7 @@ function ViewModal({ report, data, lastUpdated, onClose }: { report: Report; dat
             </div>
           </div>
           <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-            <button onClick={() => generatePDF(report, data)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer" }}>
+            <button onClick={() => generatePDF(report, data, userName)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer" }}>
               <Download style={{ width: 13, height: 13 }} /> Export PDF
             </button>
             <button onClick={onClose} style={{ color: "#9ca3af", background: "none", border: "none", cursor: "pointer", padding: 4 }}><X style={{ width: 20, height: 20 }} /></button>
@@ -503,6 +711,9 @@ function ViewModal({ report, data, lastUpdated, onClose }: { report: Report; dat
           <p style={{ fontSize: "0.78rem", color: "#92400e", lineHeight: 1.5 }}>{data.aiInsight}</p>
         </div>
 
+        {/* Full detail */}
+        {data.detailTables.map(dt => <DetailTableSection key={dt.title} title={dt.title} table={dt.table} />)}
+
         {/* Footer */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <p style={{ fontSize: "0.72rem", color: "#9ca3af" }}>
@@ -530,12 +741,17 @@ export default function ReportsPage() {
   const [stockItems, setStockItems] = useState<WarehouseStockItem[]>([]);
   const [warehouseRequests, setWarehouseRequests] = useState<WarehouseRequest[]>([]);
   const [redistribution, setRedistribution] = useState<RedistributionRecommendation[]>([]);
-  const [orders, setOrders] = useState<ApiPO[]>([]);
+  const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [suppliers, setSuppliers] = useState<ApiSupplier[]>([]);
   const [excessRecords, setExcessRecords] = useState<ExcessWasteRecord[]>([]);
   const [forecasts, setForecasts] = useState<ForecastResult[]>([]);
+  const [accuracyReports, setAccuracyReports] = useState<ForecastAccuracyReport[]>([]);
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
 
   const risk = useWeatherStore(s => s.risk);
+  const user = useAuthStore(s => s.user);
+  const isAdmin = user?.role === "Admin";
+  const userName = user ? `${user.firstName} ${user.lastName}`.trim() : "ConstructIQ System";
 
   useEffect(() => {
     async function loadAll() {
@@ -545,8 +761,10 @@ export default function ReportsPage() {
           api.get<Project[]>("/projects"),
           api.get<WarehouseStockItem[]>("/warehouse-stock"),
           api.get<WarehouseRequest[]>("/warehouse-requests"),
-          api.get<RedistributionRecommendation[]>("/redistribution"),
-          api.get<ApiPO[]>("/purchase-orders"),
+          // Full history (incl. Completed/Rejected) — the live Redistribution
+          // page keeps using the active-only GET /redistribution elsewhere.
+          api.get<RedistributionRecommendation[]>("/redistribution/history"),
+          api.get<PurchaseOrder[]>("/purchase-orders"),
           api.get<ApiSupplier[]>("/suppliers"),
         ]);
         setProjects(projectsRes.data);
@@ -556,21 +774,39 @@ export default function ReportsPage() {
         setOrders(poRes.data);
         setSuppliers(supRes.data);
 
-        // Excess/waste and forecasts are recorded per project — pull each
-        // active (non-historical) project's data and flatten. Isolated in
-        // its own catch per project so one project with no data yet can't
-        // take down the whole report.
+        // Excess/waste, forecasts, and accuracy are all recorded per
+        // project — pull each active (non-historical) project's data and
+        // flatten. Isolated in its own catch per project so one project
+        // with no data yet can't take down the whole report.
         const activeProjects = projectsRes.data.filter(p => !p.isHistorical);
-        const [excessLists, forecastLists] = await Promise.all([
+        const [excessLists, forecastLists, accuracyLists] = await Promise.all([
           Promise.all(activeProjects.map(p =>
             api.get<ExcessWasteRecord[]>(`/excess-waste/project/${p.id}`).then(r => r.data).catch(() => []))),
           Promise.all(activeProjects.map(p =>
             // Most recent forecast run only (index 0 — backend returns newest first) so
             // stale historical runs don't skew the current risk/accuracy picture.
             api.get<ForecastResult[]>(`/forecast/project/${p.id}`).then(r => r.data.slice(0, 1)).catch(() => []))),
+          Promise.all(activeProjects.map(p =>
+            api.get<ForecastAccuracyReport>(`/forecast/accuracy/${p.id}`).then(r => r.data).catch(() => null))),
         ]);
         setExcessRecords(excessLists.flat());
         setForecasts(forecastLists.flat());
+        setAccuracyReports(accuracyLists.filter((a): a is ForecastAccuracyReport => a !== null));
+
+        // Admin-only, same gate as components/auth/ActivityLogView.tsx —
+        // skipped entirely for other roles rather than firing a call that
+        // would 403.
+        if (isAdmin) {
+          try {
+            const { data } = await api.get<{ items: ActivityLog[]; total: number }>("/v1/activity-logs", { params: { page: 1, pageSize: 100 } });
+            setActivityLogs(data.items);
+          } catch {
+            setActivityLogs([]);
+          }
+        } else {
+          setActivityLogs([]);
+        }
+
         setLastUpdated(new Date());
       } catch {
         toast.error("Failed to load report data.");
@@ -579,20 +815,21 @@ export default function ReportsPage() {
       }
     }
     loadAll();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin]);
 
   const REPORT_DATA = useMemo<Record<string, ReportViewData>>(() => ({
     projects: buildProjectsData(projects),
     inventory: buildInventoryData(stockItems, warehouseRequests),
-    forecasting: buildForecastingData(forecasts),
+    forecasting: buildForecastingData(forecasts, accuracyReports, projects),
     excess: buildExcessData(excessRecords),
     redistribution: buildRedistributionData(redistribution),
-    procurement: buildProcurementData(orders, suppliers),
+    procurement: buildProcurementData(orders, suppliers, risk?.level ?? null, risk?.advisory ?? null),
     system: buildSystemData(
       projects, stockItems, orders, redistribution, excessRecords,
-      risk?.level ?? null, risk?.advisory ?? null,
+      risk?.level ?? null, risk?.advisory ?? null, activityLogs, isAdmin,
     ),
-  }), [projects, stockItems, warehouseRequests, forecasts, excessRecords, redistribution, orders, suppliers, risk]);
+  }), [projects, stockItems, warehouseRequests, forecasts, accuracyReports, excessRecords, redistribution, orders, suppliers, risk, activityLogs, isAdmin]);
 
   const filtered = useMemo(() => REPORTS.filter(r => {
     const matchSearch   = r.title.toLowerCase().includes(search.toLowerCase()) || r.desc.toLowerCase().includes(search.toLowerCase());
@@ -615,8 +852,8 @@ export default function ReportsPage() {
 
   return (
     <div style={{ background: "#f5f4f0" }}>
-      {modal?.type === "view"     && <ViewModal     report={modal.report} data={REPORT_DATA[modal.report.id]} lastUpdated={lastUpdated} onClose={() => setModal(null)} />}
-      {modal?.type === "generate" && <GenerateModal report={modal.report} data={REPORT_DATA[modal.report.id]} onClose={() => setModal(null)} />}
+      {modal?.type === "view"     && <ViewModal     report={modal.report} data={REPORT_DATA[modal.report.id]} lastUpdated={lastUpdated} userName={userName} onClose={() => setModal(null)} />}
+      {modal?.type === "generate" && <GenerateModal report={modal.report} data={REPORT_DATA[modal.report.id]} userName={userName} onClose={() => setModal(null)} />}
 
       <Header title="Reports" />
 
@@ -672,7 +909,7 @@ export default function ReportsPage() {
                     <button disabled={loading} onClick={() => setModal({ type: "view", report })} style={{ ...btnOutline, opacity: loading ? 0.5 : 1, cursor: loading ? "default" : "pointer" }}>
                       <Eye style={{ width: 12, height: 12 }} /> View
                     </button>
-                    <button disabled={loading} onClick={() => generatePDF(report, REPORT_DATA[report.id])} style={{ ...btnOutline, opacity: loading ? 0.5 : 1, cursor: loading ? "default" : "pointer" }}>
+                    <button disabled={loading} onClick={() => generatePDF(report, REPORT_DATA[report.id], userName)} style={{ ...btnOutline, opacity: loading ? 0.5 : 1, cursor: loading ? "default" : "pointer" }}>
                       <Download style={{ width: 12, height: 12 }} /> PDF
                     </button>
                     <button disabled={loading} onClick={() => setModal({ type: "generate", report })} style={{ ...btnDark, opacity: loading ? 0.5 : 1, cursor: loading ? "default" : "pointer" }}>

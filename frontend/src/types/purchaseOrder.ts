@@ -1,4 +1,8 @@
-export type PurchaseOrderStatus = "Pending" | "Approved" | "Delivered";
+// Matches backend/ConstructIQ.API/Models/Entities/PurchaseOrder.cs's enum —
+// DeliveryInProgress (3) was missing here even though it's a real, reachable
+// status (see PurchaseOrderStatus enum's own comment on why it's out of
+// numeric order).
+export type PurchaseOrderStatus = "Pending" | "Approved" | "Delivered" | "DeliveryInProgress";
 
 export interface PurchaseOrderMaterial {
   id?: number;
