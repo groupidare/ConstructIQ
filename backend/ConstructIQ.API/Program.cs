@@ -91,10 +91,12 @@ builder.Services.AddHttpClient("OpenMeteoWeather", client =>
 });
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
+var frontendOrigins = (builder.Configuration["FRONTEND_URL"] ?? "http://localhost:3000")
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
 builder.Services.AddCors(opts =>
     opts.AddPolicy("FrontendPolicy", policy =>
-        policy.WithOrigins(
-                builder.Configuration["FRONTEND_URL"] ?? "http://localhost:3000")
+        policy.WithOrigins(frontendOrigins)
               .AllowAnyMethod()
               .AllowAnyHeader()
               .AllowCredentials()));
