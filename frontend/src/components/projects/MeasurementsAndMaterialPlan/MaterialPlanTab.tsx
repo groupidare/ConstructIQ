@@ -99,7 +99,7 @@ export default function MaterialPlanTab({
   // A completed project shows three quantity columns instead — the live
   // procurement columns (Purchase Unit, Est. Qty, Alerts) only make sense
   // while there's still something left to order:
-  //  - historical: Total Area/Qty (BOQ measure) / Material Quantity (what
+  //  - historical: Total Area (BOQ measure) / Material Quantity (what
   //    its PO lines actually bought) / Actual Quantity (typed, purchase unit)
   //  - completed through the app: Material Quantity (delivered) / Estimated
   //    Quantity (the row's own Est. Qty) / Actual Quantity (derived)
@@ -490,7 +490,7 @@ export default function MaterialPlanTab({
               <div style={{ overflowX: 'auto' }}>
                 <div style={{ minWidth: 760 }}>
                   <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.2fr 2fr 0.7fr 1fr', gap: 8, padding: '0.55rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-                    {['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA / QUANTITY'].map(h => <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>)}
+                    {['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA'].map(h => <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>)}
                   </div>
                   {rows.length === 0 ? <p style={{ padding: '1rem', fontSize: '0.78rem', color: '#9ca3af' }}>No BOQ rows extracted yet.</p> : rows.map((row, index) => (
                     <div key={`${row.id ?? 'new'}-${index}`} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.2fr 2fr 0.7fr 1fr', gap: 8, padding: '0.7rem 1rem', borderBottom: '1px solid #f3f4f6', alignItems: 'center' }}>
@@ -539,7 +539,7 @@ export default function MaterialPlanTab({
         <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
           {(isCompleted
             ? isHistorical
-              ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'TOTAL AREA/QTY', 'MATERIAL QUANTITY', 'ACTUAL QUANTITY']
+              ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'TOTAL AREA', 'MATERIAL QUANTITY', 'ACTUAL QUANTITY']
               : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'MATERIAL QUANTITY', 'ESTIMATED QUANTITY', 'ACTUAL QUANTITY']
             : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'UNIT', 'EST. QTY', 'ALERTS']
           ).map((h, idx) => (
@@ -644,28 +644,28 @@ export default function MaterialPlanTab({
                   {!isCompleted && (
                     <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   )}
-                  {/* Historical row: "Total Area/Qty" is the BOQ measurement
-                      (e.g. 130 sq.m of wall), still editable, with its unit;
-                      "Material Quantity" is what was actually bought for it
-                      (its PO lines' total, e.g. 2,368 pcs) — real recorded
-                      data, read-only, never an AI figure. There's no
+                  {/* Historical row: "Total Area" is the BOQ measurement
+                      (e.g. 130 sq.m of wall), still editable; "Material
+                      Quantity" is what was actually bought for it (its PO
+                      lines' total, e.g. 2,368 pcs) — real recorded data,
+                      always read-only, never an AI figure, shown in a box
+                      matching the Total Area input beside it. There's no
                       Estimated Quantity column: nothing about a project that
                       already happened is still an estimate. */}
                   {isCompleted && isHistorical && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', minWidth: 0 }} />
-                      <span style={{ fontSize: '0.7rem', color: '#6b7280', whiteSpace: 'nowrap' }}>{r.unit || ''}</span>
-                    </div>
+                    <input disabled={!editable} type="number" title={r.unit ? `Total area (${r.unit})` : 'Total area'} value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   )}
                   {isCompleted && isHistorical && (() => {
                     const purchase = historicalPurchase(r);
                     return (
-                      <span
+                      <input
+                        type="text"
+                        readOnly
+                        tabIndex={-1}
                         title={purchase ? 'Total of this row\'s purchase order lines' : 'No purchase order lines in a single unit for this row'}
-                        style={{ fontSize: '0.76rem', color: purchase ? '#374151' : '#d1d5db' }}
-                      >
-                        {purchase ? `${purchase.quantity.toLocaleString()} ${purchase.unit}` : '—'}
-                      </span>
+                        value={purchase ? `${purchase.quantity.toLocaleString()} ${purchase.unit}` : '—'}
+                        style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', background: '#f9fafb', color: purchase ? '#111827' : '#9ca3af', cursor: 'default' }}
+                      />
                     );
                   })()}
                   {/* Project completed through the app: "Material Quantity" is
