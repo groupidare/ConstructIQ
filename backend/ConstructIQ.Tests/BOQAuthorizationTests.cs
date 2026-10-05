@@ -7,7 +7,7 @@ namespace ConstructIQ.Tests;
 [Collection("Database")]
 public class BOQAuthorizationTests(DatabaseFixture fixture)
 {
-    // Case 18: a Site Engineer must only see reconciled data for projects
+    // Case 18: a Site Engineer must only see completed-project data for projects
     // they're actually assigned to — not every project in the system, which
     // is what GET /boq/monthly-demand-summary did before this rework.
     [Fact]
@@ -19,11 +19,11 @@ public class BOQAuthorizationTests(DatabaseFixture fixture)
         var otherSiteEngineer = await TestDataBuilder.CreateUserAsync(db, UserRole.SiteEngineer);
         var material = await TestDataBuilder.CreateMaterialAsync(db);
 
-        var ownProject = await TestDataBuilder.CreateProjectAsync(db, admin.Id, siteEngineerId: siteEngineer.Id);
+        var ownProject = await TestDataBuilder.CreateProjectAsync(db, admin.Id, status: ProjectStatus.Completed, siteEngineerId: siteEngineer.Id);
         var ownBoq = await TestDataBuilder.CreateBoqItemAsync(db, ownProject.Id, material.Id, admin.Id, estimatedQuantity: 100);
         await TestDataBuilder.CreateExcessWasteRecordAsync(db, ownProject.Id, material.Id, ownBoq.Id, admin.Id, 10, isReusable: true);
 
-        var otherProject = await TestDataBuilder.CreateProjectAsync(db, admin.Id, siteEngineerId: otherSiteEngineer.Id);
+        var otherProject = await TestDataBuilder.CreateProjectAsync(db, admin.Id, status: ProjectStatus.Completed, siteEngineerId: otherSiteEngineer.Id);
         var otherBoq = await TestDataBuilder.CreateBoqItemAsync(db, otherProject.Id, material.Id, admin.Id, estimatedQuantity: 200);
         await TestDataBuilder.CreateExcessWasteRecordAsync(db, otherProject.Id, material.Id, otherBoq.Id, admin.Id, 20, isReusable: true);
 
@@ -43,7 +43,7 @@ public class BOQAuthorizationTests(DatabaseFixture fixture)
         var siteEngineer = await TestDataBuilder.CreateUserAsync(db, UserRole.SiteEngineer);
         var material = await TestDataBuilder.CreateMaterialAsync(db);
 
-        var projectA = await TestDataBuilder.CreateProjectAsync(db, admin.Id, siteEngineerId: siteEngineer.Id);
+        var projectA = await TestDataBuilder.CreateProjectAsync(db, admin.Id, status: ProjectStatus.Completed, siteEngineerId: siteEngineer.Id);
         var boqA = await TestDataBuilder.CreateBoqItemAsync(db, projectA.Id, material.Id, admin.Id, estimatedQuantity: 100);
         await TestDataBuilder.CreateExcessWasteRecordAsync(db, projectA.Id, material.Id, boqA.Id, admin.Id, 10, isReusable: true);
 

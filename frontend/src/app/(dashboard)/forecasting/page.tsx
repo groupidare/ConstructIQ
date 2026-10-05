@@ -17,12 +17,18 @@ interface ChartPoint {
   monthLabel: string;
   actual?: number;
   predicted?: number;
-  status: "Provisional" | "Finalized" | null;
+  projectCount: number;
   contributingProjects: string[];
   estimatedTotal: number | null;
   excessTotal: number | null;
   wasteTotal: number | null;
 }
+
+// The tooltip follows the cursor, so nothing inside it can be clicked — a
+// show/hide toggle isn't reachable. The first few names plus a count keeps
+// the numbers below them in view even when dozens of projects finished in
+// the same month.
+const TOOLTIP_PROJECT_NAMES = 5;
 
 function ChartTooltip({ active, payload }: TooltipProps<number, string>) {
   if (!active || !payload?.length) return null;
@@ -33,25 +39,26 @@ function ChartTooltip({ active, payload }: TooltipProps<number, string>) {
         {label}: <strong>{value.toLocaleString()}</strong>
       </p>
     );
+  const shownNames = point.contributingProjects.slice(0, TOOLTIP_PROJECT_NAMES);
+  const hiddenCount = point.contributingProjects.length - shownNames.length;
   return (
     <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, padding: "0.75rem 0.9rem", fontSize: "0.75rem", maxWidth: 260, boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}>
-      <p style={{ fontWeight: 800, marginBottom: 6 }}>{point.monthLabel}</p>
-      {point.contributingProjects.length > 0 && (
-        <p style={{ color: "#9ca3af", marginBottom: 6, fontSize: "0.7rem" }}>{point.contributingProjects.join(", ")}</p>
+      <p style={{ fontWeight: 800, marginBottom: 2 }}>{point.monthLabel}</p>
+      {point.projectCount > 0 && (
+        <>
+          <p style={{ color: "#6b7280", fontWeight: 600, marginBottom: 2 }}>
+            {point.projectCount} project{point.projectCount > 1 ? "s" : ""}
+          </p>
+          <p style={{ color: "#9ca3af", marginBottom: 6, fontSize: "0.7rem" }}>
+            {shownNames.join(", ")}{hiddenCount > 0 && ` and ${hiddenCount} more`}
+          </p>
+        </>
       )}
       {row("Estimated", point.estimatedTotal)}
       {row("Excess", point.excessTotal)}
       {row("Waste", point.wasteTotal)}
       {row("Actual Usage", point.actual, "#374151")}
       {row("AI Predicted", point.predicted, "#f97316")}
-      {point.status && (
-        <span style={{
-          display: "inline-block", marginTop: 8, padding: "2px 8px", borderRadius: 999, fontSize: "0.62rem", fontWeight: 800, letterSpacing: "0.03em",
-          background: point.status === "Finalized" ? "#dcfce7" : "#fef3c7", color: point.status === "Finalized" ? "#15803d" : "#b45309",
-        }}>
-          {point.status.toUpperCase()}
-        </span>
-      )}
     </div>
   );
 }
@@ -114,8 +121,10 @@ export default function ForecastingPage() {
       month: year === prevYear ? m.monthLabel.split(" ")[0] : m.monthLabel,
       monthLabel: m.monthLabel,
       actual: m.actualUsage ?? undefined,
-      predicted: m.aiPredicted ?? undefined,
-      status: m.reconciliationStatus,
+      // Rounded up like every other forecast display — a material quantity
+      // isn't fractional, and rounding down would understate what's needed.
+      predicted: m.aiPredicted == null ? undefined : Math.ceil(m.aiPredicted),
+      projectCount: m.projectCount,
       contributingProjects: m.contributingProjects,
       estimatedTotal: m.estimatedTotal,
       excessTotal: m.excessTotal,
@@ -140,7 +149,7 @@ export default function ForecastingPage() {
                 <span style={{ fontWeight: 700, fontSize: "1rem" }}>AI Material Demand Forecast</span>
               </div>
               <p style={{ color: "#9ca3af", fontSize: "0.72rem", marginTop: 3 }}>
-                Actual Usage is calculated from reconciled Excess/Waste records; AI Predicted is the forecasting model&apos;s own output — never the same figure.
+                Completed projects demand over time: compares Actual Usage against original AI forecasts (live projects) and model evaluations (historical projects).
               </p>
             </div>
             {materials.length > 0 && (
@@ -198,11 +207,11 @@ export default function ForecastingPage() {
             <p style={{ fontSize: "0.82rem", color: "#b91c1c", padding: "2rem 0", textAlign: "center" }}>{error}</p>
           ) : materials.length === 0 ? (
             <p style={{ fontSize: "0.82rem", color: "#9ca3af", padding: "2rem 0", textAlign: "center" }}>
-              No reconciled excess/waste data yet — record Excess or Waste against a BOQ item to see this chart.
+              No completed-project data yet — projects appear on this chart once they&apos;re completed.
             </p>
           ) : chartData.length === 0 ? (
             <p style={{ fontSize: "0.82rem", color: "#9ca3af", padding: "2rem 0", textAlign: "center" }}>
-              No reconciled data for {selectedMaterial?.materialName ?? "this material"} yet.
+              No completed-project data for {selectedMaterial?.materialName ?? "this material"} yet.
             </p>
           ) : (
             <ResponsiveContainer width="100%" height={340}>
@@ -212,11 +221,10 @@ export default function ForecastingPage() {
                 <YAxis tick={{ fontSize: 12, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
                 <Tooltip content={<ChartTooltip />} />
                 <Legend iconType="plainline" wrapperStyle={{ fontSize: "0.78rem", paddingTop: 16 }} />
-                {/* connectNulls intentionally omitted (defaults to false) — a
-                    missing month must render as a real gap, never bridged as
-                    if data existed. */}
-                <Line type="monotone" dataKey="actual"    name="Actual Usage" stroke="#374151" strokeWidth={2.5} dot={{ r: 4, fill: "#374151" }} />
-                <Line type="monotone" dataKey="predicted" name="AI Predicted" stroke="#f97316" strokeWidth={2.5} dot={{ r: 4, fill: "#f97316" }} />
+                {/* connectNulls={false} — a missing month must render as a
+                    real gap, never bridged as if data existed. */}
+                <Line type="monotone" dataKey="actual"    name="Actual Usage" stroke="#374151" strokeWidth={2.5} dot={{ r: 4, fill: "#374151" }} connectNulls={false} />
+                <Line type="monotone" dataKey="predicted" name="AI Predicted" stroke="#f97316" strokeWidth={2.5} dot={{ r: 4, fill: "#f97316" }} connectNulls={false} />
               </LineChart>
             </ResponsiveContainer>
           )}

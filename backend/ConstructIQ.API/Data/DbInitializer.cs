@@ -189,8 +189,9 @@ public static class DbInitializer
         now.AddMinutes(-Rng.NextDouble() * days * 24 * 60);
 
     // Marks a ForecastResult as one this seeder created, so a re-run can tell
-    // synthetic rows apart from anything a real Generate Forecast click made.
-    private const string ForecastSeedMarker = "Seeded historical forecast aligned to reconciled Excess/Waste data.";
+    // synthetic rows apart from anything a real Generate Forecast click made
+    // (BOQService relies on this too — see GetMonthlyPredictedTotalsAsync).
+    public const string ForecastSeedMarker = "Seeded historical forecast aligned to reconciled Excess/Waste data.";
 
     // Backfills ForecastResult/ForecastedMaterial rows so the Forecasting
     // chart's "AI Predicted" line has more than the single point real forecast

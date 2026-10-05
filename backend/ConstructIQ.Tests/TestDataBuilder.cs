@@ -23,7 +23,8 @@ public static class TestDataBuilder
     }
 
     public static async Task<Project> CreateProjectAsync(AppDbContext db, int projectManagerId,
-        DateTime? startDate = null, ProjectStatus status = ProjectStatus.Active, bool isHistorical = false, int? siteEngineerId = null)
+        DateTime? startDate = null, ProjectStatus status = ProjectStatus.Active, bool isHistorical = false, int? siteEngineerId = null,
+        DateTime? targetEndDate = null)
     {
         var project = new Project
         {
@@ -32,7 +33,7 @@ public static class TestDataBuilder
             Location = "Test Site",
             Budget = 100000,
             StartDate = startDate ?? DateTime.UtcNow,
-            TargetEndDate = (startDate ?? DateTime.UtcNow).AddMonths(6),
+            TargetEndDate = targetEndDate ?? (startDate ?? DateTime.UtcNow).AddMonths(6),
             ProjectManagerId = projectManagerId,
             SiteEngineerId = siteEngineerId,
             Status = status,
@@ -62,7 +63,8 @@ public static class TestDataBuilder
     }
 
     public static async Task<BOQItem> CreateBoqItemAsync(AppDbContext db, int projectId, int materialId, int createdByUserId,
-        decimal estimatedQuantity, string? unit = null, decimal? estimatedPurchaseQuantity = null, string? estimatedPurchaseUnit = null)
+        decimal estimatedQuantity, string? unit = null, decimal? estimatedPurchaseQuantity = null, string? estimatedPurchaseUnit = null,
+        decimal actualQuantity = 0)
     {
         var item = new BOQItem
         {
@@ -72,6 +74,7 @@ public static class TestDataBuilder
             EstimatedQuantity = estimatedQuantity,
             EstimatedPurchaseQuantity = estimatedPurchaseQuantity,
             EstimatedPurchaseUnit = estimatedPurchaseUnit,
+            ActualQuantity = actualQuantity,
             CreatedByUserId = createdByUserId,
         };
         db.BOQItems.Add(item);
@@ -95,12 +98,31 @@ public static class TestDataBuilder
         return record;
     }
 
-    public static async Task<ForecastResult> CreateForecastResultAsync(AppDbContext db, int projectId, DateTime generatedAt, int? phaseId = null)
+    public static async Task<ForecastResult> CreateForecastResultAsync(AppDbContext db, int projectId, DateTime generatedAt, int? phaseId = null, string? notes = null)
     {
-        var result = new ForecastResult { ProjectId = projectId, PhaseId = phaseId, Period = ForecastPeriod.Monthly, GeneratedAt = generatedAt };
+        var result = new ForecastResult { ProjectId = projectId, PhaseId = phaseId, Period = ForecastPeriod.Monthly, GeneratedAt = generatedAt, Notes = notes };
         db.ForecastResults.Add(result);
         await db.SaveChangesAsync();
         return result;
+    }
+
+    public static async Task CreateProgressUpdateAsync(AppDbContext db, int projectId, int updatedByUserId, int progress, DateTime createdAt)
+    {
+        db.ProjectProgressUpdates.Add(new ProjectProgressUpdate
+        {
+            ProjectId = projectId, Progress = progress, Notes = "Test update",
+            UpdatedByUserId = updatedByUserId, CreatedAt = createdAt,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    // Flips a project to Completed after its data was logged the normal way
+    // (the Forecasting chart only shows finished projects).
+    public static async Task CompleteProjectAsync(AppDbContext db, int projectId)
+    {
+        var project = await db.Projects.FindAsync(projectId);
+        project!.Status = ProjectStatus.Completed;
+        await db.SaveChangesAsync();
     }
 
     public static async Task<Phase> CreatePhaseAsync(AppDbContext db, int projectId)
@@ -117,14 +139,15 @@ public static class TestDataBuilder
         return phase;
     }
 
-    public static async Task AddForecastedMaterialAsync(AppDbContext db, int forecastResultId, int materialId, decimal quantity)
+    public static async Task AddForecastedMaterialAsync(AppDbContext db, int forecastResultId, int materialId, decimal quantity, string? unit = null)
     {
         // Defaults to the catalog Material's own unit — same fallback used in
         // production (ForecastService/forecasting_service) when a row has no
         // unit of its own. Without this, every test fixture defaulted to ""
         // for Unit, which no longer matches the real unit on whatever it's
         // being compared against now that both sides key on it.
-        var unit = await db.Materials.Where(m => m.Id == materialId).Select(m => m.Unit).FirstOrDefaultAsync() ?? string.Empty;
+        // Pass `unit` ("" included) to override it.
+        unit ??= await db.Materials.Where(m => m.Id == materialId).Select(m => m.Unit).FirstOrDefaultAsync() ?? string.Empty;
         db.ForecastedMaterials.Add(new ForecastedMaterial
         {
             ForecastResultId = forecastResultId, MaterialId = materialId, Unit = unit,

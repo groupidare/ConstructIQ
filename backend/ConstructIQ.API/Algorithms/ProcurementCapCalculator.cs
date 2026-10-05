@@ -5,13 +5,15 @@ using Microsoft.EntityFrameworkCore;
 namespace ConstructIQ.API.Algorithms;
 
 /// <summary>
-/// Shared quantity-cap math for Notify Procurement/Warehouse and the BOQ
-/// bulk-save backstop: a project can never be asked to buy more of a
-/// material than its BOQ estimate, minus whatever's already covered —
-/// redistributed in, released from the warehouse, or already asked of
-/// Procurement. Each source is tracked from its own real table (not the
-/// generic BOQItem.RequestedQuantity ask-counter), because "asked" and
-/// "actually covered" can differ — e.g. a warehouse request for 12 approved
+/// Shared quantity math for Notify Procurement/Warehouse: how much of a
+/// material is still needed against its BOQ estimate, minus whatever's
+/// already covered — redistributed in, released from the warehouse, or
+/// already asked of Procurement. Notify Warehouse treats this as a hard cap;
+/// Notify Procurement only uses it to suggest a quantity and to flag a
+/// request beyond it as an additional order. Each source is tracked from
+/// its own real table (not the generic BOQItem.RequestedQuantity
+/// ask-counter), because "asked" and "actually covered" can differ — e.g.
+/// a warehouse request for 12 approved
 /// for only 3 (that's all that was on hand) only reduces the gap by 3, not 12.
 /// </summary>
 public static class ProcurementCapCalculator

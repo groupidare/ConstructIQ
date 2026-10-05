@@ -13,13 +13,11 @@ namespace ConstructIQ.API.Services;
 // is used instead.
 public class EmailService(IHttpClientFactory httpFactory, IConfiguration config, ILogger<EmailService> logger) : IEmailService
 {
-    // Resend's shared sandbox sender — works without owning/verifying a
-    // custom domain, but can only deliver to the Resend account's own
-    // verified email, not arbitrary recipients. Set RESEND_FROM_ADDRESS
-    // (e.g. "otp@constructiq.cfd") once that domain shows Verified in
-    // Resend's own dashboard to actually lift that restriction for every
-    // real user; left unset, this safely keeps working exactly as before.
-    private const string SandboxFromAddress = "onboarding@resend.dev";
+    // Falls back to Resend's shared sandbox sender — works with no domain
+    // setup, but only delivers to the email on the Resend account itself, not
+    // to real app users. RESEND_FROM_ADDRESS should be set to an address on a
+    // verified custom domain (e.g. noreply@constructiq.cfd) for real delivery.
+    private string FromAddress => config["RESEND_FROM_ADDRESS"] ?? "onboarding@resend.dev";
 
     private record ResendRequest(
         [property: JsonPropertyName("from")] string From,
@@ -33,11 +31,10 @@ public class EmailService(IHttpClientFactory httpFactory, IConfiguration config,
         if (string.IsNullOrWhiteSpace(apiKey))
             return false;
 
-        var fromAddress = string.IsNullOrWhiteSpace(config["RESEND_FROM_ADDRESS"]) ? SandboxFromAddress : config["RESEND_FROM_ADDRESS"];
         var fromName = config["SMTP_FROM_NAME"] ?? "ConstructIQ";
         var client = httpFactory.CreateClient("Resend");
         var response = await client.PostAsJsonAsync("emails", new ResendRequest(
-            From: $"{fromName} <{fromAddress}>",
+            From: $"{fromName} <{FromAddress}>",
             To: [toEmail],
             Subject: subject,
             Html: html));
