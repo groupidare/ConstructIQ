@@ -32,6 +32,24 @@ public class RedistributionService(AppDbContext db, INotificationService notific
         return ordered.Select(ToDto);
     }
 
+    // Full history for reporting — unlike GetRecommendationsAsync, this
+    // deliberately does NOT filter to RedistributionStatuses.Active, so
+    // Completed and Rejected records (never shown on the live Redistribution
+    // page) are included too. Most-recently-decided first.
+    public async Task<IEnumerable<RedistributionRecommendationDto>> GetAllRecommendationsAsync()
+    {
+        var requests = await db.RedistributionRequests
+            .Include(r => r.Material)
+            .Include(r => r.SourceProject)
+            .Include(r => r.TargetProject)
+            .ToListAsync();
+
+        var ordered = requests
+            .OrderByDescending(r => r.CompletedAt ?? r.ApprovedAt ?? r.RequestedAt);
+
+        return ordered.Select(ToDto);
+    }
+
     public async Task GenerateRecommendationsAsync()
     {
         // Supply signal 1: current project-level excess inventory.

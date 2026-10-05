@@ -5,6 +5,7 @@ namespace ConstructIQ.API.Services.Interfaces;
 public interface IRedistributionService
 {
     Task<IEnumerable<RedistributionRecommendationDto>> GetRecommendationsAsync();
+    Task<IEnumerable<RedistributionRecommendationDto>> GetAllRecommendationsAsync();
     Task GenerateRecommendationsAsync();
     Task<bool> ApproveTransferAsync(int recommendationId, int userId);
     Task<bool> RejectTransferAsync(int recommendationId, int userId);
