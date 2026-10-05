@@ -10,8 +10,58 @@ namespace ConstructIQ.API.Services;
 
 public class BOQService(AppDbContext db) : IBOQService
 {
+    // How many times over the baseline a bare, unlogged Actual Qty can land
+    // before it's treated as implausible rather than a real overrun — see
+    // GetReconciledBoqItemsAsync's else branch.
+    private const decimal ImplausibleActualMultiplier = 3m;
+
+    // Mirrors ExcessWasteService.GetDeliveredBaselineAsync, batched for a
+    // whole set of BOQItems at once (GetReconciledBoqItemsAsync loops over
+    // every completed project's lines, so one query per item here would be
+    // real N+1). Same BOQItemId-then-Material/Phase fallback match, same
+    // "delivered, else plan estimate" baseline per item.
+    private async Task<Dictionary<int, decimal>> GetDeliveredBaselinesAsync(List<BOQItem> items)
+    {
+        var boqItemIds = items.Select(b => b.Id).ToHashSet();
+        var byDirectId = await db.PurchaseOrderMaterials
+            .Where(pom => pom.PurchaseOrder.Status == PurchaseOrderStatus.Delivered
+                && pom.BOQItemId != null && boqItemIds.Contains(pom.BOQItemId.Value))
+            .GroupBy(pom => pom.BOQItemId!.Value)
+            .Select(g => new { BOQItemId = g.Key, Total = g.Sum(p => p.Quantity) })
+            .ToDictionaryAsync(g => g.BOQItemId, g => g.Total);
+
+        var fallbackMaterialIds = items
+            .Where(b => !byDirectId.ContainsKey(b.Id))
+            .Select(b => b.MaterialId)
+            .Distinct()
+            .ToList();
+        var fallbackTotals = new Dictionary<(int MaterialId, int? PhaseId), decimal>();
+        if (fallbackMaterialIds.Count > 0)
+        {
+            var rows = await db.PurchaseOrderMaterials
+                .Where(pom => pom.PurchaseOrder.Status == PurchaseOrderStatus.Delivered
+                    && pom.BOQItemId == null && pom.MaterialId != null && fallbackMaterialIds.Contains(pom.MaterialId.Value))
+                .Select(pom => new { pom.MaterialId, pom.PhaseId, pom.Quantity })
+                .ToListAsync();
+            foreach (var g in rows.GroupBy(r => (r.MaterialId!.Value, r.PhaseId)))
+                fallbackTotals[g.Key] = g.Sum(r => r.Quantity);
+        }
+
+        var result = new Dictionary<int, decimal>();
+        foreach (var item in items)
+        {
+            var delivered = byDirectId.TryGetValue(item.Id, out var direct)
+                ? direct
+                : fallbackTotals.GetValueOrDefault((item.MaterialId, item.PhaseId), 0);
+            result[item.Id] = delivered > 0 ? delivered : (item.EstimatedPurchaseQuantity ?? item.EstimatedQuantity);
+        }
+        return result;
+    }
+
     public async Task<IEnumerable<BOQItemResponseDto>> GetByProjectAsync(int projectId)
     {
+        var project = await db.Projects.FindAsync(projectId)
+            ?? throw new InvalidOperationException("Project not found.");
         var rows = await db.BOQItems
             .Include(b => b.Material)
             .Include(b => b.Phase)
@@ -21,7 +71,10 @@ public class BOQService(AppDbContext db) : IBOQService
 
         var fulfillment = await ProcurementCapCalculator.GetNetLeftToOrderForProjectAsync(db, projectId);
         var remainingRequestable = await ProcurementCapCalculator.GetRemainingRequestableForProjectAsync(db, projectId);
-        return rows.Select(b => ToDto(b, fulfillment, remainingRequestable));
+        var deliveredBaselines = project.Status == ProjectStatus.Completed && !project.IsHistorical
+            ? await GetDeliveredBaselinesAsync(rows)
+            : [];
+        return rows.Select(b => ToDto(b, fulfillment, remainingRequestable, project, deliveredBaselines));
     }
 
     public async Task<IEnumerable<BOQItemResponseDto>> BulkSaveAsync(int projectId, List<BOQItemUpsertDto> items, int userId)
@@ -86,6 +139,19 @@ public class BOQService(AppDbContext db) : IBOQService
             // from (manual entry, BOQ scan, or the historical-estimate average).
             entity.EstimatedQuantity = Math.Round(item.EstimatedQuantity, 0, MidpointRounding.AwayFromZero);
             entity.CoverageArea      = BOQUnitRules.IsAreaUnit(unitForRow) ? entity.EstimatedQuantity : null;
+            // Rejected at the point of entry, not just flagged later in a
+            // report — a bare typed-in Actual Qty is the one place a human
+            // can enter literally any number, and a wrong-unit or extra-digit
+            // typo (e.g. a pieces count typed into a sq.m row) looks
+            // identical to a real figure without this bound. Same threshold
+            // GetReconciledBoqItemsAsync already flags with, kept in sync.
+            if (item.ActualQuantity is > 0)
+            {
+                var plausibilityBaseline = item.EstimatedPurchaseQuantity ?? item.EstimatedQuantity;
+                if (plausibilityBaseline > 0 && item.ActualQuantity.Value > plausibilityBaseline * ImplausibleActualMultiplier)
+                    throw new InvalidOperationException(
+                        $"Actual Qty ({item.ActualQuantity.Value}) for \"{item.Specification ?? item.NewMaterialName ?? "this row"}\" is {Math.Round(item.ActualQuantity.Value / plausibilityBaseline, 1)}x the estimated {plausibilityBaseline} — likely a wrong unit or an extra digit. Double-check the figure before saving.");
+            }
             entity.ActualQuantity    = Math.Round(item.ActualQuantity ?? 0, 0, MidpointRounding.AwayFromZero);
             // A real number here (the historical-backfill Actual Qty entry —
             // the only place a human still types this) confirms it. Never
@@ -156,7 +222,10 @@ public class BOQService(AppDbContext db) : IBOQService
 
         var fulfillment = await ProcurementCapCalculator.GetNetLeftToOrderForProjectAsync(db, projectId);
         var remainingRequestable = await ProcurementCapCalculator.GetRemainingRequestableForProjectAsync(db, projectId);
-        return reloaded.Select(b => ToDto(b, fulfillment, remainingRequestable));
+        var deliveredBaselines = project.Status == ProjectStatus.Completed && !project.IsHistorical
+            ? await GetDeliveredBaselinesAsync(reloaded)
+            : [];
+        return reloaded.Select(b => ToDto(b, fulfillment, remainingRequestable, project, deliveredBaselines));
     }
 
     public async Task<bool> DeleteAsync(int id)
@@ -241,8 +310,13 @@ public class BOQService(AppDbContext db) : IBOQService
         return supplier.Id;
     }
 
-    private static BOQItemResponseDto ToDto(BOQItem b, Dictionary<int, (decimal NetLeftToOrder, bool WarehouseApproved)> fulfillment, Dictionary<int, decimal> remainingRequestable)
+    private static BOQItemResponseDto ToDto(BOQItem b, Dictionary<int, (decimal NetLeftToOrder, bool WarehouseApproved)> fulfillment, Dictionary<int, decimal> remainingRequestable, Project project, Dictionary<int, decimal> deliveredBaselines)
     {
+        var materialQuantity = project.IsHistorical
+            ? b.EstimatedQuantity
+            : project.Status == ProjectStatus.Completed
+                ? deliveredBaselines.GetValueOrDefault(b.Id, b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity)
+                : (decimal?)null;
         var f = fulfillment.TryGetValue(b.MaterialId, out var found)
             ? found
             : (NetLeftToOrder: b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity, WarehouseApproved: false);
@@ -286,6 +360,7 @@ public class BOQService(AppDbContext db) : IBOQService
         NetLeftToOrder            = f.NetLeftToOrder,
         WarehouseApproved         = f.WarehouseApproved,
         RemainingRequestable      = remaining,
+        MaterialQuantity          = materialQuantity,
     };
     }
 
@@ -499,6 +574,7 @@ public class BOQService(AppDbContext db) : IBOQService
                 .Select(e => new { BOQItemId = e.BOQItemId!.Value, e.Quantity, e.IsReusable })
                 .ToListAsync())
             .ToLookup(e => e.BOQItemId);
+        var baselines = await GetDeliveredBaselinesAsync(items);
 
         var valid = new List<ReconciledBoqItem>();
         var flagged = new List<FlaggedExcessItemDto>();
@@ -508,15 +584,16 @@ public class BOQService(AppDbContext db) : IBOQService
             var project = completed[boqItem.ProjectId];
 
             // The baseline a record's Quantity is actually denominated in —
-            // the same precedence BOQItem.ActualQuantity already uses as
-            // ground truth — labelled with the unit THAT quantity is in:
-            // the purchase unit when the purchase-unit baseline is the one
-            // used, otherwise the BOQ row's own unit, never the catalog
-            // Material's default unit (which can differ — a row of blocks
-            // estimated in pcs against a catalog entry in sq.m). Same row-
-            // unit-first rule the ML service forecasts in, so a line's
-            // Actual Usage and its forecast always land on the same unit.
-            var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
+            // the same delivered-quantity-first precedence BOQItem.ActualQuantity
+            // itself now uses (see ExcessWasteService.GetDeliveredBaselineAsync)
+            // — labelled with the unit THAT quantity is in: the purchase unit
+            // when the purchase-unit baseline is the one used, otherwise the
+            // BOQ row's own unit, never the catalog Material's default unit
+            // (which can differ — a row of blocks estimated in pcs against a
+            // catalog entry in sq.m). Same row-unit-first rule the ML service
+            // forecasts in, so a line's Actual Usage and its forecast always
+            // land on the same unit.
+            var baseline = baselines[boqItem.Id];
             var effectiveUnit = CompletedProjectDemandRules.ResolveBoqLineUnit(
                 boqItem.EstimatedPurchaseQuantity.HasValue ? boqItem.EstimatedPurchaseUnit : null,
                 boqItem.Unit, boqItem.Material.Unit);
@@ -548,6 +625,25 @@ public class BOQService(AppDbContext db) : IBOQService
             else
             {
                 if (boqItem.ActualQuantity <= 0) continue;
+                // A bare typed-in Actual Qty with nothing logged against it is
+                // the one place a human can enter literally any number — a
+                // wrong-unit or extra-digit typo (e.g. a pieces count typed
+                // into a sq.m row) looks identical to a real figure without a
+                // sanity bound. A genuine overrun from real over-procurement
+                // is expected within a normal multiple of the baseline, not
+                // many times over it, so anything beyond that is flagged for
+                // review instead of silently trusted.
+                if (baseline > 0 && boqItem.ActualQuantity > baseline * ImplausibleActualMultiplier)
+                {
+                    flagged.Add(new FlaggedExcessItemDto
+                    {
+                        BOQItemId = boqItem.Id, ProjectId = boqItem.ProjectId, ProjectName = project.Name,
+                        MaterialName = boqItem.Material.Name, Unit = effectiveUnit,
+                        EstimatedQuantity = baseline, ExcessTotal = 0, WasteTotal = 0,
+                        Reason = $"Actual Quantity ({boqItem.ActualQuantity}) is {Math.Round(boqItem.ActualQuantity / baseline, 1)}x the baseline ({baseline}) with nothing logged to explain it — likely a data-entry error (wrong unit or extra digit).",
+                    });
+                    continue;
+                }
                 actualUsage = boqItem.ActualQuantity;
             }
 

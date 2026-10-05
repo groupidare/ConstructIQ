@@ -23,7 +23,12 @@ var connStr = $"Server={builder.Configuration["DB_HOST"] ?? "localhost"};" +
               $"SslMode={builder.Configuration["DB_SSL_MODE"] ?? "Preferred"};";
 
 builder.Services.AddDbContext<AppDbContext>(opts =>
-    opts.UseMySql(connStr, new MySqlServerVersion(new Version(8, 0, 0))));
+    opts.UseMySql(connStr, new MySqlServerVersion(new Version(8, 0, 0)), mysql =>
+        // A brief connection blip to Aiven (network hiccup, not a real
+        // outage) used to surface as a raw 500 straight to the user instead
+        // of just quietly retrying — this is EF Core's own built-in retry
+        // policy for exactly that class of transient failure.
+        mysql.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorNumbersToAdd: null)));
 
 // ── JWT Authentication ───────────────────────────────────────────────────────
 builder.Services.AddConstructIqSecurity(builder.Configuration);
@@ -48,6 +53,7 @@ builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IBackupJobService, BackupJobService>();
 builder.Services.AddScoped<IPhaseService, PhaseService>();
 builder.Services.AddScoped<IWarehouseStockService, WarehouseStockService>();
+builder.Services.AddSingleton<IFileStorageService, R2FileStorageService>();
 builder.Services.AddScoped<IWeatherGeocodingService, WeatherGeocodingService>();
 builder.Services.AddHostedService<WeatherWatcherService>();
 builder.Services.AddHttpClient("MLService", client =>
@@ -105,9 +111,10 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseStaticFiles(); // serves wwwroot/uploads/{projectId}/... for blueprint/BOQ previews
+// No app.UseStaticFiles() — uploads now live on Cloudflare R2 (see
+// R2FileStorageService), served directly to the browser from there, not
+// proxied through this app's own (ephemeral, Render-free-tier) disk.
 app.UseCors("FrontendPolicy");
-app.UseStaticFiles(); // serves wwwroot/uploads/avatars/* publicly, e.g. GET /uploads/avatars/8.jpg
 app.UseMiddleware<ActivityLoggingMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();

@@ -193,102 +193,32 @@ public static class DbInitializer
     // (BOQService relies on this too — see GetMonthlyPredictedTotalsAsync).
     public const string ForecastSeedMarker = "Seeded historical forecast aligned to reconciled Excess/Waste data.";
 
-    // Backfills ForecastResult/ForecastedMaterial rows so the Forecasting
-    // chart's "AI Predicted" line has more than the single point real forecast
-    // runs happen to cover. Aligned to the exact same reporting month and
-    // Actual Usage figure BOQService.GetReconciledBoqItemsAsync computes for
-    // the real chart (one reporting month per BOQItem — its most recent
-    // record's month — carrying the full combined Excess+Waste total), with
-    // +/-10% variance layered on top to simulate real model error. Never
-    // touches BOQItem/Project/ExcessWasteRecord; safe to re-run (skips if
-    // already seeded, identified by the Notes marker, not by clearing again).
+    // Previously backfilled fabricated "AI Predicted" rows (real Actual Usage
+    // +/-10% random variance, never touching the real model) to make the
+    // Forecasting chart's historical trendline look fuller. That's no longer
+    // acceptable — a judge/panel question about any historical point on that
+    // chart deserves a real answer. This now only removes whatever synthetic
+    // rows a prior run already inserted (identified by the Notes marker) and
+    // never creates more; the chart shows only genuine /forecast/generate
+    // results from here on, however sparse that leaves it.
     public static async Task SeedHistoricalForecastsAsync(AppDbContext context)
     {
-        // Confirmed with the user: every existing ForecastResult (96 rows) was
-        // a real Sep 28-29, 2026 test-run cluster — 100% of prior forecast
-        // history — which would otherwise clump every AI-Predicted point onto
-        // one date. Cleared once, up front, rather than left to accumulate
-        // alongside the new historical spread.
-        var clusterStart = new DateTime(2026, 9, 28);
-        var clusterEnd   = new DateTime(2026, 9, 30);
-        var clusterResults = await context.ForecastResults
-            .Where(f => f.GeneratedAt >= clusterStart && f.GeneratedAt < clusterEnd)
+        var fakeResults = await context.ForecastResults
+            .Where(f => f.Notes == ForecastSeedMarker)
             .ToListAsync();
-        if (clusterResults.Count > 0)
+        if (fakeResults.Count == 0)
         {
-            var clusterIds = clusterResults.Select(f => f.Id).ToList();
-            var clusterMaterials = await context.ForecastedMaterials
-                .Where(fm => clusterIds.Contains(fm.ForecastResultId))
-                .ToListAsync();
-            context.ForecastedMaterials.RemoveRange(clusterMaterials);
-            context.ForecastResults.RemoveRange(clusterResults);
-            await context.SaveChangesAsync();
-            Console.WriteLine($"[Seed] Cleared {clusterResults.Count} clumped forecast run(s) from Sep 28-29, 2026.");
-        }
-
-        if (await context.ForecastResults.AnyAsync(f => f.Notes == ForecastSeedMarker))
-        {
-            Console.WriteLine("[Seed] Historical forecasts already seeded — nothing to do.");
+            Console.WriteLine("[Seed] No fabricated historical forecasts found — nothing to clean up.");
             return;
         }
 
-        var records = await context.ExcessWasteRecords
-            .Where(e => e.BOQItemId != null)
-            .Include(e => e.BOQItem!).ThenInclude(b => b.Material)
+        var fakeIds = fakeResults.Select(f => f.Id).ToList();
+        var fakeMaterials = await context.ForecastedMaterials
+            .Where(fm => fakeIds.Contains(fm.ForecastResultId))
             .ToListAsync();
-
-        var created = 0;
-        foreach (var group in records.GroupBy(e => e.BOQItemId!.Value))
-        {
-            var boqItem = group.First().BOQItem!;
-            var baseline = boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity;
-            var effectiveUnit = !string.IsNullOrWhiteSpace(boqItem.EstimatedPurchaseUnit)
-                ? boqItem.EstimatedPurchaseUnit
-                : boqItem.Material.Unit;
-
-            // GetMonthlyPredictedTotalsAsync groups AI Predicted totals by the
-            // material's own catalog Unit (never a per-BOQItem override), so a
-            // prediction only ever lines up with its Actual Usage point when
-            // the two share that same unit — seeding a mismatched pair would
-            // just create a prediction that can never join anything.
-            if (!string.Equals(effectiveUnit, boqItem.Material.Unit, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            var excessTotal = group.Where(e => e.IsReusable).Sum(e => e.Quantity);
-            var wasteTotal  = group.Where(e => !e.IsReusable).Sum(e => e.Quantity);
-            var deducted = excessTotal + wasteTotal;
-            if (baseline <= 0 || deducted > baseline)
-                continue; // same validity rule ActualUsageCalculator applies to the real chart
-
-            var actualUsage = baseline - deducted;
-            var reportingMonth = group.Max(e => e.RecordedAt);
-
-            var variance = 1 + (decimal)(Rng.NextDouble() * 0.2 - 0.1); // +/-10%
-            var predictedQuantity = Math.Max(0, Math.Round(actualUsage * variance, 2));
-
-            var forecastResult = new ForecastResult
-            {
-                ProjectId   = boqItem.ProjectId,
-                PhaseId     = boqItem.PhaseId,
-                Period      = ForecastPeriod.Monthly,
-                GeneratedAt = new DateTime(reportingMonth.Year, reportingMonth.Month, 15),
-                Notes       = ForecastSeedMarker,
-            };
-            context.ForecastResults.Add(forecastResult);
-            context.ForecastedMaterials.Add(new ForecastedMaterial
-            {
-                ForecastResult     = forecastResult,
-                MaterialId         = boqItem.MaterialId,
-                ForecastedQuantity = predictedQuantity,
-                CurrentStock       = 0,
-                Shortage           = 0,
-                ReorderSuggestion  = 0,
-                RiskLevel          = RiskLevel.Low,
-            });
-            created++;
-        }
-
+        context.ForecastedMaterials.RemoveRange(fakeMaterials);
+        context.ForecastResults.RemoveRange(fakeResults);
         await context.SaveChangesAsync();
-        Console.WriteLine($"[Seed] Seeded {created} historical AI-Predicted forecast(s) aligned to reconciled BOQ months.");
+        Console.WriteLine($"[Seed] Removed {fakeResults.Count} fabricated historical forecast(s) — only real model output remains.");
     }
 }

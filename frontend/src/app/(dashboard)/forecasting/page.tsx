@@ -134,6 +134,22 @@ export default function ForecastingPage() {
 
   const selectedMaterial = materials.find(m => `${m.materialId}:${m.unit}` === selectedKey);
 
+  // Real accuracy only — computed from the same Actual/Predicted pairs the
+  // chart itself plots, never a stored/fabricated figure. A month missing
+  // either side (one of them null) contributes nothing; there's genuinely
+  // no comparison to score for it. Accuracy per point = 100% minus the
+  // absolute error as a percentage of actual usage, floored at 0 so a
+  // wildly-off prediction reads as 0%, not a negative number.
+  const accuracyPoints = chartData.filter(
+    (p): p is ChartPoint & { actual: number; predicted: number } => p.actual != null && p.predicted != null && p.actual > 0,
+  );
+  const meanAbsoluteError = accuracyPoints.length > 0
+    ? accuracyPoints.reduce((sum, p) => sum + Math.abs(p.actual - p.predicted), 0) / accuracyPoints.length
+    : null;
+  const modelAccuracy = accuracyPoints.length > 0
+    ? accuracyPoints.reduce((sum, p) => sum + Math.max(0, 100 - (Math.abs(p.actual - p.predicted) / p.actual) * 100), 0) / accuracyPoints.length
+    : null;
+
   return (
     <div style={{ background: "#f5f4f0", minHeight: "100vh" }}>
       <Header title="Forecasting" />
@@ -151,6 +167,19 @@ export default function ForecastingPage() {
               <p style={{ color: "#9ca3af", fontSize: "0.72rem", marginTop: 3 }}>
                 Completed projects demand over time: compares Actual Usage against original AI forecasts (live projects) and model evaluations (historical projects).
               </p>
+              {modelAccuracy != null && meanAbsoluteError != null && (
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  <span style={{ padding: "4px 10px", borderRadius: 999, background: "#dcfce7", color: "#15803d", fontSize: "0.72rem", fontWeight: 700 }}>
+                    Model Accuracy: {modelAccuracy.toFixed(1)}%
+                  </span>
+                  <span style={{ padding: "4px 10px", borderRadius: 999, background: "#f3f4f6", color: "#374151", fontSize: "0.72rem", fontWeight: 700 }}>
+                    Error Margin: ±{meanAbsoluteError.toLocaleString(undefined, { maximumFractionDigits: 1 })} {selectedMaterial?.unit}
+                  </span>
+                  <span style={{ fontSize: "0.68rem", color: "#9ca3af", alignSelf: "center" }}>
+                    across {accuracyPoints.length} scored month{accuracyPoints.length > 1 ? "s" : ""}
+                  </span>
+                </div>
+              )}
             </div>
             {materials.length > 0 && (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

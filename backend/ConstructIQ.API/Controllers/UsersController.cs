@@ -11,7 +11,7 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
-public class UsersController(AppDbContext db, IWebHostEnvironment env, Services.Interfaces.INotificationService notifications) : ControllerBase
+public class UsersController(AppDbContext db, Services.Interfaces.IFileStorageService storage, Services.Interfaces.INotificationService notifications) : ControllerBase
 {
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
@@ -299,28 +299,16 @@ public class UsersController(AppDbContext db, IWebHostEnvironment env, Services.
         if (file.Length > MaxAvatarBytes)
             return BadRequest(new { message = "Image must be 5MB or smaller." });
 
-        if (!AllowedAvatarTypes.TryGetValue(file.ContentType, out var ext))
+        if (!AllowedAvatarTypes.ContainsKey(file.ContentType))
             return BadRequest(new { message = "Only JPEG, PNG, or WebP images are allowed." });
 
-        var avatarsDir = Path.Combine(env.WebRootPath, "uploads", "avatars");
-        Directory.CreateDirectory(avatarsDir);
-
-        // Delete the previous avatar file (if any) so uploads don't accumulate.
+        // Delete the previous avatar object (if any) so uploads don't accumulate.
         if (!string.IsNullOrWhiteSpace(user.AvatarUrl))
         {
-            var oldPath = Path.Combine(env.WebRootPath, user.AvatarUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-            if (System.IO.File.Exists(oldPath))
-            {
-                try { System.IO.File.Delete(oldPath); } catch { /* best-effort cleanup */ }
-            }
+            try { await storage.DeleteAsync(user.AvatarUrl); } catch { /* best-effort cleanup */ }
         }
 
-        var fileName = $"{userId}_{Guid.NewGuid():N}{ext}";
-        var savePath = Path.Combine(avatarsDir, fileName);
-        await using (var stream = System.IO.File.Create(savePath))
-            await file.CopyToAsync(stream);
-
-        user.AvatarUrl = $"/uploads/avatars/{fileName}";
+        user.AvatarUrl = await storage.UploadAsync(file, "avatars");
         user.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
@@ -355,11 +343,7 @@ public class UsersController(AppDbContext db, IWebHostEnvironment env, Services.
 
         if (!string.IsNullOrWhiteSpace(user.AvatarUrl))
         {
-            var oldPath = Path.Combine(env.WebRootPath, user.AvatarUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-            if (System.IO.File.Exists(oldPath))
-            {
-                try { System.IO.File.Delete(oldPath); } catch { /* best-effort cleanup */ }
-            }
+            try { await storage.DeleteAsync(user.AvatarUrl); } catch { /* best-effort cleanup */ }
         }
 
         user.AvatarUrl = null;

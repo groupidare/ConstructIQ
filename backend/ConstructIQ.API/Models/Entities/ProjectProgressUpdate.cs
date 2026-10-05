@@ -33,6 +33,6 @@ public class ProjectProgressPhoto
     public int ProjectProgressUpdateId { get; set; }
     public ProjectProgressUpdate ProjectProgressUpdate { get; set; } = null!;
 
-    [Required, MaxLength(255)]
+    [Required, MaxLength(500)]
     public string Url { get; set; } = string.Empty;
 }

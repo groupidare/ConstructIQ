@@ -6,8 +6,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from app.ml.feature_engineering import records_to_dataframe, FEATURE_COLS
+from app.ml import r2_storage
 
 MODEL_PATH = Path("trained_models/xgb_model.ubj")
+R2_KEY = "models/xgb_model.ubj"
 
 
 def train(records: list[dict], targets: list[float]) -> dict:
@@ -35,12 +37,13 @@ def train(records: list[dict], targets: list[float]) -> dict:
 
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     model.save_model(str(MODEL_PATH))
+    r2_storage.upload_file(MODEL_PATH, R2_KEY)
 
     return {"mae": mae, "rmse": rmse, "r2": r2}
 
 
 def predict(records: list[dict]) -> np.ndarray:
-    if not MODEL_PATH.exists():
+    if not MODEL_PATH.exists() and not r2_storage.download_file(R2_KEY, MODEL_PATH):
         return np.array([float(r.get("boq_quantity", 0)) for r in records])
 
     model = XGBRegressor()
