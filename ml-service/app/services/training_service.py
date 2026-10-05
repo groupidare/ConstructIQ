@@ -8,20 +8,21 @@ from app.ml.model_evaluator import ensemble_predict
 # ProjectStatus enum (backend): Planning=0, Active=1, OnHold=2, Completed=3, Cancelled=4.
 # PurchaseOrderStatus enum (backend): Pending=0, Approved=1, Delivered=2.
 # Historical training data comes from whole completed projects (backfilled via the
-# "add a completed project" flow), not individual completed phases — a project can
-# have real actual-usage figures entered without every phase being marked Completed.
+# "add a completed project" flow), not individual completed phases.
 # LEFT JOIN phases: a BOQ row without a phase assigned still has a usable target.
 #
-# Target quantity: ActualQuantity, filtered to BOQItems.IsUsageConfirmed = 1 only
-# (backend-computed — see BOQItem.IsUsageConfirmed). A row's ActualQuantity is
-# only ever a genuine figure when it's confirmed: a real ExcessWasteRecord was
-# logged against it, or a human actually typed a number while backfilling a
-# historical project. An unconfirmed row's ActualQuantity is just its own
-# EstimatedQuantity silently standing in (nothing was ever logged/entered) —
-# training on that teaches the model to predict the estimate from the estimate,
-# which is circular, not signal. Previously this query treated any IsHistorical
-# row's EstimatedQuantity as if it were a confirmed actual by default; that's
-# exactly the ambiguity IsUsageConfirmed now makes explicit instead of guessing.
+# Target quantity: the row's PO quantity — EstimatedPurchaseQuantity of a row
+# backed by real PO-report lines (HistoricalMaterialSupply), which the backend
+# sets to those lines' total when they're all in one unit (BOQService.
+# BulkSaveAsync). That's what was actually BOUGHT for the BOQ line, and it's
+# exactly what a live project's Est. Qty is: how much to order. Every
+# historical row with PO lines is usable as-is — no hand-typed Actual Qty
+# needed first.
+#
+# Only rows WITH PO-report lines: a project completed through the app is also
+# IsHistorical, but its rows' EstimatedPurchaseQuantity is their Est. Qty —
+# typed by hand or filled in by this very model on Run Forecast. Training on
+# that would teach the model to predict its own past predictions.
 #
 # supplier_lead_time_days is a correlated scalar subquery, not a JOIN+GROUP BY —
 # a BOQ row can match several PurchaseOrderMaterial rows (multiple deliveries of
@@ -29,16 +30,14 @@ from app.ml.model_evaluator import ensemble_predict
 # rows, breaking the 1:1 alignment train_models() assumes between records/targets.
 # Only Delivered POs count — Pending/Approved aren't real actuals yet.
 #
-# What's learned: BOQ quantity (sq.m/l.m/..., known at planning time) → actual
-# quantity USED in the purchase unit (pcs/bag/box/...). So:
+# What's learned: BOQ quantity (sq.m/l.m/..., known at planning time) → PO
+# quantity in the purchase unit (pcs/bag/box/...). So:
 #  - Input boq_quantity is bi.EstimatedQuantity, never EstimatedPurchaseQuantity:
-#    for a new project that's the unknown being forecast (the Est. Qty this
-#    model fills in), and for a historical row it's the PO total — nearly the
-#    answer itself. Training on it would be leakage.
+#    that's the target itself here (and, on a live project, the Est. Qty this
+#    model fills in). Using it as an input would be leakage.
 #  - Only rows whose purchase unit is known — both EstimatedPurchaseUnit and
-#    EstimatedPurchaseQuantity set, the same "purchase baseline in use" rule
-#    the backend labels the row's Actual Qty unit with (CompletedProjectDemand
-#    Rules.ResolveBoqLineUnit) — so the target's unit is never ambiguous.
+#    EstimatedPurchaseQuantity set (mixed-unit PO lines leave both null) — so
+#    the target's unit is never ambiguous.
 #  - purchase_unit is returned with each row; material_ratios.py learns the
 #    per-material conversion from it.
 _TRAINING_SQL = text("""
@@ -52,7 +51,7 @@ _TRAINING_SQL = text("""
         TRIM(bi.EstimatedPurchaseUnit) AS purchase_unit,
         m.UnitCost   AS unit_cost,
         bi.EstimatedQuantity AS boq_quantity,
-        bi.ActualQuantity AS actual_used,
+        bi.EstimatedPurchaseQuantity AS purchased_quantity,
         COALESCE(ir.AvailableQuantity, 0) AS current_stock,
         COALESCE(ir.ExcessQuantity, 0)    AS excess_quantity,
         COALESCE(ir.WastedQuantity, 0)    AS wasted_quantity,
@@ -76,8 +75,8 @@ _TRAINING_SQL = text("""
     JOIN Projects p  ON p.Id = bi.ProjectId AND p.Status = 3
     LEFT JOIN Phases ph ON ph.Id = bi.PhaseId
     LEFT JOIN InventoryRecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
-    WHERE bi.IsUsageConfirmed = 1
-      AND bi.EstimatedPurchaseQuantity IS NOT NULL
+    WHERE EXISTS (SELECT 1 FROM HistoricalMaterialSupplies h WHERE h.BOQItemId = bi.Id)
+      AND bi.EstimatedPurchaseQuantity IS NOT NULL AND bi.EstimatedPurchaseQuantity > 0
       AND bi.EstimatedPurchaseUnit IS NOT NULL AND TRIM(bi.EstimatedPurchaseUnit) <> ''
 """)
 
@@ -94,11 +93,12 @@ def train_models(min_samples: int = 10) -> dict:
 
     if len(records) < min_samples:
         raise ValueError(
-            f"Not enough completed-phase BOQ records to train on "
-            f"({len(records)} found, need at least {min_samples})."
+            f"Not enough historical BOQ rows with a purchase-order quantity to train on "
+            f"({len(records)} found, need at least {min_samples}). Each row needs PO lines "
+            f"in a single unit — upload more historical projects' BOQ+PO reports."
         )
 
-    targets = [float(r["actual_used"]) for r in records]
+    targets = [float(r["purchased_quantity"]) for r in records]
 
     # Feature: each row's material ratio from OTHER projects only (see
     # material_ratios.attach_out_of_project — the full table would leak the

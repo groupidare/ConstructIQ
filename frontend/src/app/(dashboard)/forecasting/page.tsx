@@ -16,6 +16,7 @@ interface ChartPoint {
   month: string;
   monthLabel: string;
   actual?: number;
+  purchased?: number;
   predicted?: number;
   projectCount: number;
   contributingProjects: string[];
@@ -57,6 +58,7 @@ function ChartTooltip({ active, payload }: TooltipProps<number, string>) {
       {row("Estimated", point.estimatedTotal)}
       {row("Excess", point.excessTotal)}
       {row("Waste", point.wasteTotal)}
+      {row("Purchased (PO)", point.purchased, "#2563eb")}
       {row("Actual Usage", point.actual, "#374151")}
       {row("AI Predicted", point.predicted, "#f97316")}
     </div>
@@ -121,6 +123,7 @@ export default function ForecastingPage() {
       month: year === prevYear ? m.monthLabel.split(" ")[0] : m.monthLabel,
       monthLabel: m.monthLabel,
       actual: m.actualUsage ?? undefined,
+      purchased: m.purchasedTotal ?? undefined,
       // Rounded up like every other forecast display — a material quantity
       // isn't fractional, and rounding down would understate what's needed.
       predicted: m.aiPredicted == null ? undefined : Math.ceil(m.aiPredicted),
@@ -134,20 +137,22 @@ export default function ForecastingPage() {
 
   const selectedMaterial = materials.find(m => `${m.materialId}:${m.unit}` === selectedKey);
 
-  // Real accuracy only — computed from the same Actual/Predicted pairs the
-  // chart itself plots, never a stored/fabricated figure. A month missing
+  // Real accuracy only — computed from the same Purchased/Predicted pairs
+  // the chart itself plots, never a stored/fabricated figure. Scored against
+  // Purchased (PO), not Actual Usage: the PO quantity is what the model is
+  // trained to predict (what to order for a BOQ line). A month missing
   // either side (one of them null) contributes nothing; there's genuinely
   // no comparison to score for it. Accuracy per point = 100% minus the
-  // absolute error as a percentage of actual usage, floored at 0 so a
-  // wildly-off prediction reads as 0%, not a negative number.
+  // absolute error as a percentage of the purchased quantity, floored at 0
+  // so a wildly-off prediction reads as 0%, not a negative number.
   const accuracyPoints = chartData.filter(
-    (p): p is ChartPoint & { actual: number; predicted: number } => p.actual != null && p.predicted != null && p.actual > 0,
+    (p): p is ChartPoint & { purchased: number; predicted: number } => p.purchased != null && p.predicted != null && p.purchased > 0,
   );
   const meanAbsoluteError = accuracyPoints.length > 0
-    ? accuracyPoints.reduce((sum, p) => sum + Math.abs(p.actual - p.predicted), 0) / accuracyPoints.length
+    ? accuracyPoints.reduce((sum, p) => sum + Math.abs(p.purchased - p.predicted), 0) / accuracyPoints.length
     : null;
   const modelAccuracy = accuracyPoints.length > 0
-    ? accuracyPoints.reduce((sum, p) => sum + Math.max(0, 100 - (Math.abs(p.actual - p.predicted) / p.actual) * 100), 0) / accuracyPoints.length
+    ? accuracyPoints.reduce((sum, p) => sum + Math.max(0, 100 - (Math.abs(p.purchased - p.predicted) / p.purchased) * 100), 0) / accuracyPoints.length
     : null;
 
   return (
@@ -165,12 +170,12 @@ export default function ForecastingPage() {
                 <span style={{ fontWeight: 700, fontSize: "1rem" }}>AI Material Demand Forecast</span>
               </div>
               <p style={{ color: "#9ca3af", fontSize: "0.72rem", marginTop: 3 }}>
-                Completed projects demand over time: compares Actual Usage against original AI forecasts (live projects) and model evaluations (historical projects).
+                Completed projects demand over time: what was purchased (PO) and actually used, against the AI&apos;s prediction — the original forecast for live projects, a held-out model evaluation for historical ones.
               </p>
               {modelAccuracy != null && meanAbsoluteError != null && (
                 <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                   <span style={{ padding: "4px 10px", borderRadius: 999, background: "#dcfce7", color: "#15803d", fontSize: "0.72rem", fontWeight: 700 }}>
-                    Model Accuracy: {modelAccuracy.toFixed(1)}%
+                    Model Accuracy (vs Purchased): {modelAccuracy.toFixed(1)}%
                   </span>
                   <span style={{ padding: "4px 10px", borderRadius: 999, background: "#f3f4f6", color: "#374151", fontSize: "0.72rem", fontWeight: 700 }}>
                     Error Margin: ±{meanAbsoluteError.toLocaleString(undefined, { maximumFractionDigits: 1 })} {selectedMaterial?.unit}
@@ -252,6 +257,7 @@ export default function ForecastingPage() {
                 <Legend iconType="plainline" wrapperStyle={{ fontSize: "0.78rem", paddingTop: 16 }} />
                 {/* connectNulls={false} — a missing month must render as a
                     real gap, never bridged as if data existed. */}
+                <Line type="monotone" dataKey="purchased" name="Purchased (PO)" stroke="#2563eb" strokeWidth={2} strokeDasharray="5 4" dot={{ r: 4, fill: "#2563eb" }} connectNulls={false} />
                 <Line type="monotone" dataKey="actual"    name="Actual Usage" stroke="#374151" strokeWidth={2.5} dot={{ r: 4, fill: "#374151" }} connectNulls={false} />
                 <Line type="monotone" dataKey="predicted" name="AI Predicted" stroke="#f97316" strokeWidth={2.5} dot={{ r: 4, fill: "#f97316" }} connectNulls={false} />
               </LineChart>

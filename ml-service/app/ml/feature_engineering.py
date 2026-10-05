@@ -23,10 +23,10 @@ _PRIMARY_SECTION_INDEX = {name: i + 1 for i, name in enumerate(PRIMARY_SECTIONS)
 # by dropping actual_used entirely and redefining usage_rate from boq_quantity
 # (the estimate, legitimately known before the actual is) instead.
 #
-# boq_quantity is the BOQ measure (sq.m/l.m/...) while the target is actual
-# usage in the PURCHASE unit (pcs/bag/box/...), and nothing else here says
+# boq_quantity is the BOQ measure (sq.m/l.m/...) while the target is the PO
+# quantity in the PURCHASE unit (pcs/bag/box/...), and nothing else here says
 # which material a row is — so material_ratio (that material's median
-# actual ÷ boq_quantity, see material_ratios.py) and ratio_estimate
+# PO quantity ÷ boq_quantity, see material_ratios.py) and ratio_estimate
 # (boq_quantity × material_ratio, the plain conversion) carry the
 # material-specific scale the models otherwise couldn't learn. Adding them
 # changes the column count, so models trained before this need retraining

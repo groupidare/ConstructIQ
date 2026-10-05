@@ -6,12 +6,12 @@ from typing import Any
 from app.ml import r2_storage
 
 # Material-specific BOQ-quantity → purchase-unit conversion, learned from
-# completed projects. The models predict ACTUAL usage in the purchase unit
+# completed projects. The models predict the PO quantity in the purchase unit
 # (pcs/bag/box/...) from the BOQ quantity (sq.m/l.m/...), but nothing else in
 # FEATURE_COLS says WHICH material a row is — and the conversion is almost
 # entirely material-specific (CHB ≈ 18 pcs per sq.m of wall, floor tile ≈
 # 0.7 box per sq.m). So each (material_id, normalized purchase unit) gets the
-# MEDIAN of actual ÷ boq_quantity across its training rows (median, not mean,
+# MEDIAN of PO quantity ÷ boq_quantity across its training rows (median, not mean,
 # so one typo'd row can't drag a whole material's ratio), with the global
 # median over every training row as the fallback for a material/unit never
 # seen before. The ratio itself and boq_quantity × ratio are both features
@@ -49,7 +49,7 @@ def empty_table() -> dict:
 
 def fit(records: list[dict], targets: list[float]) -> dict:
     """Ratio table from training rows (records carry material_id,
-    purchase_unit and boq_quantity; targets are the actual quantities used,
+    purchase_unit and boq_quantity; targets are the PO quantities bought,
     in that purchase unit). Rows with no BOQ quantity can't give a ratio."""
     ratios_by_key: dict[str, list[float]] = {}
     unit_counts: dict[str, dict[str, int]] = {}
@@ -102,7 +102,7 @@ def attach_out_of_project(records: list[dict], targets: list[float]) -> None:
     """Training-time version of attach(): each row's ratio comes from a table
     fitted WITHOUT its own project's rows. Using the full table instead would
     leak the target straight into the feature — a material seen on only one
-    row would get ratio == actual ÷ boq_quantity exactly, so ratio_estimate
+    row would get ratio == target ÷ boq_quantity exactly, so ratio_estimate
     would BE the target, and the models would learn to trust that feature far
     more than it deserves on a genuinely new project (which is never in the
     table). Out-of-project ratios are what a new project actually gets."""

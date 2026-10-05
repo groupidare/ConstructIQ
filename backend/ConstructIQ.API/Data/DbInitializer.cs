@@ -231,13 +231,16 @@ public static class DbInitializer
     // re-saving each historical Material Plan would now do, without anyone
     // having to. Run via `dotnet run --backfill-historical-purchase-units`
     // (see Program.cs); safe to re-run — a row already matching the rule is
-    // left untouched and not reported.
+    // left untouched and not reported. Only rows that have PO-report lines
+    // at all: a project completed through the app is IsHistorical too, and
+    // its rows' Est. Qty is a real procurement figure that has no PO lines
+    // to be derived from — never cleared here.
     public static async Task BackfillHistoricalPurchaseUnitsAsync(AppDbContext context)
     {
         var rows = await context.BOQItems
             .Include(b => b.Project)
             .Include(b => b.HistoricalSupplies)
-            .Where(b => b.Project.IsHistorical)
+            .Where(b => b.Project.IsHistorical && b.HistoricalSupplies.Any())
             .ToListAsync();
 
         var changed = 0;
@@ -255,7 +258,7 @@ public static class DbInitializer
                 $"({row.EstimatedQuantity} {row.Unit}): purchase " +
                 $"{row.EstimatedPurchaseQuantity?.ToString() ?? "—"} {row.EstimatedPurchaseUnit ?? ""} → " +
                 $"{newQuantity?.ToString() ?? "—"} {newUnit ?? ""}" +
-                (resolved is null ? $" (cleared: {(row.HistoricalSupplies.Count == 0 ? "no PO lines" : "PO lines not all in one unit with a positive total")})" : string.Empty));
+                (resolved is null ? " (cleared: PO lines not all in one unit with a positive total)" : string.Empty));
             row.EstimatedPurchaseQuantity = newQuantity;
             row.EstimatedPurchaseUnit = newUnit;
             row.UpdatedAt = DateTime.UtcNow;

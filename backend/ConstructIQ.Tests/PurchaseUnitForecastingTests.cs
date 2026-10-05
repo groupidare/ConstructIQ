@@ -66,7 +66,7 @@ public class PurchaseUnitForecastingTests(DatabaseFixture fixture)
         Assert.Null(saved.EstimatedPurchaseUnit);
     }
 
-    [Fact] // No PO lines → both null; the row stays in its BOQ unit.
+    [Fact] // No PO lines and nothing sent → both null; the row stays in its BOQ unit.
     public async Task HistoricalSave_NoPoLines_LeaveBothNull()
     {
         await using var db = fixture.CreateContext();
@@ -167,6 +167,7 @@ public class PurchaseUnitForecastingTests(DatabaseFixture fixture)
         Assert.Equal(2160, point.ActualUsage);
         Assert.Equal(2200, point.AiPredicted);
         Assert.Equal(2368, point.EstimatedTotal);   // PO quantity is the baseline, not 130 sq.m
+        Assert.Equal(2368, point.PurchasedTotal);   // "Purchased (PO)" line — the real PO total
     }
 
     [Fact] // A backfilled project's leave-one-project-out evaluation beats every ordinary forecast run on it.
@@ -186,5 +187,41 @@ public class PurchaseUnitForecastingTests(DatabaseFixture fixture)
 
         var point = Assert.Single(await service.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null));
         Assert.Equal(2050, point.AiPredicted);
+    }
+
+    [Fact] // A project completed through the app is IsHistorical too — re-saving its rows (no PO-report lines) keeps their Est. Qty.
+    public async Task AppCompletedProject_ResaveWithoutPoLines_KeepsEstQty()
+    {
+        await using var db = fixture.CreateContext();
+        var (user, project, material) = await SeedHistoricalProjectAsync(db);
+        var service = new BOQService(db);
+
+        var row = HistoricalRow(material.Id, actual: 450, [], clientPurchaseQuantity: 500, clientPurchaseUnit: "pc");
+        var saved = (await service.BulkSaveAsync(project.Id, [row], user.Id)).Single();
+        Assert.Equal(500, saved.EstimatedPurchaseQuantity);
+        Assert.Equal("pc", saved.EstimatedPurchaseUnit);
+
+        // No PO-report lines and nothing delivered → no "Purchased (PO)" figure, never the Est. Qty standing in.
+        var point = Assert.Single(await service.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null));
+        Assert.Equal(450, point.ActualUsage);
+        Assert.Null(point.PurchasedTotal);
+    }
+
+    [Fact] // A project completed through the app charts its Delivered PO quantity as "Purchased (PO)".
+    public async Task Chart_LiveCompletedProject_PurchasedIsDeliveredPoQuantity()
+    {
+        await using var db = fixture.CreateContext();
+        var user = await TestDataBuilder.CreateUserAsync(db);
+        var material = await TestDataBuilder.CreateMaterialAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, user.Id, status: ProjectStatus.Active);
+        var boq = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 6,
+            estimatedPurchaseQuantity: 100, estimatedPurchaseUnit: "pcs", actualQuantity: 110);
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, project.Id, user.Id, material.Id, 120, boqItemId: boq.Id);
+        await TestDataBuilder.CompleteProjectAsync(db, project.Id);
+
+        var point = Assert.Single(await new BOQService(db).GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null));
+        Assert.Equal("pcs", point.Unit);
+        Assert.Equal(120, point.PurchasedTotal);
+        Assert.Equal(110, point.ActualUsage);
     }
 }

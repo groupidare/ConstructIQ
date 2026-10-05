@@ -131,6 +131,9 @@ export interface MonthlyDemandSummary {
   projectCount: number;
   contributingProjects: string[];
   estimatedTotal: number | null;
+  // "Purchased (PO)": what was really bought — historical rows' PO-report
+  // totals, or Delivered PO quantities. Null when no line has one.
+  purchasedTotal: number | null;
   excessTotal: number | null;
   wasteTotal: number | null;
 }

@@ -140,6 +140,10 @@ public class MonthlyDemandSummaryDto
     public int      ProjectCount         { get; set; }
     public List<string> ContributingProjects { get; set; } = [];
     public decimal? EstimatedTotal       { get; set; }
+    // "Purchased (PO)" line: what was really bought for this month's lines —
+    // historical rows' PO-report totals, or Delivered PO quantities for
+    // projects completed through the app. Null when no line has one.
+    public decimal? PurchasedTotal       { get; set; }
     public decimal? ExcessTotal          { get; set; }
     public decimal? WasteTotal           { get; set; }
 }

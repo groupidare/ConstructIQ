@@ -31,6 +31,18 @@ public class BOQService(AppDbContext db) : IBOQService
     // linked BOQ item belongs to the PO's project.
     private async Task<Dictionary<int, decimal>> GetDeliveredBaselinesAsync(List<BOQItem> items)
     {
+        var delivered = await GetDeliveredTotalsAsync(items);
+        return items.ToDictionary(
+            item => item.Id,
+            item => delivered[item.Id] > 0 ? delivered[item.Id] : (item.EstimatedPurchaseQuantity ?? item.EstimatedQuantity));
+    }
+
+    // The Delivered PO quantity matched to each BOQ line (0 when nothing's
+    // been delivered) — the raw figure GetDeliveredBaselinesAsync falls back
+    // from, also the "Purchased (PO)" figure for a project completed through
+    // the app (see GetReconciledBoqItemsAsync).
+    private async Task<Dictionary<int, decimal>> GetDeliveredTotalsAsync(List<BOQItem> items)
+    {
         var boqItemIds = items.Select(b => b.Id).ToHashSet();
         var byDirectId = await db.PurchaseOrderMaterials
             .Where(pom => pom.PurchaseOrder.Status == PurchaseOrderStatus.Delivered
@@ -56,15 +68,11 @@ public class BOQService(AppDbContext db) : IBOQService
                 fallbackTotals[g.Key] = g.Sum(r => r.Quantity);
         }
 
-        var result = new Dictionary<int, decimal>();
-        foreach (var item in items)
-        {
-            var delivered = byDirectId.TryGetValue(item.Id, out var direct)
+        return items.ToDictionary(
+            item => item.Id,
+            item => byDirectId.TryGetValue(item.Id, out var direct)
                 ? direct
-                : fallbackTotals.GetValueOrDefault((item.ProjectId, item.MaterialId, item.PhaseId), 0);
-            result[item.Id] = delivered > 0 ? delivered : (item.EstimatedPurchaseQuantity ?? item.EstimatedQuantity);
-        }
-        return result;
+                : fallbackTotals.GetValueOrDefault((item.ProjectId, item.MaterialId, item.PhaseId), 0));
     }
 
     public async Task<IEnumerable<BOQItemResponseDto>> GetByProjectAsync(int projectId)
@@ -153,13 +161,21 @@ public class BOQService(AppDbContext db) : IBOQService
             // what was actually bought, i.e. the sum of this row's own real PO
             // lines when they're all in one unit (e.g. 130 sq.m of CHB wall →
             // 2,368 pcs). That's the unit its Actual Qty is typed in, so it's
-            // also the baseline the plausibility check below compares against
-            // and the unit the Forecasting chart/ML model see for this row.
-            // Mixed units or no PO lines → both stay null and the row stays in
-            // its BOQ unit. Taken from this save's lines when it carries them
-            // (same rounding they're stored with below), else from the lines
-            // already on file for this row.
+            // also the baseline the plausibility check below compares against,
+            // the unit the Forecasting chart/ML model see for this row, and the
+            // quantity the model learns to predict. Mixed units → both null and
+            // the row stays in its BOQ unit. Taken from this save's lines when
+            // it carries them (same rounding they're stored with below), else
+            // from the lines already on file for this row.
+            //
+            // Only for rows that actually HAVE PO-report lines: a project
+            // completed through the app is flagged IsHistorical too (see
+            // ProjectService), but its rows have no HistoricalMaterialSupply
+            // lines — their Est. Qty is a real procurement figure (manual or
+            // AI-filled) that must survive a re-save untouched, not be wiped
+            // to null for lacking lines it was never going to have.
             (decimal Quantity, string Unit)? historicalPurchase = null;
+            var usesPoLines = false;
             if (project.IsHistorical)
             {
                 var poLines = item.HistoricalSupply is not null
@@ -174,6 +190,7 @@ public class BOQService(AppDbContext db) : IBOQService
                             .Select(h => ((string?)h.Unit, h.Quantity))
                             .ToList()
                         : [];
+                usesPoLines = poLines.Count > 0;
                 historicalPurchase = CompletedProjectDemandRules.ResolveHistoricalPurchase(poLines);
             }
 
@@ -185,7 +202,7 @@ public class BOQService(AppDbContext db) : IBOQService
             // GetReconciledBoqItemsAsync already flags with, kept in sync.
             if (item.ActualQuantity is > 0)
             {
-                var plausibilityBaseline = project.IsHistorical
+                var plausibilityBaseline = usesPoLines
                     ? historicalPurchase?.Quantity ?? item.EstimatedQuantity
                     : item.EstimatedPurchaseQuantity ?? item.EstimatedQuantity;
                 if (plausibilityBaseline > 0 && item.ActualQuantity.Value > plausibilityBaseline * ImplausibleActualMultiplier)
@@ -202,7 +219,7 @@ public class BOQService(AppDbContext db) : IBOQService
             if (item.ActualQuantity is > 0)
                 entity.IsUsageConfirmed = true;
             entity.Notes             = item.Notes;
-            if (project.IsHistorical)
+            if (usesPoLines)
             {
                 entity.EstimatedPurchaseQuantity = historicalPurchase?.Quantity;
                 entity.EstimatedPurchaseUnit     = historicalPurchase?.Unit;
@@ -536,10 +553,15 @@ public class BOQService(AppDbContext db) : IBOQService
         };
     }
 
+    // Purchased: what was really bought for the line, in its Unit — the PO
+    // total of a historical row's own PO-report lines, or the Delivered PO
+    // quantity of a line completed through the app. Null when there's no
+    // real purchase figure at all (never the plan estimate standing in).
     private record ReconciledBoqItem(
         int BOQItemId, int ProjectId, string ProjectName,
         int MaterialId, string MaterialName, string Unit, DateTime ReportingMonth,
-        decimal EstimatedQuantity, decimal ExcessTotal, decimal WasteTotal, decimal ActualUsage);
+        decimal EstimatedQuantity, decimal ExcessTotal, decimal WasteTotal, decimal ActualUsage,
+        decimal? Purchased);
 
     // IsBackfilled: entered via "Add Completed Project" rather than finished
     // through the app — told apart by never having logged a 100% progress
@@ -622,7 +644,14 @@ public class BOQService(AppDbContext db) : IBOQService
                 .Select(e => new { BOQItemId = e.BOQItemId!.Value, e.Quantity, e.IsReusable })
                 .ToListAsync())
             .ToLookup(e => e.BOQItemId);
-        var baselines = await GetDeliveredBaselinesAsync(items);
+        var deliveredTotals = await GetDeliveredTotalsAsync(items);
+        var itemIds = items.Select(b => b.Id).ToList();
+        var itemsWithPoLines = (await db.HistoricalMaterialSupplies
+                .Where(h => itemIds.Contains(h.BOQItemId))
+                .Select(h => h.BOQItemId)
+                .Distinct()
+                .ToListAsync())
+            .ToHashSet();
 
         var valid = new List<ReconciledBoqItem>();
         var flagged = new List<FlaggedExcessItemDto>();
@@ -641,7 +670,11 @@ public class BOQService(AppDbContext db) : IBOQService
             // catalog entry in sq.m). Same row-unit-first rule the ML service
             // forecasts in, so a line's Actual Usage and its forecast always
             // land on the same unit.
-            var baseline = baselines[boqItem.Id];
+            var delivered = deliveredTotals[boqItem.Id];
+            var baseline = delivered > 0 ? delivered : (boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity);
+            decimal? purchased = delivered > 0 ? delivered
+                : itemsWithPoLines.Contains(boqItem.Id) ? boqItem.EstimatedPurchaseQuantity
+                : null;
             var effectiveUnit = CompletedProjectDemandRules.ResolveBoqLineUnit(
                 boqItem.EstimatedPurchaseQuantity.HasValue ? boqItem.EstimatedPurchaseUnit : null,
                 boqItem.Unit, boqItem.Material.Unit);
@@ -699,7 +732,7 @@ public class BOQService(AppDbContext db) : IBOQService
                 boqItem.Id, boqItem.ProjectId, project.Name,
                 boqItem.MaterialId, boqItem.Material.Name, effectiveUnit,
                 CompletedProjectDemandRules.ToMonth(project.CompletedAt),
-                baseline, excessTotal, wasteTotal, actualUsage));
+                baseline, excessTotal, wasteTotal, actualUsage, purchased));
         }
 
         return (valid, flagged);
@@ -871,6 +904,11 @@ public class BOQService(AppDbContext db) : IBOQService
                 ProjectCount = projectNames.Count,
                 ContributingProjects = projectNames,
                 EstimatedTotal = items is null ? null : items.Sum(i => i.EstimatedQuantity),
+                // Only lines with a real purchase figure count; null — never
+                // zero — when none of this month's lines has one.
+                PurchasedTotal = items is null || items.All(i => i.Purchased is null)
+                    ? null
+                    : items.Sum(i => i.Purchased ?? 0),
                 ExcessTotal    = items is null ? null : items.Sum(i => i.ExcessTotal),
                 WasteTotal     = items is null ? null : items.Sum(i => i.WasteTotal),
             };

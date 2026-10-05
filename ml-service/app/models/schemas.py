@@ -35,7 +35,7 @@ class ForecastedMaterial(BaseModel):
 
 
 class ForecastedLine(BaseModel):
-    """One BOQ row's own prediction (actual usage, in `unit` — the row's
+    """One BOQ row's own prediction (PO/purchase quantity, in `unit` — the row's
     purchase unit when it has one). forecasted_materials sums these per
     (material, unit); this keeps them per row."""
     boq_item_id:          int
