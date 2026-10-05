@@ -2,7 +2,7 @@
 
 import { useRef } from 'react';
 import { Upload, FileText, ExternalLink, X } from 'lucide-react';
-import { getApiOrigin } from '@/lib/api';
+import { resolveUploadUrl } from '@/lib/avatar';
 import type { ProjectType } from '@/types/project';
 import { PROJECT_TYPES } from '@/types/project';
 import type { ProjectDocument } from '@/types/document';
@@ -81,7 +81,7 @@ export default function MeasurementsTab({
           {blueprints.map(doc => (
             <div key={doc.id} style={{ display: 'flex', alignItems: 'center', gap: 6, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff' }}>
               <a
-                href={`${getApiOrigin()}${doc.url}`}
+                href={resolveUploadUrl(doc.url) ?? "#"}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', textDecoration: 'none', flex: 1, minWidth: 0 }}

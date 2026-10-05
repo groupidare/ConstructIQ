@@ -11,7 +11,7 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/purchase-orders")]
 [Authorize]
-public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env, Services.Interfaces.INotificationService notifications) : ControllerBase
+public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFileStorageService storage, Services.Interfaces.INotificationService notifications) : ControllerBase
 {
     // Roles that manage the PO lifecycle (create + set Pending/Approved).
     // ProjectManager is view-only for Procurement, and WarehousePersonnel
@@ -205,22 +205,16 @@ public class PurchaseOrdersController(AppDbContext db, IWebHostEnvironment env, 
         if (dto.PodPhotos.Count == 0)
             return BadRequest(new { message = "At least one proof-of-delivery photo is required." });
 
-        var uploadsDir = Path.Combine(env.WebRootPath, "uploads", "deliveries");
-        Directory.CreateDirectory(uploadsDir);
-
         async Task<string> SaveFileAsync(IFormFile file, Dictionary<string, string> allowedTypes, string typeLabel)
         {
             if (file.Length > MaxPhotoBytes)
                 throw new InvalidOperationException($"{typeLabel} must be 5MB or smaller.");
-            if (!allowedTypes.TryGetValue(file.ContentType, out var ext))
+            if (!allowedTypes.ContainsKey(file.ContentType))
                 throw new InvalidOperationException(allowedTypes == AllowedDocTypes
                     ? $"{typeLabel} must be a JPEG, PNG, WebP, or PDF file."
                     : $"{typeLabel} must be a JPEG, PNG, or WebP image.");
 
-            var fileName = $"{id}_{Guid.NewGuid():N}{ext}";
-            await using var stream = System.IO.File.Create(Path.Combine(uploadsDir, fileName));
-            await file.CopyToAsync(stream);
-            return $"/uploads/deliveries/{fileName}";
+            return await storage.UploadAsync(file, "deliveries");
         }
 
         string? poFileUrl = null;

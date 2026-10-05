@@ -44,7 +44,7 @@ public class DeliveryBatchPhoto
     public int DeliveryBatchId { get; set; }
     public DeliveryBatch DeliveryBatch { get; set; } = null!;
 
-    [Required, MaxLength(255)]
+    [Required, MaxLength(500)]
     public string Url { get; set; } = string.Empty;
 
     // Rows saved before this column existed are all real proof-of-delivery

@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X } from 'lucide-react';
-import { getApiOrigin } from '@/lib/api';
+import { resolveUploadUrl } from '@/lib/avatar';
 import { formatDate } from '@/lib/utils';
 import type { Project, ProjectType } from '@/types/project';
 import type { ProjectDocument } from '@/types/document';
@@ -413,7 +413,7 @@ export default function MaterialPlanTab({
             {boqDocs.map(doc => (
               <div key={doc.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <FileText style={{ width: 12, height: 12, color: '#9ca3af', flexShrink: 0 }} />
-                <a href={`${getApiOrigin()}${doc.url}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', color: '#374151', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <a href={resolveUploadUrl(doc.url) ?? "#"} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', color: '#374151', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {doc.fileName}
                 </a>
                 <ExternalLink style={{ width: 10, height: 10, color: '#9ca3af', flexShrink: 0 }} />
@@ -780,7 +780,7 @@ export default function MaterialPlanTab({
             {poDocs.map(doc => (
               <div key={doc.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <FileText style={{ width: 12, height: 12, color: '#9ca3af', flexShrink: 0 }} />
-                <a href={`${getApiOrigin()}${doc.url}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', color: '#374151', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <a href={resolveUploadUrl(doc.url) ?? "#"} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', color: '#374151', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {doc.fileName}
                 </a>
                 <ExternalLink style={{ width: 10, height: 10, color: '#9ca3af', flexShrink: 0 }} />

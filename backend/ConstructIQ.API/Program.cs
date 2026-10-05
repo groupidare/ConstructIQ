@@ -48,6 +48,7 @@ builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IBackupJobService, BackupJobService>();
 builder.Services.AddScoped<IPhaseService, PhaseService>();
 builder.Services.AddScoped<IWarehouseStockService, WarehouseStockService>();
+builder.Services.AddSingleton<IFileStorageService, R2FileStorageService>();
 builder.Services.AddScoped<IWeatherGeocodingService, WeatherGeocodingService>();
 builder.Services.AddHostedService<WeatherWatcherService>();
 builder.Services.AddHttpClient("MLService", client =>
@@ -105,9 +106,10 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseStaticFiles(); // serves wwwroot/uploads/{projectId}/... for blueprint/BOQ previews
+// No app.UseStaticFiles() — uploads now live on Cloudflare R2 (see
+// R2FileStorageService), served directly to the browser from there, not
+// proxied through this app's own (ephemeral, Render-free-tier) disk.
 app.UseCors("FrontendPolicy");
-app.UseStaticFiles(); // serves wwwroot/uploads/avatars/* publicly, e.g. GET /uploads/avatars/8.jpg
 app.UseMiddleware<ActivityLoggingMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();

@@ -38,6 +38,6 @@ public class DeliveryPhoto
     public int DeliveryEvaluationId { get; set; }
     public DeliveryEvaluation DeliveryEvaluation { get; set; } = null!;
 
-    [Required, MaxLength(255)]
+    [Required, MaxLength(500)]
     public string Url { get; set; } = string.Empty;
 }

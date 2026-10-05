@@ -13,7 +13,7 @@ import NewProjectWizardModal from "@/components/projects/NewProjectWizardModal";
 import AddCompletedProjectWizardModal from "@/components/projects/AddCompletedProjectWizardModal";
 import { useDocumentRepository } from "@/hooks/useDocumentRepository";
 import { useSiteEngineers } from "@/hooks/useSiteEngineers";
-import { getApiOrigin } from "@/lib/api";
+import { resolveUploadUrl } from "@/lib/avatar";
 import { formatDate } from "@/lib/utils";
 import type { Project as RealProject, ProjectType } from "@/types/project";
 import { PROJECT_TYPES, PROJECT_STATUSES } from "@/types/project";
@@ -324,7 +324,7 @@ function FileRepositoryModal({ onClose, projects }: { onClose:()=>void; projects
                           </div>
                         </div>
                         <div style={{ display:"flex", alignItems:"center", gap:4, flexShrink:0 }}>
-                          <a href={`${getApiOrigin()}${doc.url}`} target="_blank" rel="noopener noreferrer" title="Preview" style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af", padding:4, display:"flex" }}>
+                          <a href={resolveUploadUrl(doc.url) ?? "#"} target="_blank" rel="noopener noreferrer" title="Preview" style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af", padding:4, display:"flex" }}>
                             <ExternalLink style={{ width:15, height:15 }} />
                           </a>
                           <button onClick={()=>handleDelete(doc)} title="Delete" style={{ background:"none", border:"none", cursor:"pointer", color:"#d1d5db", padding:4 }}>

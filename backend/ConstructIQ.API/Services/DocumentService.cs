@@ -4,7 +4,6 @@ using ConstructIQ.API.Models.DTOs.Document;
 using ConstructIQ.API.Models.DTOs.BOQ;
 using ConstructIQ.API.Models.Entities;
 using ConstructIQ.API.Services.Interfaces;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 
@@ -12,7 +11,7 @@ namespace ConstructIQ.API.Services;
 
 public class DocumentService(
     AppDbContext db,
-    IWebHostEnvironment env,
+    IFileStorageService storage,
     IHttpClientFactory httpFactory,
     ILogger<DocumentService> logger) : IDocumentService
 {
@@ -32,15 +31,7 @@ public class DocumentService(
         _ = await db.Projects.FindAsync(projectId)
             ?? throw new KeyNotFoundException("Project not found.");
 
-        var webRoot = env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot");
-        var uploadsDir = Path.Combine(webRoot, "uploads", projectId.ToString());
-        Directory.CreateDirectory(uploadsDir);
-
-        var storedFileName = $"{Guid.NewGuid():N}_{Path.GetFileName(file.FileName)}";
-        var fullPath = Path.Combine(uploadsDir, storedFileName);
-
-        using (var stream = new FileStream(fullPath, FileMode.Create))
-            await file.CopyToAsync(stream);
+        var storagePath = await storage.UploadAsync(file, $"documents/{projectId}");
 
         var doc = new ProjectDocument
         {
@@ -49,7 +40,7 @@ public class DocumentService(
             CategoryOther    = parsedCategory == DocumentCategory.Other ? categoryOther!.Trim() : null,
             Description      = string.IsNullOrWhiteSpace(description) ? null : description.Trim(),
             FileName         = file.FileName,
-            StoragePath      = $"/uploads/{projectId}/{storedFileName}",
+            StoragePath      = storagePath,
             SizeBytes        = file.Length,
             UploadedByUserId = userId,
         };
@@ -199,16 +190,12 @@ public class DocumentService(
     // Uploads the file's actual bytes to the ml-service rather than a local
     // path — the backend and ml-service are separate processes with no
     // shared filesystem in any real deployment (Render, Docker containers),
-    // so a path only meaningful on the backend's own disk would never
-    // resolve on the other side. The backend still reads the file from its
-    // own wwwroot/uploads as before; only the transport to the ml-service
-    // changed, from "here's where it is" to "here it is".
+    // so a path only meaningful on one side would never resolve on the
+    // other. The file now lives on R2, so this just does a plain GET
+    // against its public URL rather than reading local disk.
     private async Task<MultipartFormDataContent> BuildParseRequestContentAsync(ProjectDocument doc)
     {
-        var webRoot = env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot");
-        var absolutePath = Path.Combine(webRoot, doc.StoragePath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-
-        var bytes = await File.ReadAllBytesAsync(absolutePath);
+        var bytes = await httpFactory.CreateClient().GetByteArrayAsync(doc.StoragePath);
         var content = new MultipartFormDataContent
         {
             { new StringContent(doc.ProjectId.ToString()), "project_id" },
@@ -222,10 +209,8 @@ public class DocumentService(
         var doc = await db.ProjectDocuments.FindAsync(documentId);
         if (doc is null) return false;
 
-        var webRoot = env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot");
-        var absolutePath = Path.Combine(webRoot, doc.StoragePath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-        try { if (File.Exists(absolutePath)) File.Delete(absolutePath); }
-        catch (Exception ex) { logger.LogWarning(ex, "Couldn't delete file on disk for document {DocumentId}.", documentId); }
+        try { await storage.DeleteAsync(doc.StoragePath); }
+        catch (Exception ex) { logger.LogWarning(ex, "Couldn't delete R2 object for document {DocumentId}.", documentId); }
 
         db.ProjectDocuments.Remove(doc);
         await db.SaveChangesAsync();

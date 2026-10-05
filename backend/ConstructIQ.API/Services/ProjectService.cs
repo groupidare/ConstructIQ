@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class ProjectService(AppDbContext db, IWebHostEnvironment env, IWeatherGeocodingService geocoding) : IProjectService
+public class ProjectService(AppDbContext db, IFileStorageService storage, IWeatherGeocodingService geocoding) : IProjectService
 {
     private static readonly Dictionary<string, string> AllowedPhotoTypes = new()
     {
@@ -161,22 +161,17 @@ public class ProjectService(AppDbContext db, IWebHostEnvironment env, IWeatherGe
         var project = await db.Projects.Include(p => p.Phases).FirstOrDefaultAsync(p => p.Id == projectId);
         if (project is null) return null;
 
-        var uploadsDir = Path.Combine(env.WebRootPath, "uploads", "progress");
-        Directory.CreateDirectory(uploadsDir);
-
         var photos = new List<ProjectProgressPhoto>();
         foreach (var file in dto.Photos)
         {
             if (file.Length == 0) continue;
             if (file.Length > MaxPhotoBytes)
                 throw new InvalidOperationException("Each photo must be 5MB or smaller.");
-            if (!AllowedPhotoTypes.TryGetValue(file.ContentType, out var ext))
+            if (!AllowedPhotoTypes.ContainsKey(file.ContentType))
                 throw new InvalidOperationException("Only JPEG, PNG, or WebP images are allowed.");
 
-            var fileName = $"{projectId}_{Guid.NewGuid():N}{ext}";
-            await using (var stream = File.Create(Path.Combine(uploadsDir, fileName)))
-                await file.CopyToAsync(stream);
-            photos.Add(new ProjectProgressPhoto { Url = $"/uploads/progress/{fileName}" });
+            var url = await storage.UploadAsync(file, "progress");
+            photos.Add(new ProjectProgressPhoto { Url = url });
         }
 
         var update = new ProjectProgressUpdate

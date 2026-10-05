@@ -7,8 +7,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from app.ml.feature_engineering import records_to_dataframe, FEATURE_COLS
+from app.ml import r2_storage
 
 MODEL_PATH = Path("trained_models/rf_model.pkl")
+R2_KEY = "models/rf_model.pkl"
 
 
 def train(records: list[dict], targets: list[float]) -> dict:
@@ -34,13 +36,18 @@ def train(records: list[dict], targets: list[float]) -> dict:
 
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, MODEL_PATH)
+    # Persisted so a later cold start (a fresh Render deploy/restart wipes
+    # this container's own local disk) can self-restore instead of silently
+    # degrading to the naive fallback in predict() below.
+    r2_storage.upload_file(MODEL_PATH, R2_KEY)
 
     return {"mae": mae, "rmse": rmse, "r2": r2}
 
 
 def predict(records: list[dict]) -> np.ndarray:
-    if not MODEL_PATH.exists():
-        # Fallback: return BOQ quantity as naive forecast
+    if not MODEL_PATH.exists() and not r2_storage.download_file(R2_KEY, MODEL_PATH):
+        # Nothing locally AND nothing in R2 — genuinely never trained yet.
+        # Fallback: return BOQ quantity as naive forecast.
         return np.array([float(r.get("boq_quantity", 0)) for r in records])
 
     model = joblib.load(MODEL_PATH)
