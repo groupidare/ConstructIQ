@@ -113,8 +113,8 @@ export interface HistoricalEstimate {
   matchCount: number;
 }
 
-// One point on the Forecasting page's chart — real project data (not a
-// trained model's own output), see BOQController.GetMonthlyDemandSummary.
+// One point on the Forecasting page's chart — completed projects only, each
+// placed in its completion month, see BOQController.GetMonthlyDemandSummary.
 export interface MonthlyDemandSummary {
   month: string;
   monthLabel: string;
@@ -123,10 +123,8 @@ export interface MonthlyDemandSummary {
   unit: string;
   actualUsage: number | null;
   aiPredicted: number | null;
-  // "Provisional" while a contributing project is still active (the total
-  // could still change); "Finalized" once every contributing project is
-  // Completed/historical. Null when actualUsage itself is null.
-  reconciliationStatus: "Provisional" | "Finalized" | null;
+  // Every project behind either figure this month.
+  projectCount: number;
   contributingProjects: string[];
   estimatedTotal: number | null;
   excessTotal: number | null;

@@ -23,7 +23,8 @@ public static class TestDataBuilder
     }
 
     public static async Task<Project> CreateProjectAsync(AppDbContext db, int projectManagerId,
-        DateTime? startDate = null, ProjectStatus status = ProjectStatus.Active, bool isHistorical = false, int? siteEngineerId = null)
+        DateTime? startDate = null, ProjectStatus status = ProjectStatus.Active, bool isHistorical = false, int? siteEngineerId = null,
+        DateTime? targetEndDate = null)
     {
         var project = new Project
         {
@@ -32,7 +33,7 @@ public static class TestDataBuilder
             Location = "Test Site",
             Budget = 100000,
             StartDate = startDate ?? DateTime.UtcNow,
-            TargetEndDate = (startDate ?? DateTime.UtcNow).AddMonths(6),
+            TargetEndDate = targetEndDate ?? (startDate ?? DateTime.UtcNow).AddMonths(6),
             ProjectManagerId = projectManagerId,
             SiteEngineerId = siteEngineerId,
             Status = status,
@@ -62,7 +63,8 @@ public static class TestDataBuilder
     }
 
     public static async Task<BOQItem> CreateBoqItemAsync(AppDbContext db, int projectId, int materialId, int createdByUserId,
-        decimal estimatedQuantity, string? unit = null, decimal? estimatedPurchaseQuantity = null, string? estimatedPurchaseUnit = null)
+        decimal estimatedQuantity, string? unit = null, decimal? estimatedPurchaseQuantity = null, string? estimatedPurchaseUnit = null,
+        decimal actualQuantity = 0)
     {
         var item = new BOQItem
         {
@@ -72,6 +74,7 @@ public static class TestDataBuilder
             EstimatedQuantity = estimatedQuantity,
             EstimatedPurchaseQuantity = estimatedPurchaseQuantity,
             EstimatedPurchaseUnit = estimatedPurchaseUnit,
+            ActualQuantity = actualQuantity,
             CreatedByUserId = createdByUserId,
         };
         db.BOQItems.Add(item);
@@ -101,6 +104,25 @@ public static class TestDataBuilder
         db.ForecastResults.Add(result);
         await db.SaveChangesAsync();
         return result;
+    }
+
+    public static async Task CreateProgressUpdateAsync(AppDbContext db, int projectId, int updatedByUserId, int progress, DateTime createdAt)
+    {
+        db.ProjectProgressUpdates.Add(new ProjectProgressUpdate
+        {
+            ProjectId = projectId, Progress = progress, Notes = "Test update",
+            UpdatedByUserId = updatedByUserId, CreatedAt = createdAt,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    // Flips a project to Completed after its data was logged the normal way
+    // (the Forecasting chart only shows finished projects).
+    public static async Task CompleteProjectAsync(AppDbContext db, int projectId)
+    {
+        var project = await db.Projects.FindAsync(projectId);
+        project!.Status = ProjectStatus.Completed;
+        await db.SaveChangesAsync();
     }
 
     public static async Task<Phase> CreatePhaseAsync(AppDbContext db, int projectId)

@@ -28,6 +28,7 @@ public class ExcessWasteServiceTests(DatabaseFixture fixture)
 
         await service.CreateAsync(Dto(project.Id, material.Id, boq.Id, 30, isReusable: true), user.Id);
 
+        await TestDataBuilder.CompleteProjectAsync(db, project.Id);
         var boqService = new BOQService(db);
         var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null)).ToList();
         Assert.Single(summary);
@@ -48,6 +49,7 @@ public class ExcessWasteServiceTests(DatabaseFixture fixture)
 
         await service.CreateAsync(Dto(project.Id, material.Id, boq.Id, 15, isReusable: false), user.Id);
 
+        await TestDataBuilder.CompleteProjectAsync(db, project.Id);
         var boqService = new BOQService(db);
         var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null)).ToList();
         Assert.Single(summary);
@@ -66,6 +68,7 @@ public class ExcessWasteServiceTests(DatabaseFixture fixture)
         await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 200);
         // No ExcessWasteRecord created at all.
 
+        await TestDataBuilder.CompleteProjectAsync(db, project.Id);
         var boqService = new BOQService(db);
         var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null)).ToList();
         Assert.Empty(summary);
@@ -99,6 +102,7 @@ public class ExcessWasteServiceTests(DatabaseFixture fixture)
         await service.CreateAsync(Dto(project.Id, material.Id, boq.Id, 10, isReusable: true), user.Id);
         await service.CreateAsync(Dto(project.Id, material.Id, boq.Id, 10, isReusable: true), user.Id);
 
+        await TestDataBuilder.CompleteProjectAsync(db, project.Id);
         var boqService = new BOQService(db);
         var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null)).ToList();
         Assert.Single(summary);
@@ -128,6 +132,7 @@ public class ExcessWasteServiceTests(DatabaseFixture fixture)
         // And the second (Waste) entry actually succeeds.
         await service.CreateAsync(Dto(project.Id, material.Id, boq.Id, 5, isReusable: false), user.Id);
 
+        await TestDataBuilder.CompleteProjectAsync(db, project.Id);
         var boqService = new BOQService(db);
         var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null)).ToList();
         Assert.Equal(85, summary[0].ActualUsage); // 100 - 10 - 5
@@ -147,6 +152,7 @@ public class ExcessWasteServiceTests(DatabaseFixture fixture)
         await service.CreateAsync(Dto(project.Id, material.Id, boqA.Id, 10, isReusable: true), user.Id);
         await service.CreateAsync(Dto(project.Id, material.Id, boqB.Id, 5, isReusable: true), user.Id);
 
+        await TestDataBuilder.CompleteProjectAsync(db, project.Id);
         var boqService = new BOQService(db);
         var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null)).ToList();
         Assert.Single(summary); // same material+unit+month, aggregated into one chart point
@@ -173,6 +179,7 @@ public class ExcessWasteServiceTests(DatabaseFixture fixture)
         });
         await db.SaveChangesAsync();
 
+        await TestDataBuilder.CompleteProjectAsync(db, project.Id);
         var boqService = new BOQService(db);
         var summary = (await boqService.GetMonthlyDemandSummaryAsync(user.Id, "Admin", material.Id, null)).ToList();
         Assert.Empty(summary);

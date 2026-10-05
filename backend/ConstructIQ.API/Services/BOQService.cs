@@ -421,48 +421,90 @@ public class BOQService(AppDbContext db) : IBOQService
     }
 
     private record ReconciledBoqItem(
-        int BOQItemId, int ProjectId, string ProjectName, bool Finalized,
+        int BOQItemId, int ProjectId, string ProjectName,
         int MaterialId, string MaterialName, string Unit, DateTime ReportingMonth,
         decimal EstimatedQuantity, decimal ExcessTotal, decimal WasteTotal, decimal ActualUsage);
 
-    // Shared core of every Forecasting-chart endpoint below: every BOQItem
-    // that has at least one linked ExcessWasteRecord (the FK link, never
-    // matched by material name), reduced to ONE reporting month per item —
-    // the calendar month of its MOST RECENT record — carrying its full,
-    // all-records-combined Excess/Waste totals. This is what stops "excess
-    // logged in July, waste logged in September" from double-plotting a
-    // partial usage figure in two different months (spec requirement): the
-    // whole, final calculation lands once, in the month it was last touched.
-    // Items failing validation (Excess+Waste > baseline) are returned
-    // separately, never silently included or clamped.
-    private async Task<(List<ReconciledBoqItem> Valid, List<FlaggedExcessItemDto> Flagged)> GetReconciledBoqItemsAsync(
-        int userId, string role, int? materialId, string? unit)
+    private record CompletedProject(string Name, DateTime CompletedAt);
+
+    private sealed class PredictedTotal
     {
-        var recordsQuery = db.ExcessWasteRecords
-            .Where(e => e.BOQItemId != null)
-            .Include(e => e.BOQItem!).ThenInclude(b => b.Project)
-            .Include(e => e.BOQItem!).ThenInclude(b => b.Material)
-            .AsQueryable();
+        public string MaterialName { get; init; } = string.Empty;
+        public string Unit         { get; init; } = string.Empty;
+        public decimal Quantity    { get; set; }
+        public HashSet<int> ProjectIds { get; } = [];
+    }
 
-        // Same SiteEngineer/ProjectManager scoping as ProjectService.GetAllAsync —
-        // this endpoint had none at all before.
+    // The Forecasting chart only ever shows FINISHED projects — every
+    // Completed project this user can see (same SiteEngineer/ProjectManager
+    // scoping as ProjectService.GetAllAsync), each with the date it finished
+    // (see CompletedProjectDemandRules.ResolveCompletionDate). Active and
+    // Planning projects never appear, even with Excess/Waste already logged;
+    // they show up once they're done. Two queries total, never one per project.
+    private async Task<Dictionary<int, CompletedProject>> GetCompletedProjectsAsync(int userId, string role)
+    {
+        var query = db.Projects.Where(p => p.Status == ProjectStatus.Completed);
         if (role is "SiteEngineer")
-            recordsQuery = recordsQuery.Where(e => e.BOQItem!.Project.SiteEngineerId == userId);
+            query = query.Where(p => p.SiteEngineerId == userId);
         else if (role is "ProjectManager")
-            recordsQuery = recordsQuery.Where(e => e.BOQItem!.Project.ProjectManagerId == userId);
+            query = query.Where(p => p.ProjectManagerId == userId);
 
+        var projects = await query.Select(p => new { p.Id, p.Name, p.TargetEndDate }).ToListAsync();
+        var projectIds = projects.Select(p => p.Id).ToList();
+
+        var firstFullProgressAt = await db.ProjectProgressUpdates
+            .Where(u => projectIds.Contains(u.ProjectId) && u.Progress >= 100)
+            .GroupBy(u => u.ProjectId)
+            .Select(g => new { ProjectId = g.Key, At = g.Min(u => u.CreatedAt) })
+            .ToDictionaryAsync(x => x.ProjectId, x => x.At);
+
+        return projects.ToDictionary(
+            p => p.Id,
+            p => new CompletedProject(p.Name, CompletedProjectDemandRules.ResolveCompletionDate(
+                firstFullProgressAt.TryGetValue(p.Id, out var at) ? at : null, p.TargetEndDate)));
+    }
+
+    // Shared core of every Forecasting-chart endpoint below: every BOQItem of
+    // a completed project, reduced to its final Actual Usage and placed in
+    // its project's completion month — never the month an individual
+    // Excess/Waste record happened to be logged in, so a project's whole,
+    // final figure lands once, in the same month as its AI Predicted figure.
+    //  - Lines with Excess/Waste records: Baseline - Excess - Waste, via
+    //    ActualUsageCalculator. Items failing validation (Excess+Waste >
+    //    baseline) are returned separately, never silently included or clamped.
+    //  - Lines without any record: BOQItem.ActualQuantity as-is — either the
+    //    Actual Qty typed in for a backfilled project, or the estimate
+    //    ProjectService stood in at completion because nothing was logged.
+    //    A line still at 0 (e.g. a backfilled row with no Actual Qty typed)
+    //    is "no data", not zero demand, and is skipped.
+    private async Task<(List<ReconciledBoqItem> Valid, List<FlaggedExcessItemDto> Flagged)> GetReconciledBoqItemsAsync(
+        IReadOnlyDictionary<int, CompletedProject> completed, int? materialId, string? unit)
+    {
+        var projectIds = completed.Keys.ToList();
+
+        var itemsQuery = db.BOQItems
+            .Include(b => b.Material)
+            .Where(b => projectIds.Contains(b.ProjectId));
+        var recordsQuery = db.ExcessWasteRecords
+            .Where(e => e.BOQItemId != null && projectIds.Contains(e.BOQItem!.ProjectId));
         if (materialId.HasValue)
+        {
+            itemsQuery = itemsQuery.Where(b => b.MaterialId == materialId.Value);
             recordsQuery = recordsQuery.Where(e => e.BOQItem!.MaterialId == materialId.Value);
+        }
 
-        var records = await recordsQuery.ToListAsync();
+        var items = await itemsQuery.ToListAsync();
+        var recordsByItem = (await recordsQuery
+                .Select(e => new { BOQItemId = e.BOQItemId!.Value, e.Quantity, e.IsReusable })
+                .ToListAsync())
+            .ToLookup(e => e.BOQItemId);
 
         var valid = new List<ReconciledBoqItem>();
         var flagged = new List<FlaggedExcessItemDto>();
 
-        foreach (var group in records.GroupBy(e => e.BOQItemId!.Value))
+        foreach (var boqItem in items)
         {
-            var boqItem = group.First().BOQItem!;
-            var project = boqItem.Project;
+            var project = completed[boqItem.ProjectId];
 
             // The baseline and unit a record's Quantity is actually
             // denominated in — the exact same precedence the Record
@@ -475,31 +517,42 @@ public class BOQService(AppDbContext db) : IBOQService
             var effectiveUnit = !string.IsNullOrWhiteSpace(boqItem.EstimatedPurchaseUnit)
                 ? boqItem.EstimatedPurchaseUnit
                 : boqItem.Material.Unit;
-            if (unit is not null && !string.Equals(effectiveUnit, unit, StringComparison.OrdinalIgnoreCase))
+            if (unit is not null && CompletedProjectDemandRules.NormalizeUnit(effectiveUnit) != CompletedProjectDemandRules.NormalizeUnit(unit))
                 continue;
 
-            var excessTotal = group.Where(e => e.IsReusable).Sum(e => e.Quantity);
-            var wasteTotal  = group.Where(e => !e.IsReusable).Sum(e => e.Quantity);
+            var records = recordsByItem[boqItem.Id].ToList();
+            decimal excessTotal = 0, wasteTotal = 0, actualUsage;
 
-            var result = ActualUsageCalculator.Calculate(baseline, excessTotal, wasteTotal);
-            if (!result.IsValid)
+            if (records.Count > 0)
             {
-                flagged.Add(new FlaggedExcessItemDto
+                excessTotal = records.Where(e => e.IsReusable).Sum(e => e.Quantity);
+                wasteTotal  = records.Where(e => !e.IsReusable).Sum(e => e.Quantity);
+
+                var result = ActualUsageCalculator.Calculate(baseline, excessTotal, wasteTotal);
+                if (!result.IsValid)
                 {
-                    BOQItemId = boqItem.Id, ProjectId = project.Id, ProjectName = project.Name,
-                    MaterialName = boqItem.Material.Name, Unit = effectiveUnit,
-                    EstimatedQuantity = baseline, ExcessTotal = excessTotal, WasteTotal = wasteTotal,
-                    Reason = result.ErrorMessage!,
-                });
-                continue;
+                    flagged.Add(new FlaggedExcessItemDto
+                    {
+                        BOQItemId = boqItem.Id, ProjectId = boqItem.ProjectId, ProjectName = project.Name,
+                        MaterialName = boqItem.Material.Name, Unit = effectiveUnit,
+                        EstimatedQuantity = baseline, ExcessTotal = excessTotal, WasteTotal = wasteTotal,
+                        Reason = result.ErrorMessage!,
+                    });
+                    continue;
+                }
+                actualUsage = result.ActualUsage!.Value;
+            }
+            else
+            {
+                if (boqItem.ActualQuantity <= 0) continue;
+                actualUsage = boqItem.ActualQuantity;
             }
 
-            var reportingMonth = group.Max(e => e.RecordedAt);
             valid.Add(new ReconciledBoqItem(
-                boqItem.Id, project.Id, project.Name, project.Status == ProjectStatus.Completed || project.IsHistorical,
+                boqItem.Id, boqItem.ProjectId, project.Name,
                 boqItem.MaterialId, boqItem.Material.Name, effectiveUnit,
-                new DateTime(reportingMonth.Year, reportingMonth.Month, 1),
-                baseline, excessTotal, wasteTotal, result.ActualUsage!.Value));
+                CompletedProjectDemandRules.ToMonth(project.CompletedAt),
+                baseline, excessTotal, wasteTotal, actualUsage));
         }
 
         return (valid, flagged);
@@ -509,74 +562,100 @@ public class BOQService(AppDbContext db) : IBOQService
     // ForecastResult, never EstimatedPurchaseQuantity (which is user/BOQ-scan
     // entered, at best auto-suggested from a historical-average heuristic;
     // see GetHistoricalEstimateAsync — it has never been touched by the ML
-    // pipeline). Attributed to the calendar month of the run that produced it
-    // (GeneratedAt) — there's no target-period field to do better, and this
-    // is disclosed in the UI rather than presented as more precise than it is.
-    private async Task<Dictionary<(int MaterialId, string Unit, DateTime Month), decimal>> GetMonthlyPredictedTotalsAsync(
-        int userId, string role, int? materialId)
+    // pipeline). Only for the same completed projects the Actual Usage side
+    // covers, only from runs made BEFORE each project finished, and placed in
+    // that project's completion month — so each month's AI Predicted figure
+    // always comes from the same projects as its Actual Usage, never from
+    // unrelated projects that merely ran a forecast that month. Which of a
+    // project's runs count: see CompletedProjectDemandRules.SelectForecastRuns.
+    private async Task<Dictionary<(int MaterialId, string Unit, DateTime Month), PredictedTotal>> GetMonthlyPredictedTotalsAsync(
+        IReadOnlyDictionary<int, CompletedProject> completed, int? materialId, string? unit)
     {
-        var query = db.ForecastedMaterials
-            .Include(fm => fm.Material)
-            .Include(fm => fm.ForecastResult).ThenInclude(fr => fr.Project)
-            .AsQueryable();
+        var projectIds = completed.Keys.ToList();
 
-        if (role is "SiteEngineer")
-            query = query.Where(fm => fm.ForecastResult.Project.SiteEngineerId == userId);
-        else if (role is "ProjectManager")
-            query = query.Where(fm => fm.ForecastResult.Project.ProjectManagerId == userId);
+        var runs = await db.ForecastResults
+            .Where(f => projectIds.Contains(f.ProjectId))
+            .Select(f => new { f.Id, f.ProjectId, f.PhaseId, f.GeneratedAt })
+            .ToListAsync();
+
+        var projectIdByRunId = runs
+            .GroupBy(r => r.ProjectId)
+            .SelectMany(g => CompletedProjectDemandRules
+                .SelectForecastRuns(
+                    g.Select(r => new CompletedProjectDemandRules.ForecastRun(r.Id, r.PhaseId, r.GeneratedAt)),
+                    completed[g.Key].CompletedAt)
+                .Select(runId => (RunId: runId, ProjectId: g.Key)))
+            .ToDictionary(x => x.RunId, x => x.ProjectId);
+        var runIds = projectIdByRunId.Keys.ToList();
+
+        var rowsQuery = db.ForecastedMaterials.Where(fm => runIds.Contains(fm.ForecastResultId));
         if (materialId.HasValue)
-            query = query.Where(fm => fm.MaterialId == materialId.Value);
+            rowsQuery = rowsQuery.Where(fm => fm.MaterialId == materialId.Value);
 
-        var rows = await query.ToListAsync();
+        var rows = await rowsQuery
+            .Select(fm => new { fm.ForecastResultId, fm.MaterialId, fm.Unit, MaterialName = fm.Material.Name, MaterialUnit = fm.Material.Unit, fm.ForecastedQuantity })
+            .ToListAsync();
 
-        // Only the latest forecast run per (project, phase-scope) — otherwise
-        // re-running a forecast for the same project/phase just adds its
-        // quantities on top of the previous run's instead of replacing them,
-        // so running it 3 times in a month would show ~3x the real total.
-        // Mirrors the same latest-run-only rule GetTopForecastedDemandAsync
-        // already applies to its own panel.
-        var latestResultIdPerScope = rows
-            .GroupBy(fm => (fm.ForecastResult.ProjectId, fm.ForecastResult.PhaseId))
-            .Select(g => g.OrderByDescending(fm => fm.ForecastResult.GeneratedAt).ThenByDescending(fm => fm.ForecastResultId).First().ForecastResultId)
-            .ToHashSet();
-        rows = rows.Where(fm => latestResultIdPerScope.Contains(fm.ForecastResultId)).ToList();
+        var totals = new Dictionary<(int MaterialId, string Unit, DateTime Month), PredictedTotal>();
+        foreach (var row in rows)
+        {
+            // A row with no unit of its own was forecast in the catalog
+            // Material's unit — same fallback ForecastService applies.
+            var rowUnit = string.IsNullOrWhiteSpace(row.Unit) ? row.MaterialUnit : row.Unit.Trim();
+            if (unit is not null && CompletedProjectDemandRules.NormalizeUnit(rowUnit) != CompletedProjectDemandRules.NormalizeUnit(unit))
+                continue;
 
-        return rows
-            .GroupBy(fm => (fm.MaterialId, Unit: fm.Unit, Month: new DateTime(fm.ForecastResult.GeneratedAt.Year, fm.ForecastResult.GeneratedAt.Month, 1)))
-            .ToDictionary(g => g.Key, g => g.Sum(fm => fm.ForecastedQuantity));
+            var projectId = projectIdByRunId[row.ForecastResultId];
+            var key = (row.MaterialId, CompletedProjectDemandRules.NormalizeUnit(rowUnit),
+                CompletedProjectDemandRules.ToMonth(completed[projectId].CompletedAt));
+            if (!totals.TryGetValue(key, out var total))
+                totals[key] = total = new PredictedTotal { MaterialName = row.MaterialName, Unit = rowUnit };
+            total.Quantity += row.ForecastedQuantity;
+            total.ProjectIds.Add(projectId);
+        }
+        return totals;
     }
 
     // Drives the Forecasting page's chart for one selected material+unit (or
-    // every material if none is selected). Actual Usage is a monthly TOTAL
-    // (sum, not average) of every reconciled BOQItem's calculated usage whose
-    // reporting month falls in that bucket; AI Predicted is a monthly total
-    // of real forecast-run output for the same material+unit. Either side is
-    // null — never zero — when nothing that month has that figure.
+    // every material if none is selected), completed projects only. Actual
+    // Usage is a monthly TOTAL (sum, not average) of every completed
+    // project's BOQ lines whose completion month falls in that bucket; AI
+    // Predicted is the monthly total of those same projects' pre-completion
+    // forecasts for the same material+unit. Either side is null — never
+    // zero — when nothing that month has that figure.
     public async Task<IEnumerable<MonthlyDemandSummaryDto>> GetMonthlyDemandSummaryAsync(int userId, string role, int? materialId, string? unit)
     {
-        var (valid, _) = await GetReconciledBoqItemsAsync(userId, role, materialId, unit);
-        var predicted = await GetMonthlyPredictedTotalsAsync(userId, role, materialId);
+        var completed = await GetCompletedProjectsAsync(userId, role);
+        var (valid, _) = await GetReconciledBoqItemsAsync(completed, materialId, unit);
+        var predicted = await GetMonthlyPredictedTotalsAsync(completed, materialId, unit);
 
         var actualByKey = valid
-            .GroupBy(r => (r.MaterialId, r.Unit, Month: r.ReportingMonth))
+            .GroupBy(r => (r.MaterialId, Unit: CompletedProjectDemandRules.NormalizeUnit(r.Unit), Month: r.ReportingMonth))
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        var keys = actualByKey.Keys.Concat(predicted.Keys).Distinct().OrderBy(k => k.Month);
+        var keys = actualByKey.Keys.Concat(predicted.Keys).Distinct().OrderBy(k => k.Month).ThenBy(k => k.MaterialId);
 
         return keys.Select(key =>
         {
             var items = actualByKey.GetValueOrDefault(key);
+            var p = predicted.GetValueOrDefault(key);
+            var projectNames = (items?.Select(i => i.ProjectId) ?? [])
+                .Concat(p?.ProjectIds ?? [])
+                .Distinct()
+                .Select(id => completed[id].Name)
+                .OrderBy(n => n)
+                .ToList();
             return new MonthlyDemandSummaryDto
             {
                 Month       = key.Month.ToString("yyyy-MM"),
                 MonthLabel  = key.Month.ToString("MMMM yyyy"),
                 MaterialId  = key.MaterialId,
-                MaterialName = items?.FirstOrDefault()?.MaterialName ?? string.Empty,
-                Unit        = key.Unit,
+                MaterialName = items?.FirstOrDefault()?.MaterialName ?? p?.MaterialName ?? string.Empty,
+                Unit        = items?.FirstOrDefault()?.Unit ?? p?.Unit ?? key.Unit,
                 ActualUsage = items is null ? null : Math.Round(items.Sum(i => i.ActualUsage), 2),
-                AiPredicted = predicted.TryGetValue(key, out var p) ? Math.Round(p, 2) : null,
-                ReconciliationStatus = items is null ? null : (items.All(i => i.Finalized) ? "Finalized" : "Provisional"),
-                ContributingProjects = items?.Select(i => i.ProjectName).Distinct().ToList() ?? [],
+                AiPredicted = p is null ? null : Math.Round(p.Quantity, 2),
+                ProjectCount = projectNames.Count,
+                ContributingProjects = projectNames,
                 EstimatedTotal = items is null ? null : items.Sum(i => i.EstimatedQuantity),
                 ExcessTotal    = items is null ? null : items.Sum(i => i.ExcessTotal),
                 WasteTotal     = items is null ? null : items.Sum(i => i.WasteTotal),
@@ -586,7 +665,8 @@ public class BOQService(AppDbContext db) : IBOQService
 
     public async Task<IEnumerable<MaterialOptionDto>> GetMaterialOptionsAsync(int userId, string role)
     {
-        var (valid, _) = await GetReconciledBoqItemsAsync(userId, role, null, null);
+        var completed = await GetCompletedProjectsAsync(userId, role);
+        var (valid, _) = await GetReconciledBoqItemsAsync(completed, null, null);
         return valid
             .GroupBy(r => (r.MaterialId, r.Unit))
             .Select(g => new MaterialOptionDto
@@ -602,7 +682,8 @@ public class BOQService(AppDbContext db) : IBOQService
 
     public async Task<IEnumerable<FlaggedExcessItemDto>> GetFlaggedExcessItemsAsync(int userId, string role)
     {
-        var (_, flagged) = await GetReconciledBoqItemsAsync(userId, role, null, null);
+        var completed = await GetCompletedProjectsAsync(userId, role);
+        var (_, flagged) = await GetReconciledBoqItemsAsync(completed, null, null);
         return flagged;
     }
 }

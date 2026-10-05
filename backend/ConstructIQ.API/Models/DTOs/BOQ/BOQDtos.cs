@@ -107,16 +107,16 @@ public class HistoricalEstimateResponseDto
 }
 
 // One point on the Forecasting page's chart, for one selected material+unit.
-// Actual Usage = Baseline - Excess - Waste, computed fresh from
-// ExcessWasteRecords (not read from the live BOQItem.ActualQuantity field —
-// see ActualUsageCalculator), where Baseline is EstimatedPurchaseQuantity ??
-// EstimatedQuantity per BOQ item (whichever the record was actually logged
-// against), attributed to the calendar month each record was actually
-// recorded in. AI Predicted is the real ML model's own output
-// (ForecastedMaterial.ForecastedQuantity), attributed to the month its
-// forecast run happened. Either side is null when nothing that month has
-// that particular figure — never a fabricated zero, and the frontend must
-// render this as a gap, not interpolate across it.
+// Completed projects only, each placed in its completion month (see
+// CompletedProjectDemandRules). Actual Usage = Baseline - Excess - Waste for
+// BOQ lines with Excess/Waste records (see ActualUsageCalculator), where
+// Baseline is EstimatedPurchaseQuantity ?? EstimatedQuantity per BOQ item
+// (whichever the record was actually logged against), or BOQItem.
+// ActualQuantity for lines with no record. AI Predicted is the real ML
+// model's own output (ForecastedMaterial.ForecastedQuantity) for those same
+// projects, from runs made before each project finished. Either side is null
+// when nothing that month has that particular figure — never a fabricated
+// zero, and the frontend must render this as a gap, not interpolate across it.
 public class MonthlyDemandSummaryDto
 {
     public string   Month                { get; set; } = string.Empty; // e.g. "2026-01"
@@ -126,11 +126,9 @@ public class MonthlyDemandSummaryDto
     public string   Unit                 { get; set; } = string.Empty;
     public decimal? ActualUsage          { get; set; }
     public decimal? AiPredicted          { get; set; }
-    // "Provisional" while the contributing project(s) are still active (more
-    // excess/waste could still be logged, changing this number); "Finalized"
-    // once every contributing project is Completed or IsHistorical. Null when
-    // ActualUsage itself is null (nothing to qualify).
-    public string?  ReconciliationStatus { get; set; }
+    // Every project behind either figure (Actual Usage or AI Predicted) for
+    // this month, and how many there are.
+    public int      ProjectCount         { get; set; }
     public List<string> ContributingProjects { get; set; } = [];
     public decimal? EstimatedTotal       { get; set; }
     public decimal? ExcessTotal          { get; set; }
