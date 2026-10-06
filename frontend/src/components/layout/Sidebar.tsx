@@ -23,7 +23,9 @@ const ROLE_LABELS: Record<string, string> = {
 const ALL_ROLES: UserRole[] = ["Admin","ProjectManager","SiteEngineer","WarehousePersonnel","ProcurementOfficer"];
 
 const NAV_ITEMS: { label: string; href: string; icon: React.ElementType; roles: UserRole[] }[] = [
-  { label: "Projects",        href: "/projects",        icon: FolderKanban,    roles: ["Admin","ProjectManager","SiteEngineer","ProcurementOfficer"] },
+  // WarehousePersonnel included — view-only there (no edit controls; see
+  // canEditProject in projects/page.tsx), same as ProcurementOfficer.
+  { label: "Projects",        href: "/projects",        icon: FolderKanban,    roles: ["Admin","ProjectManager","SiteEngineer","WarehousePersonnel","ProcurementOfficer"] },
   { label: "Inventory",       href: "/inventory",       icon: Package,         roles: ALL_ROLES },
   { label: "Forecasting",     href: "/forecasting",     icon: TrendingUp,      roles: ["Admin","ProjectManager","ProcurementOfficer"] },
   { label: "Excess Analytics",href: "/excess-analytics",icon: Trash2,          roles: ["Admin","ProjectManager","SiteEngineer","WarehousePersonnel"] },

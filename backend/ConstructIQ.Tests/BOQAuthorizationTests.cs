@@ -52,4 +52,29 @@ public class BOQAuthorizationTests(DatabaseFixture fixture)
         Assert.Single(summary);
         Assert.Equal(90, summary[0].ActualUsage);
     }
+
+    // A Project Manager sees the same company-wide chart as a Procurement
+    // Officer — including projects someone else created (ProjectManagerId is
+    // the creator, not "the PM in charge"), which is every backfilled one.
+    [Fact]
+    public async Task ProjectManager_SeesProjectsCreatedByOthers_SameAsProcurementOfficer()
+    {
+        await using var db = fixture.CreateContext();
+        var admin = await TestDataBuilder.CreateUserAsync(db, UserRole.Admin);
+        var projectManager = await TestDataBuilder.CreateUserAsync(db, UserRole.ProjectManager);
+        var procurementOfficer = await TestDataBuilder.CreateUserAsync(db, UserRole.ProcurementOfficer);
+        var material = await TestDataBuilder.CreateMaterialAsync(db);
+
+        var project = await TestDataBuilder.CreateProjectAsync(db, admin.Id, status: ProjectStatus.Completed);
+        var boq = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, admin.Id, estimatedQuantity: 100);
+        await TestDataBuilder.CreateExcessWasteRecordAsync(db, project.Id, material.Id, boq.Id, admin.Id, 10, isReusable: true);
+
+        var boqService = new BOQService(db);
+        var forPm = (await boqService.GetMonthlyDemandSummaryAsync(projectManager.Id, "ProjectManager", material.Id, null)).ToList();
+        var forProcurement = (await boqService.GetMonthlyDemandSummaryAsync(procurementOfficer.Id, "ProcurementOfficer", material.Id, null)).ToList();
+
+        Assert.Equal(90, Assert.Single(forPm).ActualUsage);
+        Assert.Equal(90, Assert.Single(forProcurement).ActualUsage);
+        Assert.NotEmpty(await boqService.GetMaterialOptionsAsync(projectManager.Id, "ProjectManager"));
+    }
 }

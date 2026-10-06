@@ -1040,7 +1040,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
 type ModalState =
   | { type:"newProject" }
   | { type:"addCompletedProject" }
-  | { type:"workspace"; projectId:number; editable:boolean }
+  | { type:"workspace"; projectId:number; editable:boolean; canEdit:boolean }
   | { type:"reports"; project:Project }
   | { type:"forecast"; project:Project }
   | { type:"repository" }
@@ -1072,11 +1072,13 @@ export default function ProjectsPage() {
   const canEdit      = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
   const canDelete    = role === "Admin";
   const showProgress = role === "Admin" || role === "ProjectManager" || role === "SiteEngineer";
-  const viewOnly     = role === "ProcurementOfficer";
 
-  // A SiteEngineer can only edit the project they're assigned to (mirrors
+  // A SiteEngineer/PIC can only edit the project they're assigned to (mirrors
   // the backend's ProjectAccessService) — every other role's edit rights are
-  // all-or-nothing, so this only needs to branch for SiteEngineer.
+  // all-or-nothing, so this only needs to branch for SiteEngineer. Warehouse
+  // Personnel and Procurement Officers never edit project details. Anything
+  // this returns false for is view-only: VIEW ONLY badge on its card, no
+  // Edit toggle in its Material Plan, no edit-details or progress buttons.
   function canEditProject(p: Project): boolean {
     if (role === "Admin" || role === "ProjectManager") return true;
     if (role === "SiteEngineer") return p.siteEngineerId === user?.id;
@@ -1150,6 +1152,7 @@ export default function ProjectsPage() {
         <MeasurementsAndMaterialPlan
           project={workspaceProject}
           initialEditable={modal.editable}
+          canEdit={modal.canEdit}
           onClose={()=>{ setModal(null); setRefreshKey(k=>k+1); }}
           onProjectSaved={(updated)=>setFullProjects(prev=>prev.map(p=>p.id===updated.id?updated:p))}
         />
@@ -1277,8 +1280,8 @@ export default function ProjectsPage() {
                 key={p.id}
                 project={p}
                 refreshKey={refreshKey}
-                onView={()=>setModal({type:"workspace",projectId:p.id,editable:false})}
-                onMaterialPlan={()=>setModal({type:"workspace",projectId:p.id,editable:canEditProject(p)})}
+                onView={()=>setModal({type:"workspace",projectId:p.id,editable:false,canEdit:canEditProject(p)})}
+                onMaterialPlan={()=>setModal({type:"workspace",projectId:p.id,editable:canEditProject(p),canEdit:canEditProject(p)})}
                 onReports={()=>setModal({type:"reports",project:p})}
                 onProgress={()=>setModal({type:"progress",project:p})}
                 onDelete={()=>setModal({type:"deleteConfirm",project:p})}
@@ -1289,8 +1292,8 @@ export default function ProjectsPage() {
                 canEdit={canEdit}
                 canDelete={canDelete}
                 canEditDetails={canEditProject(p)}
-                showProgress={showProgress}
-                viewOnly={viewOnly}
+                showProgress={showProgress && canEditProject(p)}
+                viewOnly={!canEditProject(p)}
               />
             ))}
           </div>

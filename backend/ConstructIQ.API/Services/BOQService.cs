@@ -577,18 +577,21 @@ public class BOQService(AppDbContext db) : IBOQService
     }
 
     // The Forecasting chart only ever shows FINISHED projects — every
-    // Completed project this user can see (same SiteEngineer/ProjectManager
-    // scoping as ProjectService.GetAllAsync), each with the date it finished
+    // Completed project this user can see, each with the date it finished
     // (see CompletedProjectDemandRules.ResolveCompletionDate). Active and
     // Planning projects never appear, even with Excess/Waste already logged;
     // they show up once they're done. Two queries total, never one per project.
     private async Task<Dictionary<int, CompletedProject>> GetCompletedProjectsAsync(int userId, string role)
     {
+        // A Site Engineer/PIC only sees the projects they're assigned to.
+        // Every other role — Project Manager included — sees the company-wide
+        // chart, same as a Procurement Officer. A Project Manager used to be
+        // limited to ProjectManagerId == their own id, but ProjectService sets
+        // that to whoever CREATED the project (often an Admin, and every
+        // backfilled historical project), so a PM's chart came up empty.
         var query = db.Projects.Where(p => p.Status == ProjectStatus.Completed);
         if (role is "SiteEngineer")
             query = query.Where(p => p.SiteEngineerId == userId);
-        else if (role is "ProjectManager")
-            query = query.Where(p => p.ProjectManagerId == userId);
 
         var projects = await query.Select(p => new { p.Id, p.Name, p.TargetEndDate }).ToListAsync();
         var projectIds = projects.Select(p => p.Id).ToList();

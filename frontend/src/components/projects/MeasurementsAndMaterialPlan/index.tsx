@@ -8,18 +8,25 @@ interface Props {
   project: Project;
   onClose: () => void;
   initialEditable?: boolean;
+  // Whether this user may edit THIS project at all (Admin/Project Manager,
+  // or the Site Engineer/PIC assigned to it — see canEditProject in
+  // projects/page.tsx, mirroring the backend's ProjectAccessService). When
+  // false the modal is strictly view-only: it never opens editable and the
+  // Edit toggle isn't shown, so a Warehouse/Procurement user or an
+  // unassigned PIC can't switch editing on from View.
+  canEdit?: boolean;
   initialTab?: Tab;
   onProjectSaved?: (p: Project) => void;
 }
 
-export default function MeasurementsAndMaterialPlan({ project, onClose, initialEditable = true, initialTab = 'measurements', onProjectSaved }: Props) {
+export default function MeasurementsAndMaterialPlan({ project, onClose, initialEditable = true, canEdit = true, initialTab = 'measurements', onProjectSaved }: Props) {
   // Historical projects are seeded/backfilled training data — reopening one
   // from the Projects list must never start editable, and (with the toggle
   // hidden below) there's no way to flip it back on from here. This is
   // narrower than forcing it in the shared hook itself: AddCompletedProjectWizard
   // reuses this same hook via Inline.tsx for a historical project's OWN initial
   // data-entry step, right after creation, which still needs to be editable.
-  const state = useMeasurementsAndMaterialPlan({ project, initialEditable: project.isHistorical ? false : initialEditable, initialTab, onProjectSaved });
+  const state = useMeasurementsAndMaterialPlan({ project, initialEditable: canEdit && !project.isHistorical && initialEditable, initialTab, onProjectSaved });
 
   // Files only has a narrow single-column layout — a fixed wide modal leaves
   // a large empty gap on the right. Material Plan's BOQ table needs the
@@ -51,7 +58,13 @@ export default function MeasurementsAndMaterialPlan({ project, onClose, initialE
                   Historical
                 </span>
               )}
-              <EditToggle editable={state.editable} onToggle={() => state.setEditable(e => !e)} />
+              {canEdit ? (
+                <EditToggle editable={state.editable} onToggle={() => state.setEditable(e => !e)} />
+              ) : (
+                <span style={{ padding: '6px 12px', borderRadius: 999, background: '#f3f4f6', color: '#6b7280', fontSize: '0.72rem', fontWeight: 700 }}>
+                  View Only
+                </span>
+              )}
               <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af' }}><X style={{ width: 20, height: 20 }} /></button>
             </div>
           </div>
