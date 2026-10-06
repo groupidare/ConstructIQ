@@ -56,6 +56,8 @@ public class DatabaseBackupService(AppDbContext db, IConfiguration config)
         var tables = Tables();
         var rows = new Dictionary<string, List<Dictionary<string, JsonElement>>>();
         var createdAt = DateTime.UtcNow;
+        return await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
         long size = 0;
         foreach (var table in tables)
@@ -84,6 +86,7 @@ public class DatabaseBackupService(AppDbContext db, IConfiguration config)
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         return (bytes, createdAt);
+        });
     }
 
     public async Task RestoreAsync(Stream stream, int actorId, string actorName, string? ip, CancellationToken ct)
@@ -110,6 +113,8 @@ public class DatabaseBackupService(AppDbContext db, IConfiguration config)
                     throw new InvalidOperationException("Backup contains invalid columns.");
         }
 
+        await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
         foreach (var table in tables.AsEnumerable().Reverse())
         {
@@ -150,5 +155,6 @@ public class DatabaseBackupService(AppDbContext db, IConfiguration config)
             IpAddress = ip, Details = $"Restored backup from {data.CreatedAt:O}; requested by {actorName} (user {actorId}). All sessions revoked." });
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
+        });
     }
 }

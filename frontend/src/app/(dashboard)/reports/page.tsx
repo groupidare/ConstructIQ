@@ -207,10 +207,9 @@ function buildForecastingData(
     ])),
   };
   const forecastDetailTable: ReportTable = {
-    columns: ["Project", "Material", "Forecasted Qty", "Current Stock", "Shortage", "Risk Level", "Reorder Suggestion"],
+    columns: ["Project", "Material", "Forecasted Qty"],
     rows: forecasts.flatMap(f => f.forecastedMaterials.map(m => [
-      projectName(f.projectId), m.materialName, num(m.forecastedQuantity), num(m.currentStock),
-      num(m.shortage), m.riskLevel, num(m.reorderSuggestion),
+      projectName(f.projectId), m.materialName, num(m.forecastedQuantity),
     ])),
   };
 
@@ -229,7 +228,7 @@ function buildForecastingData(
     })),
     aiInsight: forecasts.length === 0
       ? "No forecasts have been generated yet — run a forecast from a project's Material Plan tab."
-      : `${shortageRisks} material(s) across ${forecasts.length} project(s) are at High or Critical shortage risk and may need reordering soon.`,
+      : `${shortageRisks} material(s) across ${forecasts.length} project(s) are at High or Critical shortage risk. Accuracy measures how close the forecast was to confirmed actual usage (100% is an exact match). Variance is the difference between actual and forecasted quantity; a positive value means actual usage was higher, while a negative value means it was lower.`,
     detailTables: [
       { title: "Predicted vs. Actual Usage", table: comparisonTable },
       { title: "Current Forecast Detail", table: forecastDetailTable },
