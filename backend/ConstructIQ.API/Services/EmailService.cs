@@ -32,10 +32,9 @@ public class EmailService(IHttpClientFactory httpFactory, IConfiguration config,
             return false;
 
         var fromName = config["SMTP_FROM_NAME"] ?? "ConstructIQ";
-        var fromAddress = config["RESEND_FROM_ADDRESS"] ?? DefaultFromAddress;
         var client = httpFactory.CreateClient("Resend");
         var response = await client.PostAsJsonAsync("emails", new ResendRequest(
-            From: $"{fromName} <{fromAddress}>",
+            From: $"{fromName} <{FromAddress}>",
             To: [toEmail],
             Subject: subject,
             Html: html));
