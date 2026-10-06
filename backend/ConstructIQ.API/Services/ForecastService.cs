@@ -1,4 +1,6 @@
+using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Models.DTOs.Forecast;
 using ConstructIQ.API.Models.Entities;
@@ -11,11 +13,33 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
 {
     // Notes prefix marking a ForecastResult as a historical project's
     // leave-one-project-out evaluation (predicted by a model fitted WITHOUT
-    // that project's own rows — see SaveEvaluationForecastsAsync), not an
-    // ordinary Generate Forecast run. Matched with StartsWith: the Notes may
-    // carry an explanation after it (see MlProjectEvaluationDto.Note).
-    // BOQService's Forecasting chart prefers these for backfilled projects.
+    // that project's own rows — see PersistEvaluationsAsync), not an
+    // ordinary Generate Forecast run. Matched with StartsWith: the Notes carry
+    // the model version after it. BOQService's Forecasting chart prefers
+    // these for backfilled projects.
     public const string LeaveOneProjectOutMarker = "Leave-one-project-out evaluation";
+
+    // Every ForecastResult a trained model produced carries the model version
+    // in its Notes, starting with one of these — Generate Forecast runs with
+    // AiForecastNotesPrefix, evaluations with EvaluationNotesPrefix. Anything
+    // without one predates the trained-model workflow (an untrained fallback
+    // or a legacy model) — see DbInitializer.CleanupFallbackForecastsAsync.
+    public const string AiForecastNotesPrefix = "AI forecast — model ";
+    public static readonly string EvaluationNotesPrefix = $"{LeaveOneProjectOutMarker} — model ";
+
+    // The ML service's training endpoints answer in snake_case; the training
+    // DTOs are plain PascalCase classes shared with the browser response
+    // (camelCase), so they're read with a snake_case policy instead of a
+    // second set of [JsonPropertyName]-annotated mirror classes.
+    public static readonly JsonSerializerOptions MlJson = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+    };
+
+    // A finished training run's evaluations are persisted by whichever
+    // model-status poll first sees the run succeeded (see GetModelStatusAsync)
+    // — serialized so two concurrent polls can't both write them.
+    private static readonly SemaphoreSlim EvaluationPersistLock = new(1, 1);
 
     public async Task<ForecastResponseDto> GenerateForecastAsync(ForecastRequestDto request, int userId)
     {
@@ -40,11 +64,24 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
             throw new InvalidOperationException("Couldn't reach the forecasting service. Make sure it's running and try again.");
         }
 
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            // The ML service refuses to forecast without a trained model
+            // (409, code "model_not_trained") rather than answering with an
+            // untrained fallback calculation — passed on as its own error so
+            // the Material Plan can fall back to the non-AI historical-average
+            // estimate instead of showing a generic failure.
+            var body = await response.Content.ReadAsStringAsync();
+            logger.LogWarning("Forecast blocked for project {ProjectId} — no trained model: {Body}", request.ProjectId, body);
+            throw new ModelNotTrainedException(
+                "AI forecasting is unavailable until an administrator trains the model (Forecasting → Retrain Model).");
+        }
+
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync();
             logger.LogError("Forecast generation failed for project {ProjectId}: {Status} {Body}", request.ProjectId, response.StatusCode, body);
-            throw new InvalidOperationException("Couldn't generate a forecast for this project right now. It usually means the model needs to be (re)trained, or this project doesn't have enough BOQ data yet.");
+            throw new InvalidOperationException("Couldn't generate a forecast for this project right now — the forecasting service returned an error. Try again in a moment.");
         }
 
         var mlResult = await response.Content.ReadFromJsonAsync<MlForecastResponseDto>();
@@ -66,6 +103,8 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
             PlanningWeeks     = request.PlanningWeeks,
             ModelAccuracy     = mlResult.ModelAccuracy,
             GeneratedByUserId = userId,
+            Notes             = $"{AiForecastNotesPrefix}{mlResult.ModelVersion ?? "unknown"}"
+                + (mlResult.ModelConfidence == "Low" ? " (low confidence)" : string.Empty),
         };
         foreach (var fm in mlResult.ForecastedMaterials)
         {
@@ -140,86 +179,158 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
         }).ToList(),
     };
 
-    public async Task<TrainModelsResponseDto> TrainModelsAsync()
+    // Starts a background training run on the ML service and returns at once
+    // (a full run can outlast an HTTP request) — the Forecasting page then
+    // polls GetModelStatusAsync until it reads succeeded or failed. Only one
+    // run at a time: a second start while one runs is refused (409).
+    public async Task<TrainingJobDto> StartTrainingAsync()
     {
         var client = httpFactory.CreateClient("MLService");
-        var response = await client.PostAsync("/forecast/train", null);
+        HttpResponseMessage response;
+        try
+        {
+            response = await client.PostAsync("/forecast/train", null);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Couldn't reach the ML service to start training.");
+            throw new InvalidOperationException("Couldn't reach the forecasting service. Make sure it's running and try again.");
+        }
 
+        if (response.StatusCode == HttpStatusCode.Conflict)
+            throw new TrainingInProgressException("A training run is already in progress — wait for it to finish.");
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync();
-            throw new InvalidOperationException($"Training failed: {body}");
+            logger.LogError("Starting training failed: {Status} {Body}", response.StatusCode, body);
+            throw new InvalidOperationException("The forecasting service couldn't start a training run.");
         }
 
-        var result = await response.Content.ReadFromJsonAsync<MlTrainModelsResponseDto>();
-        if (result is null)
-            throw new InvalidOperationException("The training service returned an empty response.");
+        return await response.Content.ReadFromJsonAsync<TrainingJobDto>(MlJson)
+            ?? throw new InvalidOperationException("The forecasting service returned an empty response.");
+    }
 
-        await SaveEvaluationForecastsAsync(result.Evaluations);
-
-        return new TrainModelsResponseDto
+    // The active model (trained or not, with its training metadata) and the
+    // latest training run. When that run has just succeeded, its
+    // leave-one-project-out evaluations are persisted here — once per model
+    // version — since the ML service itself never writes to the database.
+    public async Task<ModelStatusDto> GetModelStatusAsync()
+    {
+        var client = httpFactory.CreateClient("MLService");
+        MlModelStatusDto? status;
+        try
         {
-            SampleCount  = result.SampleCount,
-            RandomForest = result.RandomForest,
-            Xgboost      = result.Xgboost,
+            status = await client.GetFromJsonAsync<MlModelStatusDto>("/forecast/model-status", MlJson);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Couldn't read the model status from the ML service.");
+            return new ModelStatusDto
+            {
+                ServiceReachable = false,
+                Model = new ModelAvailabilityDto { Trained = false, Message = "The forecasting service couldn't be reached." },
+            };
+        }
+        if (status is null)
+            return new ModelStatusDto { ServiceReachable = false, Model = new ModelAvailabilityDto { Message = "The forecasting service returned an empty response." } };
+
+        if (status.Training is { Status: "succeeded", Result: { } result } && !string.IsNullOrEmpty(result.Model.Version))
+            await PersistEvaluationsAsync(result.Model.Version, result.Evaluations);
+
+        return new ModelStatusDto
+        {
+            Model = status.Model,
+            Training = new TrainingJobDto
+            {
+                JobId      = status.Training.JobId,
+                Status     = status.Training.Status,
+                StartedAt  = status.Training.StartedAt,
+                FinishedAt = status.Training.FinishedAt,
+                Error      = status.Training.Error,
+            },
         };
     }
 
-    // Persists each historical project's leave-one-project-out evaluation
-    // (computed during training by the ML service, which never writes to the
-    // DB itself) as that project's evaluation ForecastResult — replacing the
-    // previous evaluation for the same project, so retraining never piles up
-    // stale ones. Only ever runs as part of TrainModelsAsync.
-    private async Task SaveEvaluationForecastsAsync(List<MlProjectEvaluationDto> evaluations)
+    // Which completed projects/rows training can use, and why the rest can't.
+    public async Task<TrainingDataReportDto> GetTrainingDataReportAsync()
     {
-        if (evaluations.Count == 0) return;
-
-        var projectIds = evaluations.Select(e => e.ProjectId).Distinct().ToList();
-        var existingProjectIds = (await db.Projects
-                .Where(p => projectIds.Contains(p.Id))
-                .Select(p => p.Id)
-                .ToListAsync())
-            .ToHashSet();
-
-        var previous = await db.ForecastResults
-            .Where(f => projectIds.Contains(f.ProjectId) && f.Notes != null && f.Notes.StartsWith(LeaveOneProjectOutMarker))
-            .ToListAsync();
-        var previousIds = previous.Select(f => f.Id).ToList();
-        db.ForecastedMaterials.RemoveRange(await db.ForecastedMaterials
-            .Where(fm => previousIds.Contains(fm.ForecastResultId))
-            .ToListAsync());
-        db.ForecastResults.RemoveRange(previous);
-
-        foreach (var evaluation in evaluations.Where(e => existingProjectIds.Contains(e.ProjectId)))
+        var client = httpFactory.CreateClient("MLService");
+        try
         {
-            var entity = new ForecastResult
-            {
-                ProjectId = evaluation.ProjectId,
-                PhaseId   = null,
-                Period    = ForecastPeriod.Monthly,
-                Notes     = string.IsNullOrWhiteSpace(evaluation.Note)
-                    ? $"{LeaveOneProjectOutMarker} — predicted by a model trained without this project's own rows."
-                    : $"{LeaveOneProjectOutMarker} — {evaluation.Note}",
-            };
-            foreach (var fm in evaluation.ForecastedMaterials)
-            {
-                if (!Enum.TryParse<RiskLevel>(fm.RiskLevel, true, out var risk))
-                    risk = RiskLevel.Low;
-                entity.ForecastedMaterials.Add(new ForecastedMaterial
-                {
-                    MaterialId         = fm.MaterialId,
-                    Unit               = fm.Unit,
-                    ForecastedQuantity = fm.ForecastedQuantity,
-                    CurrentStock       = fm.CurrentStock,
-                    Shortage           = fm.Shortage,
-                    ReorderSuggestion  = fm.ReorderSuggestion,
-                    RiskLevel          = risk,
-                });
-            }
-            db.ForecastResults.Add(entity);
+            return await client.GetFromJsonAsync<TrainingDataReportDto>("/forecast/training-data", MlJson)
+                ?? throw new InvalidOperationException("The forecasting service returned an empty response.");
         }
+        catch (Exception ex) when (ex is not InvalidOperationException)
+        {
+            logger.LogError(ex, "Couldn't read the training-data report from the ML service.");
+            throw new InvalidOperationException("Couldn't reach the forecasting service. Make sure it's running and try again.");
+        }
+    }
 
-        await db.SaveChangesAsync();
+    // Saves a newly trained model version's leave-one-project-out evaluations
+    // as each historical project's evaluation ForecastResult, replacing EVERY
+    // previous evaluation run (they described the previous model, which is no
+    // longer the one forecasting). Idempotent per version: the Notes carry
+    // the version, so a later status poll for the same run is a no-op.
+    public async Task PersistEvaluationsAsync(string version, List<MlProjectEvaluationDto> evaluations)
+    {
+        var notesPrefix = $"{EvaluationNotesPrefix}{version}";
+        await EvaluationPersistLock.WaitAsync();
+        try
+        {
+            var alreadySaved = await db.ForecastResults
+                .AnyAsync(f => f.Notes != null && f.Notes.StartsWith(notesPrefix));
+            if (alreadySaved) return;
+
+            var previous = await db.ForecastResults
+                .Where(f => f.Notes != null && f.Notes.StartsWith(LeaveOneProjectOutMarker))
+                .ToListAsync();
+            var previousIds = previous.Select(f => f.Id).ToList();
+            db.ForecastedMaterials.RemoveRange(await db.ForecastedMaterials
+                .Where(fm => previousIds.Contains(fm.ForecastResultId))
+                .ToListAsync());
+            db.ForecastResults.RemoveRange(previous);
+
+            var projectIds = evaluations.Select(e => e.ProjectId).Distinct().ToList();
+            var existingProjectIds = (await db.Projects
+                    .Where(p => projectIds.Contains(p.Id))
+                    .Select(p => p.Id)
+                    .ToListAsync())
+                .ToHashSet();
+
+            foreach (var evaluation in evaluations.Where(e => existingProjectIds.Contains(e.ProjectId)))
+            {
+                var entity = new ForecastResult
+                {
+                    ProjectId = evaluation.ProjectId,
+                    PhaseId   = null,
+                    Period    = ForecastPeriod.Monthly,
+                    Notes     = $"{notesPrefix}: predicted by a model trained without this project's own rows.",
+                };
+                foreach (var fm in evaluation.ForecastedMaterials)
+                {
+                    if (!Enum.TryParse<RiskLevel>(fm.RiskLevel, true, out var risk))
+                        risk = RiskLevel.Low;
+                    entity.ForecastedMaterials.Add(new ForecastedMaterial
+                    {
+                        MaterialId         = fm.MaterialId,
+                        Unit               = fm.Unit,
+                        ForecastedQuantity = fm.ForecastedQuantity,
+                        CurrentStock       = fm.CurrentStock,
+                        Shortage           = fm.Shortage,
+                        ReorderSuggestion  = fm.ReorderSuggestion,
+                        RiskLevel          = risk,
+                    });
+                }
+                db.ForecastResults.Add(entity);
+            }
+
+            await db.SaveChangesAsync();
+        }
+        finally
+        {
+            EvaluationPersistLock.Release();
+        }
     }
 
     // "Top Forecasted Material Demand" panel (System Overview). Uses only

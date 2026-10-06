@@ -268,4 +268,55 @@ public static class DbInitializer
         await context.SaveChangesAsync();
         Console.WriteLine($"[Backfill] Checked {rows.Count} historical BOQ row(s); updated {changed}.");
     }
+
+    // One-off: removes every saved forecast that a trained model didn't
+    // produce — runs from before the trained-model workflow, made by the
+    // untrained fallback (BOQ quantity × a default ratio) or a legacy model,
+    // which the app would otherwise keep showing as AI forecasts. A run is
+    // kept only if its Notes name the model version that made it
+    // (ForecastService.AiForecastNotesPrefix / EvaluationNotesPrefix).
+    //
+    // Dry run unless `confirm` is true: `dotnet run --cleanup-fallback-forecasts`
+    // only lists what would go; add `--confirm` to actually delete. Never
+    // touches BOQ rows, projects, or anything but ForecastResults and their
+    // ForecastedMaterials. Take a database backup first.
+    public static async Task CleanupFallbackForecastsAsync(AppDbContext context, bool confirm)
+    {
+        var aiPrefix = ConstructIQ.API.Services.ForecastService.AiForecastNotesPrefix;
+        var evaluationPrefix = ConstructIQ.API.Services.ForecastService.EvaluationNotesPrefix;
+        var untrained = await context.ForecastResults
+            .Include(f => f.Project)
+            .Where(f => f.Notes == null
+                || (!f.Notes.StartsWith(aiPrefix) && !f.Notes.StartsWith(evaluationPrefix)))
+            .OrderBy(f => f.ProjectId).ThenBy(f => f.GeneratedAt)
+            .ToListAsync();
+
+        if (untrained.Count == 0)
+        {
+            Console.WriteLine("[Cleanup] Every saved forecast was made by a trained model — nothing to remove.");
+            return;
+        }
+
+        foreach (var group in untrained.GroupBy(f => f.ProjectId))
+        {
+            var first = group.First();
+            Console.WriteLine(
+                $"[Cleanup] {first.Project.Name} (#{first.ProjectId}): {group.Count()} forecast run(s), " +
+                $"generated {group.Min(f => f.GeneratedAt):yyyy-MM-dd} – {group.Max(f => f.GeneratedAt):yyyy-MM-dd}");
+        }
+
+        if (!confirm)
+        {
+            Console.WriteLine($"[Cleanup] DRY RUN — {untrained.Count} forecast run(s) listed above would be removed. Re-run with --confirm to delete them.");
+            return;
+        }
+
+        var ids = untrained.Select(f => f.Id).ToList();
+        context.ForecastedMaterials.RemoveRange(await context.ForecastedMaterials
+            .Where(fm => ids.Contains(fm.ForecastResultId))
+            .ToListAsync());
+        context.ForecastResults.RemoveRange(untrained);
+        await context.SaveChangesAsync();
+        Console.WriteLine($"[Cleanup] Removed {untrained.Count} forecast run(s) not made by a trained model.");
+    }
 }

@@ -39,8 +39,12 @@ export default function ProjectForecastingPage() {
     try {
       await generateForecast({ projectId: pid, period, planningWeeks: 4 });
       toast.success('Forecast generated!');
-    } catch {
-      toast.error('Failed to generate forecast. Ensure the ML service is running.');
+    } catch (error) {
+      // The backend's own message when it has one — e.g. "AI forecasting is
+      // unavailable until an administrator trains the model" (409, no trained
+      // model) rather than a generic failure.
+      const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message || 'Failed to generate forecast. Ensure the ML service is running.');
     } finally {
       setGenerating(false);
     }

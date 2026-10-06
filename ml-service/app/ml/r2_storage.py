@@ -3,7 +3,7 @@ from pathlib import Path
 
 import boto3
 from botocore.client import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
 # Same R2 credentials/bucket the backend uses (see
@@ -27,29 +27,38 @@ def _client():
     )
 
 
-def upload_file(local_path: Path, key: str) -> None:
-    """Best-effort — training already succeeded and saved locally by the
-    time this is called; a persistence failure here shouldn't fail the
-    /forecast/train request itself, just leave the model un-backed-up until
-    the next successful train."""
+def is_configured() -> bool:
+    """False for local dev with no R2 bucket set — trained models then only
+    live on this machine's own disk (see model_registry)."""
+    return bool(_BUCKET)
+
+
+def upload_file_strict(local_path: Path, key: str) -> None:
+    """A failure RAISES — never swallowed. model_registry uploads a training
+    run's artifacts with this, so a model that didn't actually reach R2 is
+    never made the active one (it would vanish on the next restart). No-op
+    when R2 isn't configured at all (local dev)."""
     if not _BUCKET:
         return
     try:
         _client().upload_file(str(local_path), _BUCKET, key)
-    except ClientError:
-        pass
+    except (ClientError, BotoCoreError) as e:
+        raise RuntimeError(f"Uploading {key} to R2 failed: {e}") from e
 
 
 def download_file(key: str, local_path: Path) -> bool:
-    """Returns True if a model was actually found and pulled down from R2 —
-    the caller falls back to a naive prediction only when this is False
-    (i.e. truly never trained), not merely because this container's own
-    local disk was just wiped by a fresh deploy/restart."""
+    """Returns True if the file was actually found and pulled down from R2 —
+    model_registry uses this to restore the active model after a fresh
+    deploy/restart wiped this container's local disk. False means "not
+    available" (never uploaded, or R2 unreachable/unconfigured)."""
     if not _BUCKET:
         return False
     try:
         local_path.parent.mkdir(parents=True, exist_ok=True)
         _client().download_file(_BUCKET, key, str(local_path))
         return True
-    except ClientError:
+    except (ClientError, BotoCoreError):
+        # BotoCoreError too (bad endpoint, no network, missing credentials)
+        # — "couldn't fetch" must read as "not available", never crash the
+        # forecast/status request that asked.
         return False

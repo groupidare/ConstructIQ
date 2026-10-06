@@ -18,7 +18,7 @@ namespace ConstructIQ.Tests;
 //       assert the delta - immune to whatever other tests already left in
 //       the shared database.
 // IHttpClientFactory is never invoked by this method (only
-// GenerateForecastAsync/TrainModelsAsync call the ML service), so `null!`
+// GenerateForecastAsync and the training/model-status calls hit the ML service), so `null!`
 // is safe here, not a stand-in for real behavior.
 [Collection("Database")]
 public class TopForecastedDemandTests(DatabaseFixture fixture)

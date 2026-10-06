@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using ConstructIQ.API.Models.DTOs.Forecast;
+using ConstructIQ.API.Services;
 using ConstructIQ.API.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -28,6 +29,7 @@ public class ForecastController(IForecastService forecastService, IProjectAccess
         {
             return Ok(await forecastService.GenerateForecastAsync(request, CurrentUserId));
         }
+        catch (ModelNotTrainedException ex) { return Conflict(new { code = "ModelNotTrained", message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -43,13 +45,42 @@ public class ForecastController(IForecastService forecastService, IProjectAccess
     public async Task<IActionResult> GetTopDemand([FromQuery] string? unit) =>
         Ok(await forecastService.GetTopForecastedDemandAsync(unit));
 
+    // Starts a background training run and returns at once (202) — poll
+    // GET model-status for the outcome. One run at a time (409 otherwise).
     [HttpPost("train")]
     [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Train()
     {
         try
         {
-            return Ok(await forecastService.TrainModelsAsync());
+            return Accepted(await forecastService.StartTrainingAsync());
+        }
+        catch (TrainingInProgressException ex)
+        {
+            return Conflict(new { code = "TrainingInProgress", message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    // Whether a trained model exists (and its training metadata), plus the
+    // latest training run's state. Every role that can open the Forecasting
+    // page sees it, so nobody mistakes an untrained state for real forecasts.
+    [HttpGet("model-status")]
+    public async Task<IActionResult> GetModelStatus() =>
+        Ok(await forecastService.GetModelStatusAsync());
+
+    // Which completed projects/rows the model can learn from, and why the
+    // rest can't — Admin only, alongside the Retrain button.
+    [HttpGet("training-data")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> GetTrainingData()
+    {
+        try
+        {
+            return Ok(await forecastService.GetTrainingDataReportAsync());
         }
         catch (InvalidOperationException ex)
         {

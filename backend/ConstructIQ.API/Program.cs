@@ -184,4 +184,15 @@ if (args.Contains("--backfill-historical-purchase-units"))
     return;
 }
 
+// One-off: removes saved forecasts no trained model produced (see
+// DbInitializer.CleanupFallbackForecastsAsync). `dotnet run
+// --cleanup-fallback-forecasts` only lists them; add `--confirm` to delete.
+if (args.Contains("--cleanup-fallback-forecasts"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await ConstructIQ.API.Data.DbInitializer.CleanupFallbackForecastsAsync(db, confirm: args.Contains("--confirm"));
+    return;
+}
+
 app.Run();

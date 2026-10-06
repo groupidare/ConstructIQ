@@ -58,6 +58,10 @@ class ForecastResponse(BaseModel):
     # Optional/additive — older callers that only read forecasted_materials
     # are unaffected.
     line_forecasts:       list[ForecastedLine] = []
+    # Which trained model version produced this (see model_registry), and its
+    # training-time confidence ("Normal"/"Low"). Every AI forecast carries one.
+    model_version:        Optional[str] = None
+    model_confidence:     Optional[str] = None
 
 
 class DocumentParseRequest(BaseModel):

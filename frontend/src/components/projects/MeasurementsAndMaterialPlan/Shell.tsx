@@ -25,6 +25,14 @@ function apiErrorMessage(error: unknown, fallback: string): string {
   return message || fallback;
 }
 
+// The backend answers Generate Forecast with 409 / code "ModelNotTrained"
+// when no trained model exists — AI forecasting is blocked rather than
+// answered with an untrained fallback (see ForecastService).
+function isModelNotTrained(error: unknown): boolean {
+  const response = (error as { response?: { status?: number; data?: { code?: string } } })?.response;
+  return response?.status === 409 && response.data?.code === 'ModelNotTrained';
+}
+
 export type Tab = 'measurements' | 'materialPlan';
 
 export interface ShellProps {
@@ -351,12 +359,21 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
         rows = saved.map(boqItemToRow);
         setBoqRows(rows);
       }
-      const forecast = await generateForecast({ projectId: project.id, period: 'Monthly', planningWeeks: 4 });
+      // No trained model → no AI forecast at all (never an untrained
+      // fallback shown as one); Est. Qty below then only gets the non-AI
+      // historical-average suggestion.
+      let forecast: Awaited<ReturnType<typeof generateForecast>> | null = null;
+      try {
+        forecast = await generateForecast({ projectId: project.id, period: 'Monthly', planningWeeks: 4 });
+      } catch (error) {
+        if (!isModelNotTrained(error)) throw error;
+      }
 
       // Est. Qty/Unit stay blank until this point — filling them in is part
       // of what "running a forecast" does, never a background side-effect
       // of typing. Each still-empty row gets the AI's prediction for THAT
-      // row (actual usage in its purchase unit), not its material's total.
+      // row (the purchase quantity, in its purchase unit), not its
+      // material's total — or, with no trained model, no AI value at all.
       // Only when the AI has no usable prediction for a row (none returned,
       // zero, or only in the BOQ's own measurement unit because no purchase
       // unit is known for that material yet) does the historical-average
@@ -365,7 +382,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       // Historical projects record what was actually bought instead (their
       // PO lines, set server-side), so nothing is filled there.
       if (!project.isHistorical && rows.length > 0) {
-        const lineByBoqItemId = new Map((forecast.lineForecasts ?? []).map(l => [l.boqItemId, l]));
+        const lineByBoqItemId = new Map((forecast?.lineForecasts ?? []).map(l => [l.boqItemId, l]));
         const materialNameById = new Map(boqItems.map(b => [b.materialId, b.materialName]));
         let changed = false;
         const filledRows = await Promise.all(rows.map(async row => {
@@ -398,7 +415,11 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
         }
       }
 
-      toast.success('Material plan saved and forecast generated.');
+      if (forecast) {
+        toast.success('Material plan saved and forecast generated.');
+      } else {
+        toast('AI forecasting is unavailable until an administrator trains the model. The material plan was saved, and empty Est. Qty rows were filled from historical averages where available — not an AI forecast.', { icon: 'ℹ️', duration: 8000 });
+      }
       setTab('materialPlan');
     } catch (error) {
       toast.error(apiErrorMessage(error, 'Failed to generate forecast — no historical or BOQ data available yet.'));
