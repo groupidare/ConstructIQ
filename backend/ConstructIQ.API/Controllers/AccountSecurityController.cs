@@ -36,10 +36,11 @@ public class AccountSecurityController(AppDbContext db, IConfiguration config, I
     public async Task<IActionResult> RequestOtp()
     {
         var code = RandomNumberGenerator.GetInt32(1_000_000).ToString("D6");
-        string address;
+        string address = string.Empty;
         var hash = OtpHash(UserId, code);
-        await using (var tx = await db.Database.BeginTransactionAsync())
+        var rateLimitResponse = await db.Database.CreateExecutionStrategy().ExecuteAsync<IActionResult?>(async () =>
         {
+            await using var tx = await db.Database.BeginTransactionAsync();
             var user = await LockUser();
             if (user.PasswordChangeRequestedAt > DateTime.UtcNow.AddMinutes(-1))
                 return StatusCode(429, new { message = "Wait one minute before requesting another code." });
@@ -51,7 +52,9 @@ public class AccountSecurityController(AppDbContext db, IConfiguration config, I
             user.PasswordChangeAttempts = 0;
             await db.SaveChangesAsync();
             await tx.CommitAsync();
-        }
+            return (IActionResult?)null;
+        });
+        if (rateLimitResponse is not null) return rateLimitResponse;
         try { await email.SendPasswordChangeCodeAsync(address, code); }
         catch (Exception ex)
         {
@@ -68,34 +71,37 @@ public class AccountSecurityController(AppDbContext db, IConfiguration config, I
     [HttpPost("change-password/verify-otp")]
     public async Task<IActionResult> VerifyOtp(VerifyPasswordChangeOtp dto)
     {
-        await using var tx = await db.Database.BeginTransactionAsync();
-        var user = await LockUser();
-        if (user.PasswordChangeOtpHash is null || user.PasswordChangeExpiresAt <= DateTime.UtcNow || user.PasswordChangeAttempts >= 5)
-            return BadRequest(new { message = "The code expired or is unavailable. Request another code." });
-        user.PasswordChangeAttempts++;
-        if (!CryptographicOperations.FixedTimeEquals(Convert.FromHexString(user.PasswordChangeOtpHash),
-                Convert.FromHexString(OtpHash(UserId, dto.Code))))
+        return await db.Database.CreateExecutionStrategy().ExecuteAsync<IActionResult>(async () =>
         {
-            if (user.PasswordChangeAttempts >= 5) user.PasswordChangeOtpHash = null;
-            Audit("PASSWORD_CHANGE_OTP_REJECTED");
+            await using var tx = await db.Database.BeginTransactionAsync();
+            var user = await LockUser();
+            if (user.PasswordChangeOtpHash is null || user.PasswordChangeExpiresAt <= DateTime.UtcNow || user.PasswordChangeAttempts >= 5)
+                return BadRequest(new { message = "The code expired or is unavailable. Request another code." });
+            user.PasswordChangeAttempts++;
+            if (!CryptographicOperations.FixedTimeEquals(Convert.FromHexString(user.PasswordChangeOtpHash),
+                    Convert.FromHexString(OtpHash(UserId, dto.Code))))
+            {
+                if (user.PasswordChangeAttempts >= 5) user.PasswordChangeOtpHash = null;
+                Audit("PASSWORD_CHANGE_OTP_REJECTED");
+                await db.SaveChangesAsync();
+                await tx.CommitAsync();
+                return BadRequest(new { message = "Invalid verification code." });
+            }
+            var expires = DateTime.UtcNow.AddMinutes(5);
+            user.PasswordChangeOtpHash = null;
+            user.PasswordChangeTokenId = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+            user.PasswordChangeExpiresAt = expires;
+            var token = new JwtSecurityToken(config["JWT_ISSUER"], "ConstructIQ.PasswordChange",
+                [new Claim(JwtRegisteredClaimNames.Sub, UserId.ToString()),
+                 new Claim(JwtRegisteredClaimNames.Jti, user.PasswordChangeTokenId),
+                 new Claim("purpose", "password_change")],
+                notBefore: DateTime.UtcNow, expires: expires,
+                signingCredentials: new SigningCredentials(new SymmetricSecurityKey(Key), SecurityAlgorithms.HmacSha256));
+            Audit("PASSWORD_CHANGE_VERIFIED");
             await db.SaveChangesAsync();
             await tx.CommitAsync();
-            return BadRequest(new { message = "Invalid verification code." });
-        }
-        var expires = DateTime.UtcNow.AddMinutes(5);
-        user.PasswordChangeOtpHash = null;
-        user.PasswordChangeTokenId = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-        user.PasswordChangeExpiresAt = expires;
-        var token = new JwtSecurityToken(config["JWT_ISSUER"], "ConstructIQ.PasswordChange",
-            [new Claim(JwtRegisteredClaimNames.Sub, UserId.ToString()),
-             new Claim(JwtRegisteredClaimNames.Jti, user.PasswordChangeTokenId),
-             new Claim("purpose", "password_change")],
-            notBefore: DateTime.UtcNow, expires: expires,
-            signingCredentials: new SigningCredentials(new SymmetricSecurityKey(Key), SecurityAlgorithms.HmacSha256));
-        Audit("PASSWORD_CHANGE_VERIFIED");
-        await db.SaveChangesAsync();
-        await tx.CommitAsync();
-        return Ok(new { password_change_token = new JwtSecurityTokenHandler().WriteToken(token), expiresAt = expires });
+            return Ok(new { password_change_token = new JwtSecurityTokenHandler().WriteToken(token), expiresAt = expires });
+        });
     }
 
     [HttpPost("change-password")]
@@ -121,28 +127,31 @@ public class AccountSecurityController(AppDbContext db, IConfiguration config, I
         if (claims.FindFirstValue("sub") != UserId.ToString() || claims.FindFirstValue("purpose") != "password_change")
             return BadRequest(new { message = "Invalid password change authorization." });
 
-        await using var tx = await db.Database.BeginTransactionAsync();
-        var user = await LockUser();
-        if (user.PasswordChangeTokenId is null || user.PasswordChangeTokenId != claims.FindFirstValue("jti") ||
-            user.PasswordChangeExpiresAt <= DateTime.UtcNow)
-            return BadRequest(new { message = "Authorization expired or was already used. Verify your email again." });
-        user.PasswordHash = PasswordHasher.Hash(dto.NewPassword);
-        user.PasswordChangeTokenId = null;
-        user.PasswordChangeOtpHash = null;
-        user.PasswordChangeExpiresAt = null;
-        user.PasswordResetToken = null;
-        user.PasswordResetTokenExpiresAt = null;
-        user.MfaChallengeToken = null;
-        user.MfaCode = null;
-        user.MfaCodeExpiresAt = null;
-        user.PendingDeviceId = null;
-        user.SecurityStamp = Guid.NewGuid().ToString("N");
-        user.UpdatedAt = DateTime.UtcNow;
-        await db.TrustedDevices.Where(d => d.UserId == UserId).ExecuteDeleteAsync();
-        Audit("PASSWORD_CHANGED");
-        await db.SaveChangesAsync();
-        await tx.CommitAsync();
-        return Ok(new { message = "Password changed. Sign in again." });
+        return await db.Database.CreateExecutionStrategy().ExecuteAsync<IActionResult>(async () =>
+        {
+            await using var tx = await db.Database.BeginTransactionAsync();
+            var user = await LockUser();
+            if (user.PasswordChangeTokenId is null || user.PasswordChangeTokenId != claims.FindFirstValue("jti") ||
+                user.PasswordChangeExpiresAt <= DateTime.UtcNow)
+                return BadRequest(new { message = "Authorization expired or was already used. Verify your email again." });
+            user.PasswordHash = PasswordHasher.Hash(dto.NewPassword);
+            user.PasswordChangeTokenId = null;
+            user.PasswordChangeOtpHash = null;
+            user.PasswordChangeExpiresAt = null;
+            user.PasswordResetToken = null;
+            user.PasswordResetTokenExpiresAt = null;
+            user.MfaChallengeToken = null;
+            user.MfaCode = null;
+            user.MfaCodeExpiresAt = null;
+            user.PendingDeviceId = null;
+            user.SecurityStamp = Guid.NewGuid().ToString("N");
+            user.UpdatedAt = DateTime.UtcNow;
+            await db.TrustedDevices.Where(d => d.UserId == UserId).ExecuteDeleteAsync();
+            Audit("PASSWORD_CHANGED");
+            await db.SaveChangesAsync();
+            await tx.CommitAsync();
+            return Ok(new { message = "Password changed. Sign in again." });
+        });
     }
 
     [HttpGet("mfa")]
@@ -156,18 +165,21 @@ public class AccountSecurityController(AppDbContext db, IConfiguration config, I
 
     private async Task<IActionResult> SetMfa(bool enabled)
     {
-        await using var tx = await db.Database.BeginTransactionAsync();
-        var user = await LockUser();
-        user.MfaEnabled = enabled;
-        user.MfaCode = null;
-        user.MfaCodeExpiresAt = null;
-        user.MfaChallengeToken = null;
-        user.PendingDeviceId = null;
-        user.UpdatedAt = DateTime.UtcNow;
-        Audit(enabled ? "MFA_ENABLED" : "MFA_DISABLED");
-        await db.SaveChangesAsync();
-        await tx.CommitAsync();
-        return Ok(new { isMfaEnabled = user.MfaEnabled, method = "email" });
+        return await db.Database.CreateExecutionStrategy().ExecuteAsync<IActionResult>(async () =>
+        {
+            await using var tx = await db.Database.BeginTransactionAsync();
+            var user = await LockUser();
+            user.MfaEnabled = enabled;
+            user.MfaCode = null;
+            user.MfaCodeExpiresAt = null;
+            user.MfaChallengeToken = null;
+            user.PendingDeviceId = null;
+            user.UpdatedAt = DateTime.UtcNow;
+            Audit(enabled ? "MFA_ENABLED" : "MFA_DISABLED");
+            await db.SaveChangesAsync();
+            await tx.CommitAsync();
+            return Ok(new { isMfaEnabled = user.MfaEnabled, method = "email" });
+        });
     }
 }
 
