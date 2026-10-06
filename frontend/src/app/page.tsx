@@ -9,28 +9,29 @@ const GRID_STYLE = `
   .landing-hero {
     background-color: #f5ede0;
     background-image:
+      radial-gradient(circle at 82% 22%, rgba(249,115,22,0.28) 0%, rgba(249,115,22,0.12) 24%, transparent 52%),
       linear-gradient(rgba(160,130,100,0.15) 1px, transparent 1px),
       linear-gradient(90deg, rgba(160,130,100,0.15) 1px, transparent 1px);
-    background-size: 40px 40px;
+    background-size: auto, 40px 40px, 40px 40px;
     width: 100%;
   }
   .landing-hero-inner {
-    max-width: 1200px;
+    max-width: 1280px;
     margin: 0 auto;
-    padding: 5rem 2rem 4rem;
+    padding: clamp(3.5rem, 7vw, 5.5rem) clamp(1.25rem, 5.5vw, 3.5rem) 4.5rem;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    min-height: calc(100vh - 64px);
+    min-height: 0;
   }
   .landing-why {
     background: #ffffff;
     width: 100%;
   }
   .landing-why-inner {
-    max-width: 1100px;
+    max-width: 1200px;
     margin: 0 auto;
-    padding: 5rem 2rem;
+    padding: clamp(3.5rem, 6vw, 5rem) clamp(1.25rem, 5.5vw, 3.5rem);
   }
   .why-grid {
     display: grid;
@@ -40,15 +41,16 @@ const GRID_STYLE = `
   .landing-cta {
     background-color: #f5ede0;
     background-image:
+      radial-gradient(circle at 18% 50%, rgba(249,115,22,0.14) 0%, transparent 42%),
       linear-gradient(rgba(160,130,100,0.1) 1px, transparent 1px),
       linear-gradient(90deg, rgba(160,130,100,0.1) 1px, transparent 1px);
-    background-size: 40px 40px;
+    background-size: auto, 40px 40px, 40px 40px;
     width: 100%;
   }
   .landing-cta-inner {
-    max-width: 1100px;
+    max-width: 1200px;
     margin: 0 auto;
-    padding: 5rem 2rem;
+    padding: clamp(3.5rem, 6vw, 5rem) clamp(1.25rem, 5.5vw, 3.5rem);
     display: grid;
     grid-template-columns: 1fr auto;
     gap: 3rem;
@@ -77,10 +79,53 @@ const GRID_STYLE = `
   .nav-links { display: flex; gap: 32px; }
   .nav-links button { font-size: 0.9rem; color: #374151; background: none; border: none; cursor: pointer; font-weight: 500; transition: color 0.15s; font-family: inherit; padding: 0; }
   .nav-links button:hover { color: #f97316; }
+  .hero-title {
+    max-width: 1000px !important;
+    letter-spacing: -0.035em;
+    font-family: "Arial Black", "Trebuchet MS", sans-serif !important;
+    color: #203f69;
+  }
+  .hero-title span:first-child,
+  .hero-title span:last-child {
+    color: #203f69 !important;
+  }
+  .hero-title span:nth-child(2) {
+    color: #ff6b0b !important;
+  }
+  .landing-why h2,
+  .landing-cta h2 {
+    font-family: "Arial Black", "Trebuchet MS", sans-serif !important;
+  }
+  .landing-why h2 span:first-child,
+  .landing-why h2 span:last-child,
+  .landing-cta h2 {
+    color: #ff6b0b !important;
+  }
+  .landing-why h2 span:nth-child(2),
+  .landing-cta h3 {
+    color: #203f69 !important;
+  }
+  .landing-why .why-grid > div > div {
+    box-shadow: 0 5px 0 rgba(17,24,39,0.26), 0 7px 12px rgba(17,24,39,0.16);
+  }
+  .landing-why .why-grid > div:nth-child(even) > div {
+    background: #ff6b0b !important;
+  }
+  .hero-description { max-width: 570px !important; }
+  .hero-actions { width: 100%; justify-content: center; }
+  .tutorial-card { align-self: center; max-width: 900px !important; width: min(100%, 900px) !important; }
+  .tutorial-content { align-items: center !important; }
+  .tutorial-copy { flex: 0 1 260px !important; }
+  .tutorial-video { flex: 1 1 420px !important; min-width: 0; }
+  .cta-copy { max-width: 620px; }
   @media (max-width: 900px) {
     .why-grid { grid-template-columns: repeat(2, 1fr); }
     .landing-cta-inner { grid-template-columns: 1fr; }
     .cta-logo { display: none !important; }
+    .hero-title {
+      max-width: 760px !important;
+      font-size: clamp(2.25rem, 6vw, 3.5rem) !important;
+    }
   }
   @media (max-width: 640px) {
     .nav-links { display: none; }
@@ -88,6 +133,18 @@ const GRID_STYLE = `
     .landing-cta-inner { padding: 3rem 1.25rem; }
     .landing-why-inner { padding: 3rem 1.25rem; }
     .why-grid { grid-template-columns: 1fr 1fr; }
+    .hero-title {
+      width: 100% !important;
+      max-width: 100% !important;
+      font-size: clamp(1.75rem, 8vw, 2.75rem) !important;
+      line-height: 1.05 !important;
+      letter-spacing: -0.04em !important;
+      overflow-wrap: normal;
+      word-break: normal;
+    }
+    .hero-actions { justify-content: flex-start; }
+    .tutorial-content { flex-direction: column !important; padding: 1.25rem !important; }
+    .tutorial-copy, .tutorial-video { flex: 1 1 auto !important; width: 100%; }
   }
 `;
 
@@ -95,7 +152,7 @@ function DarkBtn({ label, onClick }: { label: string; onClick?: () => void }) {
   return (
     <button onClick={onClick} style={{
       padding: "13px 30px", borderRadius: 9, border: "none", cursor: "pointer",
-      background: "#1a2235", color: "#fff", fontWeight: 700, fontSize: "0.95rem",
+      background: "#203f69", color: "#fff", fontWeight: 700, fontSize: "0.95rem",
       transition: "opacity 0.15s", letterSpacing: "0.01em",
     }}
       onMouseEnter={e => (e.currentTarget.style.opacity = "0.82")}
@@ -475,16 +532,16 @@ export default function LandingPage() {
         {/* ── HERO ── */}
         <section id="home" className="landing-hero">
           <div className="landing-hero-inner">
-            <h1 style={{
+            <h1 className="hero-title" style={{
               fontSize: "clamp(2.8rem, 5vw, 4.5rem)", fontWeight: 900,
-              lineHeight: 1.05, marginBottom: "1.75rem", maxWidth: 720,
+              lineHeight: 1.05, marginBottom: "1.75rem", maxWidth: 1000,
             }}>
               <span style={{ color: "#1a2235", display: "block" }}>Smarter Materials.</span>
               <span style={{ color: "#f97316", fontStyle: "italic", display: "block" }}>Zero Waste.</span>
               <span style={{ color: "#1a2235", display: "block" }}>Built for Construction.</span>
             </h1>
 
-            <p style={{
+            <p className="hero-description" style={{
               fontSize: "clamp(0.88rem, 1.5vw, 1rem)", color: "#4b5563",
               lineHeight: 1.8, maxWidth: 500, marginBottom: "2.25rem",
             }}>
@@ -493,20 +550,20 @@ export default function LandingPage() {
               construction projects.
             </p>
 
-            <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "3.5rem" }}>
+            <div className="hero-actions" style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "3.5rem" }}>
               <DarkBtn label="Get Started" onClick={() => scrollTo("help")} />
-              <OrangeBtn label="Sign Up" onClick={goLogin} />
+              <OrangeBtn label="Sign In" onClick={goLogin} />
             </div>
 
             {/* Video tutorial card */}
-            <div style={{
+            <div className="tutorial-card" style={{
               width: "100%", maxWidth: 560,
               border: "3px solid #1a2235", borderRadius: 16,
               overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.14)",
             }}>
-              <div style={{ background: "#dde0f0", padding: "1.75rem", display: "flex", gap: "1.5rem", alignItems: "flex-start" }}>
+              <div className="tutorial-content" style={{ background: "#dde0f0", padding: "1.75rem", display: "flex", gap: "1.5rem", alignItems: "flex-start" }}>
                 {/* Left copy */}
-                <div style={{ flex: "0 0 190px" }}>
+                <div className="tutorial-copy" style={{ flex: "0 0 190px" }}>
                   <h3 style={{ fontSize: "1.75rem", fontWeight: 900, color: "#111827", lineHeight: 1.1, marginBottom: "0.85rem" }}>
                     Construction Intelligence
                   </h3>
@@ -520,7 +577,7 @@ export default function LandingPage() {
                   }}>Watch Overview</button>
                 </div>
                 {/* Right — real product walkthrough video */}
-                <div style={{ flex: 1 }}>
+                <div className="tutorial-video" style={{ flex: 1 }}>
                   <video
                     ref={videoRef}
                     src="/landing-video.mp4"
@@ -573,7 +630,7 @@ export default function LandingPage() {
         <section id="about" className="landing-cta">
           <div className="landing-cta-inner">
             {/* Left */}
-            <div>
+            <div className="cta-copy">
               <h2 style={{ fontSize: "clamp(2rem, 4vw, 3.25rem)", fontWeight: 900, color: "#f97316", letterSpacing: "-0.02em", marginBottom: "0.5rem", lineHeight: 1 }}>
                 TRY FOR FREE
               </h2>
@@ -598,7 +655,7 @@ export default function LandingPage() {
             {/* Right logo */}
             <div className="cta-logo" style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src="/landlogo.png" alt="ConstructIQ" style={{ width: 380, height: 380, objectFit: "contain", filter: "drop-shadow(0 10px 30px rgba(0,0,0,0.14))" }} />
+              <img src="/constructiq-logo.png" alt="ConstructIQ" style={{ width: 380, height: 380, objectFit: "contain", filter: "drop-shadow(0 10px 30px rgba(0,0,0,0.14))" }} />
             </div>
           </div>
         </section>
