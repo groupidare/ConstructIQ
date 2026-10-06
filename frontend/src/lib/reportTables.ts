@@ -114,15 +114,11 @@ export function buildForecastReportTable(results: ForecastResult[], from: Date, 
           formatDate(f.generatedAt),
           m.materialName,
           num(m.forecastedQuantity),
-          num(m.currentStock),
-          num(m.shortage),
-          m.riskLevel,
-          num(m.reorderSuggestion),
         ]);
       });
     });
   return {
-    columns: ["Period", "Generated", "Material", "Forecasted Qty", "Current Stock", "Shortage", "Risk Level", "Reorder Suggestion"],
+    columns: ["Period", "Generated", "Material", "Forecasted Qty"],
     rows,
   };
 }
