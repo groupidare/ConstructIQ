@@ -390,7 +390,7 @@ function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void 
       if (type === "Procurement Summary") {
         const { data } = await api.get<PurchaseOrder[]>("/purchase-orders", { params: { projectId: project.id } });
         table = buildReportTable(type, { purchaseOrders: data }, from, to);
-      } else if (type === "Excess Analytics") {
+      } else if (type === "Excess") {
         const { data } = await api.get<ExcessWasteRecord[]>(`/excess-waste/project/${project.id}`);
         table = buildReportTable(type, { excessRecords: data }, from, to);
       } else if (type === "Forecast Report") {
@@ -419,7 +419,7 @@ function ReportsModal({ project, onClose }: { project:Project; onClose:()=>void 
           <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#9ca3af" }}><X style={{ width:20, height:20 }} /></button>
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
-          <div><label style={lbl}>Report Type</label><select value={type} onChange={e=>setType(e.target.value)} style={{ ...sel, width:"100%" }}>{["Material Usage","Procurement Summary","Excess Analytics","Forecast Report"].map(t=><option key={t}>{t}</option>)}</select></div>
+          <div><label style={lbl}>Report Type</label><select value={type} onChange={e=>setType(e.target.value)} style={{ ...sel, width:"100%" }}>{["Material Usage","Procurement Summary","Excess","Forecast Report"].map(t=><option key={t}>{t}</option>)}</select></div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
             <div><label style={lbl}>From</label><DatePickerField value={from} onChange={setFrom} inputStyle={{ ...inp, width:"100%", boxSizing:"border-box" as const }} /></div>
             <div><label style={lbl}>To</label><DatePickerField value={to} onChange={setTo} inputStyle={{ ...inp, width:"100%", boxSizing:"border-box" as const }} /></div>

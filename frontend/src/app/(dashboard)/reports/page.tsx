@@ -13,7 +13,7 @@ import type { Project } from "@/types/project";
 import type { WarehouseStockItem } from "@/types/warehouseStock";
 import type { WarehouseRequest } from "@/types/warehouseRequest";
 import type { ExcessWasteRecord } from "@/types/excess";
-import type { ForecastResult, RiskLevel, ForecastAccuracyReport } from "@/types/forecast";
+import type { ForecastResult, ForecastAccuracyReport } from "@/types/forecast";
 import type { RedistributionRecommendation, RedistributionStatus } from "@/types/procurement";
 import type { PurchaseOrder } from "@/types/purchaseOrder";
 import {
@@ -39,8 +39,8 @@ interface Report {
 const REPORTS: Report[] = [
   { id: "projects",    title: "Projects",          desc: "Timeline, status, and phase progress across every project",   icon: FolderKanban,    category: "Management" },
   { id: "inventory",   title: "Inventory",         desc: "Warehouse stock balance, zero-stock items, pending requests", icon: Package,         category: "Operations" },
-  { id: "forecasting", title: "Forecasting",       desc: "Demand forecasts, shortage risk, model accuracy",             icon: TrendingUp,      category: "Analytics"  },
-  { id: "excess",      title: "Excess Analytics",  desc: "Waste rate, excess rate, reusable materials",                 icon: Trash2,          category: "Analytics"  },
+  { id: "forecasting", title: "Forecasting",       desc: "Demand forecasts and model accuracy",                         icon: TrendingUp,      category: "Analytics"  },
+  { id: "excess",      title: "Excess",            desc: "Waste rate, excess rate, reusable materials",                 icon: Trash2,          category: "Analytics"  },
   { id: "redistribution", title: "Redistribution", desc: "Dead-stock opportunities, approvals, and priority",           icon: Network,         category: "Operations" },
   { id: "procurement", title: "Procurement",       desc: "Purchase order status, supplier performance and ratings",     icon: ShoppingCart,    category: "Operations" },
   { id: "system",      title: "System Overview",   desc: "Cross-system snapshot — projects, stock, orders, weather",    icon: LayoutDashboard, category: "Overview"   },
@@ -92,11 +92,11 @@ const PROJECT_STATUS_COLORS: Record<string, string> = {
 };
 
 function buildProjectsData(projects: Project[]): ReportViewData {
-  const real = projects.filter(p => !p.isHistorical);
-  const byStatus = new Map<string, number>();
-  for (const p of real) byStatus.set(p.status, (byStatus.get(p.status) ?? 0) + 1);
+  const tracked = projects;
+  const byStatus = new Map<string, number>([["Active", 0], ["Planning", 0], ["Completed", 0]]);
+  for (const p of tracked) byStatus.set(p.status, (byStatus.get(p.status) ?? 0) + 1);
 
-  const allPhases = real.flatMap(p => p.phases);
+  const allPhases = tracked.flatMap(p => p.phases);
   const avgProgress = avg(allPhases.map(ph => ph.progressPercent));
   const active = byStatus.get("Active") ?? 0;
 
@@ -114,21 +114,21 @@ function buildProjectsData(projects: Project[]): ReportViewData {
   };
 
   return {
-    subtitle: `${real.length} project(s) tracked`,
+    subtitle: `${tracked.length} project(s) tracked`,
     stats: [
-      { label: "TOTAL PROJECTS", value: String(real.length), sub: "Excludes historical records" },
-      { label: "ACTIVE",         value: String(active),      sub: `${pct(active, real.length)}% of total` },
+      { label: "TOTAL PROJECTS", value: String(tracked.length), sub: "All projects, including completed records" },
+      { label: "ACTIVE",         value: String(active),      sub: `${pct(active, tracked.length)}% of total` },
       { label: "AVG PHASE PROGRESS", value: `${avgProgress.toFixed(0)}%`, sub: `Across ${allPhases.length} phase(s)` },
     ],
     chartTitle: "Projects by Status",
     chartData: Array.from(byStatus.entries()).map(([name, value]) => ({ name, value })),
     healthTitle: "Project Status",
     health: Array.from(byStatus.entries()).map(([label, count]) => ({
-      label, pct: `${pct(count, real.length)}%`, color: PROJECT_STATUS_COLORS[label] ?? "#9ca3af",
+      label, pct: `${pct(count, tracked.length)}%`, color: PROJECT_STATUS_COLORS[label] ?? "#9ca3af",
     })),
-    aiInsight: real.length === 0
+    aiInsight: tracked.length === 0
       ? "No projects tracked yet — create a project to start seeing real progress data here."
-      : `${active} of ${real.length} project(s) are active, averaging ${avgProgress.toFixed(0)}% phase completion.`,
+      : `${active} of ${tracked.length} project(s) are active, averaging ${avgProgress.toFixed(0)}% phase completion.`,
     detailTables: [{ title: "All Projects", table: projectsTable }],
   };
 }
@@ -176,17 +176,16 @@ function buildInventoryData(items: WarehouseStockItem[], requests: WarehouseRequ
   };
 }
 
-const RISK_COLORS: Record<RiskLevel, string> = { Low: "#22c55e", Medium: "#f59e0b", High: "#f97316", Critical: "#ef4444" };
-
 function buildForecastingData(
   forecasts: ForecastResult[],
   accuracyReports: ForecastAccuracyReport[],
   projects: Project[],
 ): ReportViewData {
   const materials = forecasts.flatMap(f => f.forecastedMaterials);
-  const riskCounts = new Map<RiskLevel, number>([["Low", 0], ["Medium", 0], ["High", 0], ["Critical", 0]]);
-  for (const m of materials) riskCounts.set(m.riskLevel, (riskCounts.get(m.riskLevel) ?? 0) + 1);
-  const shortageRisks = (riskCounts.get("High") ?? 0) + (riskCounts.get("Critical") ?? 0);
+  const forecastByMaterial = new Map<string, number>();
+  for (const material of materials) {
+    forecastByMaterial.set(material.materialName, (forecastByMaterial.get(material.materialName) ?? 0) + material.forecastedQuantity);
+  }
 
   // Real accuracy, not the forecast run's own ModelAccuracy field (the
   // ml-service never sets it) — /forecast/accuracy/{id} compares each
@@ -217,18 +216,23 @@ function buildForecastingData(
     subtitle: `${forecasts.length} project forecast(s) · most recent run per project`,
     stats: [
       { label: "PROJECTS FORECASTED", value: String(forecasts.length), sub: "Most recent run each" },
-      { label: "SHORTAGE RISKS",      value: String(shortageRisks),    sub: "High + Critical materials" },
+      { label: "FORECASTED MATERIALS", value: String(materials.length), sub: "Current forecast rows" },
       { label: "MODEL ACCURACY",      value: avgAccuracy != null ? `${avgAccuracy.toFixed(1)}%` : "—", sub: avgAccuracy != null ? `Avg across ${withComparisons.length} project(s) with confirmed usage` : "No confirmed actual usage yet to score against" },
     ],
-    chartTitle: "Forecasted Materials by Risk Level",
-    chartData: Array.from(riskCounts.entries()).map(([name, value]) => ({ name, value })),
-    healthTitle: "Risk Breakdown",
-    health: Array.from(riskCounts.entries()).map(([label, count]) => ({
-      label, pct: `${pct(count, materials.length)}%`, color: RISK_COLORS[label],
+    chartTitle: "Forecasted Quantity by Material",
+    chartData: Array.from(forecastByMaterial.entries())
+      .map(([name, value]) => ({ name: truncate(name, 14), value: Math.round(value * 100) / 100 }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 8),
+    healthTitle: "Forecast Coverage",
+    health: forecasts.map(f => ({
+      label: projectName(f.projectId),
+      pct: `${pct(f.forecastedMaterials.length, materials.length)}%`,
+      color: "#f97316",
     })),
     aiInsight: forecasts.length === 0
       ? "No forecasts have been generated yet — run a forecast from a project's Material Plan tab."
-      : `${shortageRisks} material(s) across ${forecasts.length} project(s) are at High or Critical shortage risk. Accuracy measures how close the forecast was to confirmed actual usage (100% is an exact match). Variance is the difference between actual and forecasted quantity; a positive value means actual usage was higher, while a negative value means it was lower.`,
+      : `${materials.length} forecast material row(s) across ${forecasts.length} project(s). Accuracy measures how close the forecast was to confirmed actual usage (100% is an exact match). Variance is the difference between actual and forecasted quantity; a positive value means actual usage was higher, while a negative value means it was lower.`,
     detailTables: [
       { title: "Predicted vs. Actual Usage", table: comparisonTable },
       { title: "Current Forecast Detail", table: forecastDetailTable },
@@ -422,7 +426,7 @@ function buildSystemData(
       ["Projects", "Total Tracked", String(real.length)],
       ["Inventory", "Zero-Stock Items", String(zeroStock)],
       ["Procurement", "Open Purchase Orders", String(activePOs)],
-      ["Excess Analytics", "Records Logged", String(excessRecords.length)],
+      ["Excess", "Records Logged", String(excessRecords.length)],
       ["Redistribution", "Active Opportunities", String(activeRedistribution)],
       ["Weather", "Current Risk", weatherRisk ?? "—"],
     ],
@@ -773,13 +777,13 @@ export default function ReportsPage() {
         setOrders(poRes.data);
         setSuppliers(supRes.data);
 
-        // Excess/waste, forecasts, and accuracy are all recorded per
-        // project — pull each active (non-historical) project's data and
-        // flatten. Isolated in its own catch per project so one project
-        // with no data yet can't take down the whole report.
-        const activeProjects = projectsRes.data.filter(p => !p.isHistorical);
+        // Excess/waste records belong to every project, including historical
+        // projects. Forecasts remain scoped to live projects so stale
+        // historical runs do not distort the forecasting report.
+        const allProjects = projectsRes.data;
+        const activeProjects = allProjects.filter(p => !p.isHistorical);
         const [excessLists, forecastLists, accuracyLists] = await Promise.all([
-          Promise.all(activeProjects.map(p =>
+          Promise.all(allProjects.map(p =>
             api.get<ExcessWasteRecord[]>(`/excess-waste/project/${p.id}`).then(r => r.data).catch(() => []))),
           Promise.all(activeProjects.map(p =>
             // Most recent forecast run only (index 0 — backend returns newest first) so
@@ -814,6 +818,13 @@ export default function ReportsPage() {
       }
     }
     loadAll();
+    const refreshOnFocus = () => { void loadAll(); };
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnFocus);
+    return () => {
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnFocus);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
 

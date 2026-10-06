@@ -32,7 +32,7 @@ export default function ProjectDetailPage() {
   const quickLinks = [
     { label: 'Inventory',         icon: Package,       href: `/inventory/${id}` },
     { label: 'Forecasting',       icon: BarChart2,      href: `/forecasting/${id}` },
-    { label: 'Excess Analytics',  icon: AlertTriangle,  href: `/excess-analytics/${id}` },
+    { label: 'Excess',            icon: AlertTriangle,  href: `/excess-analytics/${id}` },
     { label: 'Procurement',       icon: ShoppingCart,   href: `/procurement/${id}` },
   ];
 

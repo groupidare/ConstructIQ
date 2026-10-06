@@ -161,6 +161,17 @@ function DarkBtn({ label, onClick }: { label: string; onClick?: () => void }) {
   );
 }
 
+function DarkLink({ label, href }: { label: string; href: string }) {
+  return (
+    <a href={href} style={{
+      display: "inline-block", padding: "13px 30px", borderRadius: 9, border: "none",
+      cursor: "pointer", background: "#203f69", color: "#fff", fontWeight: 700,
+      fontSize: "0.95rem", transition: "opacity 0.15s", letterSpacing: "0.01em",
+      textDecoration: "none",
+    }}>{label}</a>
+  );
+}
+
 // ── Terms of Use Modal ───────────────────────────────────────────────────────
 
 function ModalShell({ icon: Icon, title, onClose, children }: {
@@ -448,6 +459,17 @@ function OrangeBtn({ label, onClick }: { label: string; onClick?: () => void }) 
   );
 }
 
+function OrangeLink({ label, href }: { label: string; href: string }) {
+  return (
+    <a href={href} style={{
+      display: "inline-block", padding: "13px 30px", borderRadius: 9, border: "none",
+      cursor: "pointer", background: "#f97316", color: "#fff", fontWeight: 700,
+      fontSize: "0.95rem", transition: "opacity 0.15s", letterSpacing: "0.01em",
+      textDecoration: "none",
+    }}>{label}</a>
+  );
+}
+
 type FooterModal = "privacy" | "terms" | "contact" | null;
 
 export default function LandingPage() {
@@ -513,18 +535,18 @@ export default function LandingPage() {
 
             {/* Auth buttons — right */}
             <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "flex-end" }}>
-              <button onClick={goLogin} style={{
+              <a href="/login" style={{
                 background: "none", border: "none", cursor: "pointer",
                 color: "#f97316", fontWeight: 700, fontSize: "0.9rem", padding: "6px 4px",
-              }}>Login</button>
-              <button onClick={goLogin} style={{
+                textDecoration: "none",
+              }}>Login</a>
+              <a href="/login" style={{
                 padding: "9px 20px", borderRadius: 8, border: "none", cursor: "pointer",
                 background: "#1a2235", color: "#fff", fontWeight: 700, fontSize: "0.875rem",
                 transition: "opacity 0.15s",
+                textDecoration: "none",
               }}
-                onMouseEnter={e => (e.currentTarget.style.opacity = "0.82")}
-                onMouseLeave={e => (e.currentTarget.style.opacity = "1")}
-              >Get ConstructIQ</button>
+              >Get ConstructIQ</a>
             </div>
           </div>
         </nav>
@@ -551,8 +573,8 @@ export default function LandingPage() {
             </p>
 
             <div className="hero-actions" style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "3.5rem" }}>
-              <DarkBtn label="Get Started" onClick={() => scrollTo("help")} />
-              <OrangeBtn label="Sign In" onClick={goLogin} />
+              <DarkLink label="Get Started" href="#help" />
+              <OrangeLink label="Sign In" href="/login" />
             </div>
 
             {/* Video tutorial card */}

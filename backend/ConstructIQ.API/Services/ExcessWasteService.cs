@@ -1,4 +1,5 @@
 using ConstructIQ.API.Data;
+using ConstructIQ.API.Algorithms;
 using ConstructIQ.API.Models.DTOs.ExcessWaste;
 using ConstructIQ.API.Models.Entities;
 using ConstructIQ.API.Services.Interfaces;
@@ -12,7 +13,8 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
     {
         var records = await db.ExcessWasteRecords
             .Include(e => e.Project).Include(e => e.Phase)
-            .Include(e => e.Material).Include(e => e.RecordedBy)
+            .Include(e => e.Material).Include(e => e.BOQItem).ThenInclude(b => b!.HistoricalSupplies)
+            .Include(e => e.RecordedBy)
             .Where(e => e.ProjectId == projectId)
             .OrderByDescending(e => e.RecordedAt)
             .ToListAsync();
@@ -52,19 +54,19 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         // old best-effort match-by-material stays as a fallback for the
         // free-text path so nothing regresses for callers that don't send one.
         var boqItem = dto.BOQItemId.HasValue
-            ? await db.BOQItems.FirstOrDefaultAsync(b => b.Id == dto.BOQItemId.Value && b.ProjectId == dto.ProjectId)
+            ? await db.BOQItems.Include(b => b.HistoricalSupplies)
+                .FirstOrDefaultAsync(b => b.Id == dto.BOQItemId.Value && b.ProjectId == dto.ProjectId)
             : null;
         if (boqItem is null)
         {
-            var boqQuery = db.BOQItems.Where(b => b.ProjectId == dto.ProjectId && b.MaterialId == materialId);
+            var boqQuery = db.BOQItems.Include(b => b.HistoricalSupplies)
+                .Where(b => b.ProjectId == dto.ProjectId && b.MaterialId == materialId);
             boqItem = dto.PhaseId.HasValue
                 ? await boqQuery.FirstOrDefaultAsync(b => b.PhaseId == dto.PhaseId.Value) ?? await boqQuery.FirstOrDefaultAsync()
                 : await boqQuery.FirstOrDefaultAsync();
         }
 
-        var excessPercent = boqItem is not null && boqItem.EstimatedQuantity > 0
-            ? dto.Quantity / boqItem.EstimatedQuantity * 100
-            : 0;
+        var excessPercent = 0m;
 
         // Validated against what was actually delivered (falling back to the
         // estimate only if nothing's been marked Delivered yet) instead of
@@ -75,6 +77,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         if (boqItem is not null)
         {
             var baseline = await GetDeliveredBaselineAsync(boqItem);
+            excessPercent = baseline > 0 ? dto.Quantity / baseline * 100 : 0;
             var alreadyLogged = await db.ExcessWasteRecords
                 .Where(e => e.BOQItemId == boqItem.Id)
                 .SumAsync(e => (decimal?)e.Quantity) ?? 0;
@@ -83,18 +86,21 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
                     $"This entry would bring total logged Excess+Waste to {alreadyLogged + dto.Quantity} {(boqItem.EstimatedPurchaseUnit ?? boqItem.Unit ?? "")}, exceeding the {baseline} delivered (or estimated, if nothing's been delivered yet) — reduce the quantity or confirm the delivery was recorded.");
         }
 
+        var excessType = Enum.Parse<ExcessType>(dto.ExcessType);
+        var isReusable = excessType is ExcessType.Unused or ExcessType.Overordered;
+
         var record = new ExcessWasteRecord
         {
             ProjectId       = dto.ProjectId,
             PhaseId         = dto.PhaseId,
             BOQItemId       = boqItem?.Id,
             MaterialId      = materialId,
-            ExcessType      = Enum.Parse<ExcessType>(dto.ExcessType),
+            ExcessType      = excessType,
             Quantity        = dto.Quantity,
             UnitCost        = dto.UnitCost,
             TotalCost       = dto.Quantity * dto.UnitCost,
             ExcessPercent   = excessPercent,
-            IsReusable      = dto.IsReusable,
+            IsReusable      = isReusable,
             Notes           = dto.Notes,
             RecordedByUserId= userId,
         };
@@ -106,7 +112,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         if (inventory is not null)
         {
             inventory.ExcessQuantity += dto.Quantity;
-            if (!dto.IsReusable)
+            if (!isReusable)
             {
                 inventory.WastedQuantity    += dto.Quantity;
                 inventory.AvailableQuantity -= dto.Quantity;
@@ -137,7 +143,8 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
 
         var saved = await db.ExcessWasteRecords
             .Include(e => e.Project).Include(e => e.Phase)
-            .Include(e => e.Material).Include(e => e.RecordedBy)
+            .Include(e => e.Material).Include(e => e.BOQItem).ThenInclude(b => b!.HistoricalSupplies)
+            .Include(e => e.RecordedBy)
             .FirstAsync(e => e.Id == record.Id);
 
         return ToDto(saved);
@@ -180,8 +187,8 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
             BOQItemId         = b.Id,
             MaterialId        = b.MaterialId,
             MaterialName      = b.Material.Name,
-            Unit              = b.EstimatedPurchaseUnit ?? b.Material.Unit,
-            EstimatedQuantity = b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity,
+            Unit              = PreferredUnit(b),
+            EstimatedQuantity = PurchaseQuantity(b),
         });
     }
 
@@ -259,7 +266,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         record.ExcessType = Enum.Parse<ExcessType>(dto.ExcessType);
         record.Quantity   = dto.Quantity;
         record.TotalCost  = dto.Quantity * record.UnitCost;
-        record.IsReusable = dto.IsReusable;
+        record.IsReusable = record.ExcessType is ExcessType.Unused or ExcessType.Overordered;
 
         await db.SaveChangesAsync();
 
@@ -285,7 +292,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
 
         var saved = await db.ExcessWasteRecords
             .Include(e => e.Project).Include(e => e.Phase)
-            .Include(e => e.Material).Include(e => e.RecordedBy)
+            .Include(e => e.Material).Include(e => e.BOQItem).Include(e => e.RecordedBy)
             .FirstAsync(e => e.Id == id);
 
         return ToDto(saved);
@@ -393,7 +400,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
                 || (pom.BOQItemId == null && pom.MaterialId == boqItem.MaterialId
                     && (pom.PhaseId == boqItem.PhaseId || (pom.PhaseId == null && boqItem.PhaseId == null))))
             .SumAsync(pom => (decimal?)pom.Quantity) ?? 0;
-        return delivered > 0 ? delivered : (boqItem.EstimatedPurchaseQuantity ?? boqItem.EstimatedQuantity);
+        return delivered > 0 ? delivered : PurchaseQuantity(boqItem);
     }
 
     public async Task<ExcessAnalyticsSummaryDto> GetSummaryAsync(int projectId)
@@ -441,7 +448,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         BOQItemId    = e.BOQItemId,
         MaterialId   = e.MaterialId,
         MaterialName = e.Material?.Name ?? string.Empty,
-        Unit         = e.Material?.Unit ?? string.Empty,
+        Unit         = PreferredUnit(e.BOQItem, e.Material?.Unit),
         ExcessType   = e.ExcessType.ToString(),
         Quantity     = e.Quantity,
         UnitCost     = e.UnitCost,
@@ -454,4 +461,34 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         RedistributionStatus            = redistribution?.Status.ToString(),
         RedistributionTargetProjectName = redistribution?.TargetProject?.Name,
     };
+
+    private static string PreferredUnit(BOQItem? boqItem, string? materialUnit = null)
+    {
+        if (!string.IsNullOrWhiteSpace(boqItem?.EstimatedPurchaseUnit))
+            return boqItem.EstimatedPurchaseUnit.Trim();
+
+        var supplyUnits = boqItem?.HistoricalSupplies
+            .Where(s => s.Quantity > 0 && !string.IsNullOrWhiteSpace(s.Unit))
+            .GroupBy(s => CompletedProjectDemandRules.NormalizeUnit(s.Unit))
+            .Select(g => g.First().Unit.Trim())
+            .ToList();
+        if (supplyUnits is { Count: 1 })
+            return supplyUnits[0];
+
+        return materialUnit ?? boqItem?.Material?.Unit ?? boqItem?.Unit ?? string.Empty;
+    }
+
+    private static decimal PurchaseQuantity(BOQItem boqItem)
+    {
+        if (boqItem.EstimatedPurchaseQuantity.HasValue)
+            return boqItem.EstimatedPurchaseQuantity.Value;
+
+        var supplies = boqItem.HistoricalSupplies
+            .Where(s => s.Quantity > 0 && !string.IsNullOrWhiteSpace(s.Unit))
+            .ToList();
+        var units = supplies
+            .GroupBy(s => CompletedProjectDemandRules.NormalizeUnit(s.Unit))
+            .ToList();
+        return units.Count == 1 ? supplies.Sum(s => s.Quantity) : boqItem.EstimatedQuantity;
+    }
 }

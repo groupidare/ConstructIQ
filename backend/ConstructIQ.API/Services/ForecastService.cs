@@ -529,6 +529,7 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
         // observed usage.
         var boqItems = await db.BOQItems
             .Include(b => b.Material)
+            .Include(b => b.HistoricalSupplies)
             .Where(b => b.ProjectId == projectId && b.IsUsageConfirmed)
             .ToListAsync();
 
@@ -539,11 +540,11 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
             // distinct unit actually forecasted; see ForecastedMaterial.Unit),
             // so matching by MaterialId alone could pair this BOQ row against
             // a forecast entry made in a different unit for the same material.
-            var effectiveUnit = !string.IsNullOrWhiteSpace(b.Unit) ? b.Unit : b.Material.Unit;
+            var effectiveUnit = ResolveObservedUnit(b);
             var lastForecast = forecasts
                 .SelectMany(f => f.ForecastedMaterials)
                 .Where(fm => fm.MaterialId == b.MaterialId
-                    && string.Equals(fm.Unit, effectiveUnit, StringComparison.OrdinalIgnoreCase))
+                    && NormalizeUnit(fm.Unit) == NormalizeUnit(effectiveUnit))
                 .OrderByDescending(fm => fm.Id)
                 .FirstOrDefault();
 
@@ -580,5 +581,23 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
             Rmse            = rmse,
             Comparisons     = comparisons,
         };
+    }
+
+    private static string ResolveObservedUnit(BOQItem item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.EstimatedPurchaseUnit))
+            return item.EstimatedPurchaseUnit.Trim();
+
+        var purchaseUnits = item.HistoricalSupplies
+            .Where(s => s.Quantity > 0 && !string.IsNullOrWhiteSpace(s.Unit))
+            .Select(s => s.Unit.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (purchaseUnits.Count == 1)
+            return purchaseUnits[0];
+
+        return !string.IsNullOrWhiteSpace(item.Unit)
+            ? item.Unit.Trim()
+            : item.Material.Unit;
     }
 }

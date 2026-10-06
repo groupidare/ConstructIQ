@@ -12,11 +12,22 @@ public class RedistributionService(AppDbContext db, INotificationService notific
     // Damaged/expired stock isn't safe to redistribute — only unused/overordered excess is.
     private static readonly ExcessType[] ReusableExcessTypes = [ExcessType.Unused, ExcessType.Overordered];
 
+    private static string ExcessUnit(ExcessWasteRecord record) =>
+        record.BOQItem?.EstimatedPurchaseUnit
+        ?? (record.BOQItem?.HistoricalSupplies
+            .Where(s => s.Quantity > 0 && !string.IsNullOrWhiteSpace(s.Unit))
+            .GroupBy(s => CompletedProjectDemandRules.NormalizeUnit(s.Unit))
+            .Select(g => g.First().Unit.Trim())
+            .Take(2)
+            .ToList() is { Count: 1 } units ? units[0] : null)
+        ?? record.Material.Unit;
+
     public async Task<IEnumerable<RedistributionRecommendationDto>> GetRecommendationsAsync()
     {
         var requests = await db.RedistributionRequests
             .Include(r => r.Material)
             .Include(r => r.SourceProject)
+            .Include(r => r.SourceExcessWasteRecord).ThenInclude(e => e!.BOQItem).ThenInclude(b => b!.HistoricalSupplies)
             .Include(r => r.TargetProject)
             .Where(r => RedistributionStatuses.Active.Contains(r.Status))
             .ToListAsync();
@@ -41,6 +52,7 @@ public class RedistributionService(AppDbContext db, INotificationService notific
         var requests = await db.RedistributionRequests
             .Include(r => r.Material)
             .Include(r => r.SourceProject)
+            .Include(r => r.SourceExcessWasteRecord).ThenInclude(e => e!.BOQItem).ThenInclude(b => b!.HistoricalSupplies)
             .Include(r => r.TargetProject)
             .ToListAsync();
 
@@ -237,6 +249,7 @@ public class RedistributionService(AppDbContext db, INotificationService notific
     {
         var record = await db.ExcessWasteRecords
             .Include(e => e.Material)
+            .Include(e => e.BOQItem)
             .Include(e => e.Project)
             .FirstOrDefaultAsync(e => e.Id == dto.ExcessWasteRecordId)
             ?? throw new KeyNotFoundException("Excess/waste record not found.");
@@ -260,7 +273,7 @@ public class RedistributionService(AppDbContext db, INotificationService notific
 
         var quantity = dto.Quantity ?? record.Quantity;
         if (quantity > record.Quantity)
-            throw new InvalidOperationException($"Only {record.Quantity} {record.Material.Unit} of this excess is logged.");
+            throw new InvalidOperationException($"Only {record.Quantity} {ExcessUnit(record)} of this excess is logged.");
 
         var demand = await db.ProcurementRecommendations
             .Where(r => r.ProjectId == dto.TargetProjectId && r.MaterialId == record.MaterialId && r.CurrentStock < r.ReorderPoint)
@@ -296,7 +309,7 @@ public class RedistributionService(AppDbContext db, INotificationService notific
             .FirstAsync(r => r.Id == request.Id);
 
         await notifications.CreateForRoleAsync(UserRole.WarehousePersonnel, NotificationKind.RedistributionRequested,
-            $"{quantity} {record.Material.Unit} of {record.Material.Name} requested for transfer from {saved.SourceProject.Name} to {saved.TargetProject.Name} — awaiting your approval.",
+            $"{quantity} {ExcessUnit(record)} of {record.Material.Name} requested for transfer from {saved.SourceProject.Name} to {saved.TargetProject.Name} — awaiting your approval.",
             userId, actionLink: "/redistribution");
         await NotifyBothPMsAsync(saved, userId, NotificationKind.RedistributionRequested,
             $"was submitted for transfer between {saved.SourceProject.Name} and {saved.TargetProject.Name}.");
@@ -322,6 +335,7 @@ public class RedistributionService(AppDbContext db, INotificationService notific
     {
         var record = await db.ExcessWasteRecords
             .Include(e => e.Material)
+            .Include(e => e.BOQItem)
             .Include(e => e.Project)
             .FirstOrDefaultAsync(e => e.Id == excessWasteRecordId)
             ?? throw new KeyNotFoundException("Excess/waste record not found.");
@@ -365,7 +379,7 @@ public class RedistributionService(AppDbContext db, INotificationService notific
             var score = (int)Math.Min(needed, 1000) + (usesMaterial ? 50 : 0) + (sameType ? 10 : 0);
 
             var reasons = new List<string>();
-            if (needed > 0)       reasons.Add($"Needs {needed:N2} {record.Material.Unit} more of {record.Material.Name}");
+            if (needed > 0)       reasons.Add($"Needs {needed:N2} {ExcessUnit(record)} more of {record.Material.Name}");
             else if (usesMaterial) reasons.Add($"Already uses {record.Material.Name}");
             if (sameType)         reasons.Add($"Same project type ({p.Type})");
             if (reasons.Count == 0) reasons.Add("No strong match signal — general candidate only");
@@ -404,12 +418,22 @@ public class RedistributionService(AppDbContext db, INotificationService notific
         _                                           => RedistributionPriority.Low,
     };
 
+    private static string RedistributionUnit(RedistributionRequest r) =>
+        r.SourceExcessWasteRecord?.BOQItem?.EstimatedPurchaseUnit
+        ?? (r.SourceExcessWasteRecord?.BOQItem?.HistoricalSupplies
+            .Where(s => s.Quantity > 0 && !string.IsNullOrWhiteSpace(s.Unit))
+            .GroupBy(s => CompletedProjectDemandRules.NormalizeUnit(s.Unit))
+            .Select(g => g.First().Unit.Trim())
+            .Take(2)
+            .ToList() is { Count: 1 } units ? units[0] : null)
+        ?? r.Material.Unit;
+
     private static RedistributionRecommendationDto ToDto(RedistributionRequest r) => new()
     {
         Id                = r.Id,
         SourceMaterialId  = r.MaterialId,
         MaterialName      = r.Material.Name,
-        Unit              = r.Material.Unit,
+        Unit              = RedistributionUnit(r),
         SourceProjectId   = r.SourceProjectId,
         SourceProjectName = r.SourceProject.Name,
         TargetProjectId   = r.TargetProjectId,
