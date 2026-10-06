@@ -544,7 +544,7 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
             var lastForecast = forecasts
                 .SelectMany(f => f.ForecastedMaterials)
                 .Where(fm => fm.MaterialId == b.MaterialId
-                    && NormalizeUnit(fm.Unit) == NormalizeUnit(effectiveUnit))
+                    && NormalizeUnitLabel(fm.Unit) == NormalizeUnitLabel(effectiveUnit))
                 .OrderByDescending(fm => fm.Id)
                 .FirstOrDefault();
 
