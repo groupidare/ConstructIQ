@@ -22,7 +22,16 @@ export default function Header({ title }: HeaderProps) {
   const initials = `${user?.firstName?.[0] ?? ""}${user?.lastName?.[0] ?? ""}`.toUpperCase();
   const theme         = useTheme((s) => s.theme);
   const toggleTheme   = useTheme((s) => s.toggleTheme);
-  const toggleSidebar = useSidebarStore((s) => s.toggleCollapsed);
+  const toggleCollapsed = useSidebarStore((s) => s.toggleCollapsed);
+  const toggleMobile = useSidebarStore((s) => s.toggleMobile);
+
+  function toggleSidebar() {
+    if (window.matchMedia("(max-width: 767px)").matches) {
+      toggleMobile();
+    } else {
+      toggleCollapsed();
+    }
+  }
 
   const { notifications, unreadCount, markRead, markAllRead } = useNotificationPolling();
 
@@ -42,7 +51,7 @@ export default function Header({ title }: HeaderProps) {
   }, [notifOpen]);
 
   return (
-    <header style={{
+    <header className="app-header" style={{
       background: "#fff",
       borderBottom: "1px solid #e5e7eb",
       padding: "0 1.5rem",
@@ -57,7 +66,7 @@ export default function Header({ title }: HeaderProps) {
     }}>
 
       {/* ── Left: hamburger + title + breadcrumb ── */}
-      <div style={{ display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
+      <div className="app-header-title" style={{ display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
         <button suppressHydrationWarning onClick={toggleSidebar} title="Toggle sidebar" style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:0, display:"flex", alignItems:"center" }}>
           <Menu style={{ width:20, height:20 }} />
         </button>
@@ -73,7 +82,7 @@ export default function Header({ title }: HeaderProps) {
       <div style={{ display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
 
         {/* Weather — live, based on the user's current location. Shared across every page. */}
-        <WeatherChip />
+        <div className="header-weather"><WeatherChip /></div>
 
         {/* Bell + dropdown */}
         <div ref={bellRef} style={{ position:"relative" }}>
@@ -98,7 +107,7 @@ export default function Header({ title }: HeaderProps) {
           </button>
 
           {notifOpen && (
-            <div style={{
+            <div className="notification-menu" style={{
               position:"absolute", top:"calc(100% + 10px)", right:0,
               width:380, background:"#fff",
               borderRadius:14, boxShadow:"0 8px 32px rgba(0,0,0,0.15)",

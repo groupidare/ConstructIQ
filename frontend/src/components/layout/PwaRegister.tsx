@@ -8,7 +8,15 @@ export default function PwaRegister() {
   useEffect(() => {
     if (process.env.NODE_ENV !== "production") return;
     if (!("serviceWorker" in navigator)) return;
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    let cancelled = false;
+    navigator.serviceWorker.register("/sw.js")
+      .then(registration => {
+        if (!cancelled) void registration.update();
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return null;

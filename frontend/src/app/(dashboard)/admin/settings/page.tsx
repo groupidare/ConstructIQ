@@ -329,7 +329,7 @@ export default function SettingsPage() {
 
       <Header title="Settings" />
 
-      <div style={{ padding:"1.25rem 1.5rem", maxWidth:900, margin:"0 auto" }}>
+      <div className="responsive-page" style={{ padding:"1.25rem 1.5rem", maxWidth:900, margin:"0 auto" }}>
 
         {/* ── Account Information ── */}
         <Card title="Account Information">

@@ -181,7 +181,7 @@ export default function RedistributionPage() {
       {reviewItem && <ReviewModal item={reviewItem} onClose={() => setReviewItem(null)} />}
       <Header title="Redistribution" />
 
-      <div style={{ padding: "1.25rem 1.5rem" }}>
+      <div className="responsive-page" style={{ padding: "1.25rem 1.5rem" }}>
 
         {/* ── 3 stat cards — all derived from real redistribution data ─────────── */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "1rem", marginBottom: "1.5rem" }}>

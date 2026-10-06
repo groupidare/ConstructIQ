@@ -421,7 +421,7 @@ export default function UsersPage() {
 
       <Header title="User Management" />
 
-      <div style={{ padding:"1.25rem 1.5rem" }}>
+      <div className="responsive-page" style={{ padding:"1.25rem 1.5rem" }}>
         {/* Page header */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", marginBottom:"1.5rem" }}>
           <div>

@@ -148,7 +148,7 @@ function InventoryPageInner() {
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
       <Header title="Inventory" />
 
-      <div style={{ padding: "1.25rem 1.5rem" }}>
+      <div className="responsive-page" style={{ padding: "1.25rem 1.5rem" }}>
 
         {/* ── Page header ── */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>

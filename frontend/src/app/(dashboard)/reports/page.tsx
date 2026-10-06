@@ -856,7 +856,7 @@ export default function ReportsPage() {
 
       <Header title="Reports" />
 
-      <div style={{ padding: "1.25rem 1.5rem" }}>
+      <div className="responsive-page" style={{ padding: "1.25rem 1.5rem" }}>
 
         {/* Filter bar */}
         <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", marginBottom: "1.25rem" }}>

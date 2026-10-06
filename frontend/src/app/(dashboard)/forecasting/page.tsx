@@ -159,7 +159,7 @@ export default function ForecastingPage() {
     <div style={{ background: "#f5f4f0", minHeight: "100vh" }}>
       <Header title="Forecasting" />
 
-      <div style={{ padding: "1.25rem 1.5rem" }}>
+      <div className="responsive-page" style={{ padding: "1.25rem 1.5rem" }}>
         <div style={{ background: "#fff", borderRadius: 12, padding: "1.5rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
 
           {/* Header + material selector */}

@@ -190,7 +190,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div style={{
+    <div className="login-page" style={{
       minHeight: "100vh",
       display: "flex",
       alignItems: "center",
@@ -200,7 +200,7 @@ export default function LoginPage() {
     }}>
       {privacyOpen && <PrivacyModal initialTab={privacyTab} onClose={() => setPrivacyOpen(false)} />}
       {/* Card */}
-      <div style={{
+      <div className="login-card" style={{
         width: "100%",
         maxWidth: "1000px",
         borderRadius: "16px",
@@ -212,7 +212,7 @@ export default function LoginPage() {
       }}>
 
         {/* ── LEFT PANEL ── */}
-        <div style={{
+        <div className="login-brand-panel hidden lg:flex" style={{
           width: "45%",
           flexShrink: 0,
           position: "relative",
@@ -223,11 +223,9 @@ export default function LoginPage() {
           backgroundImage: "url(/background.png)",
           backgroundSize: "cover",
           backgroundPosition: "center",
-        }}
-          className="hidden lg:flex"
-        >
+        }}>
           {/* overlay */}
-          <div style={{
+          <div className="login-form-panel" style={{
             position: "absolute", inset: 0,
             background: "rgba(7, 18, 50, 0.78)",
           }} />
@@ -266,7 +264,7 @@ export default function LoginPage() {
                   { Icon: ShieldCheck, text: "Role-based secure access" },
                 ].map(({ Icon, text }) => (
                   <div key={text} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                    <div style={{
+                    <div className="login-feature-icon" style={{
                       width: 36, height: 36, borderRadius: 8, flexShrink: 0,
                       background: "rgba(249,115,22,0.15)",
                       border: "1px solid rgba(249,115,22,0.35)",

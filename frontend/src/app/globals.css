@@ -10,6 +10,403 @@
 
   body {
     @apply bg-gray-50 text-gray-900 antialiased;
+    overflow-x: hidden;
+  }
+}
+
+/* Shared layout primitives. Most screens use inline styles for their visual
+   treatment; these classes provide the narrow-screen rules without changing
+   their data flow or desktop appearance. */
+.dashboard-layout {
+  position: relative;
+}
+
+.mobile-sidebar-backdrop {
+  display: block;
+}
+
+.responsive-page {
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.responsive-page *,
+.login-page *,
+.app-header * {
+  box-sizing: border-box;
+}
+
+@media (max-width: 767px) {
+  .dashboard-layout {
+    display: block !important;
+    height: 100dvh !important;
+  }
+
+  .dashboard-layout > main {
+    width: 100%;
+    height: 100dvh;
+    margin-left: 76px;
+    width: calc(100% - 76px);
+    max-width: calc(100vw - 76px);
+  }
+
+  #app-sidebar {
+    position: fixed !important;
+    inset: 0 auto 0 0;
+    z-index: 1100;
+    width: 76px !important;
+    height: 100dvh !important;
+    transform: translateX(0);
+    box-shadow: 12px 0 32px rgba(0, 0, 0, 0.22);
+  }
+
+  #app-sidebar[data-mobile-open="true"] {
+    width: min(280px, 88vw) !important;
+    transform: translateX(0) !important;
+    pointer-events: auto;
+  }
+
+  #app-sidebar[data-mobile-open="true"] > div:first-child {
+    justify-content: flex-start !important;
+    padding-inline: 1.25rem !important;
+  }
+
+  #app-sidebar[data-mobile-open="true"] > div:first-child > span,
+  #app-sidebar[data-mobile-open="true"] nav p,
+  #app-sidebar[data-mobile-open="true"] nav a span,
+  #app-sidebar[data-mobile-open="true"] > div:last-child > div {
+    max-width: 200px !important;
+    max-height: none !important;
+    opacity: 1 !important;
+    overflow: hidden !important;
+  }
+
+  #app-sidebar[data-mobile-open="true"] nav {
+    padding-inline: 0.75rem !important;
+  }
+
+  #app-sidebar[data-mobile-open="true"] nav a {
+    justify-content: flex-start !important;
+    gap: 10px !important;
+    padding-inline: 0.75rem !important;
+  }
+
+  #app-sidebar[data-mobile-open="true"] > div:last-child {
+    justify-content: flex-start !important;
+    padding-inline: 1rem !important;
+  }
+
+  #app-sidebar[data-mobile-open="false"] > div:first-child {
+    justify-content: center !important;
+    padding-inline: 0.5rem !important;
+  }
+
+  #app-sidebar[data-mobile-open="false"] > div:first-child > span,
+  #app-sidebar[data-mobile-open="false"] nav p,
+  #app-sidebar[data-mobile-open="false"] nav a span,
+  #app-sidebar[data-mobile-open="false"] > div:last-child > div {
+    max-width: 0 !important;
+    max-height: 0 !important;
+    opacity: 0 !important;
+    overflow: hidden !important;
+  }
+
+  #app-sidebar[data-mobile-open="false"] nav {
+    padding-inline: 0.5rem !important;
+  }
+
+  #app-sidebar[data-mobile-open="false"] nav a {
+    justify-content: center !important;
+    gap: 0 !important;
+    padding-inline: 0 !important;
+  }
+
+  #app-sidebar[data-mobile-open="false"] > div:last-child {
+    justify-content: center !important;
+    padding-inline: 0.5rem !important;
+  }
+
+  #app-sidebar[data-mobile-open="false"] > div:last-child > button {
+    display: none !important;
+  }
+
+  .mobile-sidebar-close {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .mobile-sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 1050;
+    background: rgba(15, 23, 42, 0.48);
+  }
+
+  .app-header {
+    padding-inline: 0.75rem !important;
+    gap: 0.5rem !important;
+  }
+
+  .app-header-title {
+    min-width: 0;
+  }
+
+  .app-header-title p {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .header-weather {
+    display: none !important;
+  }
+
+  .notification-menu {
+    position: fixed !important;
+    top: 4.25rem !important;
+    left: 0.75rem !important;
+    right: 0.75rem !important;
+    width: auto !important;
+    max-height: calc(100dvh - 5rem);
+  }
+
+  .responsive-page {
+    padding: 0.875rem !important;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .responsive-page > *,
+  .responsive-page [style*="display: flex"],
+  .responsive-page [style*="display:flex"] {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .responsive-page [style*="grid-template-columns"],
+  .responsive-page [style*="gridTemplateColumns"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .responsive-page .page-actions {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 0.75rem !important;
+  }
+
+  .responsive-page .page-actions > * {
+    width: 100%;
+    justify-content: center;
+    min-width: 0;
+  }
+
+  .responsive-page .responsive-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .responsive-page .responsive-two-column {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .responsive-page table {
+    min-width: 620px;
+  }
+
+  .responsive-page [style*="overflow-x: auto"],
+  .responsive-page [style*="overflowX: auto"] {
+    max-width: 100%;
+    overflow-x: auto !important;
+  }
+
+  .responsive-page button,
+  .responsive-page input,
+  .responsive-page select,
+  .responsive-page textarea {
+    max-width: 100%;
+  }
+
+  .responsive-page [style*="min-width: 220px"],
+  .responsive-page [style*="minWidth: 220px"] {
+    min-width: 0 !important;
+    width: 100%;
+  }
+
+  .responsive-page [style*="width: fit-content"],
+  .responsive-page [style*="width:fit-content"] {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .responsive-page .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .login-page {
+    min-height: 100dvh !important;
+    align-items: flex-start !important;
+    padding: max(0.75rem, env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-right)) max(0.75rem, env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left)) !important;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .login-card {
+    min-height: auto !important;
+    border-radius: 14px !important;
+    display: block !important;
+    width: 100% !important;
+    max-width: 32rem !important;
+    margin: 0 auto;
+  }
+
+  .login-brand-panel {
+    display: none !important;
+  }
+
+  .login-form-panel {
+    display: flex !important;
+    width: 100% !important;
+    min-height: auto !important;
+    padding: clamp(1.25rem, 5vw, 2rem) clamp(1rem, 5vw, 1.5rem) !important;
+    justify-content: flex-start !important;
+  }
+
+  .login-form-panel > div {
+    max-width: 100% !important;
+  }
+
+  .login-form-panel form {
+    width: 100%;
+  }
+
+  .login-form-panel h2 {
+    font-size: clamp(1.25rem, 5vw, 1.6rem) !important;
+  }
+
+  .login-form-panel input,
+  .login-form-panel button {
+    min-height: 42px;
+  }
+
+  .login-feature-icon {
+    min-height: 0 !important;
+  }
+
+  .login-form-panel label,
+  .login-form-panel p {
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1100px) {
+  .dashboard-layout > main {
+    min-width: 0;
+  }
+
+  #app-sidebar {
+    width: 76px !important;
+  }
+
+  #app-sidebar[data-collapsed="false"] {
+    width: 260px !important;
+  }
+
+  .responsive-page {
+    padding: 1rem !important;
+    overflow-x: hidden;
+  }
+
+  .responsive-page [style*="grid-template-columns"],
+  .responsive-page [style*="gridTemplateColumns"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .responsive-page [style*="min-width: 220px"],
+  .responsive-page [style*="minWidth: 220px"] {
+    min-width: 0 !important;
+  }
+
+  .login-page {
+    padding: 1rem !important;
+  }
+
+  .login-card {
+    max-width: min(100%, 900px) !important;
+    min-height: 0 !important;
+  }
+
+  .login-brand-panel {
+    padding: 1.75rem !important;
+  }
+
+  .login-form-panel {
+    padding: 1.75rem 1.25rem !important;
+  }
+
+  .login-form-panel > div {
+    max-width: 100% !important;
+  }
+}
+
+@media (max-width: 420px) {
+  .dashboard-layout > main {
+    margin-left: 64px;
+    width: calc(100% - 64px);
+    max-width: calc(100vw - 64px);
+  }
+
+  #app-sidebar {
+    width: 64px !important;
+  }
+
+  .responsive-page {
+    padding-inline: 0.625rem !important;
+  }
+
+  .app-header-title > div {
+    min-width: 0;
+  }
+
+  .app-header-title p:first-child {
+    font-size: 0.92rem !important;
+  }
+
+  .responsive-page .page-actions > * {
+    font-size: 0.78rem !important;
+  }
+
+  .login-page {
+    padding-inline: 0.625rem !important;
+  }
+
+  .login-form-panel {
+    padding-inline: 0.875rem !important;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 600px) {
+  .dashboard-layout,
+  .dashboard-layout > main,
+  #app-sidebar {
+    height: 100svh !important;
+  }
+
+  .responsive-page {
+    padding-block: 0.625rem !important;
+  }
+
+  .login-form-panel {
+    padding-block: 1rem !important;
+  }
+}
+
+@supports (padding: env(safe-area-inset-bottom)) {
+  .login-page,
+  .mobile-sidebar-backdrop,
+  .app-header {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
   }
 }
 

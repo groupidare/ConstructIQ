@@ -3,7 +3,7 @@ import { Toaster } from "react-hot-toast";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ display: "flex", flexDirection: "row", height: "100vh", overflow: "hidden" }}>
+    <div className="dashboard-layout" style={{ display: "flex", flexDirection: "row", height: "100vh", overflow: "hidden" }}>
       <Toaster position="top-right" />
       <Sidebar />
       {/* minWidth: 0 overrides a flex item's default min-width:auto — without

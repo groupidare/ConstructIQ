@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/authStore";
@@ -8,7 +8,7 @@ import { useSidebarStore } from "@/store/sidebarStore";
 import { Avatar } from "@/components/ui/Avatar";
 import {
   FolderKanban, Package, TrendingUp, Trash2, Network,
-  ShoppingCart, FileText, LayoutDashboard, Users, Settings, LogOut,
+  ShoppingCart, FileText, LayoutDashboard, Users, Settings, LogOut, X,
 } from "lucide-react";
 import type { UserRole } from "@/types/auth";
 
@@ -84,7 +84,20 @@ export default function Sidebar() {
   const { user } = useAuthStore();
   const logout   = useAuthStore(s => s.logout);
   const collapsed = useSidebarStore(s => s.collapsed);
+  const toggleCollapsed = useSidebarStore(s => s.toggleCollapsed);
+  const mobileOpen = useSidebarStore(s => s.mobileOpen);
+  const closeMobile = useSidebarStore(s => s.closeMobile);
   const [showConfirm, setShowConfirm] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 767px)");
+    const handleViewportChange = () => {
+      if (!media.matches) closeMobile();
+    };
+    handleViewportChange();
+    media.addEventListener("change", handleViewportChange);
+    return () => media.removeEventListener("change", handleViewportChange);
+  }, [closeMobile]);
 
   function doLogout() {
     logout();
@@ -100,7 +113,11 @@ export default function Sidebar() {
         />
       )}
 
-      <aside id="app-sidebar" suppressHydrationWarning style={{
+      {mobileOpen && (
+        <div className="mobile-sidebar-backdrop" onClick={closeMobile} aria-hidden="true" />
+      )}
+
+      <aside id="app-sidebar" data-collapsed={collapsed} data-mobile-open={mobileOpen} suppressHydrationWarning style={{
         width: collapsed ? 76 : 260, flexShrink: 0,
         background: "#1a2235",
         display: "flex", flexDirection: "column",
@@ -134,6 +151,24 @@ export default function Sidebar() {
             maxWidth: collapsed ? 0 : 160, opacity: collapsed ? 0 : 1,
             transition: "max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease",
           }}>ConstructIQ</span>
+          {mobileOpen && (
+            <button
+              className="mobile-sidebar-close"
+              onClick={closeMobile}
+              aria-label="Close navigation menu"
+              style={{
+                display: "none",
+                marginLeft: "auto",
+                color: "#cbd5e1",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: 6,
+              }}
+            >
+              <X style={{ width: 20, height: 20 }} />
+            </button>
+          )}
         </div>
 
         {/* Nav */}

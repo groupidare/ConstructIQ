@@ -190,7 +190,7 @@ export default function DashboardPage() {
     <div style={{ background: "#f5f4f0" }}>
       <Header title="System Overview" />
 
-      <div style={{ padding: "1.25rem 1.5rem" }}>
+      <div className="responsive-page" style={{ padding: "1.25rem 1.5rem" }}>
 
         {/* Stats grid */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "0.875rem", marginBottom: "1.25rem" }}>

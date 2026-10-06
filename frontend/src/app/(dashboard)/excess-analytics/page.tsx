@@ -204,7 +204,7 @@ export default function ExcessAnalyticsPage() {
 
       <Header title="Excess Analytics" />
 
-      <div style={{ padding:"1.25rem 1.5rem" }}>
+      <div className="responsive-page" style={{ padding:"1.25rem 1.5rem" }}>
 
         {/* ── Tabs ──────────────────────────────────────────────────────────── */}
         <div style={{ display:"flex", gap:4, background:"#e5e7eb", borderRadius:8, padding:4, width:"fit-content", marginBottom:"1.25rem" }}>

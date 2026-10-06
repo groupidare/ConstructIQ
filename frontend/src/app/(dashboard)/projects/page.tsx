@@ -1192,9 +1192,9 @@ export default function ProjectsPage() {
 
       <Header title="Projects" />
 
-      <div style={{ padding:"1.25rem 1.5rem" }}>
+      <div className="responsive-page" style={{ padding:"1.25rem 1.5rem" }}>
         {/* Page header */}
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.25rem" }}>
+        <div className="page-actions" style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.25rem" }}>
           <div>
             <p style={{ fontWeight:800, fontSize:"1.35rem", color:"#111827" }}>All Projects</p>
             <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>
@@ -1274,7 +1274,7 @@ export default function ProjectsPage() {
           // min size of "auto" (its content's min-content width), so a long
           // project name/location could still force this grid wider than the
           // viewport even with the flex-container fix in the dashboard layout.
-          <div style={{ display:"grid", gridTemplateColumns:"minmax(0, 1fr) minmax(0, 1fr)", gap:"1rem" }}>
+          <div className="responsive-grid" style={{ display:"grid", gridTemplateColumns:"minmax(0, 1fr) minmax(0, 1fr)", gap:"1rem" }}>
             {visibleProjects.map(p => (
               <ProjectCard
                 key={p.id}
