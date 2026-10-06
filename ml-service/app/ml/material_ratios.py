@@ -3,8 +3,6 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-from app.ml import r2_storage
-
 # Material-specific BOQ-quantity → purchase-unit conversion, learned from
 # completed projects. The models predict the PO quantity in the purchase unit
 # (pcs/bag/box/...) from the BOQ quantity (sq.m/l.m/...), but nothing else in
@@ -17,16 +15,16 @@ from app.ml import r2_storage
 # seen before. The ratio itself and boq_quantity × ratio are both features
 # (see feature_engineering.FEATURE_COLS).
 #
-# The table is persisted next to the models (same local dir + R2 mechanism),
-# so forecasting looks up the exact values the models were trained against,
-# and it also answers "what unit is this prediction in" for a row with no
-# purchase unit of its own (that material's most common training unit).
-TABLE_PATH = Path("trained_models/material_ratios.json")
-R2_KEY = "models/material_ratios.json"
+# The table is persisted as part of each trained model version (see
+# model_registry), so forecasting looks up the exact values the models were
+# trained against, and it also answers "what unit is this prediction in" for
+# a row with no purchase unit of its own (that material's most common
+# training unit).
+FILE_NAME = "material_ratios.json"
 
-# Used only when there's no training data at all (never trained, or an empty
-# fold) — makes ratio_estimate == boq_quantity, i.e. exactly the old naive
-# "forecast = BOQ quantity" fallback rather than an invented conversion.
+# Neutral ratio for a table fitted from rows with no usable BOQ quantity at
+# all (only reachable for a tiny out-of-project fold) — "no conversion
+# known", never an invented one. Forecasting itself never runs untrained.
 _NO_DATA_RATIO = 1.0
 
 
@@ -41,10 +39,6 @@ def normalize_unit(unit: Any) -> str:
 def _key(material_id: Any, unit: str) -> str:
     # JSON object keys must be strings.
     return f"{int(material_id)}|{unit}"
-
-
-def empty_table() -> dict:
-    return {"ratios": {}, "default_unit": {}, "global_ratio": _NO_DATA_RATIO}
 
 
 def fit(records: list[dict], targets: list[float]) -> dict:
@@ -113,12 +107,6 @@ def attach_out_of_project(records: list[dict], targets: list[float]) -> None:
         attach([r for r in records if r["project_id"] == project_id], table)
 
 
-def ratio_estimates(records: list[dict]) -> list[float]:
-    """boq_quantity × material_ratio — the naive, model-free prediction (used
-    when no trained model is available, or a fold is too small to fit one)."""
-    return [float(r.get("boq_quantity") or 0) * float(r.get("material_ratio", _NO_DATA_RATIO)) for r in records]
-
-
 def has_purchase_unit(table: dict, record: dict) -> bool:
     """False when resolve_output_unit had to fall back to the BOQ unit —
     the row has no purchase unit and its material never appeared in
@@ -141,17 +129,9 @@ def resolve_output_unit(table: dict, record: dict) -> str:
     return str(record.get("boq_unit") or "")
 
 
-def save(table: dict) -> None:
-    TABLE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TABLE_PATH.write_text(json.dumps(table, indent=2, sort_keys=True))
-    r2_storage.upload_file(TABLE_PATH, R2_KEY)
+def save(table: dict, path: Path) -> None:
+    path.write_text(json.dumps(table, indent=2, sort_keys=True))
 
 
-def load() -> dict:
-    """The table saved by the last training run (local copy, else R2 — same
-    cold-start self-restore as the models). Never trained → empty table, so
-    every ratio is 1.0 and predictions degrade to the old BOQ-quantity naive
-    forecast instead of failing."""
-    if not TABLE_PATH.exists() and not r2_storage.download_file(R2_KEY, TABLE_PATH):
-        return empty_table()
-    return json.loads(TABLE_PATH.read_text())
+def load(path: Path) -> dict:
+    return json.loads(path.read_text())

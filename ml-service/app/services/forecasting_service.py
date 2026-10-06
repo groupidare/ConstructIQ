@@ -5,7 +5,7 @@ from datetime import datetime, date
 
 from dotenv import load_dotenv
 from app.models.schemas import ForecastRequest, ForecastResponse, ForecastedMaterial, ForecastedLine, RiskLevel
-from app.ml import random_forest, xgboost_model, material_ratios
+from app.ml import random_forest, xgboost_model, material_ratios, model_registry
 from app.ml.model_evaluator import ensemble_predict, classify_risk
 
 # Loaded here (not just in main.py) so DB access works from any entrypoint —
@@ -170,7 +170,18 @@ def build_response(
     )
 
 
+class ModelNotAvailable(Exception):
+    """No trained model to forecast with (never trained, or the active one
+    can't be loaded) — the route turns this into a 409 so the caller can tell
+    it apart from a real failure. AI forecasting is blocked rather than
+    answered with a fallback calculation dressed up as a model prediction."""
+
+
 def run_forecast(request: ForecastRequest) -> ForecastResponse:
+    active, problem = model_registry.load_active()
+    if active is None:
+        raise ModelNotAvailable(problem or "No trained model is available.")
+
     engine  = get_engine()
     records = fetch_records(engine, request.project_id, request.phase_id)
 
@@ -181,14 +192,18 @@ def run_forecast(request: ForecastRequest) -> ForecastResponse:
             period=request.period.value,
             model_accuracy=None,
             forecasted_materials=[],
+            model_version=active.version,
+            model_confidence=active.manifest.get("confidence"),
         )
 
-    # The same ratio table the persisted models were trained against.
-    table = material_ratios.load()
-    material_ratios.attach(records, table)
+    # The same ratio table the active models were trained against.
+    material_ratios.attach(records, active.ratio_table)
 
-    rf_preds  = random_forest.predict(records)
-    xgb_preds = xgboost_model.predict(records)
+    rf_preds  = random_forest.predict(records, active.rf)
+    xgb_preds = xgboost_model.predict(records, active.xgb)
     preds     = ensemble_predict(rf_preds, xgb_preds)
 
-    return build_response(request.project_id, request.phase_id, request.period.value, records, preds, table)
+    response = build_response(request.project_id, request.phase_id, request.period.value, records, preds, active.ratio_table)
+    response.model_version    = active.version
+    response.model_confidence = active.manifest.get("confidence")
+    return response

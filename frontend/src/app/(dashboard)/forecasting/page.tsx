@@ -8,6 +8,10 @@ import {
   Tooltip, Legend, ResponsiveContainer, TooltipProps,
 } from "recharts";
 import api from "@/lib/api";
+import toast from "react-hot-toast";
+import { useAuthStore } from "@/store/authStore";
+import { useModelTraining } from "@/hooks/useModelTraining";
+import ModelStatusPanel from "@/components/forecasting/ModelStatusPanel";
 import type { MonthlyDemandSummary, MaterialOption, FlaggedExcessItem } from "@/types/boq";
 
 // ── Chart point + tooltip ────────────────────────────────────────────────────
@@ -76,6 +80,19 @@ export default function ForecastingPage() {
   const [loadingSummary, setLoadingSummary] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showFlagged, setShowFlagged] = useState(false);
+  // Bumped when a training run finishes — the chart's AI Predicted line for
+  // historical projects comes from the new model's evaluations, so reload it.
+  const [dataVersion, setDataVersion] = useState(0);
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === "Admin";
+  const training = useModelTraining({
+    isAdmin,
+    onRunFinished: job => {
+      if (job.status === "succeeded") toast.success("Model trained — forecasts now use the new model.");
+      else if (job.status === "failed") toast.error(job.error ?? "Training failed — the previous model is still active.");
+      setDataVersion(v => v + 1);
+    },
+  });
 
   // Material selector: every unique material+unit pair that has ever
   // contributed a real, unit-safe Actual Usage figure, highest-demand first —
@@ -86,7 +103,11 @@ export default function ForecastingPage() {
       .then(({ data }) => {
         if (cancelled) return;
         setMaterials(data);
-        if (data.length > 0) setSelectedKey(`${data[0].materialId}:${data[0].unit}`);
+        // Keep the current selection across a reload (e.g. after training)
+        // when it's still in the list; otherwise start at the top.
+        setSelectedKey(prev => prev && data.some(m => `${m.materialId}:${m.unit}` === prev)
+          ? prev
+          : data.length > 0 ? `${data[0].materialId}:${data[0].unit}` : null);
       })
       .catch(() => { if (!cancelled) setError("Failed to load the material list."); })
       .finally(() => { if (!cancelled) setLoadingMaterials(false); });
@@ -94,7 +115,7 @@ export default function ForecastingPage() {
       .then(({ data }) => { if (!cancelled) setFlagged(data); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, []);
+  }, [dataVersion]);
 
   const selected = useMemo(() => {
     if (!selectedKey) return null;
@@ -112,7 +133,7 @@ export default function ForecastingPage() {
       .catch(() => { if (!cancelled) setError("Failed to load the chart for this material."); })
       .finally(() => { if (!cancelled) setLoadingSummary(false); });
     return () => { cancelled = true; };
-  }, [selected]);
+  }, [selected, dataVersion]);
 
   // Axis label: month name alone once inside a year already shown, "Mon
   // YYYY" the first time a new year appears.
@@ -207,6 +228,16 @@ export default function ForecastingPage() {
               </div>
             )}
           </div>
+
+          <ModelStatusPanel
+            status={training.status}
+            report={training.report}
+            reportError={training.reportError}
+            isAdmin={isAdmin}
+            running={training.running}
+            starting={training.starting}
+            onRetrain={training.startTraining}
+          />
 
           {/* Flagged-items banner */}
           {flagged.length > 0 && (

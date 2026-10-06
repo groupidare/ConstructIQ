@@ -65,16 +65,68 @@ export interface ForecastAccuracyReport {
   comparisons: ForecastComparison[];
 }
 
+// ── Model training workflow (GET /forecast/model-status, POST /forecast/train,
+// GET /forecast/training-data) ────────────────────────────────────────────────
+
+// null when the metric couldn't be computed (e.g. R² of an all-identical holdout).
 export interface ModelMetrics {
-  mae: number;
-  rmse: number;
-  r2: number;
+  mae: number | null;
+  rmse: number | null;
+  r2: number | null;
+  n: number;
 }
 
-export interface TrainModelsResult {
+export interface ModelManifest {
+  version: string;
+  trainedAt: string | null;
   sampleCount: number;
-  randomForest: ModelMetrics;
-  xgboost: ModelMetrics;
+  projectCount: number;
+  // Random 80/20 row holdout, per model and for the ensemble.
+  metrics: { randomForest: ModelMetrics; xgboost: ModelMetrics; ensemble: ModelMetrics };
+  // Whole-project (leave-one-project-out) holdout — the stricter check.
+  projectHoldout: ModelMetrics | null;
+  evaluatedProjects: number;
+  skippedEvaluations: { projectId: number; reason: string }[];
+  confidence: 'Normal' | 'Low' | string;
+  confidenceReasons: string[];
+  storage: string;
+}
+
+export type TrainingStatus = 'idle' | 'running' | 'succeeded' | 'failed';
+
+export interface TrainingJob {
+  jobId: string | null;
+  status: TrainingStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+}
+
+export interface ModelStatus {
+  serviceReachable: boolean;
+  model: { trained: boolean; message: string | null; manifest: ModelManifest | null };
+  training: TrainingJob;
+}
+
+export interface ProjectTrainingEligibility {
+  projectId: number;
+  projectName: string;
+  boqRows: number;
+  rowsWithPoLines: number;
+  eligibleRows: number;
+  eligible: boolean;
+  reason: string | null;
+}
+
+export interface TrainingDataReport {
+  completedProjects: number;
+  eligibleProjects: number;
+  eligibleRows: number;
+  excludedProjects: number;
+  minRows: number;
+  minProjects: number;
+  canTrain: boolean;
+  projects: ProjectTrainingEligibility[];
 }
 
 export interface ForecastContribution {
