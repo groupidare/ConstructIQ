@@ -42,29 +42,20 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         // up past the baseline it was just checked against).
         dto.Quantity = Math.Round(dto.Quantity, 0, MidpointRounding.AwayFromZero);
 
-        int materialId;
-        if (dto.MaterialId.HasValue)
-            materialId = dto.MaterialId.Value;
-        else if (!string.IsNullOrWhiteSpace(dto.NewMaterialName))
-            materialId = await FindOrCreateMaterialAsync(dto.NewMaterialName, dto.Unit);
-        else
-            throw new InvalidOperationException("Each excess entry needs either an existing MaterialId or a NewMaterialName.");
+        if (!dto.BOQItemId.HasValue)
+            throw new InvalidOperationException(
+                "Select the specific BOQ material line this excess or waste belongs to.");
 
-        // A specific BOQ line (the new picker-driven flow) takes priority; the
-        // old best-effort match-by-material stays as a fallback for the
-        // free-text path so nothing regresses for callers that don't send one.
-        var boqItem = dto.BOQItemId.HasValue
-            ? await db.BOQItems.Include(b => b.HistoricalSupplies)
-                .FirstOrDefaultAsync(b => b.Id == dto.BOQItemId.Value && b.ProjectId == dto.ProjectId)
-            : null;
-        if (boqItem is null)
-        {
-            var boqQuery = db.BOQItems.Include(b => b.HistoricalSupplies)
-                .Where(b => b.ProjectId == dto.ProjectId && b.MaterialId == materialId);
-            boqItem = dto.PhaseId.HasValue
-                ? await boqQuery.FirstOrDefaultAsync(b => b.PhaseId == dto.PhaseId.Value) ?? await boqQuery.FirstOrDefaultAsync()
-                : await boqQuery.FirstOrDefaultAsync();
-        }
+        var boqItem = await db.BOQItems
+            .Include(b => b.HistoricalSupplies)
+            .FirstOrDefaultAsync(b => b.Id == dto.BOQItemId.Value && b.ProjectId == dto.ProjectId)
+            ?? throw new InvalidOperationException(
+                "The selected BOQ material line was not found in this project.");
+
+        var materialId = boqItem.MaterialId;
+        if (dto.MaterialId.HasValue && dto.MaterialId.Value != materialId)
+            throw new InvalidOperationException(
+                "The selected material does not match the selected BOQ material line.");
 
         var excessPercent = 0m;
 

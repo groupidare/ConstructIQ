@@ -9,10 +9,8 @@ public class ExcessWasteCreateDto
     public int?    MaterialId      { get; set; }
     public string? NewMaterialName { get; set; }
     public string? Unit            { get; set; }
-    // The specific BOQ line this is logged against — when present, drives
-    // BOQItem.ActualQuantity (Est. Qty minus everything logged against it)
-    // and is what makes a material stop appearing in the "still needs
-    // logging" picker. Optional so the older free-text flow keeps working.
+    // Every excess/waste entry must identify the specific BOQ line it belongs
+    // to. This drives BOQItem.ActualQuantity and forecast-accuracy matching.
     public int?    BOQItemId  { get; set; }
     [Required] public string  ExcessType  { get; set; } = string.Empty;
     [Range(0.0001, double.MaxValue)] public decimal Quantity { get; set; }
