@@ -25,10 +25,13 @@ from app.ml.model_evaluator import ensemble_predict
 # historical row with PO lines is usable as-is — no hand-typed Actual Qty
 # needed first.
 #
-# Only rows WITH PO-report lines: a project completed through the app is also
-# IsHistorical, but its rows' EstimatedPurchaseQuantity is their Est. Qty —
-# typed by hand or filled in by this very model on Run Forecast. Training on
-# that would teach the model to predict its own past predictions.
+# Projects completed THROUGH THE APP have no PO-report lines; their rows learn
+# from what was really supplied to them in the app instead — delivered
+# Purchase Orders + approved warehouse releases + approved redistributions in,
+# minus approved redistributions out (see app_supply_records). Never from
+# their EstimatedPurchaseQuantity: that's their Est. Qty, typed by hand or
+# filled in by this very model on Run Forecast, and training on it would
+# teach the model to predict its own past predictions.
 #
 # supplier_lead_time_days is a correlated scalar subquery, not a JOIN+GROUP BY —
 # a BOQ row can match several PurchaseOrderMaterial rows (multiple deliveries of
@@ -55,7 +58,7 @@ _ELIGIBLE_ROW_PREDICATE = """
     AND bi.EstimatedPurchaseUnit IS NOT NULL AND TRIM(bi.EstimatedPurchaseUnit) <> ''
 """
 
-_TRAINING_SQL = text(f"""
+_ROW_SELECT = """
     SELECT
         bi.Id        AS boq_item_id,
         bi.ProjectId AS project_id,
@@ -90,14 +93,164 @@ _TRAINING_SQL = text(f"""
     JOIN Projects p  ON p.Id = bi.ProjectId AND p.Status = 3
     LEFT JOIN Phases ph ON ph.Id = bi.PhaseId
     LEFT JOIN InventoryRecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
-    WHERE {_ELIGIBLE_ROW_PREDICATE}
+"""
+
+# Rows backed by PO-report lines: the target is their PO total.
+_TRAINING_SQL = text(f"{_ROW_SELECT} WHERE {_ELIGIBLE_ROW_PREDICATE}")
+
+# Completed-project rows WITHOUT PO-report lines (projects completed through
+# the app): their purchased_quantity column (= Est. Qty) is ignored — the
+# target is computed from in-app supply by app_supply_records.
+_APP_ROWS_SQL = text(f"""{_ROW_SELECT}
+    WHERE NOT EXISTS (SELECT 1 FROM HistoricalMaterialSupplies h WHERE h.BOQItemId = bi.Id)
+""")
+
+# In-app supply per completed project + material. Status values are the
+# backend enums' int values: PurchaseOrderStatus.Delivered = 2,
+# WarehouseRequestStatus.Approved = 1, RedistributionStatus.Approved = 2
+# (InTransit = 3 / Completed = 4 counted too, though the app never sets them).
+# A warehouse release counts what was actually approved, not what was asked.
+_DELIVERED_PO_SQL = text("""
+    SELECT po.ProjectId AS project_id, pom.MaterialId AS material_id, pom.Unit AS unit, SUM(pom.Quantity) AS quantity
+    FROM PurchaseOrderMaterials pom
+    JOIN PurchaseOrders po ON po.Id = pom.PurchaseOrderId AND po.Status = 2
+    JOIN Projects p ON p.Id = po.ProjectId AND p.Status = 3
+    WHERE pom.MaterialId IS NOT NULL
+    GROUP BY po.ProjectId, pom.MaterialId, pom.Unit
+""")
+_WAREHOUSE_SQL = text("""
+    SELECT w.ProjectId AS project_id, w.MaterialId AS material_id,
+           SUM(COALESCE(w.ApprovedQuantity, w.RequestedQuantity)) AS quantity
+    FROM WarehouseRequests w
+    JOIN Projects p ON p.Id = w.ProjectId AND p.Status = 3
+    WHERE w.Status = 1
+    GROUP BY w.ProjectId, w.MaterialId
+""")
+_REDISTRIBUTED_IN_SQL = text("""
+    SELECT r.TargetProjectId AS project_id, r.MaterialId AS material_id, SUM(r.Quantity) AS quantity
+    FROM RedistributionRequests r
+    JOIN Projects p ON p.Id = r.TargetProjectId AND p.Status = 3
+    WHERE r.Status IN (2, 3, 4)
+    GROUP BY r.TargetProjectId, r.MaterialId
+""")
+_REDISTRIBUTED_OUT_SQL = text("""
+    SELECT r.SourceProjectId AS project_id, r.MaterialId AS material_id, SUM(r.Quantity) AS quantity
+    FROM RedistributionRequests r
+    JOIN Projects p ON p.Id = r.SourceProjectId AND p.Status = 3
+    WHERE r.Status IN (2, 3, 4)
+    GROUP BY r.SourceProjectId, r.MaterialId
 """)
 
 
-def fetch_training_data(engine: Engine) -> list[dict]:
+def _rows(conn, sql) -> list[dict]:
+    return [dict(r) for r in conn.execute(sql).mappings().all()]
+
+
+def _fetch_app_supply_inputs(engine: Engine) -> tuple[list[dict], dict]:
     with engine.connect() as conn:
-        rows = conn.execute(_TRAINING_SQL).mappings().all()
-    return [dict(r) for r in rows]
+        rows = _rows(conn, _APP_ROWS_SQL)
+        supplies = {
+            "delivered":         _rows(conn, _DELIVERED_PO_SQL),
+            "warehouse":         _rows(conn, _WAREHOUSE_SQL),
+            "redistributed_in":  _rows(conn, _REDISTRIBUTED_IN_SQL),
+            "redistributed_out": _rows(conn, _REDISTRIBUTED_OUT_SQL),
+        }
+    return rows, supplies
+
+
+def app_supply_records(rows: list[dict], supplies: dict) -> tuple[list[dict], list[dict]]:
+    """Training rows for completed projects WITHOUT PO-report lines, with
+    purchased_quantity set to what the project really needed of each
+    material, from in-app records:
+
+        delivered POs + approved warehouse releases
+          + approved redistributions in − approved redistributions out
+
+    e.g. CHB: 1,345 from Procurement + 200 from the warehouse + 10
+    redistributed in = 1,555 pcs (less any excess later sent to another
+    project). Outgoing redistributions are subtracted so excess that was
+    reused elsewhere doesn't teach the model to over-order.
+
+    Warehouse releases and redistributions are recorded per project +
+    material, not per BOQ row, so a material on several BOQ rows has its
+    total split across them in proportion to their BOQ quantities.
+
+    Returns (records, skipped). A (project, material) is skipped — with the
+    reason — rather than guessed at when: its rows have no purchase unit, or
+    disagree on one; a delivered PO line is in a different unit (pieces and
+    bags are never added together); its BOQ quantities are all zero; or
+    nothing net was supplied. Warehouse/redistribution quantities have no
+    unit of their own and are taken to be in the rows' purchase unit."""
+    def key_map(items):
+        out: dict[tuple[int, int], float] = {}
+        for it in items:
+            k = (int(it["project_id"]), int(it["material_id"]))
+            out[k] = out.get(k, 0.0) + float(it["quantity"] or 0)
+        return out
+
+    warehouse = key_map(supplies.get("warehouse", []))
+    redist_in = key_map(supplies.get("redistributed_in", []))
+    redist_out = key_map(supplies.get("redistributed_out", []))
+    delivered: dict[tuple[int, int], list[tuple[str, float]]] = {}
+    for it in supplies.get("delivered", []):
+        k = (int(it["project_id"]), int(it["material_id"]))
+        delivered.setdefault(k, []).append((material_ratios.normalize_unit(it["unit"]), float(it["quantity"] or 0)))
+
+    groups: dict[tuple[int, int], list[dict]] = {}
+    for r in rows:
+        groups.setdefault((int(r["project_id"]), int(r["material_id"])), []).append(r)
+
+    records, skipped = [], []
+
+    def skip(key, group, reason):
+        skipped.append({"project_id": key[0], "material_id": key[1],
+                        "material_name": group[0].get("material_name"), "rows": len(group), "reason": reason})
+
+    for key, group in groups.items():
+        units = {material_ratios.normalize_unit(r.get("purchase_unit")) for r in group}
+        if "" in units:
+            skip(key, group, "no purchase unit (Est. Qty unit) on its BOQ row(s)")
+            continue
+        if len(units) > 1:
+            skip(key, group, "its BOQ rows use different purchase units")
+            continue
+        unit = units.pop()
+
+        po_lines = delivered.get(key, [])
+        other_units = sorted({u or "(none)" for u, _ in po_lines if u != unit})
+        if other_units:
+            skip(key, group, f"delivered PO line(s) in {', '.join(other_units)}, not {unit}")
+            continue
+
+        total = (sum(q for _, q in po_lines) + warehouse.get(key, 0.0)
+                 + redist_in.get(key, 0.0) - redist_out.get(key, 0.0))
+        if total <= 0:
+            skip(key, group, "nothing supplied in the app (no delivered PO, warehouse release or redistribution)")
+            continue
+
+        boq_total = sum(float(r.get("boq_quantity") or 0) for r in group)
+        if boq_total <= 0:
+            skip(key, group, "its BOQ quantities are zero, so the supply can't be split across rows")
+            continue
+
+        for r in group:
+            share = float(r.get("boq_quantity") or 0) / boq_total
+            if share <= 0:
+                continue
+            records.append({**r, "purchased_quantity": total * share})
+
+    return records, skipped
+
+
+def fetch_training_data(engine: Engine) -> list[dict]:
+    """Every row the model learns from: PO-report-backed rows (target = PO
+    total) plus rows of projects completed through the app (target = in-app
+    supply, see app_supply_records)."""
+    with engine.connect() as conn:
+        po_backed = _rows(conn, _TRAINING_SQL)
+    app_rows, supplies = _fetch_app_supply_inputs(engine)
+    app_records, _ = app_supply_records(app_rows, supplies)
+    return po_backed + app_records
 
 
 # Quality gate. Below the reject thresholds a run is refused outright and the
@@ -133,16 +286,46 @@ _ELIGIBILITY_SQL = text(f"""
 def training_data_report() -> dict:
     """Which completed projects/rows training can use, and why the rest
     can't — read-only, safe to call any time (GET /forecast/training-data)."""
-    with get_engine().connect() as conn:
+    engine = get_engine()
+    with engine.connect() as conn:
         rows = [dict(r) for r in conn.execute(_ELIGIBILITY_SQL).mappings().all()]
+
+    # Rows learned from in-app supply (projects completed through the app),
+    # computed exactly as training computes them.
+    app_rows, supplies = _fetch_app_supply_inputs(engine)
+    app_records, app_skipped = app_supply_records(app_rows, supplies)
+    app_eligible: dict[int, int] = {}
+    for rec in app_records:
+        app_eligible[int(rec["project_id"])] = app_eligible.get(int(rec["project_id"]), 0) + 1
+    app_skips: dict[int, list[dict]] = {}
+    for sk in app_skipped:
+        app_skips.setdefault(int(sk["project_id"]), []).append(sk)
+
+    def describe_skips(skips: list[dict]) -> str:
+        shown = "; ".join(f"{sk['material_name']}: {sk['reason']}" for sk in skips[:3])
+        more = f"; and {len(skips) - 3} more" if len(skips) > 3 else ""
+        return shown + more
 
     projects = []
     for r in rows:
         boq_rows, with_lines, eligible = int(r["boq_rows"]), int(r["rows_with_po_lines"]), int(r["eligible_rows"])
+        project_id = int(r["project_id"])
+        from_app = app_eligible.get(project_id, 0)
+        skips = app_skips.get(project_id, [])
+        eligible += from_app
         if boq_rows == 0:
             reason = "No BOQ rows."
         elif with_lines == 0:
-            reason = "No PO-report lines — only projects uploaded from a combined BOQ+PO report can be learned from."
+            # Completed through the app — learned from its delivered POs,
+            # warehouse releases and redistributions instead.
+            if from_app == 0:
+                reason = ("No PO-report lines, and no usable in-app supply"
+                          + (f" — {describe_skips(skips)}." if skips else "."))
+            elif skips:
+                reason = (f"Learned from in-app supply (delivered POs, warehouse releases, redistributions); "
+                          f"{len(skips)} material(s) skipped — {describe_skips(skips)}.")
+            else:
+                reason = None
         elif eligible == 0:
             reason = ("Its PO lines haven't produced a purchase quantity — mixed units on every row, or saved "
                       "before purchase units were derived (run the purchase-unit backfill or re-save its Material Plan).")
