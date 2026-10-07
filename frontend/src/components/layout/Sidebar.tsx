@@ -28,7 +28,7 @@ const NAV_ITEMS: { label: string; href: string; icon: React.ElementType; roles: 
   { label: "Projects",        href: "/projects",        icon: FolderKanban,    roles: ["Admin","ProjectManager","SiteEngineer","WarehousePersonnel","ProcurementOfficer"] },
   { label: "Inventory",       href: "/inventory",       icon: Package,         roles: ALL_ROLES },
   { label: "Forecasting",     href: "/forecasting",     icon: TrendingUp,      roles: ["Admin","ProjectManager","ProcurementOfficer"] },
-  { label: "Excess Analytics",href: "/excess-analytics",icon: Trash2,          roles: ["Admin","ProjectManager","SiteEngineer","WarehousePersonnel"] },
+  { label: "Excess",          href: "/excess-analytics",icon: Trash2,          roles: ["Admin","ProjectManager","SiteEngineer","WarehousePersonnel"] },
   { label: "Redistribution",  href: "/redistribution",  icon: Network,         roles: ["Admin","ProjectManager","WarehousePersonnel"] },
   { label: "Procurement",     href: "/procurement",     icon: ShoppingCart,    roles: ALL_ROLES },
   { label: "Reports",         href: "/reports",         icon: FileText,        roles: ALL_ROLES },

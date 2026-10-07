@@ -202,7 +202,7 @@ export default function ExcessAnalyticsPage() {
         />
       )}
 
-      <Header title="Excess Analytics" />
+      <Header title="Excess" />
 
       <div className="responsive-page" style={{ padding:"1.25rem 1.5rem" }}>
 

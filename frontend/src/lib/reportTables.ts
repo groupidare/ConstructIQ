@@ -130,6 +130,7 @@ export function buildReportTable(reportType: string, data: ReportSourceData, fro
   switch (reportType) {
     case "Material Usage":       return buildMaterialUsageTable(data.boqItems ?? []);
     case "Procurement Summary":  return buildProcurementSummaryTable(data.purchaseOrders ?? [], from, to);
+    case "Excess":
     case "Excess Analytics":     return buildExcessAnalyticsTable(data.excessRecords ?? [], from, to);
     case "Forecast Report":      return buildForecastReportTable(data.forecastResults ?? [], from, to);
     default:                     return { columns: [], rows: [] };

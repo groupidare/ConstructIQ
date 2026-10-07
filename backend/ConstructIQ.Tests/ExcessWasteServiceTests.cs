@@ -88,6 +88,35 @@ public class ExcessWasteServiceTests(DatabaseFixture fixture)
             () => service.CreateAsync(Dto(project.Id, material.Id, boq.Id, 60, isReusable: true), user.Id));
     }
 
+    [Fact]
+    public async Task CreateAsync_RequiresSpecificBoqItemLink()
+    {
+        await using var db = fixture.CreateContext();
+        var service = new ExcessWasteService(db);
+        var user = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, user.Id);
+        var material = await TestDataBuilder.CreateMaterialAsync(db);
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 50);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.CreateAsync(Dto(project.Id, material.Id, null, 5, isReusable: true), user.Id));
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsMaterialThatDoesNotMatchBoqItem()
+    {
+        await using var db = fixture.CreateContext();
+        var service = new ExcessWasteService(db);
+        var user = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, user.Id);
+        var material = await TestDataBuilder.CreateMaterialAsync(db);
+        var otherMaterial = await TestDataBuilder.CreateMaterialAsync(db);
+        var boq = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 50);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.CreateAsync(Dto(project.Id, otherMaterial.Id, boq.Id, 5, isReusable: true), user.Id));
+    }
+
     [Fact] // Case 8: multiple records sum once, never double-deducted or re-baselined.
     public async Task MultipleRecords_SumWithoutDuplicateDeduction()
     {
