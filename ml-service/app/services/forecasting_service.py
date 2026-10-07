@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 import os
+import threading
 from datetime import datetime, date
 
 from dotenv import load_dotenv
@@ -13,17 +14,41 @@ from app.ml.model_evaluator import ensemble_predict, classify_risk
 load_dotenv()
 
 
+# ONE engine (and so one small connection pool) for the whole process.
+# This used to create a brand-new engine on every call — every forecast,
+# training run and training-data report opened its own pool, whose
+# connections stayed open until garbage collection got around to them. On a
+# managed MySQL with a low connection limit (Aiven) they piled up until the
+# server refused new ones: "(1040, 'Too many connections')". The pool is kept
+# small on purpose; requests queue briefly for a free connection instead of
+# opening more. pool_pre_ping drops connections the server has already closed.
+_engine: Engine | None = None
+_engine_lock = threading.Lock()
+
+
 def get_engine() -> Engine:
-    url = os.getenv(
-        "DATABASE_URL",
-        "mysql+pymysql://root:password@db:3306/constructiq"
-    )
-    # Aiven (and most managed MySQL hosts) require TLS. Set DB_SSL_CA to the
-    # path of the provider's downloaded CA certificate to enable it — unset
-    # by default, so local/docker-compose (no TLS configured) is unaffected.
-    ssl_ca = os.getenv("DB_SSL_CA")
-    connect_args = {"ssl": {"ca": ssl_ca}} if ssl_ca else {}
-    return create_engine(url, pool_recycle=300, connect_args=connect_args)
+    global _engine
+    with _engine_lock:
+        if _engine is None:
+            url = os.getenv(
+                "DATABASE_URL",
+                "mysql+pymysql://root:password@db:3306/constructiq"
+            )
+            # Aiven (and most managed MySQL hosts) require TLS. Set DB_SSL_CA to the
+            # path of the provider's downloaded CA certificate to enable it — unset
+            # by default, so local/docker-compose (no TLS configured) is unaffected.
+            ssl_ca = os.getenv("DB_SSL_CA")
+            connect_args = {"ssl": {"ca": ssl_ca}} if ssl_ca else {}
+            _engine = create_engine(
+                url,
+                pool_size=int(os.getenv("DB_POOL_SIZE", "2")),
+                max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "3")),
+                pool_timeout=30,
+                pool_recycle=300,
+                pool_pre_ping=True,
+                connect_args=connect_args,
+            )
+        return _engine
 
 
 def fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> list[dict]:

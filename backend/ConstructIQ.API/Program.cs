@@ -20,7 +20,13 @@ var connStr = $"Server={builder.Configuration["DB_HOST"] ?? "localhost"};" +
               $"Database={builder.Configuration["DB_NAME"] ?? "constructiq"};" +
               $"Uid={builder.Configuration["DB_USER"] ?? "root"};" +
               $"Pwd={builder.Configuration["DB_PASSWORD"]};" +
-              $"SslMode={builder.Configuration["DB_SSL_MODE"] ?? "Preferred"};";
+              $"SslMode={builder.Configuration["DB_SSL_MODE"] ?? "Preferred"};" +
+              // MySqlConnector allows up to 100 pooled connections by default —
+              // more than a small managed MySQL plan (Aiven) accepts in total,
+              // shared with the ML service. Capped so the backend can't use up
+              // the server's limit ("Too many connections"); requests briefly
+              // wait for a free connection instead. Override with DB_MAX_POOL_SIZE.
+              $"Maximum Pool Size={builder.Configuration["DB_MAX_POOL_SIZE"] ?? "15"};";
 
 builder.Services.AddDbContext<AppDbContext>(opts =>
     opts.UseMySql(connStr, new MySqlServerVersion(new Version(8, 0, 0)), mysql =>
