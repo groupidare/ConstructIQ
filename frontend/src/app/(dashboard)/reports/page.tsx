@@ -195,6 +195,9 @@ function buildForecastingData(
   // contributes nothing (there's genuinely nothing to score it against).
   const withComparisons = accuracyReports.filter(a => a.comparisons.length > 0);
   const avgAccuracy = withComparisons.length > 0 ? avg(withComparisons.map(a => a.overallAccuracy)) : null;
+  const forecastedProjectIds = new Set(forecasts.map(f => f.projectId));
+  const eligibleProjects = projects.filter(p => !p.isHistorical);
+  const forecastCoverage = pct(forecastedProjectIds.size, eligibleProjects.length);
 
   const projectName = (id: number) => projects.find(p => p.id === id)?.name ?? `Project #${id}`;
 
@@ -217,6 +220,7 @@ function buildForecastingData(
     stats: [
       { label: "PROJECTS FORECASTED", value: String(forecasts.length), sub: "Most recent run each" },
       { label: "FORECASTED MATERIALS", value: String(materials.length), sub: "Current forecast rows" },
+      { label: "FORECAST COVERAGE", value: `${forecastCoverage}%`, sub: `${forecastedProjectIds.size} of ${eligibleProjects.length} active project(s)` },
       { label: "MODEL ACCURACY",      value: avgAccuracy != null ? `${avgAccuracy.toFixed(1)}%` : "—", sub: avgAccuracy != null ? `Avg across ${withComparisons.length} project(s) with confirmed usage` : "No confirmed actual usage yet to score against" },
     ],
     chartTitle: "Forecasted Quantity by Material",
@@ -224,10 +228,10 @@ function buildForecastingData(
       .map(([name, value]) => ({ name: truncate(name, 14), value: Math.round(value * 100) / 100 }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 8),
-    healthTitle: "Forecast Coverage",
+    healthTitle: "Forecast Run Coverage",
     health: forecasts.map(f => ({
       label: projectName(f.projectId),
-      pct: `${pct(f.forecastedMaterials.length, materials.length)}%`,
+      pct: "100%",
       color: "#f97316",
     })),
     aiInsight: forecasts.length === 0
