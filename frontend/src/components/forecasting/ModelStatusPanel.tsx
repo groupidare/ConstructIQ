@@ -165,7 +165,7 @@ export default function ModelStatusPanel({ status, report, reportError, isAdmin,
 
       {isAdmin && (
         <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid #f3f4f6" }}>
-          {reportError ? (
+          {reportError && !trained ? (
             <p style={{ fontSize: "0.72rem", color: "#b91c1c" }}>{reportError}</p>
           ) : !report ? (
             <p style={{ fontSize: "0.72rem", color: "#9ca3af" }}>Loading training data…</p>
