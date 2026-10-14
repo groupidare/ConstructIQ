@@ -59,7 +59,16 @@ builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IBackupJobService, BackupJobService>();
 builder.Services.AddScoped<IPhaseService, PhaseService>();
 builder.Services.AddScoped<IWarehouseStockService, WarehouseStockService>();
-builder.Services.AddSingleton<IFileStorageService, R2FileStorageService>();
+// R2 credentials only exist on the deployed instance; local dev without them
+// falls back to wwwroot/uploads instead of failing every controller that
+// depends on file storage. Outside Development, R2 stays mandatory so missing
+// config fails loudly rather than writing uploads to ephemeral container disk.
+var useR2Storage = !builder.Environment.IsDevelopment()
+    || !string.IsNullOrWhiteSpace(builder.Configuration["R2_BUCKET_NAME"]);
+if (useR2Storage)
+    builder.Services.AddSingleton<IFileStorageService, R2FileStorageService>();
+else
+    builder.Services.AddSingleton<IFileStorageService, LocalFileStorageService>();
 builder.Services.AddScoped<IWeatherGeocodingService, WeatherGeocodingService>();
 builder.Services.AddHostedService<WeatherWatcherService>();
 builder.Services.AddHttpClient("MLService", client =>
@@ -119,9 +128,11 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// No app.UseStaticFiles() — uploads now live on Cloudflare R2 (see
-// R2FileStorageService), served directly to the browser from there, not
-// proxied through this app's own (ephemeral, Render-free-tier) disk.
+// With R2, uploads are served directly from Cloudflare, not proxied through
+// this app's own (ephemeral, Render-free-tier) disk. Only the local fallback
+// needs this app to serve /uploads itself.
+if (!useR2Storage)
+    app.UseStaticFiles();
 app.UseCors("FrontendPolicy");
 app.UseMiddleware<ActivityLoggingMiddleware>();
 app.UseAuthentication();
