@@ -516,6 +516,9 @@ namespace ConstructIQ.API.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("varchar(20)");
 
+                    b.Property<decimal?>("UnitCost")
+                        .HasColumnType("decimal(18,4)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("BOQItemId");
@@ -1230,6 +1233,9 @@ namespace ConstructIQ.API.Migrations
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("varchar(20)");
+
+                    b.Property<decimal?>("UnitPrice")
+                        .HasColumnType("decimal(18,4)");
 
                     b.HasKey("Id");
 

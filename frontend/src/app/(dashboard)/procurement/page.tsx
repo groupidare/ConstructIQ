@@ -16,6 +16,7 @@ import { RISK_VISUALS, RISK_VISUALS_DARK } from "@/lib/weather";
 import { computeWeatherAtRiskOrders } from "@/lib/deliveryRisk";
 import api from "@/lib/api";
 import { resolveUploadUrl } from "@/lib/avatar";
+import { formatCurrency } from "@/lib/utils";
 
 // Formats an ISO date string as a short calendar date (e.g. "Sep 18").
 function formatShortDate(dateStr: string): string {
@@ -39,6 +40,10 @@ type POStatus = "PENDING" | "APPROVED" | "DELIVERY_IN_PROGRESS" | "DELIVERED" | 
 interface POMaterial {
   name: string;
   qty: string;
+  // Present only when the API returned a price (Admin/ProcurementOfficer).
+  unitPrice?: number;
+  unit?: string;
+  lineTotal?: number;
 }
 
 interface DeliveryBatch {
@@ -208,7 +213,7 @@ function sortSuppliersByPreference(suppliers: Supplier[]): Supplier[] {
 
 // ── API response shapes + mappers ────────────────────────────────────────────
 
-interface ApiPOMaterial { name: string; quantity: number; unit: string; }
+interface ApiPOMaterial { name: string; quantity: number; unit: string; unitPrice?: number | null; }
 interface ApiDeliveryBatch {
   id: number; batchNumber: number; uploadedByName: string; createdAt: string;
   drFileUrl: string | null; podPhotoUrls: string[];
@@ -247,7 +252,12 @@ function mapPO(a: ApiPO): PO {
     supplierId: a.supplierId, supplier: a.supplierName,
     status: apiStatusToFrontend(a.status),
     expectedDate: toDisplayDate(a.expectedDate),
-    materials: a.materials.map(m => ({ name: m.name, qty: `${Number(m.quantity)} ${m.unit}` })),
+    materials: a.materials.map(m => ({
+      name: m.name, qty: `${Number(m.quantity)} ${m.unit}`,
+      ...(m.unitPrice != null
+        ? { unitPrice: Number(m.unitPrice), unit: m.unit, lineTotal: Number(m.quantity) * Number(m.unitPrice) }
+        : {}),
+    })),
     deliveryBatches: a.deliveryBatches.map(b => ({
       id: b.id, batchNumber: b.batchNumber, uploadedByName: b.uploadedByName,
       createdAt: b.createdAt, drFileUrl: b.drFileUrl, podPhotoUrls: b.podPhotoUrls,
@@ -541,10 +551,22 @@ function ViewPOModal({ po, onClose }: { po: PO; onClose: () => void }) {
           {po.materials.map((m, i) => (
             <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#f9fafb", borderRadius: 8, padding: "10px 12px" }}>
               <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "#111827" }}>{m.name}</span>
-              <span style={{ fontSize: "0.8rem", color: "#6b7280" }}>{m.qty}</span>
+              <span style={{ fontSize: "0.8rem", color: "#6b7280", textAlign: "right" }}>
+                {m.qty}
+                {m.unitPrice != null && (
+                  <span style={{ display: "block", fontSize: "0.72rem" }}>
+                    {formatCurrency(m.unitPrice)}/{m.unit} · {formatCurrency(m.lineTotal!)}
+                  </span>
+                )}
+              </span>
             </div>
           ))}
         </div>
+        {po.materials.some(m => m.lineTotal != null) && (
+          <p style={{ fontSize: "0.85rem", fontWeight: 700, color: "#111827", textAlign: "right", marginTop: "0.75rem" }}>
+            PO Total: {formatCurrency(po.materials.reduce((sum, m) => sum + (m.lineTotal ?? 0), 0))}
+          </p>
+        )}
 
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "1.5rem" }}>
           <button onClick={onClose} style={{ padding: "9px 20px", borderRadius: 8, border: "none", background: "#111827", color: "#fff", fontSize: "0.875rem", fontWeight: 600, cursor: "pointer" }}>Close</button>

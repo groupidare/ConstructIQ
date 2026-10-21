@@ -15,6 +15,8 @@ export interface PurchaseOrderMaterial {
   phaseId?: number;
   primarySection?: string;
   subCategory?: string;
+  // ₱ per unit. Only Admin/ProcurementOfficer ever receive it (null otherwise).
+  unitPrice?: number | null;
 }
 
 export interface PurchaseOrder {

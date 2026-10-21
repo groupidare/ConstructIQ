@@ -131,6 +131,7 @@ public class DocumentService(
                     Unit         = s.Unit,
                     Quantity     = (decimal)s.Quantity,
                     SupplierName = s.SupplierName,
+                    UnitCost     = s.UnitCost is double cost ? (decimal)cost : null,
                 }).ToList(),
                 MatchedMaterialId = matches.TryGetValue(i.MaterialName.Trim().ToLower(), out var id) ? id : null,
             }).ToList(),
@@ -207,7 +208,13 @@ public class DocumentService(
     // against its public URL rather than reading local disk.
     private async Task<MultipartFormDataContent> BuildParseRequestContentAsync(ProjectDocument doc)
     {
-        var bytes = await httpFactory.CreateClient().GetByteArrayAsync(doc.StoragePath);
+        // R2 files have a public https URL; the local dev fallback stores a
+        // relative "/uploads/..." path that only the storage service can read.
+        var isWebUrl = doc.StoragePath.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || doc.StoragePath.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+        var bytes = isWebUrl
+            ? await httpFactory.CreateClient().GetByteArrayAsync(doc.StoragePath)
+            : await storage.ReadAsync(doc.StoragePath);
         var content = new MultipartFormDataContent
         {
             { new StringContent(doc.ProjectId.ToString()), "project_id" },

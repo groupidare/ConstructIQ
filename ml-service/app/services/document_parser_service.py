@@ -231,12 +231,18 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
             # normal, non-historical case), none of this activates and parsing
             # behaves exactly as before.
             po_col = next((i for i, h in enumerate(headers) if "po number" in h or "po no" in h or "po#" in h.replace(" ", "")), None)
-            po_desc_col = po_unit_col = po_qty_col = supplier_col = None
+            po_desc_col = po_unit_col = po_qty_col = supplier_col = po_cost_col = None
             if po_col is not None:
                 for i, h in enumerate(headers):
                     if i <= po_col:
                         continue
-                    if po_desc_col is None and ("material" in h or "desc" in h):
+                    # Cost/price checked before the generic "unit" match, so
+                    # "UNIT COST" can never be taken as the unit column.
+                    # TOTAL COST is derived (qty × unit cost) and ignored.
+                    if "cost" in h or "price" in h:
+                        if po_cost_col is None and "total" not in h:
+                            po_cost_col = i
+                    elif po_desc_col is None and ("material" in h or "desc" in h):
                         po_desc_col = i
                     elif po_unit_col is None and ("unit" in h or h == "um" or "uom" in h):
                         po_unit_col = i
@@ -293,12 +299,14 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
                     if supply_desc and supply_qty is not None and supply_qty > 0:
                         supply_unit = str(row[po_unit_col] or "").strip() if po_unit_col is not None and po_unit_col < len(row) else ""
                         supply_supplier = str(row[supplier_col] or "").strip() if supplier_col is not None and supplier_col < len(row) else ""
+                        supply_cost = parse_quantity_from_cell(row[po_cost_col]) if po_cost_col is not None and po_cost_col < len(row) else None
                         supply_line = HistoricalSupplyLine(
                             material_name = supply_desc,
                             unit          = supply_unit,
                             quantity      = supply_qty,
                             supplier_name = supply_supplier or None,
                             po_number     = current_po_number,
+                            unit_cost     = supply_cost if supply_cost is not None and supply_cost >= 0 else None,
                         )
 
                 if qty is None or qty <= 0:

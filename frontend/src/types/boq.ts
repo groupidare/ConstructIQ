@@ -79,6 +79,8 @@ export interface HistoricalSupplyLine {
   unit: string;
   quantity: number;
   supplierName?: string;
+  // Present only on freshly scanned lines being saved; the API never returns it.
+  unitCost?: number;
 }
 
 export interface BOQItem {

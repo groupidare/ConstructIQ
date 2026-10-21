@@ -23,4 +23,8 @@ public class HistoricalMaterialSupply
     [MaxLength(20)]  public string  Unit         { get; set; } = string.Empty;
 
     [Column(TypeName = "decimal(18,4)")] public decimal Quantity { get; set; }
+
+    // The report's UNIT COST column (price per Unit). Null when the report
+    // had no cost column or the cell was blank.
+    [Column(TypeName = "decimal(18,4)")] public decimal? UnitCost { get; set; }
 }

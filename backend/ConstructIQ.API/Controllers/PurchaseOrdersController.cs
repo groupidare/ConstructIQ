@@ -30,6 +30,12 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? User.FindFirst("sub")?.Value ?? "0");
 
+    // PO prices are visible to the same roles that manage POs, and hidden
+    // (null) in every response for everyone else.
+    private bool CanSeePrices => User.IsInRole("Admin") || User.IsInRole("ProcurementOfficer");
+
+    private PurchaseOrderDto ToDto(PurchaseOrder po) => ToDto(po, CanSeePrices);
+
     [HttpGet]
     public async Task<IActionResult> GetAll([FromQuery] int? projectId = null)
     {
@@ -101,6 +107,7 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
                     PhaseId = m.PhaseId,
                     PrimarySection = m.PrimarySection,
                     SubCategory = m.SubCategory,
+                    UnitPrice = m.UnitPrice,
                 })
                 .ToList(),
         };
@@ -358,7 +365,7 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
         return Ok(ToDto(po));
     }
 
-    private static PurchaseOrderDto ToDto(PurchaseOrder po) => new()
+    internal static PurchaseOrderDto ToDto(PurchaseOrder po, bool includePrices) => new()
     {
         Id = po.Id,
         Number = po.Number,
@@ -374,6 +381,7 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
             Id = m.Id, Name = m.Name, Quantity = m.Quantity, Unit = m.Unit,
             MaterialId = m.MaterialId, BOQItemId = m.BOQItemId, PhaseId = m.PhaseId,
             PrimarySection = m.PrimarySection, SubCategory = m.SubCategory,
+            UnitPrice = includePrices ? m.UnitPrice : null,
         }).ToList(),
         DeliveryBatches = po.DeliveryBatches
             .OrderBy(b => b.BatchNumber)

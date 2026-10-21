@@ -79,4 +79,16 @@ public class R2FileStorageService : IFileStorageService
             // the caller's own delete (of the DB row, etc.).
         }
     }
+
+    public async Task<byte[]> ReadAsync(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !url.StartsWith(_publicUrl, StringComparison.OrdinalIgnoreCase))
+            throw new FileNotFoundException("Not an R2 URL.", url);
+
+        var key = url[(_publicUrl.Length + 1)..];
+        using var response = await _client.GetObjectAsync(_bucket, key);
+        using var buffer = new MemoryStream();
+        await response.ResponseStream.CopyToAsync(buffer);
+        return buffer.ToArray();
+    }
 }

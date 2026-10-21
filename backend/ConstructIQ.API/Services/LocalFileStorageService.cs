@@ -39,6 +39,15 @@ public sealed class LocalFileStorageService : IFileStorageService
         return Task.CompletedTask;
     }
 
+    public Task<byte[]> ReadAsync(string url)
+    {
+        if (!url.StartsWith("/uploads/", StringComparison.OrdinalIgnoreCase))
+            throw new FileNotFoundException("Not a local upload.", url);
+
+        var key = url["/uploads/".Length..].Replace('/', Path.DirectorySeparatorChar);
+        return File.ReadAllBytesAsync(GetPath(key));
+    }
+
     private string GetSafeFolder(string folder)
     {
         var segments = folder.Split('/', '\\', StringSplitOptions.RemoveEmptyEntries);

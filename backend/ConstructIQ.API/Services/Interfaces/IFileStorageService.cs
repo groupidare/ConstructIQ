@@ -6,4 +6,6 @@ public interface IFileStorageService
     // local directory; nothing is ever written to this process's own disk.
     Task<string> UploadAsync(IFormFile file, string folder);
     Task DeleteAsync(string url);
+    // Reads back a file previously returned by UploadAsync.
+    Task<byte[]> ReadAsync(string url);
 }

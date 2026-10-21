@@ -32,6 +32,8 @@ export interface HistoricalSupplyLine {
   unit: string;
   quantity: number;
   supplierName?: string;
+  // Scanned UNIT COST — passed straight through to the BOQ save, never displayed.
+  unitCost?: number;
 }
 
 export interface DocumentParseResult {

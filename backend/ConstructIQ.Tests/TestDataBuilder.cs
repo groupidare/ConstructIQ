@@ -160,7 +160,8 @@ public static class TestDataBuilder
     // One Delivered PO line on its own new PO — linked to a BOQ item when
     // boqItemId is given, else the unlinked Material/Phase-fallback kind.
     public static async Task<PurchaseOrderMaterial> CreateDeliveredPoLineAsync(AppDbContext db, int projectId, int createdByUserId,
-        int materialId, decimal quantity, int? boqItemId = null, int? phaseId = null, string unit = "pcs")
+        int materialId, decimal quantity, int? boqItemId = null, int? phaseId = null, string unit = "pcs",
+        decimal? unitPrice = null, DateTime? orderDate = null)
     {
         var supplier = new Supplier { Name = "Supplier " + Guid.NewGuid().ToString("N")[..8] };
         db.Suppliers.Add(supplier);
@@ -170,16 +171,33 @@ public static class TestDataBuilder
         {
             Name = "PO line", Quantity = quantity, Unit = unit,
             MaterialId = materialId, BOQItemId = boqItemId, PhaseId = phaseId,
+            UnitPrice = unitPrice,
         };
         db.PurchaseOrders.Add(new PurchaseOrder
         {
             Number = "PO-" + Guid.NewGuid().ToString("N")[..10],
             ProjectId = projectId, SupplierId = supplier.Id,
             Status = PurchaseOrderStatus.Delivered,
+            OrderDate = orderDate ?? DateTime.UtcNow,
             ExpectedDate = DateTime.UtcNow, CreatedByUserId = createdByUserId,
             Materials = [line],
         });
         await db.SaveChangesAsync();
         return line;
+    }
+
+    // One already-happened purchase line from a historical project's
+    // combined BOQ+PO report, attached to that project's BOQ item.
+    public static async Task<HistoricalMaterialSupply> CreateHistoricalSupplyAsync(AppDbContext db, int boqItemId,
+        decimal quantity, string unit = "pcs", decimal? unitCost = null)
+    {
+        var supply = new HistoricalMaterialSupply
+        {
+            BOQItemId = boqItemId, MaterialName = "Historical line", Unit = unit,
+            Quantity = quantity, UnitCost = unitCost,
+        };
+        db.HistoricalMaterialSupplies.Add(supply);
+        await db.SaveChangesAsync();
+        return supply;
     }
 }

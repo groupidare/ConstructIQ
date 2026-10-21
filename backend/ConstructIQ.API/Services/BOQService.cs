@@ -257,12 +257,21 @@ public class BOQService(AppDbContext db) : IBOQService
                     .ToListAsync();
                 db.HistoricalMaterialSupplies.RemoveRange(existingSupplies);
 
+                // UnitCost is never sent back to the client, so a re-save of an
+                // already-loaded row arrives without it. Carry the stored cost
+                // over for the same purchase line instead of wiping it.
+                var storedCosts = existingSupplies
+                    .Where(h => h.UnitCost.HasValue)
+                    .GroupBy(h => SupplyLineKey(h.PoNumber, h.MaterialName, h.Unit, h.Quantity))
+                    .ToDictionary(g => g.Key, g => g.First().UnitCost);
+
                 foreach (var line in item.HistoricalSupply)
                 {
                     int? supplierId = !string.IsNullOrWhiteSpace(line.SupplierName)
                         ? await FindOrCreateSupplierAsync(line.SupplierName)
                         : null;
 
+                    var quantity = Math.Round(line.Quantity, 0, MidpointRounding.AwayFromZero);
                     db.HistoricalMaterialSupplies.Add(new HistoricalMaterialSupply
                     {
                         BOQItemId    = entity.Id,
@@ -270,7 +279,9 @@ public class BOQService(AppDbContext db) : IBOQService
                         PoNumber     = line.PoNumber,
                         MaterialName = line.MaterialName,
                         Unit         = line.Unit,
-                        Quantity     = Math.Round(line.Quantity, 0, MidpointRounding.AwayFromZero),
+                        Quantity     = quantity,
+                        UnitCost     = line.UnitCost
+                            ?? storedCosts.GetValueOrDefault(SupplyLineKey(line.PoNumber, line.MaterialName, line.Unit, quantity)),
                     });
                 }
                 await db.SaveChangesAsync();
@@ -359,6 +370,10 @@ public class BOQService(AppDbContext db) : IBOQService
         await db.SaveChangesAsync();
         return material.Id;
     }
+
+    // Identifies "the same purchase line" across a full-replace re-save.
+    private static (string, string, string, decimal) SupplyLineKey(string? poNumber, string materialName, string unit, decimal quantity) =>
+        ((poNumber ?? "").Trim().ToLowerInvariant(), materialName.Trim().ToLowerInvariant(), unit.Trim().ToLowerInvariant(), quantity);
 
     // Mirrors PurchaseOrdersController's supplier find-or-create-by-name — the
     // only way new suppliers enter the system, kept consistent everywhere a

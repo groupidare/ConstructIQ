@@ -4,7 +4,8 @@ import { useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X } from 'lucide-react';
 import { resolveUploadUrl } from '@/lib/avatar';
-import { formatDate } from '@/lib/utils';
+import { formatCurrency, formatDate } from '@/lib/utils';
+import { useAuthStore } from '@/store/authStore';
 import type { Project, ProjectType } from '@/types/project';
 import type { ProjectDocument } from '@/types/document';
 import type { InventoryRecord } from '@/types/inventory';
@@ -70,6 +71,18 @@ export default function MaterialPlanTab({
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const poFileInputRef = useRef<HTMLInputElement>(null);
+  // PO prices are entered and seen only by the roles that manage POs (the
+  // backend also nulls them out for everyone else).
+  const role = useAuthStore(s => s.user?.role);
+  const canSeePrices = role === 'Admin' || role === 'ProcurementOfficer';
+  // Display-only: line/PO totals are derived here and never sent or stored.
+  const lineTotal = (m: PurchaseOrderMaterial) => (m.unitPrice != null ? m.quantity * m.unitPrice : null);
+  const poTotal = (materials: PurchaseOrderMaterial[]) =>
+    materials.some(m => m.unitPrice != null) ? materials.reduce((sum, m) => sum + (lineTotal(m) ?? 0), 0) : null;
+  const draftPoTotal = poTotal(poDraftRows);
+  const draftGridColumns = canSeePrices
+    ? 'minmax(0,1.4fr) minmax(0,0.5fr) minmax(0,0.6fr) minmax(0,0.8fr) minmax(0,0.8fr) auto'
+    : 'minmax(0,1.6fr) minmax(0,0.6fr) minmax(0,0.7fr) auto';
   const [parsingPoId, setParsingPoId] = useState<number | null>(null);
   // Partial-quantity request dialog — clicking a row's Notify Procurement/
   // Warehouse button opens this instead of firing the request immediately,
@@ -934,16 +947,47 @@ export default function MaterialPlanTab({
               </div>
             </div>
 
+            {canSeePrices && poDraftRows.length > 0 && (
+              <div style={{ display: 'grid', gridTemplateColumns: draftGridColumns, gap: 6, marginBottom: 4 }}>
+                {['Material', 'Unit', 'Qty', 'Unit Price (₱ per unit)', 'Line Total', ''].map(h => (
+                  <span key={h} style={{ ...lbl, fontSize: '0.6rem', marginBottom: 0 }}>{h}</span>
+                ))}
+              </div>
+            )}
             {poDraftRows.map((r, i) => (
-              <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.6fr) minmax(0,0.6fr) minmax(0,0.7fr) auto', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+              <div key={i} style={{ display: 'grid', gridTemplateColumns: draftGridColumns, gap: 6, marginBottom: 6, alignItems: 'center' }}>
                 <input value={r.name} onChange={e => updatePoDraftRow(i, { name: e.target.value })} placeholder="Material name" style={{ ...inp, padding: '5px 8px', fontSize: '0.76rem' }} />
                 <input value={r.unit} onChange={e => updatePoDraftRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '5px 8px', fontSize: '0.76rem' }} />
                 <input type="number" step="1" value={r.quantity || ''} onChange={e => updatePoDraftRow(i, { quantity: Math.round(parseFloat(e.target.value)) || 0 })} placeholder="Qty ordered" style={{ ...inp, padding: '5px 8px', fontSize: '0.76rem' }} />
+                {canSeePrices && (
+                  <>
+                    <input
+                      type="number" min="0" step="0.01"
+                      value={r.unitPrice ?? ''}
+                      onChange={e => {
+                        const v = parseFloat(e.target.value);
+                        updatePoDraftRow(i, { unitPrice: Number.isFinite(v) && v >= 0 ? v : null });
+                      }}
+                      placeholder={`₱ per ${r.unit || 'unit'}`}
+                      aria-label={`Unit Price (₱ per ${r.unit || 'unit'})`}
+                      title={`Unit Price (₱ per ${r.unit || 'unit'})`}
+                      style={{ ...inp, padding: '5px 8px', fontSize: '0.76rem' }}
+                    />
+                    <span style={{ fontSize: '0.74rem', color: '#374151', textAlign: 'right' }}>
+                      {lineTotal(r) != null ? formatCurrency(lineTotal(r)!) : '—'}
+                    </span>
+                  </>
+                )}
                 <button onClick={() => removePoDraftRow(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 2 }}>
                   <Trash2 style={{ width: 13, height: 13 }} />
                 </button>
               </div>
             ))}
+            {canSeePrices && draftPoTotal != null && (
+              <p style={{ fontSize: '0.76rem', fontWeight: 700, color: '#111827', textAlign: 'right', marginTop: 4 }}>
+                PO Total: {formatCurrency(draftPoTotal)}
+              </p>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.5rem' }}>
               <button onClick={addBlankPoDraftRow} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 8, border: 'none', background: 'transparent', color: '#f97316', fontSize: '0.74rem', fontWeight: 600, cursor: 'pointer' }}>
@@ -975,7 +1019,10 @@ export default function MaterialPlanTab({
                 {po.materials.map(m => (
                   <div key={m.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,1fr)', gap: 6, alignItems: 'center', padding: '4px 0' }}>
                     <span style={{ fontSize: '0.76rem', color: '#374151' }}>{m.name}</span>
-                    <span style={{ fontSize: '0.72rem', color: '#6b7280' }}>{m.quantity} {m.unit}</span>
+                    <span style={{ fontSize: '0.72rem', color: '#6b7280' }}>
+                      {m.quantity} {m.unit}
+                      {m.unitPrice != null && ` · ${formatCurrency(m.unitPrice)}/${m.unit} = ${formatCurrency(lineTotal(m)!)}`}
+                    </span>
                     {editable ? (
                       <select
                         value={m.boqItemId ?? ''}
@@ -990,6 +1037,11 @@ export default function MaterialPlanTab({
                     )}
                   </div>
                 ))}
+                {poTotal(po.materials) != null && (
+                  <p style={{ fontSize: '0.72rem', fontWeight: 700, color: '#374151', textAlign: 'right', marginTop: 4 }}>
+                    PO Total: {formatCurrency(poTotal(po.materials)!)}
+                  </p>
+                )}
               </div>
             ))
           )}

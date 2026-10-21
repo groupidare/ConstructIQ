@@ -76,6 +76,12 @@ public class PurchaseOrderMaterial
     [MaxLength(20)]
     public string Unit { get; set; } = "pcs";
 
+    // Price per Unit as entered by procurement. Line and PO totals are
+    // derived (Quantity × UnitPrice) and never stored. Null when no price
+    // was entered. Only Admin/ProcurementOfficer ever see it in responses.
+    [Column(TypeName = "decimal(18,4)")]
+    public decimal? UnitPrice { get; set; }
+
     // Links this PO line to the real Material/BOQ data it corresponds to, so it
     // can feed BOQItem.ActualQuantity syncing and ML training. Nullable because
     // a scanned/typed name may not match anything yet — MaterialId is set via

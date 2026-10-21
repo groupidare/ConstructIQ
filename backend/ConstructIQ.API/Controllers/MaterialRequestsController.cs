@@ -270,6 +270,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             Id = m.Id, Name = m.Name, Quantity = m.Quantity, Unit = m.Unit,
             MaterialId = m.MaterialId, BOQItemId = m.BOQItemId, PhaseId = m.PhaseId,
             PrimarySection = m.PrimarySection, SubCategory = m.SubCategory,
+            // Only reachable by ManageRoles (Admin/ProcurementOfficer), who may see prices.
+            UnitPrice = m.UnitPrice,
         }).ToList(),
     };
 }

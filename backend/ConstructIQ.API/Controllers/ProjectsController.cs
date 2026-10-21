@@ -9,7 +9,7 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
-public class ProjectsController(IProjectService projectService, IProjectAccessService projectAccess) : ControllerBase
+public class ProjectsController(IProjectService projectService, IProjectAccessService projectAccess, IMaterialCostService materialCost) : ControllerBase
 {
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
@@ -35,6 +35,18 @@ public class ProjectsController(IProjectService projectService, IProjectAccessSe
     {
         var created = await projectService.CreateAsync(dto, CurrentUserId, CurrentRole);
         return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
+    }
+
+    // Same ownership rule as editing: Admin/ProjectManager any project, a
+    // SiteEngineer only the one they're assigned to.
+    [HttpGet("{id:int}/estimated-material-cost")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> GetEstimatedMaterialCost(int id)
+    {
+        if (!await projectAccess.CanEditProjectAsync(id, CurrentUserId, CurrentRole))
+            return Forbid();
+        var cost = await materialCost.GetEstimatedMaterialCostAsync(id);
+        return cost is null ? NotFound() : Ok(cost);
     }
 
     [HttpPut("{id:int}")]

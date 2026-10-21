@@ -815,7 +815,46 @@ function EditProjectModal({ project, onClose, onSaved }: {
 
 // ── Project Card ──────────────────────────────────────────────────────────────
 
-function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, onProgress, onDelete, onEditDetails, canEdit, canDelete, canEditDetails, showProgress, viewOnly }: {
+// Material cost only (no labor/equipment/overhead), from GET
+// /projects/:id/estimated-material-cost. Totals only — no per-item prices.
+interface EstimatedMaterialCost {
+  projectId: number;
+  totalEstimatedCost: number;
+  currency: string;
+  pricedItems: number;
+  unpricedItems: number;
+  oldestPriceDate: string | null;
+  newestPriceDate: string | null;
+}
+
+function EstimatedMaterialCostCard({ cost }: { cost: EstimatedMaterialCost }) {
+  const box: React.CSSProperties = { background:"#fff7ed", border:"1px solid #fed7aa", borderRadius:8, padding:"0.5rem 0.75rem", marginBottom:"0.75rem" };
+  if (cost.pricedItems === 0) {
+    return (
+      <div style={box}>
+        <p style={{ fontSize:"0.6rem", color:"#9a3412" }}>Estimated Material Cost</p>
+        <p style={{ fontSize:"0.75rem", fontWeight:600, color:"#9ca3af" }}>No prices recorded yet</p>
+      </div>
+    );
+  }
+  const oldest = cost.oldestPriceDate ? new Date(cost.oldestPriceDate).getFullYear() : null;
+  const newest = cost.newestPriceDate ? new Date(cost.newestPriceDate).getFullYear() : null;
+  const years = oldest && newest ? ` (${oldest === newest ? oldest : `${oldest}–${newest}`})` : "";
+  const unpriced = cost.unpricedItems > 0
+    ? ` · ${cost.unpricedItems} material${cost.unpricedItems === 1 ? "" : "s"} without price not included`
+    : "";
+  return (
+    <div style={box}>
+      <p style={{ fontSize:"0.6rem", color:"#9a3412" }}>Estimated Material Cost</p>
+      <p style={{ fontWeight:700, fontSize:"0.95rem", color:"#111827" }}>₱{Math.round(cost.totalEstimatedCost).toLocaleString("en-PH")}</p>
+      <p style={{ fontSize:"0.6rem", color:"#9ca3af", marginTop:2 }}>
+        Based on forecasted quantities × latest recorded prices{years}{unpriced}
+      </p>
+    </div>
+  );
+}
+
+function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, onProgress, onDelete, onEditDetails, canEdit, canDelete, canEditDetails, showProgress, viewOnly, showMaterialCost }: {
   project: Project;
   // Bumped by the parent whenever a Material Plan session closes (for any
   // project) — this card doesn't otherwise know a forecast/BOQ save
@@ -832,6 +871,8 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
   canEditDetails: boolean;
   showProgress: boolean;
   viewOnly: boolean;
+  // Admin/ProjectManager/SiteEngineer only — the endpoint 403s everyone else.
+  showMaterialCost: boolean;
 }) {
   const st = STATUS_STYLE[project.status];
   const btn: React.CSSProperties = { flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"10px 0", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.8rem", fontWeight:600, cursor:"pointer" };
@@ -850,6 +891,18 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
   const [excessStock, setExcessStock]     = useState(0);
   const [redistributed, setRedistributed] = useState(0);
   const [materialsCount, setMaterialsCount] = useState(0);
+  const [materialCost, setMaterialCost]     = useState<EstimatedMaterialCost | null>(null);
+
+  // Any failure (including a 403 for an unassigned Site Engineer) just hides
+  // the card rather than showing an error.
+  useEffect(() => {
+    if (!showMaterialCost) { setMaterialCost(null); return; }
+    let cancelled = false;
+    api.get<EstimatedMaterialCost>(`/projects/${project.id}/estimated-material-cost`)
+      .then(({ data }) => { if (!cancelled) setMaterialCost(data); })
+      .catch(() => { if (!cancelled) setMaterialCost(null); });
+    return () => { cancelled = true; };
+  }, [project.id, showMaterialCost, refreshKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1014,6 +1067,8 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
           </div>
         ))}
       </div>
+
+      {materialCost && <EstimatedMaterialCostCard cost={materialCost} />}
 
       {/* Team */}
       <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:"0.875rem" }}>
@@ -1293,6 +1348,7 @@ export default function ProjectsPage() {
                 canDelete={canDelete}
                 canEditDetails={canEditProject(p)}
                 showProgress={showProgress && canEditProject(p)}
+                showMaterialCost={canEditProject(p)}
                 viewOnly={!canEditProject(p)}
               />
             ))}

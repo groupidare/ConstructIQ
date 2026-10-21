@@ -45,6 +45,7 @@ public class MlHistoricalSupplyLine
     [JsonPropertyName("unit")]          public string Unit { get; set; } = string.Empty;
     [JsonPropertyName("quantity")]      public double Quantity { get; set; }
     [JsonPropertyName("supplier_name")] public string? SupplierName { get; set; }
+    [JsonPropertyName("unit_cost")]     public double? UnitCost { get; set; }
 }
 
 public class MlDocumentParseResponse

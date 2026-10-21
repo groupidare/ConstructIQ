@@ -12,6 +12,10 @@ public class PurchaseOrderMaterialDto
     public int?    PhaseId        { get; set; }
     public string? PrimarySection { get; set; }
     public string? SubCategory    { get; set; }
+    // Price per Unit. Optional on create; on read, populated only for
+    // Admin/ProcurementOfficer and null for every other role.
+    [System.ComponentModel.DataAnnotations.Range(0, double.MaxValue)]
+    public decimal? UnitPrice     { get; set; }
 }
 
 public record PurchaseOrderDto

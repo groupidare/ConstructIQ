@@ -41,6 +41,10 @@ public class HistoricalSupplyLineDto
     public string  Unit         { get; set; } = string.Empty;
     public decimal Quantity     { get; set; }
     public string? SupplierName { get; set; }
+    // Scanned UNIT COST (price per Unit). Accepted on save but never echoed
+    // back in HistoricalSupplyResponseDto — see BOQService's carry-over.
+    [Range(0, double.MaxValue)]
+    public decimal? UnitCost    { get; set; }
 }
 
 public class BOQBulkSaveDto
