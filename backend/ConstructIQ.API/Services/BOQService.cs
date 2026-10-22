@@ -403,6 +403,8 @@ public class BOQService(AppDbContext db) : IBOQService
         var remaining = remainingRequestable.TryGetValue(b.MaterialId, out var r)
             ? r
             : b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity;
+        var rowUnit = !string.IsNullOrWhiteSpace(b.Unit) ? b.Unit : b.Material.Unit;
+        var baseline = BaselineCalculator.Compute(BaselineMaterial.From(b.Material), rowUnit, b.EstimatedQuantity);
         return new()
     {
         Id                = b.Id,
@@ -436,6 +438,12 @@ public class BOQService(AppDbContext db) : IBOQService
         }).ToList(),
         EstimatedPurchaseQuantity = b.EstimatedPurchaseQuantity,
         EstimatedPurchaseUnit     = b.EstimatedPurchaseUnit,
+        BaselineQuantity          = baseline.BaselineQuantity,
+        BaselinePurchaseQuantity  = baseline.PurchaseQuantity,
+        BaselineUnit              = baseline.PurchaseUnit,
+        BaselineFormula           = baseline.FormulaText,
+        BaselineReason            = baseline.Reason,
+        Alerts                    = BaselineCalculator.Alerts(baseline, b.EstimatedPurchaseQuantity, b.EstimatedPurchaseUnit),
         RequestedQuantity         = b.RequestedQuantity,
         NetLeftToOrder            = f.NetLeftToOrder,
         WarehouseApproved         = f.WarehouseApproved,

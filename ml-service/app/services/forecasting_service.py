@@ -1,12 +1,13 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+import math
 import os
 import threading
 from datetime import datetime, date
 
 from dotenv import load_dotenv
 from app.models.schemas import ForecastRequest, ForecastResponse, ForecastedMaterial, ForecastedLine, RiskLevel
-from app.ml import random_forest, xgboost_model, material_ratios, model_registry
+from app.ml import random_forest, xgboost_model, material_ratios, model_registry, demand_factor
 from app.ml.model_evaluator import ensemble_predict, classify_risk
 
 # Loaded here (not just in main.py) so DB access works from any entrypoint —
@@ -51,6 +52,23 @@ def get_engine() -> Engine:
         return _engine
 
 
+# The catalog material's physical properties — read by demand_factor/
+# baseline_engine to compute the engineering baseline (never stored). Shared
+# with training_service's query so training and prediction see the same thing.
+MATERIAL_PROPERTY_COLUMNS = """
+            m.Unit             AS material_unit,
+            m.CalculationType  AS calculation_type,
+            m.LengthMm         AS length_mm,
+            m.WidthMm          AS width_mm,
+            m.ThicknessMm      AS thickness_mm,
+            m.PiecesPerPackage AS pieces_per_package,
+            m.CoveragePerUnit  AS coverage_per_unit,
+            m.CoverageUnit     AS coverage_unit,
+            m.UnitLengthM      AS unit_length_m,
+            m.Coats            AS coats,
+            m.PurchaseUnit     AS baseline_purchase_unit,"""
+
+
 def fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> list[dict]:
     phase_filter = "AND bi.PhaseId = :phase_id" if phase_id else ""
     sql = text(f"""
@@ -67,6 +85,7 @@ def fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> list
             -- The BOQ row's own unit, not the catalog Material's default
             -- unit, unless the row has none — the unit boq_quantity is in.
             COALESCE(NULLIF(bi.Unit, ''), m.Unit) AS boq_unit,
+            {MATERIAL_PROPERTY_COLUMNS}
             m.UnitCost   AS unit_cost,
             -- The BOQ measure (sq.m/l.m/...), exactly as training_service.py
             -- feeds it — NOT EstimatedPurchaseQuantity. On a live project
@@ -115,9 +134,30 @@ def fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> list
     return [dict(r) for r in rows]
 
 
+def _round_up(x: float) -> int:
+    """Purchase quantities are always rounded UP to whole units (tolerant of
+    float noise, so 34.0000001 stays 34)."""
+    return int(math.ceil(x - 1e-6)) if x > 0 else 0
+
+
+def predict_quantities(records: list[dict], rf, xgb) -> tuple[list[float], list[dict]]:
+    """Models → demand factors → quantities. Records need material_ratio and
+    demand_factor.attach_reference applied. Returns (quantities, per-row
+    details for build_response)."""
+    factors = ensemble_predict(random_forest.predict(records, rf), xgboost_model.predict(records, xgb))
+    quantities, clipped, flags = demand_factor.to_quantities(records, factors)
+    details = [{
+        "baseline_quantity": r.get("baseline_quantity"),
+        "reference_source":  r.get("reference_source"),
+        "predicted_factor":  round(c, 4),
+        "flag":              flag,
+    } for r, c, flag in zip(records, clipped, flags)]
+    return quantities, details
+
+
 def build_response(
     project_id: int, phase_id: int | None, period: str,
-    records: list[dict], preds, table: dict,
+    records: list[dict], preds, table: dict, details: list[dict] | None = None,
 ) -> ForecastResponse:
     """Shapes one prediction per BOQ row into the API response — shared by
     run_forecast (persisted models) and training_service's leave-one-
@@ -153,8 +193,9 @@ def build_response(
             boq_item_id         = record["boq_item_id"],
             material_id         = material_id,
             unit                = unit,
-            forecasted_quantity = round(qty),
+            forecasted_quantity = _round_up(qty),
             purchase_unit_known = material_ratios.has_purchase_unit(table, record),
+            **(details[i] if details else {}),
         ))
 
         existing = by_material.get(key)
@@ -177,13 +218,13 @@ def build_response(
         fm.shortage           = max(fm.forecasted_quantity - fm.current_stock, 0)
         fm.reorder_suggestion = fm.shortage * 1.1
         fm.risk_level         = RiskLevel(classify_risk(fm.shortage, fm.current_stock))
-        # Material quantities are always whole units in practice — round only
-        # after shortage/reorder/risk are derived from the precise float, so
-        # the rounding itself never skews the risk classification.
-        fm.forecasted_quantity = round(fm.forecasted_quantity)
+        # Material quantities are always whole purchase units, rounded UP —
+        # only after shortage/reorder/risk are derived from the precise float,
+        # so the rounding itself never skews the risk classification.
+        fm.forecasted_quantity = _round_up(fm.forecasted_quantity)
         fm.current_stock       = round(fm.current_stock)
-        fm.shortage            = round(fm.shortage)
-        fm.reorder_suggestion  = round(fm.reorder_suggestion)
+        fm.shortage            = _round_up(fm.shortage)
+        fm.reorder_suggestion  = _round_up(fm.reorder_suggestion)
 
     return ForecastResponse(
         project_id=project_id,
@@ -221,14 +262,13 @@ def run_forecast(request: ForecastRequest) -> ForecastResponse:
             model_confidence=active.manifest.get("confidence"),
         )
 
-    # The same ratio table the active models were trained against.
+    # The same ratio table the active models were trained against, then the
+    # reference each row's factor is applied to.
     material_ratios.attach(records, active.ratio_table)
+    demand_factor.attach_reference(records, active.ratio_table)
+    preds, details = predict_quantities(records, active.rf, active.xgb)
 
-    rf_preds  = random_forest.predict(records, active.rf)
-    xgb_preds = xgboost_model.predict(records, active.xgb)
-    preds     = ensemble_predict(rf_preds, xgb_preds)
-
-    response = build_response(request.project_id, request.phase_id, request.period.value, records, preds, active.ratio_table)
+    response = build_response(request.project_id, request.phase_id, request.period.value, records, preds, active.ratio_table, details)
     response.model_version    = active.version
     response.model_confidence = active.manifest.get("confidence")
     return response

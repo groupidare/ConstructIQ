@@ -37,6 +37,11 @@ FEATURE_COLS = [
     "project_type_encoded", "days_into_phase", "phase_duration_days",
     "progress_percent", "supplier_lead_time_days", "planned_usage_rate",
     "material_ratio", "ratio_estimate",
+    # The models' anchor (see demand_factor.py): the engineering baseline
+    # when the material has properties, else ratio_estimate. Adding these
+    # changes the column list, so a model trained before them is refused by
+    # model_registry.load_active until retrained.
+    "reference_quantity", "has_baseline", "calculation_type_encoded",
 ]
 
 
@@ -71,6 +76,10 @@ def build_feature_vector(record: dict[str, Any]) -> dict[str, float]:
         "planned_usage_rate":      float(record.get("boq_quantity", 0)) / max(days_into_phase, 1),
         "material_ratio":          material_ratio,
         "ratio_estimate":          boq_quantity * material_ratio,
+        # Set by demand_factor.attach_reference; the defaults mean "no baseline".
+        "reference_quantity":      float(record.get("reference_quantity", boq_quantity * material_ratio)),
+        "has_baseline":            float(record.get("has_baseline", 0)),
+        "calculation_type_encoded": float(record.get("calculation_type_encoded", 0)),
     }
 
 

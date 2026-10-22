@@ -14,6 +14,11 @@ public class MeasurementUpsertDto
     public decimal ThicknessM        { get; set; } = 0.10m;
     public string  ConcreteMixRatio  { get; set; } = "1:2:4";
     public decimal WasteAllowancePct { get; set; } = 12.00m;
+    // Floor/Ceiling rows from blueprint extraction: the room polygon's real
+    // area/perimeter. When given, AreaSqm replaces Length × Width (a
+    // non-rectangular room isn't L × W). Ignored for every other type.
+    [Range(0, double.MaxValue)] public decimal? AreaSqm    { get; set; }
+    [Range(0, double.MaxValue)] public decimal? PerimeterM { get; set; }
 }
 
 public class MeasurementBulkSaveDto
@@ -36,6 +41,7 @@ public class MeasurementResponseDto
     public decimal  ThicknessM        { get; set; }
     public decimal  AreaSqm           { get; set; }
     public decimal  VolumeCbm         { get; set; }
+    public decimal? PerimeterM        { get; set; }
     public string   ConcreteMixRatio  { get; set; } = string.Empty;
     public decimal  WasteAllowancePct { get; set; }
     public DateTime RecordedAt        { get; set; }

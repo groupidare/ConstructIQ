@@ -8,7 +8,7 @@ import { useSidebarStore } from "@/store/sidebarStore";
 import { Avatar } from "@/components/ui/Avatar";
 import {
   FolderKanban, Package, TrendingUp, Trash2, Network,
-  ShoppingCart, FileText, LayoutDashboard, Users, Settings, LogOut, X,
+  ShoppingCart, FileText, LayoutDashboard, Users, Settings, LogOut, X, Ruler,
 } from "lucide-react";
 import type { UserRole } from "@/types/auth";
 
@@ -34,6 +34,7 @@ const NAV_ITEMS: { label: string; href: string; icon: React.ElementType; roles: 
   { label: "Reports",         href: "/reports",         icon: FileText,        roles: ALL_ROLES },
   { label: "System Overview", href: "/dashboard",       icon: LayoutDashboard, roles: ALL_ROLES },
   { label: "User Management", href: "/admin/users",     icon: Users,           roles: ["Admin"] },
+  { label: "Material Properties", href: "/admin/materials", icon: Ruler,       roles: ["Admin"] },
   { label: "Settings",        href: "/admin/settings",  icon: Settings,        roles: ALL_ROLES },
 ];
 

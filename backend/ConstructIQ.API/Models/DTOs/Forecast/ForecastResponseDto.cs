@@ -39,6 +39,10 @@ public class ForecastedLineDto
     // False when Unit is just the row's BOQ unit (no purchase unit known for
     // this row/material) — see MlForecastedLineDto.PurchaseUnitKnown.
     public bool    PurchaseUnitKnown  { get; set; }
+    public decimal? BaselineQuantity  { get; set; }
+    public string?  ReferenceSource   { get; set; } // "baseline" | "historical_ratio"
+    public decimal? PredictedFactor   { get; set; }
+    public string?  Flag              { get; set; } // "factor_out_of_range"
 }
 
 public class ForecastedMaterialDto
@@ -80,6 +84,11 @@ public class MlForecastedLineDto
     // prediction with (no purchase unit on the row, material never seen in
     // training). Defaults to true for an older ML service that never sends it.
     [JsonPropertyName("purchase_unit_known")]  public bool    PurchaseUnitKnown  { get; set; } = true;
+    // What the prediction was anchored on — see ml-service ml/demand_factor.py.
+    [JsonPropertyName("baseline_quantity")]    public decimal? BaselineQuantity { get; set; }
+    [JsonPropertyName("reference_source")]     public string?  ReferenceSource  { get; set; }
+    [JsonPropertyName("predicted_factor")]     public decimal? PredictedFactor  { get; set; }
+    [JsonPropertyName("flag")]                 public string?  Flag             { get; set; }
 }
 
 public class MlForecastedMaterialDto
@@ -159,11 +168,24 @@ public class ModelManifestDto
     // Whole-project holdout (leave-one-project-out), pooled — the stricter
     // check, and the R² the confidence rating uses.
     public ModelMetricsDto? ProjectHoldout { get; set; }
+    // Same leave-one-project-out rows with no model: the reference alone
+    // (factor 1), and on rows with an engineering baseline, baseline-only vs AI.
+    public ModelMetricsDto? ReferenceHoldout { get; set; }
+    public BaselineComparisonDto? BaselineComparison { get; set; }
+    public int BaselineRows { get; set; }
+    public List<double> DemandFactorRange { get; set; } = [];
     public int    EvaluatedProjects { get; set; }
     public List<SkippedEvaluationDto> SkippedEvaluations { get; set; } = [];
     public string Confidence { get; set; } = string.Empty; // "Normal" | "Low"
     public List<string> ConfidenceReasons { get; set; } = [];
     public string Storage { get; set; } = string.Empty;    // "r2" | "local"
+}
+
+public class BaselineComparisonDto
+{
+    public int Rows { get; set; }
+    public ModelMetricsDto? BaselineOnly { get; set; }
+    public ModelMetricsDto? Ai { get; set; }
 }
 
 public class ModelAvailabilityDto

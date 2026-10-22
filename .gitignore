@@ -65,3 +65,6 @@ backend/backup/test-scratch/
 # IDE
 .vscode/settings.json
 .idea/
+
+# Azure Document Intelligence results cache (ml-service)
+azure_cache/

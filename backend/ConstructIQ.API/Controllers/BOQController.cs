@@ -9,7 +9,7 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/boq")]
 [Authorize]
-public class BOQController(IBOQService boqService, IProjectAccessService projectAccess) : ControllerBase
+public class BOQController(IBOQService boqService, IProjectAccessService projectAccess, IBlueprintService blueprints) : ControllerBase
 {
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
@@ -21,6 +21,37 @@ public class BOQController(IBOQService boqService, IProjectAccessService project
     [HttpGet("project/{projectId:int}")]
     public async Task<IActionResult> GetByProject(int projectId) =>
         Ok(await boqService.GetByProjectAsync(projectId));
+
+    // ── Blueprint → generated BOQ (previews only; saving goes through /bulk) ──
+
+    [HttpGet("templates")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> GetTemplates()
+    {
+        try { return Ok(await blueprints.GetTemplatesAsync()); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    [HttpPost("generate-from-blueprint")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> GenerateFromBlueprint([FromBody] Models.DTOs.Blueprint.GenerateFromBlueprintDto dto)
+    {
+        if (!await projectAccess.CanEditProjectAsync(dto.ProjectId, CurrentUserId, CurrentRole))
+            return Forbid();
+        try { return Ok(await blueprints.GenerateAsync(dto)); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    [HttpPost("merge-preview")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> MergePreview([FromBody] Models.DTOs.Blueprint.MergePreviewRequestDto dto)
+    {
+        if (!await projectAccess.CanEditProjectAsync(dto.ProjectId, CurrentUserId, CurrentRole))
+            return Forbid();
+        try { return Ok(await blueprints.MergePreviewAsync(dto)); }
+        catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
 
     [HttpPost("bulk")]
     [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]

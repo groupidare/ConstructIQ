@@ -47,6 +47,15 @@ class ForecastedLine(BaseModel):
     # known purchase-unit quantity, and callers filling a purchase-unit
     # Est. Qty should not use it.
     purchase_unit_known:  bool = True
+    # What the prediction is anchored on (see ml/demand_factor.py): the
+    # engineering baseline when available ("baseline"), else the historical
+    # ratio estimate ("historical_ratio"), and the factor the models applied.
+    baseline_quantity:    Optional[float] = None
+    reference_source:     Optional[str] = None
+    predicted_factor:     Optional[float] = None
+    # "factor_out_of_range" when the models' factor was clipped to the
+    # configured range (DEMAND_FACTOR_MIN/MAX) — worth a human look.
+    flag:                 Optional[str] = None
 
 
 class ForecastResponse(BaseModel):

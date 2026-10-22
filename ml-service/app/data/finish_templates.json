@@ -1,0 +1,508 @@
+{
+  "_comment": "Finish templates for BOQ generation from a blueprint. Each row names its catalog material by keywords (any one option, all of its words must appear in the material name) — catalog ids differ between databases. basis: floor_area | ceiling_area | wall_net_area | wall_net_area_x2 | perimeter | door_count | window_count. note_pattern pre-selects the template from a finish note on the plan (case-insensitive). Review with app/scripts/build_templates_from_history.py.",
+  "templates": [
+    {
+      "key": "floor_tile_600",
+      "surface": "floor",
+      "label": "600×600 floor tiles",
+      "note_pattern": "600\\s*(mm)?\\s*[x×]\\s*600.*til",
+      "rows": [
+        {
+          "name": "Floor tile 600×600",
+          "match": [
+            [
+              "tile",
+              "600"
+            ],
+            [
+              "tile",
+              "60x60"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "floor_area",
+          "sub_category": "Floor Finish"
+        },
+        {
+          "name": "Tile adhesive",
+          "match": [
+            [
+              "tile adhesive"
+            ],
+            [
+              "adhesive"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "floor_area",
+          "sub_category": "Floor Adhesive"
+        },
+        {
+          "name": "Tile grout",
+          "match": [
+            [
+              "grout"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "floor_area",
+          "sub_category": "Tile Grout"
+        }
+      ]
+    },
+    {
+      "key": "floor_tile_300",
+      "surface": "floor",
+      "label": "300×300 floor tiles",
+      "note_pattern": "300\\s*(mm)?\\s*[x×]\\s*300.*til",
+      "rows": [
+        {
+          "name": "Floor tile 300×300",
+          "match": [
+            [
+              "tile",
+              "300",
+              "300"
+            ],
+            [
+              "tile",
+              "30x30"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "floor_area",
+          "sub_category": "Floor Finish"
+        },
+        {
+          "name": "Tile adhesive",
+          "match": [
+            [
+              "tile adhesive"
+            ],
+            [
+              "adhesive"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "floor_area",
+          "sub_category": "Floor Adhesive"
+        },
+        {
+          "name": "Tile grout",
+          "match": [
+            [
+              "grout"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "floor_area",
+          "sub_category": "Tile Grout"
+        }
+      ]
+    },
+    {
+      "key": "vinyl_floor",
+      "surface": "floor",
+      "label": "Vinyl tile / plank",
+      "note_pattern": "vinyl",
+      "rows": [
+        {
+          "name": "Vinyl tile",
+          "match": [
+            [
+              "vinyl"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "floor_area",
+          "sub_category": "Floor Finish"
+        }
+      ]
+    },
+    {
+      "key": "cement_finish",
+      "surface": "floor",
+      "label": "Plain cement finish",
+      "note_pattern": "(plain\\s+)?cement\\s+finish|steel[-\\s]?trowel",
+      "rows": [
+        {
+          "name": "Plain cement finish",
+          "match": [
+            [
+              "plain cement finish"
+            ],
+            [
+              "cement finish"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "floor_area",
+          "sub_category": "Floor Finish"
+        }
+      ]
+    },
+    {
+      "key": "painted_plaster",
+      "surface": "wall",
+      "label": "Skim coat + paint (existing wall)",
+      "note_pattern": "skim\\s*coat|plaster.*paint",
+      "rows": [
+        {
+          "name": "Skim coat",
+          "match": [
+            [
+              "skim coat"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area",
+          "sub_category": "Interior Painting"
+        },
+        {
+          "name": "Primer",
+          "match": [
+            [
+              "primer"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area",
+          "sub_category": "Interior Painting"
+        },
+        {
+          "name": "Paint",
+          "match": [
+            [
+              "paint",
+              "latex"
+            ],
+            [
+              "paint"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area",
+          "sub_category": "Interior Painting"
+        }
+      ]
+    },
+    {
+      "key": "painted_gypsum",
+      "surface": "wall",
+      "label": "Gypsum board lining, painted",
+      "note_pattern": "gypsum.*(wall|partition|lining)|(wall|partition).*gypsum",
+      "rows": [
+        {
+          "name": "Gypsum board",
+          "match": [
+            [
+              "gypsum board"
+            ],
+            [
+              "gypsum"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area",
+          "sub_category": "Wall Finish"
+        },
+        {
+          "name": "Paint",
+          "match": [
+            [
+              "paint",
+              "latex"
+            ],
+            [
+              "paint"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area",
+          "sub_category": "Wall Finish"
+        }
+      ]
+    },
+    {
+      "key": "fiber_cement_partition",
+      "surface": "wall",
+      "label": "Fiber cement board partition (both faces), painted",
+      "note_pattern": "fib(er|re)\\s*cement.*(partition|wall)",
+      "rows": [
+        {
+          "name": "Fiber cement board",
+          "match": [
+            [
+              "fiber cement board"
+            ],
+            [
+              "fibre cement board"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area_x2",
+          "sub_category": "Partition"
+        },
+        {
+          "name": "Paint",
+          "match": [
+            [
+              "paint",
+              "latex"
+            ],
+            [
+              "paint"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area_x2",
+          "sub_category": "Partition"
+        }
+      ]
+    },
+    {
+      "key": "wall_tile_300x600",
+      "surface": "wall",
+      "label": "300×600 wall tiles",
+      "note_pattern": "wall\\s+til|300\\s*(mm)?\\s*[x×]\\s*600",
+      "rows": [
+        {
+          "name": "Wall tile 300×600",
+          "match": [
+            [
+              "wall tile"
+            ],
+            [
+              "tile",
+              "30x60"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area",
+          "sub_category": "Wall Finish"
+        },
+        {
+          "name": "Tile adhesive",
+          "match": [
+            [
+              "tile adhesive"
+            ],
+            [
+              "adhesive"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area",
+          "sub_category": "Wall Tile Adhesive"
+        },
+        {
+          "name": "Tile grout",
+          "match": [
+            [
+              "grout"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area",
+          "sub_category": "Wall Tile Grout"
+        }
+      ]
+    },
+    {
+      "key": "chb_wall",
+      "surface": "wall",
+      "label": "New 100mm CHB wall",
+      "note_pattern": "\\bchb\\b|hollow\\s+block",
+      "rows": [
+        {
+          "name": "Concrete hollow block 100mm",
+          "match": [
+            [
+              "hollow block",
+              "100"
+            ],
+            [
+              "hollow blocks",
+              "4"
+            ],
+            [
+              "chb",
+              "100"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area",
+          "sub_category": "Masonry"
+        }
+      ]
+    },
+    {
+      "key": "gypsum_ceiling",
+      "surface": "ceiling",
+      "label": "Gypsum board ceiling, painted",
+      "note_pattern": "gypsum.*ceil|ceil.*gypsum",
+      "rows": [
+        {
+          "name": "Gypsum board",
+          "match": [
+            [
+              "gypsum board"
+            ],
+            [
+              "gypsum"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "ceiling_area",
+          "sub_category": "Ceiling"
+        },
+        {
+          "name": "Paint",
+          "match": [
+            [
+              "paint",
+              "latex"
+            ],
+            [
+              "paint"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "ceiling_area",
+          "sub_category": "Ceiling"
+        }
+      ]
+    },
+    {
+      "key": "fiber_cement_ceiling",
+      "surface": "ceiling",
+      "label": "Fiber cement board ceiling, painted",
+      "note_pattern": "fib(er|re)\\s*cement.*ceil|ceil.*fib(er|re)\\s*cement",
+      "rows": [
+        {
+          "name": "Fiber cement board",
+          "match": [
+            [
+              "fiber cement board"
+            ],
+            [
+              "fibre cement board"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "ceiling_area",
+          "sub_category": "Ceiling"
+        },
+        {
+          "name": "Paint",
+          "match": [
+            [
+              "paint",
+              "latex"
+            ],
+            [
+              "paint"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "ceiling_area",
+          "sub_category": "Ceiling"
+        }
+      ]
+    },
+    {
+      "key": "acoustic_panel",
+      "surface": "ceiling",
+      "label": "Acoustic ceiling panel",
+      "note_pattern": "acoustic|mineral\\s+(fib|wool)",
+      "rows": [
+        {
+          "name": "Acoustic ceiling panel",
+          "match": [
+            [
+              "acoustic"
+            ],
+            [
+              "mineral wool"
+            ],
+            [
+              "perforated board"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "ceiling_area",
+          "sub_category": "Ceiling"
+        }
+      ]
+    },
+    {
+      "key": "exposed_painted",
+      "surface": "ceiling",
+      "label": "Exposed soffit, painted",
+      "note_pattern": "exposed",
+      "rows": [
+        {
+          "name": "Paint",
+          "match": [
+            [
+              "paint",
+              "latex"
+            ],
+            [
+              "paint"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "ceiling_area",
+          "sub_category": "Ceiling"
+        }
+      ]
+    },
+    {
+      "key": "doors",
+      "surface": "openings",
+      "label": "Doors (from the plan's door count)",
+      "note_pattern": null,
+      "rows": [
+        {
+          "name": "Door",
+          "match": [
+            [
+              "door",
+              "flush"
+            ],
+            [
+              "door",
+              "panel"
+            ],
+            [
+              "door"
+            ]
+          ],
+          "boq_unit": "pc",
+          "basis": "door_count",
+          "sub_category": "Doors"
+        }
+      ]
+    },
+    {
+      "key": "windows",
+      "surface": "openings",
+      "label": "Windows (from the plan's window count)",
+      "note_pattern": null,
+      "rows": [
+        {
+          "name": "Window",
+          "match": [
+            [
+              "window"
+            ]
+          ],
+          "boq_unit": "pc",
+          "basis": "window_count",
+          "sub_category": "Windows"
+        }
+      ]
+    }
+  ]
+}

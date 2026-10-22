@@ -142,6 +142,10 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
             Unit               = l.Unit,
             ForecastedQuantity = l.ForecastedQuantity,
             PurchaseUnitKnown  = l.PurchaseUnitKnown,
+            BaselineQuantity   = l.BaselineQuantity,
+            ReferenceSource    = l.ReferenceSource,
+            PredictedFactor    = l.PredictedFactor,
+            Flag               = l.Flag,
         }).ToList();
         return dto;
     }

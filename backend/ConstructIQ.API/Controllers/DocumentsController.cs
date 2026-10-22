@@ -8,7 +8,7 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/documents")]
 [Authorize]
-public class DocumentsController(IDocumentService documentService, IProjectAccessService projectAccess) : ControllerBase
+public class DocumentsController(IDocumentService documentService, IProjectAccessService projectAccess, IBlueprintService blueprints) : ControllerBase
 {
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
@@ -52,6 +52,22 @@ public class DocumentsController(IDocumentService documentService, IProjectAcces
         try
         {
             return Ok(await documentService.ParseAsync(id));
+        }
+        catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    // Rooms, openings and heights from a stored Blueprint (CAD PDF/DXF) —
+    // a preview only; nothing is saved.
+    [HttpPost("{id:int}/parse-blueprint")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> ParseBlueprint(int id, [FromBody] Models.DTOs.Blueprint.BlueprintParseRequestDto? request)
+    {
+        if (!await projectAccess.CanEditDocumentAsync(id, CurrentUserId, CurrentRole))
+            return Forbid();
+        try
+        {
+            return Ok(await blueprints.ParseAsync(id, request ?? new()));
         }
         catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }

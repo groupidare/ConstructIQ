@@ -3,11 +3,18 @@ PDF prefers pdfplumber (real text layer) and falls back to OCR when there
 isn't one — e.g. a photo of a document saved/exported as .pdf, which has no
 extractable text at all as far as pdfplumber is concerned. .xlsx/.csv go
 through pandas so they feed the exact same header-detection logic instead of
-returning nothing."""
+returning nothing.
+
+Where OCR would run (a scanned or photographed BOQ/PO), Azure Document
+Intelligence's Layout model reads it first when configured — it keeps table
+rows/columns and merged cells far better than Tesseract — and Tesseract
+stays the fallback (see app/services/azure_document.py)."""
+import logging
 from pathlib import Path
 
 import pandas as pd
 
+from app.services import azure_document
 from app.utils.pdf_extractor import extract_tables_from_pdf, extract_text_from_pdf
 from app.utils.ocr_extractor import IMAGE_EXTENSIONS, extract_text_with_ocr, extract_tables_with_ocr
 
@@ -15,6 +22,38 @@ Row = list[str | None]
 Table = list[Row]
 
 SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".csv", *IMAGE_EXTENSIONS}
+
+logger = logging.getLogger(__name__)
+
+
+def _azure_results(file_path: str) -> list[dict] | None:
+    """Azure Layout for each page, or None to use Tesseract instead. Pages
+    are cached, so extract_text and extract_tables share one set of calls."""
+    if not azure_document.enabled():
+        return None
+    try:
+        return [azure_document.analyze_image(image) for image in azure_document.file_page_images(file_path)]
+    except azure_document.AzureUnavailable as e:
+        logger.warning("%s Using the built-in OCR.", e)
+        return None
+
+
+def _ocr_tables(file_path: str) -> list["Table"]:
+    results = _azure_results(file_path)
+    if results:
+        tables = [t for r in results for t in azure_document.tables_from(r)]
+        if _has_usable_content(tables):
+            return tables
+    return extract_tables_with_ocr(file_path)
+
+
+def _ocr_text(file_path: str) -> tuple[list[str], int]:
+    results = _azure_results(file_path)
+    if results:
+        pages = [azure_document.page_text(r) for r in results]
+        if any(p.strip() for p in pages):
+            return pages, len(pages)
+    return extract_text_with_ocr(file_path)
 
 
 def _df_to_table(df: pd.DataFrame) -> Table:
@@ -55,7 +94,7 @@ def extract_tables(file_path: str) -> list[Table]:
         # No real table structure found — likely a scanned photo saved as
         # .pdf (no text layer for pdfplumber to read at all). Fall back to
         # OCR rather than silently reporting zero line items.
-        return extract_tables_with_ocr(file_path)
+        return _ocr_tables(file_path)
 
     if ext in (".xlsx", ".xls"):
         excel = pd.ExcelFile(path)
@@ -71,7 +110,7 @@ def extract_tables(file_path: str) -> list[Table]:
         return [_df_to_table(df)] if not df.empty else []
 
     if ext in IMAGE_EXTENSIONS:
-        return extract_tables_with_ocr(file_path)
+        return _ocr_tables(file_path)
 
     raise ValueError(f"Unsupported file type: {ext}")
 
@@ -86,12 +125,12 @@ def extract_text(file_path: str) -> tuple[list[str], int]:
     path = Path(file_path)
     ext = path.suffix.lower()
     if ext in IMAGE_EXTENSIONS:
-        return extract_text_with_ocr(file_path)
+        return _ocr_text(file_path)
     if ext == ".pdf":
-        pages, count = extract_text_from_pdf(str(path))
-        if any(p.strip() for p in pages):
+        pages, count = extract_text_from_pdf(str(path), ocr_fallback=False)
+        if sum(len(p.strip()) for p in pages) >= 20:
             return pages, count
-        return extract_text_with_ocr(file_path)
+        return _ocr_text(file_path)
 
     tables = extract_tables(file_path)
     pages = [

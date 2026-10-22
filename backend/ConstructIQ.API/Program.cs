@@ -84,6 +84,18 @@ builder.Services.AddHttpClient("MLService", client =>
     if (!string.IsNullOrWhiteSpace(mlApiKey))
         client.DefaultRequestHeaders.Add("X-API-Key", mlApiKey);
 });
+// Same ML service, for blueprint extraction: reading every page of a large
+// CAD plan set takes a minute or more the first time (later calls on the same
+// file are cached by the ML service), past HttpClient's 100 s default.
+builder.Services.AddHttpClient("MLServiceLong", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["ML_SERVICE_URL"] ?? "http://localhost:8000");
+    client.Timeout = TimeSpan.FromMinutes(5);
+    var mlApiKey = builder.Configuration["ML_API_KEY"];
+    if (!string.IsNullOrWhiteSpace(mlApiKey))
+        client.DefaultRequestHeaders.Add("X-API-Key", mlApiKey);
+});
+builder.Services.AddScoped<IBlueprintService, BlueprintService>();
 builder.Services.AddHostedService<MlServiceKeepAliveService>();
 builder.Services.AddHostedService<DbKeepAliveService>();
 builder.Services.AddHttpClient("Resend", client =>

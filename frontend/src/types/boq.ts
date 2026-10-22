@@ -17,7 +17,7 @@ export type PrimarySection = (typeof PRIMARY_SECTIONS)[number];
 // are included as well rather than silently blocking a real match.
 export const PURCHASE_UNITS = ['pc', 'bag', 'sheet', 'pail', 'gal', 'roll', 'set', 'box', 'sq.m', 'l.m', 'cu.m', 'lot', 'kg', 'pack'] as const;
 
-export interface BOQItemRow {
+export interface BOQItemRow extends RowBaseline {
   id?: number; // undefined = not yet saved
   phaseId?: number;
   primarySection: string;
@@ -111,6 +111,24 @@ export interface BOQItem {
   remainingRequestable?: number;
   materialQuantity?: number;
   createdAt: string;
+  // Engineering baseline (server-computed, never stored or sent back on save).
+  baselineQuantity?: number | null;
+  baselinePurchaseQuantity?: number | null;
+  baselineUnit?: string | null;
+  baselineFormula?: string | null;
+  baselineReason?: string | null;
+  alerts?: string[];
+}
+
+// Server-computed engineering baseline for a row — drives the Est. Qty
+// tooltip ("Expected ≈ …") and the Alerts column. Read-only; BOQItemUpsertDto
+// has no matching fields, so it's never sent back on save.
+export interface RowBaseline {
+  baselineQuantity?: number | null;
+  baselinePurchaseQuantity?: number | null;
+  baselineUnit?: string | null;
+  baselineFormula?: string | null;
+  baselineReason?: string | null;
 }
 
 export interface HistoricalEstimate {

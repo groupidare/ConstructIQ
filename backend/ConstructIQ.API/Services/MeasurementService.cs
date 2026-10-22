@@ -32,6 +32,24 @@ public class MeasurementService(AppDbContext db) : IMeasurementService
                 ? await db.Measurements.FirstOrDefaultAsync(m => m.Id == item.Id && m.ProjectId == projectId)
                 : null;
 
+            var isRoomSurface = elementType is ElementType.Floor or ElementType.Ceiling;
+            decimal? perimeter = null;
+            if (isRoomSurface && item.AreaSqm.HasValue)
+            {
+                area = item.AreaSqm.Value;
+                volume = area * item.ThicknessM;
+                perimeter = item.PerimeterM;
+            }
+            else if (isRoomSurface && entity?.PerimeterM is not null
+                     && entity.LengthM == item.LengthM && entity.WidthM == item.WidthM)
+            {
+                // An extracted room re-saved from a screen that doesn't send
+                // its polygon area back: keep it unless the dimensions changed.
+                area = entity.AreaSqm;
+                volume = area * item.ThicknessM;
+                perimeter = entity.PerimeterM;
+            }
+
             if (entity is null)
             {
                 entity = new Measurement { ProjectId = projectId, RecordedByUserId = userId };
@@ -47,6 +65,7 @@ public class MeasurementService(AppDbContext db) : IMeasurementService
             entity.ThicknessM        = item.ThicknessM;
             entity.AreaSqm           = area;
             entity.VolumeCbm         = volume;
+            entity.PerimeterM        = perimeter;
             entity.ConcreteMixRatio  = item.ConcreteMixRatio;
             entity.WasteAllowancePct = item.WasteAllowancePct;
             entity.RecordedAt        = DateTime.UtcNow;
@@ -61,12 +80,12 @@ public class MeasurementService(AppDbContext db) : IMeasurementService
         return reloaded.Select(ToDto);
     }
 
-    // Wall: area = length × height (the face you see), volume = area × thickness.
-    // Column/Beam/Slab/Footing: area = length × width (the footprint), volume = area × thickness.
+    // Wall/Opening: area = length × height (the face you see), volume = area × thickness.
+    // Column/Beam/Slab/Footing/Floor/Ceiling: area = length × width (the footprint), volume = area × thickness.
     private static (decimal area, decimal volume) ComputeAreaAndVolume(
         ElementType type, decimal length, decimal width, decimal height, decimal thickness)
     {
-        var area = type == ElementType.Wall ? length * height : length * width;
+        var area = type is ElementType.Wall or ElementType.Opening ? length * height : length * width;
         var volume = area * thickness;
         return (area, volume);
     }
@@ -85,6 +104,7 @@ public class MeasurementService(AppDbContext db) : IMeasurementService
         ThicknessM        = m.ThicknessM,
         AreaSqm           = m.AreaSqm,
         VolumeCbm         = m.VolumeCbm,
+        PerimeterM        = m.PerimeterM,
         ConcreteMixRatio  = m.ConcreteMixRatio,
         WasteAllowancePct = m.WasteAllowancePct,
         RecordedAt        = m.RecordedAt,

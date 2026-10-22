@@ -6,7 +6,9 @@ namespace ConstructIQ.API.Models.Entities;
 // Wall/Column/Beam/Slab/Footing — drives the volume/area formula for this specific
 // row. Per-measurement, not a single project-wide toggle (fixes a frontend bug
 // where one "Structure Type" choice was shared across every phase).
-public enum ElementType { Wall, Column, Beam, Slab, Footing }
+// Floor/Ceiling/Opening come from blueprint extraction; appended so every
+// already-stored value keeps its meaning.
+public enum ElementType { Wall, Column, Beam, Slab, Footing, Floor, Ceiling, Opening }
 
 public class Measurement
 {
@@ -31,6 +33,10 @@ public class Measurement
     // Computed client-side on entry, stored so history/reports don't need to recompute.
     [Column(TypeName = "decimal(12,3)")] public decimal AreaSqm   { get; set; }
     [Column(TypeName = "decimal(12,3)")] public decimal VolumeCbm { get; set; }
+
+    // A room polygon's perimeter, from blueprint extraction (Floor/Ceiling
+    // rows). Null for hand-entered rectangular measurements.
+    [Column(TypeName = "decimal(10,3)")] public decimal? PerimeterM { get; set; }
 
     [MaxLength(30)]
     public string ConcreteMixRatio { get; set; } = "1:2:4";

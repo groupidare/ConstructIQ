@@ -1,9 +1,12 @@
 import os
 import tempfile
+from typing import Optional
 
 from fastapi import APIRouter, UploadFile, File, Form
+from starlette.concurrency import run_in_threadpool
 
 from app.models.schemas import DocumentParseRequest, DocumentParseResponse, DocumentParsePOResponse
+from app.services.blueprint_parser_service import parse_blueprint
 from app.services.document_parser_service import parse_boq_document, parse_po_document
 
 router = APIRouter()
@@ -41,6 +44,24 @@ async def parse(project_id: int = Form(...), file: UploadFile = File(...)) -> Do
     tmp_path = await _save_to_temp_file(file)
     try:
         return parse_boq_document(DocumentParseRequest(file_path=tmp_path, project_id=project_id))
+    finally:
+        _cleanup_temp_file(tmp_path)
+
+
+@router.post("/parse-blueprint")
+async def parse_blueprint_route(
+    file: UploadFile = File(...),
+    sheet: Optional[str] = Form(None),
+    drawing_id: Optional[str] = Form(None),
+    scale_override: Optional[str] = Form(None),
+) -> dict:
+    """Rooms/openings/heights from a CAD-exported PDF or DXF. A large plan set
+    takes up to a minute or two the first time (repeat calls on the same file
+    are cached), so it runs in a worker thread — never on the event loop,
+    where it would stall every other request (including /health)."""
+    tmp_path = await _save_to_temp_file(file)
+    try:
+        return await run_in_threadpool(parse_blueprint, tmp_path, file.filename or tmp_path, sheet, drawing_id, scale_override)
     finally:
         _cleanup_temp_file(tmp_path)
 

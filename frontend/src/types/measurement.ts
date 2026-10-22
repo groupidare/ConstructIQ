@@ -1,6 +1,7 @@
-export type ElementType = "Wall" | "Column" | "Beam" | "Slab" | "Footing";
+// Floor/Ceiling/Opening come from blueprint extraction (BlueprintWizard).
+export type ElementType = "Wall" | "Column" | "Beam" | "Slab" | "Footing" | "Floor" | "Ceiling" | "Opening";
 
-export const ELEMENT_TYPES: ElementType[] = ["Wall", "Column", "Beam", "Slab", "Footing"];
+export const ELEMENT_TYPES: ElementType[] = ["Wall", "Column", "Beam", "Slab", "Footing", "Floor", "Ceiling", "Opening"];
 
 export interface MeasurementRow {
   id?: number; // undefined = not yet saved
@@ -28,6 +29,8 @@ export interface Measurement {
   thicknessM: number;
   areaSqm: number;
   volumeCbm: number;
+  // A traced room's perimeter (Floor/Ceiling rows from a blueprint).
+  perimeterM?: number | null;
   concreteMixRatio: string;
   wasteAllowancePct: number;
   recordedAt: string;

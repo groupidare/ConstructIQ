@@ -10,6 +10,7 @@ import { inp, sel } from './styles';
 
 interface Props {
   editable: boolean;
+  isHistorical: boolean;
   projectType: ProjectType;
   otherTypeSpecify: string;
   onProjectTypeChange: (type: ProjectType, otherSpecify: string) => void;
@@ -18,14 +19,16 @@ interface Props {
   blueprints: ProjectDocument[];
   uploading: boolean;
   onUploadBlueprint: (file: File) => void;
-  parsingBlueprintId: number | null;
-  onParseBlueprint: (documentId: number) => void;
+  onOpenBlueprint: (doc: ProjectDocument) => void;
   onRemoveDocument: (documentId: number) => void;
 }
 
+// Only CAD-exported files can be measured (scanned plans and DWG can't).
+const MEASURABLE = /\.(pdf|dxf)$/i;
+
 export default function MeasurementsTab({
-  editable, projectType, otherTypeSpecify, onProjectTypeChange, onOtherTypeSpecifyBlur, savingProjectType,
-  blueprints, uploading, onUploadBlueprint, parsingBlueprintId, onParseBlueprint, onRemoveDocument,
+  editable, isHistorical, projectType, otherTypeSpecify, onProjectTypeChange, onOtherTypeSpecifyBlur, savingProjectType,
+  blueprints, uploading, onUploadBlueprint, onOpenBlueprint, onRemoveDocument,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -65,12 +68,13 @@ export default function MeasurementsTab({
           onClick={() => fileInputRef.current?.click()}
           style={{ border: '2px dashed #e5e7eb', borderRadius: 10, padding: '1.1rem', textAlign: 'center', marginBottom: '0.75rem', cursor: 'pointer', background: '#fafafa' }}
         >
-          <input ref={fileInputRef} type="file" accept=".pdf,.dwg,.png,.jpg,.jpeg,.xlsx,.xls,.csv" onChange={handleFilePicked} style={{ display: 'none' }} />
+          <input ref={fileInputRef} type="file" accept=".pdf,.dxf,.dwg,.png,.jpg,.jpeg,.xlsx,.xls,.csv" onChange={handleFilePicked} style={{ display: 'none' }} />
           <div style={{ width: 36, height: 36, borderRadius: 10, background: '#fff7ed', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 0.5rem' }}>
             <Upload style={{ width: 16, height: 16, color: '#f97316' }} />
           </div>
           <p style={{ fontSize: '0.8rem', fontWeight: 600, color: '#374151' }}>{uploading ? 'Uploading…' : 'Upload Files'}</p>
-          <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginTop: 2 }}>Blueprints, BOQs, POs, or other project documents — PDF, DWG, PNG, JPG, XLSX — max 25 MB</p>
+          <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginTop: 2 }}>Blueprints, BOQs, POs, or other project documents — PDF, DXF, DWG, PNG, JPG, XLSX — max 25 MB</p>
+          <p style={{ fontSize: '0.66rem', color: '#9ca3af', marginTop: 2 }}>CAD-exported PDF or DXF plans can generate the BOQ (architectural works); scanned plans and DWG can&apos;t be measured.</p>
         </div>
       )}
 
@@ -90,13 +94,15 @@ export default function MeasurementsTab({
                 <span style={{ fontSize: '0.78rem', color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{doc.fileName}</span>
                 <ExternalLink style={{ width: 12, height: 12, color: '#9ca3af', flexShrink: 0 }} />
               </a>
-              {editable && (
+              {(editable || isHistorical) && MEASURABLE.test(doc.fileName) && (
                 <button
-                  onClick={() => onParseBlueprint(doc.id)}
-                  disabled={parsingBlueprintId === doc.id}
+                  onClick={() => onOpenBlueprint(doc)}
+                  title={isHistorical
+                    ? 'Compare the areas traced from this plan with the saved BOQ — read-only'
+                    : 'Trace rooms from this CAD plan and generate BOQ rows from them'}
                   style={{ fontSize: '0.68rem', fontWeight: 600, color: '#f97316', background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap', padding: '8px 4px', flexShrink: 0 }}
                 >
-                  {parsingBlueprintId === doc.id ? 'Scanning…' : 'Scan & Fill Rows'}
+                  {isHistorical ? 'Compare with blueprint' : 'Generate BOQ from Blueprint'}
                 </button>
               )}
               {editable && (
@@ -114,7 +120,9 @@ export default function MeasurementsTab({
       )}
 
       <p style={{ fontSize: '0.68rem', color: '#9ca3af', lineHeight: 1.4 }}>
-        Files are stored here for viewing and reference — blueprints and drawings are not scanned for measurements. If a file also contains a Bill of Quantities or Purchase Order table, use &quot;Scan &amp; Fill Rows&quot; to extract it into the Material Plan tab the same way as a BOQ upload.
+        {isHistorical
+          ? <>Use &quot;Compare with blueprint&quot; on a CAD-exported PDF or DXF plan to check its traced areas against the saved BOQ — nothing is changed.</>
+          : <>Use &quot;Generate BOQ from Blueprint&quot; on a CAD-exported PDF or DXF plan to trace its rooms and build BOQ rows for architectural works (floors, walls, ceilings, doors, windows). Scanned plans can&apos;t be measured; upload BOQ and PO tables in the Material Plan tab.</>}
       </p>
     </div>
   );

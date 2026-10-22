@@ -2,7 +2,8 @@
 
 import { useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X } from 'lucide-react';
+import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X, AlertTriangle } from 'lucide-react';
+import { baselineAlerts, expectedText } from '@/lib/baseline';
 import { resolveUploadUrl } from '@/lib/avatar';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import { useAuthStore } from '@/store/authStore';
@@ -759,7 +760,7 @@ export default function MaterialPlanTab({
                     <input
                       disabled={!editable}
                       type="number"
-                      title="Estimated/predicted procurement quantity — auto-suggested from historical data, editable"
+                      title={expectedText(r) ?? 'Estimated/predicted procurement quantity — auto-suggested from historical data, editable'}
                       value={r.estimatedPurchaseQuantity ?? ''}
                       onChange={e => updateRow(i, { estimatedPurchaseQuantity: e.target.value === '' ? undefined : parseFloat(e.target.value) || 0, estimatePurchaseManuallySet: true })}
                       placeholder="Est. qty"
@@ -778,6 +779,20 @@ export default function MaterialPlanTab({
                     )}
                   </div>
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'flex-end', paddingRight: 2 }}>
+                    {(() => {
+                      const alerts = baselineAlerts(r);
+                      if (alerts.length === 0) return null;
+                      const muted = alerts.every(a => a.code === 'missing_properties');
+                      return (
+                        <span
+                          title={alerts.map(a => a.text).join('\n')}
+                          aria-label={alerts.map(a => a.text).join('; ')}
+                          style={{ display: 'flex', alignItems: 'center', color: muted ? '#d1d5db' : '#d97706', marginRight: 2 }}
+                        >
+                          <AlertTriangle style={{ width: 13, height: 13 }} />
+                        </span>
+                      );
+                    })()}
                     {/* Action buttons always stay visible — never swapped for
                         a "Done" badge, even once the estimate is fully
                         covered: Procurement can still take an additional

@@ -81,6 +81,15 @@ public class BOQItemResponseDto
     public List<HistoricalSupplyResponseDto> HistoricalSupply { get; set; } = [];
     public decimal? EstimatedPurchaseQuantity { get; set; }
     public string?  EstimatedPurchaseUnit     { get; set; }
+    // Engineering baseline (computed, never stored) — the Est. Qty tooltip
+    // "Expected ≈ {BaselinePurchaseQuantity} {BaselineUnit} ({BaselineFormula})"
+    // and the Alerts column. See Algorithms/BaselineCalculator.
+    public decimal? BaselineQuantity         { get; set; }
+    public int?     BaselinePurchaseQuantity { get; set; }
+    public string?  BaselineUnit             { get; set; }
+    public string?  BaselineFormula          { get; set; }
+    public string?  BaselineReason           { get; set; }
+    public List<string> Alerts               { get; set; } = [];
     public decimal? RequestedQuantity { get; set; }
     // Server-computed "Net Left to Order" — EstimatedPurchaseQuantity (or
     // EstimatedQuantity if that's unset) minus whatever's actually been

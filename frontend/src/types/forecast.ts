@@ -85,6 +85,12 @@ export interface ModelManifest {
   metrics: { randomForest: ModelMetrics; xgboost: ModelMetrics; ensemble: ModelMetrics };
   // Whole-project (leave-one-project-out) holdout — the stricter check.
   projectHoldout: ModelMetrics | null;
+  // Same leave-one-project-out rows with no model: the reference alone, and
+  // on rows with an engineering baseline, baseline-only vs the AI forecast.
+  referenceHoldout?: ModelMetrics | null;
+  baselineComparison?: { rows: number; baselineOnly: ModelMetrics | null; ai: ModelMetrics | null } | null;
+  baselineRows?: number;
+  demandFactorRange?: number[];
   evaluatedProjects: number;
   skippedEvaluations: { projectId: number; reason: string }[];
   confidence: 'Normal' | 'Low' | string;

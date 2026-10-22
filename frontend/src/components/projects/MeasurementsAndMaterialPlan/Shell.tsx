@@ -17,8 +17,12 @@ import type { Project, ProjectType } from '@/types/project';
 import type { BOQItem, BOQItemRow } from '@/types/boq';
 import { PURCHASE_UNITS } from '@/types/boq';
 import type { PurchaseOrderMaterial } from '@/types/purchaseOrder';
+import type { ProjectDocument } from '@/types/document';
 import MeasurementsTab from './MeasurementsTab';
 import MaterialPlanTab from './MaterialPlanTab';
+import BlueprintWizard from './BlueprintWizard';
+import ScanCoveredDialog from './ScanCoveredDialog';
+import { knownSection, splitScannedRows } from '@/lib/boqSections';
 
 function apiErrorMessage(error: unknown, fallback: string): string {
   const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -55,7 +59,9 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [savingBoq, setSavingBoq] = useState(false);
   const [forecasting, setForecasting] = useState(false);
   const [uploadingBlueprint, setUploadingBlueprint] = useState(false);
-  const [parsingBlueprintId, setParsingBlueprintId] = useState<number | null>(null);
+  const [blueprintDoc, setBlueprintDoc] = useState<ProjectDocument | null>(null);
+  // Scanned BOQ rows held back because the blueprint already filled their section.
+  const [coveredRows, setCoveredRows] = useState<BOQItemRow[] | null>(null);
   const [uploadingBoq, setUploadingBoq] = useState(false);
   const [uploadingPo, setUploadingPo] = useState(false);
   const [savingPo, setSavingPo] = useState(false);
@@ -89,6 +95,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       specification: b.specification, materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, isUsageConfirmed: b.isUsageConfirmed, notes: b.notes,
       historicalSupply: b.historicalSupply,
       estimatedPurchaseQuantity: b.estimatedPurchaseQuantity, estimatedPurchaseUnit: b.estimatedPurchaseUnit,
+      baselineQuantity: b.baselineQuantity, baselinePurchaseQuantity: b.baselinePurchaseQuantity,
+      baselineUnit: b.baselineUnit, baselineFormula: b.baselineFormula, baselineReason: b.baselineReason,
       requestedQuantity: b.requestedQuantity,
       // A value already saved server-side was either a prior suggestion the
       // user accepted or one they typed themselves — either way, don't let
@@ -160,13 +168,13 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
         toast.error(result.parseErrors[0] || 'No line items detected in that document.');
         return;
       }
-      setBoqRows(prev => [
-        ...prev,
-        ...result.items.map(item => ({
+      const scanned: BOQItemRow[] = result.items.map(item => {
+        return {
           phaseId: item.phaseHint
             ? project.phases.find(p => p.name.toLowerCase() === item.phaseHint!.toLowerCase())?.id
             : undefined,
-          primarySection: item.primarySection || 'Others',
+          // "III. ELECTRICAL WORKS" → "Electrical Works", the plan's own section name.
+          primarySection: knownSection(item.primarySection) ?? (item.primarySection || 'Others'),
           subCategory: item.subCategory,
           // The parser can only split spec text into its own column when the
           // source sheet has one distinct from the material/description
@@ -186,22 +194,33 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
           estimatedQuantity: item.estimatedQuantity,
           historicalSupply: item.historicalSupply,
           notes: 'Auto-scanned',
-        })),
-      ]);
-      toast.success(`${result.items.length} line item(s) scanned — review and edit as needed.`);
+        };
+      });
+
+      // Sections the blueprint filled keep the blueprint's rows; rows already
+      // in the plan (the same BOQ scanned again) are skipped.
+      const { add, covered, duplicates } = splitScannedRows(scanned, boqRows);
+      if (add.length) setBoqRows(prev => [...prev, ...add]);
+      if (covered.length) setCoveredRows(covered);
+      const notes = [
+        covered.length ? `${covered.length} held back (already covered by blueprint)` : '',
+        duplicates ? `${duplicates} already in the plan` : '',
+      ].filter(Boolean).join(', ');
+      if (add.length) toast.success(`${add.length} line item(s) added${notes ? ` — ${notes}` : ''}. Review them, then Save.`);
+      else if (!covered.length) toast(`Nothing new — all ${duplicates} line item(s) are already in the plan.`);
       if (result.parseErrors.length > 0) toast.error(result.parseErrors[0]);
     } catch (error) {
       toast.error(apiErrorMessage(error, 'Failed to scan document.'));
     }
   }
 
-  async function handleParseBlueprint(documentId: number) {
-    setParsingBlueprintId(documentId);
-    try {
-      await handleParseBoq(documentId);
-    } finally {
-      setParsingBlueprintId(null);
-    }
+  // Rows generated from a blueprint join the Material Plan as unsaved rows,
+  // the same way "Scan & Fill Rows" adds a scanned BOQ — reviewed there and
+  // saved with the normal Save.
+  function handleBlueprintRows(rows: BOQItemRow[]) {
+    seededBoq.current = true; // never let the initial-load seed replace them
+    setBoqRows(prev => [...prev, ...rows]);
+    setTab('materialPlan');
   }
 
   async function handleUploadPO(file: File) {
@@ -485,8 +504,9 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     onProjectTypeChange: handleProjectTypeChange, onOtherTypeSpecifyBlur: handleOtherTypeSpecifyBlur, savingProjectType,
     boqRows, setBoqRows, boqItems,
     blueprints, boqDocs, poDocs, inventory, forecastedMaterials,
-    savingBoq, forecasting, uploadingBlueprint, parsingBlueprintId, uploadingBoq, uploadingPo, savingPo,
-    handleUploadBlueprint, handleParseBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
+    savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
+    blueprintDoc, setBlueprintDoc, handleBlueprintRows, coveredRows, setCoveredRows,
+    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
     handleSaveBoq, handleRunForecast, handleNotify,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
     poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
@@ -529,21 +549,34 @@ export function EditToggle({ editable, onToggle }: { editable: boolean; onToggle
 
 export function TabBody({ project, state }: { project: Project; state: ReturnType<typeof useMeasurementsAndMaterialPlan> }) {
   return state.tab === 'measurements' ? (
-    <MeasurementsTab
-      editable={state.editable}
-      projectType={state.projectType}
-      otherTypeSpecify={state.otherTypeSpecify}
-      onProjectTypeChange={state.onProjectTypeChange}
-      onOtherTypeSpecifyBlur={state.onOtherTypeSpecifyBlur}
-      savingProjectType={state.savingProjectType}
-      blueprints={state.blueprints}
-      uploading={state.uploadingBlueprint}
-      onUploadBlueprint={state.handleUploadBlueprint}
-      parsingBlueprintId={state.parsingBlueprintId}
-      onParseBlueprint={state.handleParseBlueprint}
-      onRemoveDocument={state.handleRemoveDocument}
-    />
+    <>
+      <MeasurementsTab
+        editable={state.editable}
+        isHistorical={project.isHistorical}
+        projectType={state.projectType}
+        otherTypeSpecify={state.otherTypeSpecify}
+        onProjectTypeChange={state.onProjectTypeChange}
+        onOtherTypeSpecifyBlur={state.onOtherTypeSpecifyBlur}
+        savingProjectType={state.savingProjectType}
+        blueprints={state.blueprints}
+        uploading={state.uploadingBlueprint}
+        onUploadBlueprint={state.handleUploadBlueprint}
+        onOpenBlueprint={state.setBlueprintDoc}
+        onRemoveDocument={state.handleRemoveDocument}
+      />
+      {state.blueprintDoc && (
+        <BlueprintWizard
+          project={project}
+          document={state.blueprintDoc}
+          savedBoq={state.boqItems}
+          existingRows={state.boqRows}
+          onClose={() => state.setBlueprintDoc(null)}
+          onAddRows={state.handleBlueprintRows}
+        />
+      )}
+    </>
   ) : (
+    <>
     <MaterialPlanTab
       project={project}
       editable={state.editable}
@@ -581,5 +614,17 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       poExpectedDate={state.poExpectedDate}
       onPoExpectedDateChange={state.setPoExpectedDate}
     />
+    {state.coveredRows && (
+      <ScanCoveredDialog
+        rows={state.coveredRows}
+        onClose={() => state.setCoveredRows(null)}
+        onAdd={rows => {
+          state.setBoqRows(prev => [...prev, ...rows]);
+          state.setCoveredRows(null);
+          toast.success(`${rows.length} more row(s) added — review them, then Save.`);
+        }}
+      />
+    )}
+    </>
   );
 }

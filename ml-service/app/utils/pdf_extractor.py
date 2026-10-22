@@ -9,7 +9,7 @@ QUANTITY_PATTERN  = re.compile(r'\b(\d+(?:\.\d+)?)\s*(pcs?|bags?|m\d?|kg|liters?
 PHASE_KEYWORDS    = ["Foundation", "Structural", "Framing", "Roofing", "Walling", "Finishing", "Electrical", "Plumbing", "HVAC"]
 
 
-def extract_text_from_pdf(file_path: str) -> tuple[list[str], int]:
+def extract_text_from_pdf(file_path: str, ocr_fallback: bool = True) -> tuple[list[str], int]:
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"PDF not found: {file_path}")
@@ -22,7 +22,9 @@ def extract_text_from_pdf(file_path: str) -> tuple[list[str], int]:
 
     # Image-only PDFs have no embedded text layer. Render them and use OCR only
     # when the digital extraction produced no meaningful text.
-    if sum(len(page.strip()) for page in pages) < 20:
+    # ocr_fallback=False: the caller runs its own OCR (Azure first, see
+    # tabular_extractor) and gets the near-empty pages back to decide on.
+    if ocr_fallback and sum(len(page.strip()) for page in pages) < 20:
         return extract_text_with_ocr(file_path)
     return pages, len(pages)
 

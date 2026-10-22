@@ -154,6 +154,16 @@ export default function ModelStatusPanel({ status, report, reportError, isAdmin,
               <MetricRow label="XGBoost" m={manifest.metrics.xgboost} />
               <p style={{ fontSize: "0.66rem", color: "#9ca3af", margin: "6px 0 2px" }}>Whole unseen projects (leave-one-project-out) — judges confidence</p>
               <MetricRow label="Ensemble, by project" m={manifest.projectHoldout} />
+              {manifest.referenceHoldout && <MetricRow label="Reference alone (no AI)" m={manifest.referenceHoldout} />}
+              {manifest.baselineComparison && manifest.baselineComparison.rows > 0 && (
+                <>
+                  <p style={{ fontSize: "0.66rem", color: "#9ca3af", margin: "6px 0 2px" }}>
+                    Rows with an engineering baseline ({manifest.baselineComparison.rows}) — baseline alone vs AI
+                  </p>
+                  <MetricRow label="Baseline only" m={manifest.baselineComparison.baselineOnly} />
+                  <MetricRow label="AI forecast" m={manifest.baselineComparison.ai} />
+                </>
+              )}
               <p style={{ fontSize: "0.68rem", color: "#9ca3af", marginTop: 4 }}>
                 {manifest.evaluatedProjects} historical project(s) evaluated for the chart
                 {manifest.skippedEvaluations.length > 0 && `; ${manifest.skippedEvaluations.length} skipped (too little data from other projects to fit a model without them)`}.

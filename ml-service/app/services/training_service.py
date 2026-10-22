@@ -7,8 +7,10 @@ from sklearn.model_selection import train_test_split
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from app.services.forecasting_service import get_engine, fetch_records, build_response
-from app.ml import random_forest, xgboost_model, material_ratios, model_registry
+from app.services.forecasting_service import (
+    get_engine, fetch_records, build_response, predict_quantities, MATERIAL_PROPERTY_COLUMNS,
+)
+from app.ml import random_forest, xgboost_model, material_ratios, model_registry, demand_factor
 from app.ml.model_evaluator import ensemble_predict
 
 # ProjectStatus enum (backend): Planning=0, Active=1, OnHold=2, Completed=3, Cancelled=4.
@@ -58,7 +60,7 @@ _ELIGIBLE_ROW_PREDICATE = """
     AND bi.EstimatedPurchaseUnit IS NOT NULL AND TRIM(bi.EstimatedPurchaseUnit) <> ''
 """
 
-_ROW_SELECT = """
+_ROW_SELECT = f"""
     SELECT
         bi.Id        AS boq_item_id,
         bi.ProjectId AS project_id,
@@ -66,6 +68,8 @@ _ROW_SELECT = """
         m.Id         AS material_id,
         m.Name       AS material_name,
         m.Unit       AS unit,
+        COALESCE(NULLIF(bi.Unit, ''), m.Unit) AS boq_unit,
+        {MATERIAL_PROPERTY_COLUMNS}
         TRIM(bi.EstimatedPurchaseUnit) AS purchase_unit,
         m.UnitCost   AS unit_cost,
         bi.EstimatedQuantity AS boq_quantity,
@@ -377,10 +381,30 @@ def _metrics(y_true, y_pred) -> dict:
     }
 
 
+def _prepare(records: list[dict], targets: list[float]) -> tuple[list[dict], list[float]]:
+    """Attaches each row's reference (baseline or historical ratio — needs
+    material_ratio attached first) and drops rows a factor can't be
+    expressed for."""
+    demand_factor.attach_reference(records)
+    return demand_factor.usable(records, targets)
+
+
+def _fit(records: list[dict], targets: list[float]):
+    """Both models, fitted on the demand factor (target ÷ reference), never
+    on the absolute quantity."""
+    factors = demand_factor.to_factors(records, targets)
+    return random_forest.fit(records, factors), xgboost_model.fit(records, factors)
+
+
+def _quantities(records: list[dict], factors) -> list[float]:
+    return demand_factor.to_quantities(records, factors)[0]
+
+
 def _row_holdout_metrics(records: list[dict], targets: list[float]) -> dict:
     """Random 80/20 row split: per-model and ensemble error on rows the
-    models didn't see. Optimistic (other rows of the same project are in
-    training) — the project-level holdout below is the stricter check."""
+    models didn't see, in purchase-unit quantities (reference × factor).
+    Optimistic (other rows of the same project are in training) — the
+    project-level holdout below is the stricter check."""
     idx = np.arange(len(records))
     train_idx, test_idx = train_test_split(idx, test_size=0.2, random_state=42)
     train_r = [records[i] for i in train_idx]
@@ -388,13 +412,12 @@ def _row_holdout_metrics(records: list[dict], targets: list[float]) -> dict:
     test_r  = [records[i] for i in test_idx]
     test_t  = [targets[i] for i in test_idx]
 
-    rf  = random_forest.fit(train_r, train_t)
-    xgb = xgboost_model.fit(train_r, train_t)
-    rf_pred, xgb_pred = random_forest.predict(test_r, rf), xgboost_model.predict(test_r, xgb)
+    rf, xgb = _fit(train_r, train_t)
+    rf_f, xgb_f = random_forest.predict(test_r, rf), xgboost_model.predict(test_r, xgb)
     return {
-        "random_forest": _metrics(test_t, rf_pred),
-        "xgboost":       _metrics(test_t, xgb_pred),
-        "ensemble":      _metrics(test_t, ensemble_predict(rf_pred, xgb_pred)),
+        "random_forest": _metrics(test_t, _quantities(test_r, rf_f)),
+        "xgboost":       _metrics(test_t, _quantities(test_r, xgb_f)),
+        "ensemble":      _metrics(test_t, _quantities(test_r, ensemble_predict(rf_f, xgb_f))),
     }
 
 
@@ -421,14 +444,21 @@ def train_models(min_rows: int = MIN_ROWS, min_projects: int = MIN_PROJECTS) -> 
     # target). The table persisted for forecasting is fitted on every row.
     material_ratios.attach_out_of_project(records, targets)
     table = material_ratios.fit(records, targets)
+    # Each row's reference (engineering baseline, else the historical ratio
+    # estimate) — the models learn the factor actual ÷ reference.
+    records, targets = _prepare(records, targets)
+    if len(records) < min_rows:
+        raise TrainingRejected(
+            f"Only {len(records)} row(s) have a non-zero BOQ quantity to anchor a forecast on — need at least {min_rows}.")
+    project_ids = {r["project_id"] for r in records}
 
     row_holdout = _row_holdout_metrics(records, targets)
-    evaluations, skipped, project_holdout = _leave_one_project_out(engine, records, targets, min_rows)
+    evaluations, skipped, holdout = _leave_one_project_out(engine, records, targets, min_rows)
+    project_holdout = holdout["ai"]
 
     # The models that actually forecast: fitted on every eligible row (the
     # holdout fits above exist only to measure quality).
-    rf  = random_forest.fit(records, targets)
-    xgb = xgboost_model.fit(records, targets)
+    rf, xgb = _fit(records, targets)
 
     # Confidence is judged on the project-level holdout — a whole unseen
     # project, exactly what forecasting a new project is.
@@ -448,6 +478,13 @@ def train_models(min_rows: int = MIN_ROWS, min_projects: int = MIN_PROJECTS) -> 
         "project_count":      len(project_ids),
         "metrics":            row_holdout,
         "project_holdout":    project_holdout,
+        # Same leave-one-project-out rows, with no model at all: the
+        # reference alone (factor 1), and — on rows that have one — the
+        # engineering baseline alone vs the AI forecast.
+        "reference_holdout":  holdout["reference"],
+        "baseline_comparison": holdout["baseline_comparison"],
+        "baseline_rows":      sum(r["has_baseline"] for r in records),
+        "demand_factor_range": [demand_factor.FACTOR_MIN, demand_factor.FACTOR_MAX],
         "evaluated_projects": len(evaluations),
         "skipped_evaluations": skipped,
         "confidence":         "Low" if reasons else "Normal",
@@ -475,7 +512,8 @@ def _leave_one_project_out(engine, records: list[dict], targets: list[float], mi
     gets NO evaluation (listed in `skipped`): no model can be fitted for it,
     and a non-model estimate must not be shown as AI Predicted."""
     evaluations, skipped = [], []
-    holdout_true, holdout_pred = [], []
+    holdout_true, holdout_pred, holdout_ref = [], [], []
+    baseline_true, baseline_only, baseline_ai = [], [], []
     historical_ids = sorted({r["project_id"] for r in records if r["is_historical"]})
 
     for project_id in historical_ids:
@@ -491,27 +529,49 @@ def _leave_one_project_out(engine, records: list[dict], targets: list[float], mi
 
         material_ratios.attach_out_of_project(fold_records, fold_targets)
         table = material_ratios.fit(fold_records, fold_targets)
-        rf  = random_forest.fit(fold_records, fold_targets)
-        xgb = xgboost_model.fit(fold_records, fold_targets)
+        fold_records, fold_targets = _prepare(fold_records, fold_targets)
+        if len(fold_records) < min_rows:
+            skipped.append({"project_id": project_id,
+                            "reason": f"Only {len(fold_records)} usable training row(s) from other projects (need {min_rows})."})
+            continue
+        rf, xgb = _fit(fold_records, fold_targets)
 
+        # The held-out project's own rows, with references computed from the
+        # fold's ratio table — never from its own targets.
         held_out = [(dict(r), t) for r, t in zip(records, targets) if r["project_id"] == project_id]
         held_records = [r for r, _ in held_out]
         material_ratios.attach(held_records, table)
-        holdout_true.extend(t for _, t in held_out)
-        holdout_pred.extend(ensemble_predict(random_forest.predict(held_records, rf),
-                                             xgboost_model.predict(held_records, xgb)))
+        demand_factor.attach_reference(held_records)
+        ai = _quantities(held_records, ensemble_predict(random_forest.predict(held_records, rf),
+                                                        xgboost_model.predict(held_records, xgb)))
+        for r, (_, t), q in zip(held_records, held_out, ai):
+            holdout_true.append(t)
+            holdout_pred.append(q)
+            holdout_ref.append(r["reference_quantity"])
+            if r["has_baseline"]:
+                baseline_true.append(t)
+                baseline_only.append(r["baseline_quantity"])
+                baseline_ai.append(q)
 
         project_records = fetch_records(engine, project_id, None)
         if not project_records:
             continue
         material_ratios.attach(project_records, table)
-        preds = ensemble_predict(random_forest.predict(project_records, rf),
-                                 xgboost_model.predict(project_records, xgb))
-        response = build_response(project_id, None, "Monthly", project_records, preds, table)
+        demand_factor.attach_reference(project_records, table)
+        preds, details = predict_quantities(project_records, rf, xgb)
+        response = build_response(project_id, None, "Monthly", project_records, preds, table, details)
         evaluations.append({
             "project_id":           project_id,
             "forecasted_materials": [fm.model_dump(mode="json") for fm in response.forecasted_materials],
         })
 
-    project_holdout = _metrics(holdout_true, holdout_pred) if holdout_true else None
-    return evaluations, skipped, project_holdout
+    holdout = {
+        "ai":        _metrics(holdout_true, holdout_pred) if holdout_true else None,
+        "reference": _metrics(holdout_true, holdout_ref) if holdout_true else None,
+        "baseline_comparison": {
+            "rows":          len(baseline_true),
+            "baseline_only": _metrics(baseline_true, baseline_only) if baseline_true else None,
+            "ai":            _metrics(baseline_true, baseline_ai) if baseline_true else None,
+        },
+    }
+    return evaluations, skipped, holdout

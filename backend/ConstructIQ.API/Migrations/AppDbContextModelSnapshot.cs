@@ -584,21 +584,51 @@ namespace ConstructIQ.API.Migrations
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<int?>("CalculationType")
+                        .HasColumnType("int");
+
                     b.Property<int>("CategoryId")
                         .HasColumnType("int");
 
+                    b.Property<int?>("Coats")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("CoveragePerUnit")
+                        .HasColumnType("decimal(12,4)");
+
+                    b.Property<string>("CoverageUnit")
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("tinyint(1)");
+
+                    b.Property<decimal?>("LengthMm")
+                        .HasColumnType("decimal(10,2)");
 
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("varchar(200)");
 
+                    b.Property<decimal?>("PiecesPerPackage")
+                        .HasColumnType("decimal(10,2)");
+
+                    b.Property<string>("PropertiesSource")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("PurchaseUnit")
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
                     b.Property<string>("Specification")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("varchar(200)");
+
+                    b.Property<decimal?>("ThicknessMm")
+                        .HasColumnType("decimal(10,2)");
 
                     b.Property<string>("Unit")
                         .IsRequired()
@@ -607,6 +637,12 @@ namespace ConstructIQ.API.Migrations
 
                     b.Property<decimal>("UnitCost")
                         .HasColumnType("decimal(18,4)");
+
+                    b.Property<decimal?>("UnitLengthM")
+                        .HasColumnType("decimal(10,3)");
+
+                    b.Property<decimal?>("WidthMm")
+                        .HasColumnType("decimal(10,2)");
 
                     b.HasKey("Id");
 
@@ -753,6 +789,9 @@ namespace ConstructIQ.API.Migrations
                         .HasColumnType("decimal(10,3)");
 
                     b.Property<decimal>("LengthM")
+                        .HasColumnType("decimal(10,3)");
+
+                    b.Property<decimal?>("PerimeterM")
                         .HasColumnType("decimal(10,3)");
 
                     b.Property<int>("PhaseId")
