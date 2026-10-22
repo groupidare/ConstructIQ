@@ -1,0 +1,41 @@
+name: Deploy to Azure VM
+
+# Runs on the self-hosted runner installed on the Azure VM itself, which pulls
+# the new commit into C:\apps\ConstructIQ and runs deploy/update.ps1 (build
+# first, then restart only the services whose code changed).
+#
+# Only pushes to main (i.e. merged code) and manual runs trigger this - never
+# pull requests, so code that hasn't been merged can't run on the server.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      all:
+        description: Rebuild and restart every service, not just what changed
+        type: boolean
+        default: false
+
+# One deploy at a time; a newer push waits for the current one to finish.
+concurrency:
+  group: deploy-vm
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, constructiq-vm]
+    timeout-minutes: 30
+    steps:
+      - name: Pull and deploy
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $before = (git -C C:\apps\ConstructIQ rev-parse HEAD).Trim()
+          git -C C:\apps\ConstructIQ pull --ff-only
+          if ($LASTEXITCODE -ne 0) { throw 'git pull failed' }
+          if ('${{ inputs.all }}' -eq 'true') {
+            & C:\apps\ConstructIQ\deploy\update.ps1 -Since $before -All
+          } else {
+            & C:\apps\ConstructIQ\deploy\update.ps1 -Since $before
+          }

@@ -13,7 +13,7 @@ import type { Project } from "@/types/project";
 import type { WarehouseStockItem } from "@/types/warehouseStock";
 import type { WarehouseRequest } from "@/types/warehouseRequest";
 import type { ExcessWasteRecord } from "@/types/excess";
-import type { ForecastResult, ForecastAccuracyReport } from "@/types/forecast";
+import type { ForecastResult, ForecastAccuracyReport, ModelStatus } from "@/types/forecast";
 import type { RedistributionRecommendation, RedistributionStatus } from "@/types/procurement";
 import type { PurchaseOrder } from "@/types/purchaseOrder";
 import {
@@ -180,6 +180,7 @@ function buildForecastingData(
   forecasts: ForecastResult[],
   accuracyReports: ForecastAccuracyReport[],
   projects: Project[],
+  modelStatus: ModelStatus | null,
 ): ReportViewData {
   const materials = forecasts.flatMap(f => f.forecastedMaterials);
   const forecastByMaterial = new Map<string, number>();
@@ -195,6 +196,14 @@ function buildForecastingData(
   // contributes nothing (there's genuinely nothing to score it against).
   const withComparisons = accuracyReports.filter(a => a.comparisons.length > 0);
   const avgAccuracy = withComparisons.length > 0 ? avg(withComparisons.map(a => a.overallAccuracy)) : null;
+  const forecastedProjectIds = new Set(forecasts.map(f => f.projectId));
+  const eligibleProjects = projects.filter(p => !p.isHistorical);
+  const forecastCoverage = pct(forecastedProjectIds.size, eligibleProjects.length);
+  const modelR2 = modelStatus?.model.manifest?.projectHoldout?.r2
+    ?? modelStatus?.model.manifest?.metrics.ensemble.r2;
+  const trainedModelAccuracy = modelR2 != null
+    ? Math.max(0, Math.min(100, modelR2 * 100))
+    : null;
 
   const projectName = (id: number) => projects.find(p => p.id === id)?.name ?? `Project #${id}`;
 
@@ -217,17 +226,18 @@ function buildForecastingData(
     stats: [
       { label: "PROJECTS FORECASTED", value: String(forecasts.length), sub: "Most recent run each" },
       { label: "FORECASTED MATERIALS", value: String(materials.length), sub: "Current forecast rows" },
-      { label: "MODEL ACCURACY",      value: avgAccuracy != null ? `${avgAccuracy.toFixed(1)}%` : "—", sub: avgAccuracy != null ? `Avg across ${withComparisons.length} project(s) with confirmed usage` : "No confirmed actual usage yet to score against" },
+      { label: "FORECAST COVERAGE", value: `${forecastCoverage}%`, sub: `${forecastedProjectIds.size} of ${eligibleProjects.length} active project(s)` },
+      { label: "MODEL ACCURACY",      value: avgAccuracy != null ? `${avgAccuracy.toFixed(1)}%` : trainedModelAccuracy != null ? `${trainedModelAccuracy.toFixed(1)}%` : "—", sub: avgAccuracy != null ? `Avg across ${withComparisons.length} project(s) with confirmed usage` : trainedModelAccuracy != null ? "Trained-model evaluation (R²)" : "Model evaluation unavailable" },
     ],
     chartTitle: "Forecasted Quantity by Material",
     chartData: Array.from(forecastByMaterial.entries())
       .map(([name, value]) => ({ name: truncate(name, 14), value: Math.round(value * 100) / 100 }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 8),
-    healthTitle: "Forecast Coverage",
+    healthTitle: "Forecast Run Coverage",
     health: forecasts.map(f => ({
       label: projectName(f.projectId),
-      pct: `${pct(f.forecastedMaterials.length, materials.length)}%`,
+      pct: "100%",
       color: "#f97316",
     })),
     aiInsight: forecasts.length === 0
@@ -749,6 +759,7 @@ export default function ReportsPage() {
   const [excessRecords, setExcessRecords] = useState<ExcessWasteRecord[]>([]);
   const [forecasts, setForecasts] = useState<ForecastResult[]>([]);
   const [accuracyReports, setAccuracyReports] = useState<ForecastAccuracyReport[]>([]);
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
 
   const risk = useWeatherStore(s => s.risk);
@@ -776,6 +787,7 @@ export default function ReportsPage() {
         setRedistribution(redisRes.data);
         setOrders(poRes.data);
         setSuppliers(supRes.data);
+        api.get<ModelStatus>("/forecast/model-status").then(r => setModelStatus(r.data)).catch(() => setModelStatus(null));
 
         // Excess/waste records belong to every project, including historical
         // projects. Forecasts remain scoped to live projects so stale
@@ -831,7 +843,7 @@ export default function ReportsPage() {
   const REPORT_DATA = useMemo<Record<string, ReportViewData>>(() => ({
     projects: buildProjectsData(projects),
     inventory: buildInventoryData(stockItems, warehouseRequests),
-    forecasting: buildForecastingData(forecasts, accuracyReports, projects),
+    forecasting: buildForecastingData(forecasts, accuracyReports, projects, modelStatus),
     excess: buildExcessData(excessRecords),
     redistribution: buildRedistributionData(redistribution),
     procurement: buildProcurementData(orders, suppliers, risk?.level ?? null, risk?.advisory ?? null),
@@ -839,7 +851,7 @@ export default function ReportsPage() {
       projects, stockItems, orders, redistribution, excessRecords,
       risk?.level ?? null, risk?.advisory ?? null, activityLogs, isAdmin,
     ),
-  }), [projects, stockItems, warehouseRequests, forecasts, accuracyReports, excessRecords, redistribution, orders, suppliers, risk, activityLogs, isAdmin]);
+  }), [projects, stockItems, warehouseRequests, forecasts, accuracyReports, modelStatus, excessRecords, redistribution, orders, suppliers, risk, activityLogs, isAdmin]);
 
   const filtered = useMemo(() => REPORTS.filter(r => {
     const matchSearch   = r.title.toLowerCase().includes(search.toLowerCase()) || r.desc.toLowerCase().includes(search.toLowerCase());
