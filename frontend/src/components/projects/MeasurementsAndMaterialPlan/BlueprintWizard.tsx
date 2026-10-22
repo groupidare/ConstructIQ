@@ -75,6 +75,7 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
   const [drawingId, setDrawingId] = useState('');
   const [scaleOverride, setScaleOverride] = useState('');
   const [rooms, setRooms] = useState<EditableRoom[]>([]);
+  const [allHeight, setAllHeight] = useState('');
   const [openings, setOpenings] = useState<EditableOpening[]>([]);
   const [templates, setTemplates] = useState<FinishTemplate[]>([]);
 
@@ -250,6 +251,17 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
 
           {step === 'rooms' && (
             <div style={{ display: 'grid', gap: 12 }}>
+              {/* A floor plan has no heights; most rooms share one, read off the plan's sections. */}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <label htmlFor="all-height" style={{ fontSize: '0.76rem', color: '#374151' }}>Ceiling height for all rooms (m)</label>
+                <input id="all-height" type="number" min="0" step="0.01" value={allHeight} placeholder="e.g. 2.75"
+                  onChange={e => setAllHeight(e.target.value)} style={{ ...small, width: 90 }} />
+                <button disabled={!(Number(allHeight) > 0)} style={{ ...btn(), padding: '5px 12px', opacity: Number(allHeight) > 0 ? 1 : 0.5 }}
+                  onClick={() => setRooms(prev => prev.map(r => ({ ...r, heightM: Number(allHeight) })))}>
+                  Apply
+                </button>
+                <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>Floor plans don&apos;t show heights — take it from the sections (floor to ceiling line).</span>
+              </div>
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
                   <thead><tr>{['', 'Room', 'Floor area (m²)', 'Perimeter (m)', 'Ceiling height (m)', 'Floor finish'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
