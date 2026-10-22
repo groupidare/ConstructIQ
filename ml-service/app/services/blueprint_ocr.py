@@ -15,6 +15,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 from app.services import azure_document
+from app.utils.pdf_render import page_image
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ def available() -> bool:
 def render(page):
     """The page as a grayscale image, and PDF points per pixel."""
     dpi = min(MAX_DPI, 72 * math.sqrt(MAX_PIXELS / (page.width * page.height)))
-    return page.to_image(resolution=dpi).original.convert("L"), 72 / dpi
+    return page_image(page, dpi).convert("L"), 72 / dpi
 
 
 def _covered(cx: float, cy: float, boxes: list[tuple]) -> bool:

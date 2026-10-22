@@ -66,6 +66,39 @@ class ScaleFromDimensions(unittest.TestCase):
         self.assertIsNone(bp._scale_from_dimensions(texts, objs))
 
 
+class TitlesWithoutSpaces(unittest.TestCase):
+    def test_spaces_put_back_in_joined_titles(self):
+        self.assertEqual(bp._spaced_title("GROUNDFLOORPLAN"), "GROUND FLOOR PLAN")
+        self.assertEqual(bp._spaced_title("RIGHTSIDEELEVATION"), "RIGHT SIDE ELEVATION")
+        self.assertEqual(bp._spaced_title("ROOFPLAN"), "ROOF PLAN")
+        self.assertEqual(bp._spaced_title("SECOND FLOOR PLAN"), "SECOND FLOOR PLAN")
+
+    def test_joined_title_still_counts_as_a_drawing(self):
+        self.assertTrue(bp._DRAWING_WORDS.search("GROUNDFLOORPLAN"))
+
+
+class RenderLock(unittest.TestCase):
+    def test_renders_run_one_at_a_time(self):
+        import threading
+        from app.utils import pdf_render
+        active, peak = [0], [0]
+
+        class Page:
+            def to_image(self, resolution):
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+                threading.Event().wait(0.02)
+                active[0] -= 1
+                return type("Img", (), {"original": None})()
+
+        threads = [threading.Thread(target=pdf_render.page_image, args=(Page(), 72)) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(peak[0], 1)
+
+
 class DoorArcs(unittest.TestCase):
     def test_closed_circle_is_not_a_door(self):
         m_per_pt = bp.PT_TO_M * 50

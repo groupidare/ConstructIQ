@@ -18,6 +18,7 @@ import logging
 import math
 import re
 import statistics
+import threading
 from collections import Counter, OrderedDict, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,7 +40,10 @@ SCANNED_PLAN_ERROR = "Scanned plan. Upload the CAD PDF or DXF."
 _SHEET_CODE = re.compile(r"^([A-Z]{1,2})-(\d{1,3}[A-Z]?)$")
 _SCALE = re.compile(r"\b1\s*:\s*(\d{1,4})(?!\d)")  # "1:50", "1 : 100", "1:50M"
 _GRID_REF = re.compile(r"^[A-Z]{1,2}-\d+(\.\d+)?$")
-_DRAWING_WORDS = re.compile(r"\b(PLAN|ELEVATION|SECTION|LAYOUT|DETAIL)S?\b", re.I)
+# No leading \b: titles stored without spaces ("GROUNDFLOORPLAN") still count.
+_DRAWING_WORDS = re.compile(r"(PLAN|ELEVATION|SECTION|LAYOUT|DETAIL)S?\b", re.I)
+_TITLE_WORD_START = re.compile(r"(?<=[A-Z])(?=FLOOR|PLAN|ELEVATION|SECTION|SIDE|SCHEDULE|LAYOUT|DETAIL|CEILING|"
+                               r"DEVELOPMENT|FRAMING)")
 _PLAN_TOTAL = re.compile(r"TOTAL\s+(?:FLOOR\s+|GROSS\s+)?AREA\s*[:=]?\s*([\d,]+(?:\.\d+)?)\s*(?:SQ\.?\s*M|M2|M²)", re.I)
 _CEILING_HEIGHT = [
     re.compile(r"\bC\.?\s?H\.?\s*[=:]\s*(\d{3,4})\s*MM\b", re.I),
@@ -252,13 +256,27 @@ def _sheet_code(lines: list[TextLine]) -> TextLine | None:
     return max(codes, key=lambda l: l.size) if codes else None
 
 
+def _spaced_title(text: str) -> str:
+    """Some CAD exports store a title's letters with no spaces at all
+    ("GROUNDFLOORPLAN") — put spaces back before the usual title words."""
+    if " " in text.strip() or len(text) < 6:
+        return text
+    return _TITLE_WORD_START.sub(" ", text)
+
+
 def _drawings(sheet_id: str, page, lines: list[TextLine], code: TextLine | None) -> tuple[list[Drawing], str]:
     sizes = [l.size for l in lines] or [1.0]
-    # 14 pt suits A1 sheets with real text; OCR'd sheets are often A3, so
-    # there the floor follows the sheet width.
-    floor = 14.0 * min(1.0, page.width / 2384) if any(l.ocr for l in lines) else 14.0
-    big_cut = max(floor, 1.8 * statistics.median(sizes))
-    big = [l for l in lines if l.size >= big_cut and l is not code and not _SHEET_CODE.match(l.text.strip())]
+    median = statistics.median(sizes)
+    # 14 pt suits A1 sheets with real text; on smaller sheets (A3) the floor
+    # follows the sheet width.
+    sheet_floor = 14.0 * min(1.0, page.width / 2384)
+    floor = sheet_floor if any(l.ocr for l in lines) else 14.0
+    big_cut = max(floor, 1.8 * median)
+    # A title with its own scale note under it may be smaller than that —
+    # an A3 sheet's 11 pt "GROUND FLOOR PLAN" over 6.7 pt body text.
+    scaled_cut = min(big_cut, max(sheet_floor, 1.4 * median))
+    candidates = [l for l in lines if l.size >= scaled_cut and l is not code and not _SHEET_CODE.match(l.text.strip())]
+    big = [l for l in candidates if l.size >= big_cut]
 
     # The sheet's own title sits in the title block, right above the code.
     sheet_title = None
@@ -267,7 +285,7 @@ def _drawings(sheet_id: str, page, lines: list[TextLine], code: TextLine | None)
         sheet_title = min(near, key=lambda l: code.top - l.bottom) if near else None
     title_block_left = code.x0 - 150 if code and code.x0 > page.width * 0.6 else page.width
 
-    title_lines = [l for l in big if l is not sheet_title and l.x0 < title_block_left
+    title_lines = [l for l in candidates if l is not sheet_title and l.x0 < title_block_left
                    and sum(ch.isalpha() for ch in l.text) >= 4]
     scale_lines = [s for s in lines if _SCALE.search(s.text)]
 
@@ -286,7 +304,9 @@ def _drawings(sheet_id: str, page, lines: list[TextLine], code: TextLine | None)
             scale_of[id(owner)] = _scale_denominator(s.text)
 
     titles = [(l, scale_of.get(id(l))) for l in title_lines
-              if id(l) in scale_of or _DRAWING_WORDS.search(l.text)]
+              if id(l) in scale_of or (l.size >= big_cut and _DRAWING_WORDS.search(l.text))]
+    for t, _ in titles:
+        t.text = _spaced_title(t.text)
 
     titles.sort(key=lambda t: (round(t[0].top / 80), t[0].x0))
     drawings = []
@@ -455,6 +475,16 @@ class _SheetScan:
 # asks twice (sheet list, then the chosen drawing) — keep the last few scans.
 _SCAN_CACHE: "OrderedDict[str, _SheetScan]" = OrderedDict()
 _SCAN_CACHE_SIZE = 4
+# One scan per file at a time: a second request for the same plan (the wizard
+# opened twice) waits and reuses the first one's result instead of scanning —
+# and paying Azure for — the same pages again.
+_SCAN_LOCKS: dict[str, threading.Lock] = {}
+_SCAN_LOCKS_GUARD = threading.Lock()
+
+
+def _scan_lock(key: str) -> threading.Lock:
+    with _SCAN_LOCKS_GUARD:
+        return _SCAN_LOCKS.setdefault(key, threading.Lock())
 
 
 def _file_hash(path: str) -> str:
@@ -537,14 +567,15 @@ def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_ov
     key = _file_hash(path)
     with pdfplumber.open(path) as pdf:
         pages = pdf.pages[:MAX_PAGES]
-        scan = _SCAN_CACHE.get(key)
-        if scan is None:
-            scan = _scan_sheets(pdf, pages)
-            _SCAN_CACHE[key] = scan
-            while len(_SCAN_CACHE) > _SCAN_CACHE_SIZE:
-                _SCAN_CACHE.popitem(last=False)
-        else:
-            _SCAN_CACHE.move_to_end(key)
+        with _scan_lock(key):
+            scan = _SCAN_CACHE.get(key)
+            if scan is None:
+                scan = _scan_sheets(pdf, pages)
+                _SCAN_CACHE[key] = scan
+                while len(_SCAN_CACHE) > _SCAN_CACHE_SIZE:
+                    _SCAN_CACHE.popitem(last=False)
+            else:
+                _SCAN_CACHE.move_to_end(key)
         sheets, all_text, warnings = scan.sheets, scan.all_text, list(scan.warnings)
 
         plan_sheets = [s for s in sheets if s.drawings]

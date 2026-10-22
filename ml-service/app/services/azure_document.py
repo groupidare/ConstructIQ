@@ -195,8 +195,9 @@ def file_page_images(path: str, max_pages: int = 30, dpi: int = 200) -> list[byt
     """Each page of a PDF (or the image itself) as an encoded image."""
     if Path(path).suffix.lower() == ".pdf":
         import pdfplumber
+        from app.utils.pdf_render import page_image
         with pdfplumber.open(path) as pdf:
-            return [encode_image(page.to_image(resolution=dpi).original) for page in pdf.pages[:max_pages]]
+            return [encode_image(page_image(page, dpi)) for page in pdf.pages[:max_pages]]
     from PIL import Image
     with Image.open(path) as image:
         return [encode_image(image)]
