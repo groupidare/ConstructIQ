@@ -37,6 +37,25 @@ public class BlueprintFeatureTests(DatabaseFixture fixture)
     }
 
     [Fact]
+    public async Task NewMaterial_GetsTypicalPropertiesWhenSaved()
+    {
+        await using var db = fixture.CreateContext();
+        var category = new MaterialCategory { Name = "Category " + Guid.NewGuid().ToString("N")[..8] };
+        db.MaterialCategories.Add(category);
+        await db.SaveChangesAsync();
+
+        var tag = Guid.NewGuid().ToString("N")[..6];
+        var block = new Material { Name = $"Concrete Hollow Block, 100mm {tag}", Unit = "pc", CategoryId = category.Id };
+        var assembly = new Material { Name = $"150mm CHB + 25mm plaster + paint {tag}", Unit = "sq.m", CategoryId = category.Id };
+        db.Materials.AddRange(block, assembly);
+        await db.SaveChangesAsync();
+
+        Assert.Equal(MaterialCalculationType.UnitArea, block.CalculationType);
+        Assert.Equal(MaterialPropertyDefaults.Source, block.PropertiesSource);
+        Assert.Null(assembly.CalculationType); // a work item, not something bought
+    }
+
+    [Fact]
     public void MaterialCatalog_IsOpenToAnySignedInUser()
     {
         Assert.NotNull(typeof(MaterialsController).GetCustomAttribute<AuthorizeAttribute>());

@@ -164,6 +164,11 @@ using (var scope = app.Services.CreateScope())
     {
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         db.Database.Migrate();
+        // Typical physical properties for any material that has none yet (the
+        // engineering baseline needs them; an Admin's own values are kept).
+        var filled = db.Materials.Where(m => m.CalculationType == null).ToList()
+            .Count(ConstructIQ.API.Algorithms.MaterialPropertyDefaults.TryApply);
+        if (filled > 0) Console.WriteLine($"[SEEDER] Filled default properties for {filled} material(s).");
         var admin = db.Users.FirstOrDefault(u => u.Username == "admin");
         if (admin is null)
         {

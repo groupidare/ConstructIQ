@@ -1,3 +1,4 @@
+using ConstructIQ.API.Algorithms;
 using ConstructIQ.API.Models.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -5,6 +6,28 @@ namespace ConstructIQ.API.Data;
 
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
+    // A new material (BOQ scan, blueprint, excess entry, seed) gets typical
+    // physical properties for the engineering baseline as it's first saved —
+    // there's no page to enter them. Existing materials are filled at startup
+    // (Program.cs).
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        ApplyMaterialDefaults();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        ApplyMaterialDefaults();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    private void ApplyMaterialDefaults()
+    {
+        foreach (var entry in ChangeTracker.Entries<Material>().Where(e => e.State == EntityState.Added))
+            MaterialPropertyDefaults.TryApply(entry.Entity);
+    }
+
     public DbSet<User>                     Users                     => Set<User>();
     public DbSet<Project>                  Projects                  => Set<Project>();
     public DbSet<Phase>                    Phases                    => Set<Phase>();
