@@ -1,19 +1,19 @@
 "use client";
 
-import { Fragment, useMemo, useState, useEffect } from "react";
+import { Fragment, useMemo, useState, useEffect, type CSSProperties } from "react";
 import Header from "@/components/layout/Header";
 import { useAuthStore } from "@/store/authStore";
 import { useProjects } from "@/hooks/useProjects";
 import api from "@/lib/api";
-import { formatDate } from "@/lib/utils";
-import type { ExcessWasteRecord } from "@/types/excess";
+import { formatCurrency, formatDate } from "@/lib/utils";
+import { canSeeCostImpact, shareOfPurchases, type ExcessCostImpact, type ExcessWasteRecord } from "@/types/excess";
 import RedistributeModal from "@/components/excess/RedistributeModal";
 import RecordExcessModal from "@/components/excess/RecordExcessModal";
 import EditExcessModal from "@/components/excess/EditExcessModal";
 import toast from "react-hot-toast";
 import {
   Trash2, Package,
-  TrendingUp, FileText, Plus, Search, Recycle, ChevronDown, ChevronRight, Pencil,
+  TrendingUp, FileText, Plus, Search, Recycle, ChevronDown, ChevronRight, Pencil, PhilippinePeso,
 } from "lucide-react";
 
 function average(nums: number[]): number {
@@ -41,6 +41,146 @@ const APPROVED_REDISTRIBUTION_STATUSES = new Set(["Approved", "InTransit", "Comp
 // (no InTransit/Completed step).
 const ACTIVE_REDISTRIBUTION_STATUSES = new Set(["AiSuggested", "PendingApproval", "Approved"]);
 
+// ── Cost impact ───────────────────────────────────────────────────────────────
+
+const COST_TH: CSSProperties = { padding:"8px 10px", textAlign:"left", fontSize:"0.62rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.05em", whiteSpace:"nowrap" };
+const COST_TD: CSSProperties = { padding:"10px", fontSize:"0.8rem", color:"#374151", whiteSpace:"nowrap" };
+
+const TREND_SERIES: { key: "excessValue" | "wasteCost" | "redistributedValue"; label: string; color: string }[] = [
+  { key: "excessValue",        label: "Excess value",  color: "#fbbf24" },
+  { key: "wasteCost",          label: "Waste cost",    color: "#dc2626" },
+  { key: "redistributedValue", label: "Redistributed", color: "#22c55e" },
+];
+
+function CostImpactCard({ impact }: { impact: ExcessCostImpact }) {
+  const priceRange = impact.oldestPriceDate && impact.newestPriceDate
+    ? ` Prices recorded ${formatDate(impact.oldestPriceDate)} – ${formatDate(impact.newestPriceDate)}.`
+    : "";
+  const share = shareOfPurchases(impact.excessValue, impact.wasteCost, impact.purchasedValue);
+  const unpricedNotes = [
+    impact.unpricedRecords    > 0 ? `${impact.unpricedRecords} excess/waste entr${impact.unpricedRecords === 1 ? "y" : "ies"}` : null,
+    impact.unpricedTransfers  > 0 ? `${impact.unpricedTransfers} transfer${impact.unpricedTransfers === 1 ? "" : "s"}` : null,
+    impact.unpricedDeliveries > 0 ? `${impact.unpricedDeliveries} delivered PO line${impact.unpricedDeliveries === 1 ? "" : "s"}` : null,
+  ].filter(Boolean);
+  // Last 12 months that have anything, oldest first.
+  const trend = impact.monthlyTrend.slice(-12);
+  const maxTrend = Math.max(1, ...trend.flatMap(t => [t.excessValue, t.wasteCost, t.redistributedValue]));
+
+  return (
+    <div style={{ background:"#fff", borderRadius:12, padding:"1.5rem", boxShadow:"0 1px 3px rgba(0,0,0,0.07)", marginTop:"1rem" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+        <div style={{ width:26, height:26, borderRadius:6, background:"#f3f4f6", display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <PhilippinePeso style={{ width:14, height:14, color:"#6b7280" }} />
+        </div>
+        <span style={{ fontWeight:700, fontSize:"1rem" }}>Cost Impact</span>
+      </div>
+      <p style={{ color:"#9ca3af", fontSize:"0.72rem", marginBottom:"1.25rem" }}>
+        Material cost only, at the latest recorded price for each material (PO, then historical, then catalog).{priceRange}
+        {unpricedNotes.length > 0 && ` Not included (no recorded price in their unit): ${unpricedNotes.join(", ")}.`}
+      </p>
+
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(170px, 1fr))", gap:"0.75rem", marginBottom:"1.25rem" }}>
+        {[
+          { label:"Excess value",            sub:"Reusable — can still be used or redistributed",              value:formatCurrency(impact.excessValue),        color:"#b45309", bg:"#fffbeb" },
+          { label:"Waste cost",              sub:"Non-reusable — money lost",                                  value:formatCurrency(impact.wasteCost),          color:"#dc2626", bg:"#fef2f2" },
+          { label:"Saved by redistributing", sub:"Excess reused on other projects instead of bought again",    value:formatCurrency(impact.redistributedValue), color:"#15803d", bg:"#f0fdf4" },
+          { label:"Purchased (delivered)",   sub: share != null ? `Excess + waste = ${share.toFixed(1)}% of purchases` : "No priced deliveries yet", value:formatCurrency(impact.purchasedValue), color:"#111827", bg:"#f9fafb" },
+        ].map(s => (
+          <div key={s.label} style={{ background:s.bg, borderRadius:10, padding:"0.875rem" }}>
+            <p style={{ fontSize:"0.72rem", color:"#6b7280" }}>{s.label}</p>
+            <p style={{ fontSize:"1.15rem", fontWeight:800, color:s.color, margin:"2px 0" }}>{s.value}</p>
+            <p style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{s.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      {trend.length > 0 && (
+        <>
+          <p style={{ fontWeight:700, fontSize:"0.85rem", color:"#111827", marginBottom:"0.25rem" }}>Monthly trend</p>
+          <p style={{ color:"#9ca3af", fontSize:"0.7rem", marginBottom:"0.75rem" }}>Excess and waste by month logged, redistribution by month approved</p>
+          <div style={{ overflowX:"auto", marginBottom:"0.5rem" }}>
+            <div style={{ display:"flex", alignItems:"flex-end", gap:"0.75rem", height:140, minWidth: trend.length * 56 }}>
+              {trend.map(t => (
+                <div key={t.month} style={{ flex:1, minWidth:44, display:"flex", flexDirection:"column", alignItems:"center", height:"100%" }}>
+                  <div style={{ flex:1, width:"100%", display:"flex", alignItems:"flex-end", justifyContent:"center", gap:2 }}>
+                    {TREND_SERIES.map(b => (
+                      <div key={b.key} title={`${b.label}: ${formatCurrency(t[b.key])}`}
+                        style={{ width:10, height:`${(t[b.key] / maxTrend) * 100}%`, minHeight: t[b.key] > 0 ? 2 : 0, background:b.color, borderRadius:"3px 3px 0 0" }} />
+                    ))}
+                  </div>
+                  <span style={{ fontSize:"0.62rem", color:"#9ca3af", marginTop:4, whiteSpace:"nowrap" }}>{t.month}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div style={{ display:"flex", gap:"1.25rem", justifyContent:"center", flexWrap:"wrap", marginBottom:"1.25rem" }}>
+            {TREND_SERIES.map(b => (
+              <div key={b.key} style={{ display:"flex", alignItems:"center", gap:6 }}>
+                <div style={{ width:10, height:10, borderRadius:"50%", background:b.color }} />
+                <span style={{ fontSize:"0.72rem", color:"#6b7280" }}>{b.label}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <p style={{ fontWeight:700, fontSize:"0.85rem", color:"#111827", marginBottom:"0.5rem" }}>By project</p>
+      <div style={{ overflowX:"auto", marginBottom: impact.byMaterial.length > 0 ? "1.25rem" : 0 }}>
+        <table style={{ width:"100%", borderCollapse:"collapse" }}>
+          <thead>
+            <tr style={{ borderBottom:"1px solid #e5e7eb" }}>
+              {["PROJECT","PURCHASED","EXCESS VALUE","WASTE COST","% OF PURCHASES","REDISTRIBUTED","UNPRICED ENTRIES"].map(h => <th key={h} style={COST_TH}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {impact.byProject.map(p => {
+              const projectShare = shareOfPurchases(p.excessValue, p.wasteCost, p.purchasedValue);
+              return (
+                <tr key={p.projectId} style={{ borderTop:"1px solid #f3f4f6" }}>
+                  <td style={{ ...COST_TD, fontWeight:600, color:"#111827" }}>{p.projectName}</td>
+                  <td style={COST_TD}>{formatCurrency(p.purchasedValue)}</td>
+                  <td style={{ ...COST_TD, color:"#b45309" }}>{formatCurrency(p.excessValue)}</td>
+                  <td style={{ ...COST_TD, color:"#dc2626" }}>{formatCurrency(p.wasteCost)}</td>
+                  <td style={COST_TD}>{projectShare != null ? `${projectShare.toFixed(1)}%` : "—"}</td>
+                  <td style={{ ...COST_TD, color:"#15803d" }}>{formatCurrency(p.redistributedValue)}</td>
+                  <td style={{ ...COST_TD, color:"#9ca3af" }}>{p.unpricedRecords || "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {impact.byMaterial.length > 0 && (
+        <>
+          <p style={{ fontWeight:700, fontSize:"0.85rem", color:"#111827", marginBottom:"0.5rem" }}>By material</p>
+          <div style={{ overflowX:"auto" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse" }}>
+              <thead>
+                <tr style={{ borderBottom:"1px solid #e5e7eb" }}>
+                  {["MATERIAL","UNIT PRICE","EXCESS QTY","EXCESS VALUE","WASTE QTY","WASTE COST"].map(h => <th key={h} style={COST_TH}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {impact.byMaterial.map(m => (
+                  <tr key={`${m.materialId}-${m.unit}`} style={{ borderTop:"1px solid #f3f4f6" }}>
+                    <td style={{ ...COST_TD, fontWeight:600, color:"#111827", whiteSpace:"normal" }}>{m.materialName}</td>
+                    <td style={COST_TD}>{formatCurrency(m.unitPrice)}/{m.unit}</td>
+                    <td style={COST_TD}>{m.excessQuantity.toLocaleString()} {m.unit}</td>
+                    <td style={{ ...COST_TD, color:"#b45309" }}>{formatCurrency(m.excessValue)}</td>
+                    <td style={COST_TD}>{m.wasteQuantity.toLocaleString()} {m.unit}</td>
+                    <td style={{ ...COST_TD, color:"#dc2626" }}>{formatCurrency(m.wasteCost)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 type Tab = "overview" | "log";
@@ -56,9 +196,11 @@ export default function ExcessAnalyticsPage() {
   // generic failure from the server's 403.
   const { user } = useAuthStore();
   const canManageExcess = user?.role === "Admin" || user?.role === "WarehousePersonnel";
+  const showCostImpact = canSeeCostImpact(user?.role);
 
   const { projects } = useProjects();
   const [records, setRecords] = useState<ExcessWasteRecord[]>([]);
+  const [costImpact, setCostImpact] = useState<ExcessCostImpact | null>(null);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [redistributeTarget, setRedistributeTarget] = useState<ExcessWasteRecord | null>(null);
   const [editTarget, setEditTarget] = useState<ExcessWasteRecord | null>(null);
@@ -68,6 +210,13 @@ export default function ExcessAnalyticsPage() {
 
   async function loadRecords() {
     if (projects.length === 0) return;
+    // Independent of the records below — a failure just hides the cost
+    // figures rather than affecting the rest of the page.
+    if (showCostImpact) {
+      api.get<ExcessCostImpact>("/excess-waste/cost-impact")
+        .then(r => setCostImpact(r.data))
+        .catch(() => setCostImpact(null));
+    }
     setRecordsLoading(true);
     try {
       const results = await Promise.all(
@@ -287,6 +436,10 @@ export default function ExcessAnalyticsPage() {
               {[
                 { icon:TrendingUp, iconBg:"#fffbeb", iconColor:"#d97706", label:"Total Excess Rate", value:`${overview.totalExcessRate.toFixed(1)}%` },
                 { icon:Trash2,     iconBg:"#fee2e2", iconColor:"#dc2626", label:"Total Waste Rate",  value:`${overview.totalWasteRate.toFixed(1)}%` },
+                ...(costImpact ? [
+                  { icon:PhilippinePeso, iconBg:"#fffbeb", iconColor:"#d97706", label:"Excess Value (reusable)", value:formatCurrency(costImpact.excessValue) },
+                  { icon:PhilippinePeso, iconBg:"#fee2e2", iconColor:"#dc2626", label:"Waste Cost (lost)",       value:formatCurrency(costImpact.wasteCost) },
+                ] : []),
               ].map(r => {
                 const Icon = r.icon;
                 return (
@@ -306,9 +459,17 @@ export default function ExcessAnalyticsPage() {
                 {records.length === 0
                   ? "No excess or waste has been recorded yet."
                   : `Excess rate stands at ${overview.totalExcessRate.toFixed(1)}% and waste rate at ${overview.totalWasteRate.toFixed(1)}% across all recorded entries.`}
+                {costImpact && costImpact.unpricedRecords > 0 && (
+                  ` ${costImpact.unpricedRecords} entr${costImpact.unpricedRecords === 1 ? "y has" : "ies have"} no recorded price in ${costImpact.unpricedRecords === 1 ? "its" : "their"} unit and ${costImpact.unpricedRecords === 1 ? "is" : "are"} left out of the ₱ totals.`
+                )}
               </p>
             </div>
           </div>
+        )}
+
+        {/* Cost impact — the per-material table only comes back for roles that may see prices */}
+        {tab === "overview" && costImpact && (costImpact.pricedRecords > 0 || costImpact.redistributedValue > 0 || costImpact.purchasedValue > 0) && (
+          <CostImpactCard impact={costImpact} />
         )}
 
         {/* ════════════════════════════════════════════════════════════════════ */}

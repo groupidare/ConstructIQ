@@ -6,13 +6,13 @@ import Header from "@/components/layout/Header";
 import api from "@/lib/api";
 import { useWeatherStore } from "@/store/weatherStore";
 import { useAuthStore } from "@/store/authStore";
-import { formatDate } from "@/lib/utils";
+import { formatCurrency, formatDate } from "@/lib/utils";
 import type { ReportTable } from "@/lib/reportTables";
 import { buildProcurementSummaryTable } from "@/lib/reportTables";
 import type { Project } from "@/types/project";
 import type { WarehouseStockItem } from "@/types/warehouseStock";
 import type { WarehouseRequest } from "@/types/warehouseRequest";
-import type { ExcessWasteRecord } from "@/types/excess";
+import { canSeeCostImpact, shareOfPurchases, type ExcessCostImpact, type ExcessWasteRecord } from "@/types/excess";
 import type { ForecastResult, ForecastAccuracyReport, ModelStatus } from "@/types/forecast";
 import type { RedistributionRecommendation, RedistributionStatus } from "@/types/procurement";
 import type { PurchaseOrder } from "@/types/purchaseOrder";
@@ -254,7 +254,9 @@ const EXCESS_TYPE_COLORS: Record<string, string> = {
   Unused: "#9ca3af", Damaged: "#ef4444", Expired: "#f59e0b", Overordered: "#f97316",
 };
 
-function buildExcessData(records: ExcessWasteRecord[]): ReportViewData {
+// costImpact is null for roles that can't see costs — the report is then
+// exactly the quantity-only version.
+function buildExcessData(records: ExcessWasteRecord[], costImpact: ExcessCostImpact | null): ReportViewData {
   const totalWasteRate = avg(records.filter(e => !e.isReusable).map(e => e.excessPercent));
   const totalExcessRate = avg(records.map(e => e.excessPercent));
   const reusableMaterialsCount = new Set(records.filter(e => e.isReusable).map(e => e.materialId)).size;
@@ -287,12 +289,63 @@ function buildExcessData(records: ExcessWasteRecord[]): ReportViewData {
       ]),
   };
 
+  const hasCost = costImpact !== null
+    && (costImpact.pricedRecords > 0 || costImpact.redistributedValue > 0 || costImpact.purchasedValue > 0);
+  const share = hasCost ? shareOfPurchases(costImpact.excessValue, costImpact.wasteCost, costImpact.purchasedValue) : null;
+  const costTables: { title: string; table: ReportTable }[] = !hasCost ? [] : [
+    {
+      title: "Cost Impact by Project (material cost, latest recorded price)",
+      table: {
+        columns: ["Project", "Purchased", "Excess Value", "Waste Cost", "% of Purchases", "Redistributed", "Unpriced Entries"],
+        rows: costImpact.byProject.map(p => {
+          const projectShare = shareOfPurchases(p.excessValue, p.wasteCost, p.purchasedValue);
+          return [
+            p.projectName, formatCurrency(p.purchasedValue), formatCurrency(p.excessValue), formatCurrency(p.wasteCost),
+            projectShare != null ? `${projectShare.toFixed(1)}%` : "—", formatCurrency(p.redistributedValue), p.unpricedRecords,
+          ];
+        }),
+      },
+    },
+    ...(costImpact.monthlyTrend.length === 0 ? [] : [{
+      title: "Cost Impact by Month (excess/waste by month logged, redistribution by month approved)",
+      table: {
+        columns: ["Month", "Excess Value", "Waste Cost", "Redistributed"],
+        rows: costImpact.monthlyTrend.map(t => [
+          t.month, formatCurrency(t.excessValue), formatCurrency(t.wasteCost), formatCurrency(t.redistributedValue),
+        ]),
+      },
+    }]),
+    ...(costImpact.byMaterial.length === 0 ? [] : [{
+      title: "Cost Impact by Material",
+      table: {
+        columns: ["Material", "Unit Price", "Excess Qty", "Excess Value", "Waste Qty", "Waste Cost"],
+        rows: costImpact.byMaterial.map(m => [
+          m.materialName, `${formatCurrency(m.unitPrice)}/${m.unit}`,
+          `${num(m.excessQuantity)} ${m.unit}`, formatCurrency(m.excessValue),
+          `${num(m.wasteQuantity)} ${m.unit}`, formatCurrency(m.wasteCost),
+        ]),
+      },
+    }]),
+  ];
+  const costInsight = !hasCost ? "" :
+    ` Excess still on hand is worth ${formatCurrency(costImpact.excessValue)} and waste has cost ${formatCurrency(costImpact.wasteCost)}` +
+    (share != null ? ` — ${share.toFixed(1)}% of the ${formatCurrency(costImpact.purchasedValue)} purchased` : "") +
+    `; redistributing excess has saved ${formatCurrency(costImpact.redistributedValue)}` +
+    (costImpact.unpricedRecords > 0 ? ` (${costImpact.unpricedRecords} excess/waste entr${costImpact.unpricedRecords === 1 ? "y has" : "ies have"} no recorded price and ${costImpact.unpricedRecords === 1 ? "is" : "are"} not included).` : ".");
+
   return {
     subtitle: `${records.length} excess/waste record(s) across ${byProject.size} project(s)`,
     stats: [
       { label: "TOTAL WASTE RATE",   value: `${totalWasteRate.toFixed(1)}%`, sub: "Non-reusable excess" },
       { label: "TOTAL EXCESS RATE",  value: `${totalExcessRate.toFixed(1)}%`, sub: "All recorded excess" },
       { label: "REUSABLE MATERIALS", value: String(reusableMaterialsCount),  sub: "Distinct materials flagged reusable" },
+      ...(hasCost ? [
+        { label: "EXCESS VALUE", value: formatCurrency(costImpact.excessValue), sub: "Reusable excess, at latest price" },
+        { label: "WASTE COST",   value: formatCurrency(costImpact.wasteCost),   sub: "Non-reusable waste, at latest price" },
+        { label: "SAVED BY REDISTRIBUTING", value: formatCurrency(costImpact.redistributedValue), sub: "Excess reused instead of bought again" },
+        { label: "SHARE OF PURCHASES", value: share != null ? `${share.toFixed(1)}%` : "—",
+          sub: share != null ? `Excess + waste of ${formatCurrency(costImpact.purchasedValue)} delivered` : "No priced deliveries yet" },
+      ] : []),
     ],
     chartTitle: "Avg Excess Rate by Project",
     chartData,
@@ -302,8 +355,8 @@ function buildExcessData(records: ExcessWasteRecord[]): ReportViewData {
     })),
     aiInsight: records.length === 0
       ? "No excess or waste has been recorded yet."
-      : `Waste rate is running at ${totalWasteRate.toFixed(1)}%. ${reusableMaterialsCount} distinct material(s) are flagged reusable and are good redistribution candidates.`,
-    detailTables: [{ title: "Excess & Waste Records (excess prioritized)", table: excessTable }],
+      : `Waste rate is running at ${totalWasteRate.toFixed(1)}%. ${reusableMaterialsCount} distinct material(s) are flagged reusable and are good redistribution candidates.${costInsight}`,
+    detailTables: [...costTables, { title: "Excess & Waste Records (excess prioritized)", table: excessTable }],
   };
 }
 
@@ -757,6 +810,7 @@ export default function ReportsPage() {
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [suppliers, setSuppliers] = useState<ApiSupplier[]>([]);
   const [excessRecords, setExcessRecords] = useState<ExcessWasteRecord[]>([]);
+  const [excessCostImpact, setExcessCostImpact] = useState<ExcessCostImpact | null>(null);
   const [forecasts, setForecasts] = useState<ForecastResult[]>([]);
   const [accuracyReports, setAccuracyReports] = useState<ForecastAccuracyReport[]>([]);
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
@@ -765,6 +819,7 @@ export default function ReportsPage() {
   const risk = useWeatherStore(s => s.risk);
   const user = useAuthStore(s => s.user);
   const isAdmin = user?.role === "Admin";
+  const showCostImpact = canSeeCostImpact(user?.role);
   const userName = user ? `${user.firstName} ${user.lastName}`.trim() : "ConstructIQ System";
 
   useEffect(() => {
@@ -788,6 +843,13 @@ export default function ReportsPage() {
         setOrders(poRes.data);
         setSuppliers(supRes.data);
         api.get<ModelStatus>("/forecast/model-status").then(r => setModelStatus(r.data)).catch(() => setModelStatus(null));
+        // Only roles allowed to see costs — others skip the call (it would 403)
+        // and get the quantity-only Excess report.
+        if (showCostImpact) {
+          api.get<ExcessCostImpact>("/excess-waste/cost-impact").then(r => setExcessCostImpact(r.data)).catch(() => setExcessCostImpact(null));
+        } else {
+          setExcessCostImpact(null);
+        }
 
         // Excess/waste records belong to every project, including historical
         // projects. Forecasts remain scoped to live projects so stale
@@ -838,20 +900,20 @@ export default function ReportsPage() {
       document.removeEventListener("visibilitychange", refreshOnFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin]);
+  }, [isAdmin, showCostImpact]);
 
   const REPORT_DATA = useMemo<Record<string, ReportViewData>>(() => ({
     projects: buildProjectsData(projects),
     inventory: buildInventoryData(stockItems, warehouseRequests),
     forecasting: buildForecastingData(forecasts, accuracyReports, projects, modelStatus),
-    excess: buildExcessData(excessRecords),
+    excess: buildExcessData(excessRecords, excessCostImpact),
     redistribution: buildRedistributionData(redistribution),
     procurement: buildProcurementData(orders, suppliers, risk?.level ?? null, risk?.advisory ?? null),
     system: buildSystemData(
       projects, stockItems, orders, redistribution, excessRecords,
       risk?.level ?? null, risk?.advisory ?? null, activityLogs, isAdmin,
     ),
-  }), [projects, stockItems, warehouseRequests, forecasts, accuracyReports, modelStatus, excessRecords, redistribution, orders, suppliers, risk, activityLogs, isAdmin]);
+  }), [projects, stockItems, warehouseRequests, forecasts, accuracyReports, modelStatus, excessRecords, excessCostImpact, redistribution, orders, suppliers, risk, activityLogs, isAdmin]);
 
   const filtered = useMemo(() => REPORTS.filter(r => {
     const matchSearch   = r.title.toLowerCase().includes(search.toLowerCase()) || r.desc.toLowerCase().includes(search.toLowerCase());
