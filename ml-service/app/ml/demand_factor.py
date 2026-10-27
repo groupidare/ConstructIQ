@@ -22,6 +22,8 @@ from app.ml import baseline_engine, material_ratios
 
 FACTOR_MIN = float(os.getenv("DEMAND_FACTOR_MIN", "0.5"))
 FACTOR_MAX = float(os.getenv("DEMAND_FACTOR_MAX", "2.0"))
+# Training rows more than this many times off their reference are skipped.
+OUTLIER_LIMIT = float(os.getenv("TRAINING_OUTLIER_LIMIT", "3.0"))
 FLAG_OUT_OF_RANGE = "factor_out_of_range"
 
 SOURCE_BASELINE = "baseline"
@@ -75,6 +77,16 @@ def usable(records: list[dict], targets: list[float]) -> tuple[list[dict], list[
     """Drops rows whose reference is zero — no factor can be expressed for
     them (a BOQ quantity of 0)."""
     kept = [(r, t) for r, t in zip(records, targets) if float(r.get("reference_quantity") or 0) > 0]
+    return [r for r, _ in kept], [t for _, t in kept]
+
+
+def without_outliers(records: list[dict], targets: list[float]) -> tuple[list[dict], list[float]]:
+    """Drops training rows whose factor is more than OUTLIER_LIMIT times off
+    the reference either way — encoding errors in the source reports (a box
+    quantity entered in pcs, 440 sacks of gravel for 8 sq.m), not real
+    demand. Needs attach_reference first."""
+    kept = [(r, t) for r, t in zip(records, targets)
+            if 1 / OUTLIER_LIMIT <= float(t) / float(r["reference_quantity"]) <= OUTLIER_LIMIT]
     return [r for r, _ in kept], [t for _, t in kept]
 
 

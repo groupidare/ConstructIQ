@@ -384,9 +384,10 @@ def _metrics(y_true, y_pred) -> dict:
 def _prepare(records: list[dict], targets: list[float]) -> tuple[list[dict], list[float]]:
     """Attaches each row's reference (baseline or historical ratio — needs
     material_ratio attached first) and drops rows a factor can't be
-    expressed for."""
+    expressed for, or whose factor is an encoding error."""
     demand_factor.attach_reference(records)
-    return demand_factor.usable(records, targets)
+    records, targets = demand_factor.usable(records, targets)
+    return demand_factor.without_outliers(records, targets)
 
 
 def _fit(records: list[dict], targets: list[float]):

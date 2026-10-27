@@ -103,6 +103,17 @@ class RegistryRefusesOldFeatureSet(unittest.TestCase):
         self.assertIn("retrain", problem)
 
 
+class TrainingOutliers(unittest.TestCase):
+    def test_rows_more_than_three_times_off_are_skipped(self):
+        # 288 sq.m of board = 100 sheets; 110 is real demand, 458 (a pcs
+        # count) and 20 are encoding errors.
+        records = [row(1, 1, 288, props=BOARD, boq_item_id=i) for i in range(3)]
+        records, targets = training_service._prepare(records, [110, 458, 20])
+
+        self.assertEqual(targets, [110])
+        self.assertEqual(len(records), 1)
+
+
 class LeaveOneProjectOutMetrics(unittest.TestCase):
     def test_reports_ai_reference_and_baseline_only_comparison(self):
         # 4 projects; material 1 (board, has a baseline) and material 2 (no

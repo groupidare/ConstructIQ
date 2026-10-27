@@ -100,10 +100,18 @@ def fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> list
             COALESCE(bi.PrimarySection, '') AS primary_section,
             COALESCE(bi.CoverageArea, 0) AS coverage_area,
             p.Type AS project_type_encoded,
-            DATEDIFF(NOW(), COALESCE(ph.StartDate, p.StartDate)) AS days_into_phase,
+            -- The forecast is a row's total demand over its whole planned
+            -- phase, and the models only ever see finished phases in
+            -- training (training_service._ROW_SELECT: days_into_phase =
+            -- phase duration, progress 100). Feeding today's date/progress
+            -- instead put a not-yet-started project outside anything the
+            -- models had seen (negative days, planned_usage_rate ~90x the
+            -- training range) and inflated its factor towards the cap.
+            DATEDIFF(COALESCE(ph.EndDate, p.TargetEndDate),
+                     COALESCE(ph.StartDate, p.StartDate)) AS days_into_phase,
             DATEDIFF(COALESCE(ph.EndDate, p.TargetEndDate),
                      COALESCE(ph.StartDate, p.StartDate)) AS phase_duration_days,
-            COALESCE(ph.ProgressPercent, 0) AS progress_percent,
+            100 AS progress_percent,
             COALESCE((
                 SELECT AVG(de.ActualLeadDays)
                 FROM PurchaseOrderMaterials pom
