@@ -66,13 +66,13 @@ export default function Header({ title }: HeaderProps) {
     }}>
 
       {/* ── Left: hamburger + title + breadcrumb ── */}
-      <div className="app-header-title" style={{ display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
+      <div className="app-header-title" style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
         <button suppressHydrationWarning onClick={toggleSidebar} title="Toggle sidebar" style={{ color:"#6b7280", border:"none", background:"none", cursor:"pointer", padding:0, display:"flex", alignItems:"center" }}>
           <Menu style={{ width:20, height:20 }} />
         </button>
-        <div>
-          <p style={{ fontWeight:700, fontSize:"1.05rem", color:"#111827", lineHeight:1.2 }}>{title}</p>
-          <p style={{ fontSize:"0.68rem", color:"#9ca3af", lineHeight:1.2, marginTop:1 }}>
+        <div style={{ minWidth:0 }}>
+          <p style={{ fontWeight:700, fontSize:"1.05rem", color:"#111827", lineHeight:1.2, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{title}</p>
+          <p style={{ fontSize:"0.68rem", color:"#9ca3af", lineHeight:1.2, marginTop:1, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
             ConstructIQ &nbsp;›&nbsp; <span style={{ color:"#f97316", fontWeight:500 }}>{title}</span>
           </p>
         </div>

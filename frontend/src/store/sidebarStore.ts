@@ -5,6 +5,7 @@ interface SidebarStore {
   collapsed: boolean;
   mobileOpen: boolean;
   toggleCollapsed: () => void;
+  setCollapsed: (collapsed: boolean) => void;
   toggleMobile: () => void;
   closeMobile: () => void;
 }
@@ -15,6 +16,7 @@ export const useSidebarStore = create<SidebarStore>()(
       collapsed: false,
       mobileOpen: false,
       toggleCollapsed: () => set((s) => ({ collapsed: !s.collapsed })),
+      setCollapsed: (collapsed) => set({ collapsed }),
       toggleMobile: () => set((s) => ({ mobileOpen: !s.mobileOpen })),
       closeMobile: () => set({ mobileOpen: false }),
     }),

@@ -12,6 +12,9 @@ import {
 } from "lucide-react";
 import type { UserRole } from "@/types/auth";
 
+// Matches the tablet band in globals.css where the sidebar overlays the page.
+const TABLET_QUERY = "(min-width: 768px) and (max-width: 1100px)";
+
 const ROLE_LABELS: Record<string, string> = {
   Admin:              "System Administration",
   ProjectManager:     "Project Manager",
@@ -87,6 +90,7 @@ export default function Sidebar() {
   const toggleCollapsed = useSidebarStore(s => s.toggleCollapsed);
   const mobileOpen = useSidebarStore(s => s.mobileOpen);
   const closeMobile = useSidebarStore(s => s.closeMobile);
+  const setCollapsed = useSidebarStore(s => s.setCollapsed);
   const [showConfirm, setShowConfirm] = useState(false);
 
   useEffect(() => {
@@ -98,6 +102,23 @@ export default function Sidebar() {
     media.addEventListener("change", handleViewportChange);
     return () => media.removeEventListener("change", handleViewportChange);
   }, [closeMobile]);
+
+  // At tablet widths the expanded sidebar overlays the page, so start it
+  // collapsed there rather than opening over the content on every load.
+  useEffect(() => {
+    const media = window.matchMedia(TABLET_QUERY);
+    const handleViewportChange = () => {
+      if (media.matches) setCollapsed(true);
+    };
+    handleViewportChange();
+    media.addEventListener("change", handleViewportChange);
+    return () => media.removeEventListener("change", handleViewportChange);
+  }, [setCollapsed]);
+
+  function handleNavClick() {
+    closeMobile();
+    if (window.matchMedia(TABLET_QUERY).matches) setCollapsed(true);
+  }
 
   function doLogout() {
     logout();
@@ -115,6 +136,12 @@ export default function Sidebar() {
 
       {mobileOpen && (
         <div className="mobile-sidebar-backdrop" onClick={closeMobile} aria-hidden="true" />
+      )}
+
+      {/* Tablet widths: the expanded sidebar slides over the page instead of
+          pushing it (see globals.css), so give it a backdrop to close it. */}
+      {!collapsed && (
+        <div className="tablet-sidebar-backdrop" onClick={toggleCollapsed} aria-hidden="true" />
       )}
 
       <aside id="app-sidebar" data-collapsed={collapsed} data-mobile-open={mobileOpen} suppressHydrationWarning style={{
@@ -191,6 +218,7 @@ export default function Sidebar() {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={handleNavClick}
                 title={collapsed ? item.label : undefined}
                 style={{
                   display:"flex", alignItems:"center", gap: collapsed ? 0 : 10,

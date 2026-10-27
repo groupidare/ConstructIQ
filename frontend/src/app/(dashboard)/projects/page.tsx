@@ -875,7 +875,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
   showMaterialCost: boolean;
 }) {
   const st = STATUS_STYLE[project.status];
-  const btn: React.CSSProperties = { flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"10px 0", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.8rem", fontWeight:600, cursor:"pointer" };
+  const btn: React.CSSProperties = { flex:"1 1 auto", minWidth:0, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"10px 12px", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.8rem", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" };
 
   // actual is undefined when this specific line never got a real recorded
   // quantity (neither a historicalSupply delivery nor BOQItem.ActualQuantity)
@@ -977,8 +977,10 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
   return (
     <div style={{ background:"#fff", borderRadius:14, padding:"1.25rem", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
       {/* Title row */}
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"0.375rem" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:8, flex:1, minWidth:0 }}>
+      {/* Wraps so the status badge drops under the name on narrow cards
+          rather than squeezing the name down to "A…". */}
+      <div style={{ display:"flex", flexWrap:"wrap", justifyContent:"space-between", alignItems:"flex-start", gap:"0.375rem 0.5rem", marginBottom:"0.375rem" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, flex:"1 1 160px", minWidth:0 }}>
           <p style={{ fontWeight:700, fontSize:"1rem", color:"#1d4ed8", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{project.name}</p>
           {canEdit && (
             <button onClick={onView} title="View" style={{ background:"none", border:"none", cursor:"pointer", padding:0, color:"#9ca3af", display:"flex", alignItems:"center", flexShrink:0 }}>
@@ -994,7 +996,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
             <span style={{ fontSize:"0.6rem", fontWeight:700, padding:"2px 7px", borderRadius:999, background:"#f3f4f6", color:"#6b7280", flexShrink:0 }}>VIEW ONLY</span>
           )}
         </div>
-        <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0, marginLeft:"auto" }}>
           {project.isHistorical ? (
             <span style={{ fontSize:"0.65rem", fontWeight:700, padding:"3px 10px", borderRadius:999, background:"#ede9fe", color:"#6d28d9", whiteSpace:"nowrap" }}>HISTORICAL DATA</span>
           ) : (
@@ -1059,7 +1061,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
       </div>
 
       {/* Stats */}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0.5rem", marginBottom:"0.75rem" }}>
+      <div className="card-stats" style={{ display:"grid", gap:"0.5rem", marginBottom:"0.75rem" }}>
         {[["Excess Stock",`${excessStock.toLocaleString()} units`],["Redistributed",`${redistributed.toLocaleString()} units`],["Materials",`${materialsCount} items`]].map(([l,v])=>(
           <div key={l} style={{ background:"#f9fafb", borderRadius:8, padding:"0.5rem 0.75rem" }}>
             <p style={{ fontSize:"0.6rem", color:"#9ca3af" }}>{l}</p>
@@ -1076,15 +1078,16 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
         <span style={{ fontSize:"0.7rem", color:"#6b7280" }}>{project.manager}{project.engineers.length>0&&` · Engineers: ${project.engineers.join(", ")}`}</span>
       </div>
 
-      {/* Action buttons */}
-      <div style={{ display:"flex", gap:"0.5rem" }}>
+      {/* Action buttons — wrap to a second line on narrow cards instead of
+          overflowing the card edge. */}
+      <div style={{ display:"flex", flexWrap:"wrap", gap:"0.5rem" }}>
         <button onClick={onMaterialPlan} style={btn}><FileText style={{ width:13, height:13 }} /> Material Plan</button>
         {showProgress && project.status !== "COMPLETED" && (
-          <button onClick={onProgress} style={{ ...btn, flex:"0 0 auto", padding:"10px 14px", background:"#1e3154" }}>
+          <button onClick={onProgress} style={{ ...btn, background:"#1e3154" }}>
             <Activity style={{ width:13, height:13 }} /> Progress
           </button>
         )}
-        <button onClick={onReports} style={{ ...btn, flex:"0 0 auto", padding:"10px 16px" }}><BarChart3 style={{ width:13, height:13 }} /> Reports</button>
+        <button onClick={onReports} style={btn}><BarChart3 style={{ width:13, height:13 }} /> Reports</button>
       </div>
     </div>
   );
@@ -1249,7 +1252,7 @@ export default function ProjectsPage() {
 
       <div className="responsive-page" style={{ padding:"1.25rem 1.5rem" }}>
         {/* Page header */}
-        <div className="page-actions" style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.25rem" }}>
+        <div className="page-actions" style={{ display:"flex", flexWrap:"wrap", justifyContent:"space-between", alignItems:"flex-start", gap:"0.75rem", marginBottom:"1.25rem" }}>
           <div>
             <p style={{ fontWeight:800, fontSize:"1.35rem", color:"#111827" }}>All Projects</p>
             <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>
@@ -1258,19 +1261,19 @@ export default function ProjectsPage() {
                 : `${realProjects.length} projects · ${realProjects.filter(p=>p.status==="ACTIVE").length} active`}
             </p>
           </div>
-          <div style={{ display:"flex", gap:"0.625rem" }}>
+          <div className="page-action-buttons" style={{ display:"flex", flexWrap:"wrap", gap:"0.625rem" }}>
             {canCreate && (
-              <button suppressHydrationWarning onClick={()=>setModal({type:"repository"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>
+              <button suppressHydrationWarning onClick={()=>setModal({type:"repository"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>
                 <Upload style={{ width:14, height:14 }} /> Import Files
               </button>
             )}
             {canCreate && (
-              <button suppressHydrationWarning onClick={()=>setModal({type:"addCompletedProject"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }} title="Backfill a finished project as historical data for the forecasting model">
+              <button suppressHydrationWarning onClick={()=>setModal({type:"addCompletedProject"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 18px", borderRadius:10, border:"1px solid #e5e7eb", background:"#fff", color:"#374151", fontSize:"0.875rem", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }} title="Backfill a finished project as historical data for the forecasting model">
                 <History style={{ width:14, height:14 }} /> Add Completed Project
               </button>
             )}
             {canCreate && (
-              <button suppressHydrationWarning onClick={()=>setModal({type:"newProject"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer" }}>
+              <button suppressHydrationWarning onClick={()=>setModal({type:"newProject"})} style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:10, border:"none", background:"#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>
                 <Plus style={{ width:15, height:15 }} /> New Project
               </button>
             )}
@@ -1329,7 +1332,7 @@ export default function ProjectsPage() {
           // min size of "auto" (its content's min-content width), so a long
           // project name/location could still force this grid wider than the
           // viewport even with the flex-container fix in the dashboard layout.
-          <div className="responsive-grid" style={{ display:"grid", gridTemplateColumns:"minmax(0, 1fr) minmax(0, 1fr)", gap:"1rem" }}>
+          <div className="project-grid" style={{ display:"grid", gap:"1rem" }}>
             {visibleProjects.map(p => (
               <ProjectCard
                 key={p.id}
