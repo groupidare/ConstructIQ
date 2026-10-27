@@ -1565,7 +1565,7 @@ export default function ProcurementPage() {
       <div className="responsive-page" style={{ padding: "1.25rem 1.5rem" }}>
 
         {/* ── 4 stat cards ─────────────────────────────────────────────────── */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "1rem", marginBottom: "1.5rem" }}>
+        <div className="po-stats" style={{ display: "grid", gap: "1rem", marginBottom: "1.5rem" }}>
           {[
             { icon: Clock,        color: "#6b7280", bg: "#f3f4f6", label: "Pending POs",  value: counts.pending   },
             { icon: CheckCircle2, color: "#16a34a", bg: "#dcfce7", label: "Approved POs", value: counts.approved  },
@@ -1574,11 +1574,11 @@ export default function ProcurementPage() {
           ].map(s => {
             const Icon = s.icon;
             return (
-              <div key={s.label} style={{ background: "#fff", borderRadius: 14, padding: "1.5rem 1.5rem 1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
-                <div style={{ width: 44, height: 44, borderRadius: 11, background: s.bg, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "0.875rem" }}>
+              <div key={s.label} className="po-stat" style={{ background: "#fff", borderRadius: 14, padding: "1.5rem 1.5rem 1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
+                <div className="po-stat-icon" style={{ width: 44, height: 44, borderRadius: 11, background: s.bg, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "0.875rem" }}>
                   <Icon style={{ width: 22, height: 22, color: s.color }} />
                 </div>
-                <p style={{ fontSize: "2.2rem", fontWeight: 800, color: "#111827", lineHeight: 1 }}>{s.value}</p>
+                <p className="po-stat-value" style={{ fontSize: "2.2rem", fontWeight: 800, color: "#111827", lineHeight: 1 }}>{s.value}</p>
                 <p style={{ fontSize: "0.78rem", color: "#9ca3af", marginTop: 4 }}>{s.label}</p>
               </div>
             );
@@ -1687,7 +1687,7 @@ export default function ProcurementPage() {
 
         {/* ── Tabs (+ Suppliers-only search/filter, floated right) ───────────── */}
         <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: "0.75rem", marginBottom: "1.25rem" }}>
-          <div style={{ display: "flex", gap: 4, background: "#e5e7eb", borderRadius: 8, padding: 4, width: "fit-content" }}>
+          <div className="procurement-tabs" style={{ display: "flex", gap: 4, background: "#e5e7eb", borderRadius: 8, padding: 4 }}>
             {([
               { id: "po", label: "Purchase Orders" },
               ...(canManagePOs ? [{ id: "requests", label: "Requests" }] as const : []),
@@ -1720,8 +1720,8 @@ export default function ProcurementPage() {
           </div>
 
           {tab === "suppliers" && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-              <div style={{ position: "relative", width: 220, maxWidth: "100%" }}>
+            <div className="supplier-tools" style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <div className="supplier-search" style={{ position: "relative", width: 220, maxWidth: "100%" }}>
                 <Search style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "#9ca3af", pointerEvents: "none" }} />
                 <input
                   value={supplierSearch}
@@ -1788,6 +1788,7 @@ export default function ProcurementPage() {
               </div>
             </div>
 
+            <div className="table-scroll">
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
@@ -1880,6 +1881,7 @@ export default function ProcurementPage() {
                 })}
               </tbody>
             </table>
+            </div>
           </div>
         )}
 
@@ -1958,7 +1960,7 @@ export default function ProcurementPage() {
                     </div>
 
                     {/* 3 stat boxes */}
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.5rem", marginBottom: "0.875rem" }}>
+                    <div className="supplier-stats" style={{ display: "grid", gap: "0.5rem", marginBottom: "0.875rem" }}>
                       {[
                         { label: "Rating",     value: s.rating.toFixed(1) },
                         { label: "Deliveries", value: s.deliveries        },
@@ -1971,8 +1973,8 @@ export default function ProcurementPage() {
                       ))}
                     </div>
 
-                    {/* Stars + buttons */}
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    {/* Stars + buttons — wraps so Contact/History drop under the stars on narrow cards */}
+                    <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                       <button onClick={() => setRatingSupplierId(s.id)} title="View rating breakdown" style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
                         <Stars rating={s.rating} />
                         <span style={{ fontSize: "0.78rem", fontWeight: 600, color: "#374151" }}>{s.rating.toFixed(1)}</span>
