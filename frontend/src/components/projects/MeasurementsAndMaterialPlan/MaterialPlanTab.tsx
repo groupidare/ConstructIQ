@@ -780,14 +780,16 @@ export default function MaterialPlanTab({
                   </div>
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'flex-end', paddingRight: 2 }}>
                     {(() => {
-                      const alerts = baselineAlerts(r);
+                      // Only the AI-vs-engineering-baseline check is shown;
+                      // the missing-properties/unit-setup notes aren't
+                      // something the user can act on from this row.
+                      const alerts = baselineAlerts(r).filter(a => a.code === 'far_from_expected');
                       if (alerts.length === 0) return null;
-                      const muted = alerts.every(a => a.code === 'missing_properties');
                       return (
                         <span
                           title={alerts.map(a => a.text).join('\n')}
                           aria-label={alerts.map(a => a.text).join('; ')}
-                          style={{ display: 'flex', alignItems: 'center', color: muted ? '#d1d5db' : '#d97706', marginRight: 2 }}
+                          style={{ display: 'flex', alignItems: 'center', color: '#d97706', marginRight: 2 }}
                         >
                           <AlertTriangle style={{ width: 13, height: 13 }} />
                         </span>
