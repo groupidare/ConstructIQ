@@ -65,6 +65,70 @@ export interface ExcessByMaterial {
   excessPercent: number;
 }
 
+// ₱ value of logged excess (reusable) and waste (non-reusable), at the latest
+// recorded price — GET /excess-waste/cost-impact (Admin, ProjectManager,
+// ProcurementOfficer). byMaterial is empty for ProjectManager, since it
+// reveals unit prices.
+export interface ExcessCostImpact {
+  currency: string;
+  excessValue: number;
+  wasteCost: number;
+  totalCost: number;
+  // Approved redistribution transfers out — excess reused instead of bought again.
+  redistributedValue: number;
+  // Delivered PO lines — what excess + waste is a share of.
+  purchasedValue: number;
+  pricedRecords: number;
+  unpricedRecords: number;
+  unpricedTransfers: number;
+  unpricedDeliveries: number;
+  oldestPriceDate: string | null;
+  newestPriceDate: string | null;
+  byProject: ExcessCostByProject[];
+  monthlyTrend: ExcessCostTrend[];
+  byMaterial: ExcessCostByMaterial[];
+}
+
+export interface ExcessCostTrend {
+  month: string; // yyyy-MM
+  excessValue: number;
+  wasteCost: number;
+  redistributedValue: number;
+}
+
+export interface ExcessCostByProject {
+  projectId: number;
+  projectName: string;
+  excessValue: number;
+  wasteCost: number;
+  redistributedValue: number;
+  purchasedValue: number;
+  unpricedRecords: number;
+}
+
+export interface ExcessCostByMaterial {
+  materialId: number;
+  materialName: string;
+  unit: string;
+  unitPrice: number;
+  excessQuantity: number;
+  wasteQuantity: number;
+  excessValue: number;
+  wasteCost: number;
+}
+
+// Excess + waste as a share of what was purchased, or null when nothing
+// priced was purchased.
+export function shareOfPurchases(excessValue: number, wasteCost: number, purchasedValue: number): number | null {
+  return purchasedValue > 0 ? ((excessValue + wasteCost) / purchasedValue) * 100 : null;
+}
+
+// Mirrors the backend's role restriction on GET /excess-waste/cost-impact,
+// so other roles never fire a call that would 403.
+export function canSeeCostImpact(role: string | undefined): boolean {
+  return role === "Admin" || role === "ProjectManager" || role === "ProcurementOfficer";
+}
+
 export interface MonthlyExcessTrend {
   month: string;
   totalCost: number;

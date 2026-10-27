@@ -9,11 +9,23 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/excess-waste")]
 [Authorize]
-public class ExcessWasteController(IExcessWasteService excessWasteService) : ControllerBase
+public class ExcessWasteController(IExcessWasteService excessWasteService, IMaterialCostService materialCost) : ControllerBase
 {
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? User.FindFirst("sub")?.Value ?? "0");
+
+    // Same price visibility as PurchaseOrdersController.CanSeePrices.
+    private bool CanSeePrices => User.IsInRole("Admin") || User.IsInRole("ProcurementOfficer");
+
+    // ₱ value of logged excess and waste, across every project unless
+    // projectId is given. ProjectManager gets the totals only; the
+    // per-material breakdown (which reveals unit prices) is for the roles
+    // that may see prices.
+    [HttpGet("cost-impact")]
+    [Authorize(Roles = "Admin,ProjectManager,ProcurementOfficer")]
+    public async Task<IActionResult> GetCostImpact([FromQuery] int? projectId) =>
+        Ok(await materialCost.GetExcessCostImpactAsync(projectId, CanSeePrices));
 
     [HttpGet("project/{projectId:int}")]
     public async Task<IActionResult> GetByProject(int projectId) =>

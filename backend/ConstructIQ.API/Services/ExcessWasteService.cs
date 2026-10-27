@@ -453,7 +453,8 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         RedistributionTargetProjectName = redistribution?.TargetProject?.Name,
     };
 
-    private static string PreferredUnit(BOQItem? boqItem, string? materialUnit = null)
+    // Also the unit MaterialCostService prices an excess record in.
+    internal static string PreferredUnit(BOQItem? boqItem, string? materialUnit = null)
     {
         if (!string.IsNullOrWhiteSpace(boqItem?.EstimatedPurchaseUnit))
             return boqItem.EstimatedPurchaseUnit.Trim();
