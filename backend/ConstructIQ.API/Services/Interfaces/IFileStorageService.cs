@@ -8,4 +8,12 @@ public interface IFileStorageService
     Task DeleteAsync(string url);
     // Reads back a file previously returned by UploadAsync.
     Task<byte[]> ReadAsync(string url);
+    // Streams one stored file by its key (e.g. "avatars/ab12_me.jpg") for
+    // UploadsController; null when it doesn't exist.
+    Task<StoredFile?> OpenAsync(string key);
+}
+
+public sealed record StoredFile(Stream Content, string ContentType) : IDisposable
+{
+    public void Dispose() => Content.Dispose();
 }

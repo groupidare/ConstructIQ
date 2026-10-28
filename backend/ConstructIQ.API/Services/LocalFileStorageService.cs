@@ -1,4 +1,5 @@
 using ConstructIQ.API.Services.Interfaces;
+using Microsoft.AspNetCore.StaticFiles;
 
 namespace ConstructIQ.API.Services;
 
@@ -46,6 +47,17 @@ public sealed class LocalFileStorageService : IFileStorageService
 
         var key = url["/uploads/".Length..].Replace('/', Path.DirectorySeparatorChar);
         return File.ReadAllBytesAsync(GetPath(key));
+    }
+
+    public Task<StoredFile?> OpenAsync(string key)
+    {
+        var path = GetPath(key.Replace('/', Path.DirectorySeparatorChar));
+        if (!File.Exists(path))
+            return Task.FromResult<StoredFile?>(null);
+
+        if (!new FileExtensionContentTypeProvider().TryGetContentType(path, out var contentType))
+            contentType = "application/octet-stream";
+        return Task.FromResult<StoredFile?>(new StoredFile(File.OpenRead(path), contentType));
     }
 
     private string GetSafeFolder(string folder)

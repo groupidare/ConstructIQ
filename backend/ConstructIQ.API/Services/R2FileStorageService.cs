@@ -91,4 +91,25 @@ public class R2FileStorageService : IFileStorageService
         await response.ResponseStream.CopyToAsync(buffer);
         return buffer.ToArray();
     }
+
+    // Buffered rather than handing out the S3 response stream, so the R2
+    // connection is released as soon as the read finishes. Uploads are
+    // capped well below anything that makes buffering a problem.
+    public async Task<StoredFile?> OpenAsync(string key)
+    {
+        try
+        {
+            using var response = await _client.GetObjectAsync(_bucket, key);
+            var buffer = new MemoryStream();
+            await response.ResponseStream.CopyToAsync(buffer);
+            buffer.Position = 0;
+            var contentType = string.IsNullOrWhiteSpace(response.Headers.ContentType)
+                ? "application/octet-stream" : response.Headers.ContentType;
+            return new StoredFile(buffer, contentType);
+        }
+        catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
 }
