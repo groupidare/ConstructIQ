@@ -111,7 +111,19 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             .OrderBy(r => r.CreatedAt)
             .ToListAsync();
 
-        return Ok(requests.Select(ToDto));
+        var materialIds = requests.Select(r => r.MaterialId).Distinct().ToList();
+        var pricedLines = await db.PurchaseOrderMaterials
+            .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value))
+            .OrderByDescending(m => m.PurchaseOrder.OrderDate).ThenByDescending(m => m.Id)
+            .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value })
+            .ToListAsync();
+
+        return Ok(requests.Select(r => ToDto(r) with
+        {
+            LastUnitPrice = pricedLines
+                .FirstOrDefault(p => p.MaterialId == r.MaterialId && string.Equals(p.Unit.Trim(), r.Unit.Trim(), StringComparison.OrdinalIgnoreCase))
+                ?.Price,
+        }));
     }
 
     // Ranks every supplier for the dropdown next to one material row: suppliers
@@ -163,6 +175,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             return BadRequest(new { message = "No materials to generate purchase orders for." });
         if (dto.Assignments.Any(a => string.IsNullOrWhiteSpace(a.SupplierName)))
             return BadRequest(new { message = "Every material needs a supplier before generating purchase orders." });
+        if (dto.Assignments.Any(a => a.UnitPrice < 0))
+            return BadRequest(new { message = "Unit prices can't be negative." });
 
         var project = await db.Projects.FindAsync(dto.ProjectId);
         if (project is null) return BadRequest(new { message = "Project not found." });
@@ -208,6 +222,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
                     Quantity = request.Quantity,
                     Unit = request.Unit,
                     MaterialId = request.MaterialId,
+                    UnitPrice = assignment.UnitPrice,
                 });
                 request.FulfilledByPurchaseOrder = po;
                 requestPoNumbers[request.Id] = po.Number;

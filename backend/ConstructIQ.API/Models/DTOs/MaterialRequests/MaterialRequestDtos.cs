@@ -19,6 +19,9 @@ public record MaterialRequestDto
     public string Unit { get; init; } = "";
     public string RequestedByName { get; init; } = "";
     public DateTime CreatedAt { get; init; }
+    // Price per unit on the most recent PO line for this material in the same
+    // unit — pre-fills the Unit Price procurement confirms on Generate P.O.
+    public decimal? LastUnitPrice { get; init; }
 }
 
 public record ProjectWithRequestsDto
@@ -45,6 +48,8 @@ public record GeneratePOAssignmentDto
 {
     public int RequestId { get; init; }
     public string SupplierName { get; init; } = "";
+    // Price per unit entered by procurement; null when left blank.
+    public decimal? UnitPrice { get; init; }
 }
 
 public record GeneratePOsFromRequestsDto

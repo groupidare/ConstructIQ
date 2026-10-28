@@ -309,6 +309,7 @@ interface RequestRow {
   quantity: number;
   unit: string;
   requestedByName: string;
+  lastUnitPrice: number | null;
 }
 
 interface SuggestedSupplier {
@@ -324,6 +325,7 @@ interface ApiProjectWithRequests { projectId: number; projectName: string; pendi
 interface ApiMaterialRequest {
   id: number; materialId: number; materialName: string;
   quantity: number; unit: string; requestedByName: string; createdAt: string;
+  lastUnitPrice?: number | null;
 }
 interface ApiSuggestedSupplier {
   id: number; name: string; rating: number; onTimePct: number; deliveries: number; hasHistoryWithMaterial: boolean;
@@ -337,6 +339,7 @@ function mapRequestRow(a: ApiMaterialRequest): RequestRow {
   return {
     id: a.id, materialId: a.materialId, materialName: a.materialName,
     quantity: a.quantity, unit: a.unit, requestedByName: a.requestedByName,
+    lastUnitPrice: a.lastUnitPrice ?? null,
   };
 }
 
@@ -370,6 +373,9 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: 
   const [loading, setLoading] = useState(true);
   const [suggestionsByMaterial, setSuggestionsByMaterial] = useState<Record<number, SuggestedSupplier[]>>({});
   const [assignments, setAssignments] = useState<Record<number, string>>({});
+  // Price per unit as typed (kept as text so the field can be cleared);
+  // pre-filled with the last price paid for that material in that unit.
+  const [unitPrices, setUnitPrices] = useState<Record<number, string>>({});
   const [expectedDate, setExpectedDate] = useState("");
   const [generating, setGenerating] = useState(false);
   const [poNumbers, setPoNumbers] = useState<Record<number, string>>({});
@@ -381,6 +387,7 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: 
         const { data } = await api.get<ApiMaterialRequest[]>(`/material-requests/project/${projectId}`);
         const mapped = data.map(mapRequestRow);
         setRows(mapped);
+        setUnitPrices(Object.fromEntries(mapped.filter(r => r.lastUnitPrice != null).map(r => [r.id, String(r.lastUnitPrice)])));
 
         const uniqueMaterialIds = [...new Set(mapped.map(r => r.materialId))];
         const entries = await Promise.all(
@@ -400,16 +407,22 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: 
 
   const generated = Object.keys(poNumbers).length > 0;
   const allAssigned = rows.length > 0 && rows.every(r => assignments[r.id]?.trim());
+  const priceOf = (id: number) => {
+    const text = unitPrices[id]?.trim();
+    return text ? Number(text) : null;
+  };
+  const invalidPrice = rows.some(r => { const p = priceOf(r.id); return p != null && (!Number.isFinite(p) || p < 0); });
 
   async function handleGenerate() {
     if (!expectedDate) { toast.error("Pick an expected delivery date."); return; }
     if (!allAssigned) { toast.error("Choose a supplier for every material."); return; }
+    if (invalidPrice) { toast.error("Unit prices must be zero or more."); return; }
     setGenerating(true);
     try {
       const { data } = await api.post<ApiGeneratedResult>("/material-requests/generate-pos", {
         projectId,
         expectedDate,
-        assignments: rows.map(r => ({ requestId: r.id, supplierName: assignments[r.id] })),
+        assignments: rows.map(r => ({ requestId: r.id, supplierName: assignments[r.id], unitPrice: priceOf(r.id) })),
       });
       setPoNumbers(data.requestPoNumbers);
       toast.success("Purchase order(s) generated.");
@@ -433,7 +446,7 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: 
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: 640, maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: 780, maxWidth: "100%", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1.5rem 1.5rem 1rem", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ width: 38, height: 38, borderRadius: 10, background: "#fff7ed", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -447,18 +460,19 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: 
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
         </div>
 
-        <div style={{ padding: "0 1.5rem", flex: 1, overflowY: "auto" }}>
+        <div style={{ padding: "0 1.5rem", flex: 1, overflowY: "auto", overflowX: "auto" }}>
           {loading ? (
             <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "2rem 0" }}>Loading requested materials…</p>
           ) : (
             <>
               <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginBottom: "0.75rem" }}>
                 Supplier suggestions are ranked by past orders of that exact material first, then overall rating — or type a new supplier name.
+                Unit prices start from the last price paid for that material; change them to the supplier&apos;s quote, or leave blank if unknown.
               </p>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
-                    {["MATERIAL", "UNIT", "QTY", "SUPPLIER", "PO #"].map(h => (
+                    {["MATERIAL", "UNIT", "QTY", "SUPPLIER", "UNIT PRICE (₱)", "PO #"].map(h => (
                       <th key={h} style={{ padding: "6px 8px", textAlign: "left", fontSize: "0.62rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{h}</th>
                     ))}
                   </tr>
@@ -487,6 +501,29 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: 
                               <datalist id={`suppliers-for-material-${r.materialId}`}>
                                 {suggestions.map(s => <option key={s.id} value={s.name} />)}
                               </datalist>
+                            </>
+                          )}
+                        </td>
+                        <td style={{ padding: "8px", minWidth: 120 }}>
+                          {poNumber ? (
+                            <span style={{ fontSize: "0.8rem", color: "#111827", whiteSpace: "nowrap" }}>
+                              {priceOf(r.id) != null ? `${formatCurrency(priceOf(r.id)!)}/${r.unit}` : "—"}
+                            </span>
+                          ) : (
+                            <>
+                              <input
+                                type="number" min="0" step="0.01" inputMode="decimal"
+                                value={unitPrices[r.id] ?? ""}
+                                onChange={e => setUnitPrices(prev => ({ ...prev, [r.id]: e.target.value }))}
+                                placeholder={`₱ per ${r.unit || "unit"}`}
+                                aria-label={`Unit price (₱ per ${r.unit || "unit"}) for ${r.materialName}`}
+                                style={fieldStyle}
+                              />
+                              {priceOf(r.id) != null && priceOf(r.id)! >= 0 && (
+                                <p style={{ fontSize: "0.65rem", color: "#9ca3af", margin: "3px 0 0", whiteSpace: "nowrap" }}>
+                                  Total {formatCurrency(priceOf(r.id)! * r.quantity)}
+                                </p>
+                              )}
                             </>
                           )}
                         </td>
