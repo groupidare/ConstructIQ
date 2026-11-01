@@ -1,28 +1,15 @@
-import joblib
 import numpy as np
 from pathlib import Path
 from xgboost import XGBRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-from app.ml.feature_engineering import records_to_dataframe
+from app.ml.feature_engineering import records_to_dataframe, FEATURE_COLS
 
-MODEL_PATH = Path("trained_models/xgb_model.ubj")
-FEATURE_COLS = [
-    "boq_quantity", "actual_used", "current_stock", "excess_quantity",
-    "wasted_quantity", "phase_order", "project_type_encoded",
-    "days_into_phase", "phase_duration_days", "progress_percent", "usage_rate",
-]
+# See random_forest.py — persistence lives in model_registry.
+FILE_NAME = "xgb_model.ubj"
 
 
-def train(records: list[dict], targets: list[float]) -> dict:
-    df = records_to_dataframe(records)
-    X  = df[FEATURE_COLS].values
-    y  = np.array(targets)
-
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    model = XGBRegressor(
+def _new_model() -> XGBRegressor:
+    return XGBRegressor(
         n_estimators=300,
         learning_rate=0.05,
         max_depth=6,
@@ -31,25 +18,25 @@ def train(records: list[dict], targets: list[float]) -> dict:
         random_state=42,
         tree_method="hist",
     )
-    model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
-
-    preds = model.predict(X_test)
-    mae   = mean_absolute_error(y_test, preds)
-    rmse  = mean_squared_error(y_test, preds, squared=False)
-    r2    = model.score(X_test, y_test)
-
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    model.save_model(str(MODEL_PATH))
-
-    return {"mae": mae, "rmse": rmse, "r2": r2}
 
 
-def predict(records: list[dict]) -> np.ndarray:
-    if not MODEL_PATH.exists():
-        return np.array([float(r.get("boq_quantity", 0)) for r in records])
+def fit(records: list[dict], targets: list[float]) -> XGBRegressor:
+    """Fits on every given row. Records need material_ratio attached first."""
+    model = _new_model()
+    model.fit(records_to_dataframe(records)[FEATURE_COLS].values, np.array(targets), verbose=False)
+    return model
 
+
+def predict(records: list[dict], model: XGBRegressor) -> np.ndarray:
+    """Records need material_ratio attached (material_ratios.attach) first."""
+    return model.predict(records_to_dataframe(records)[FEATURE_COLS].values)
+
+
+def save(model: XGBRegressor, path: Path) -> None:
+    model.save_model(str(path))
+
+
+def load(path: Path) -> XGBRegressor:
     model = XGBRegressor()
-    model.load_model(str(MODEL_PATH))
-    df = records_to_dataframe(records)
-    X  = df[FEATURE_COLS].values
-    return model.predict(X)
+    model.load_model(str(path))
+    return model

@@ -1,10 +1,24 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
+import api from "@/lib/api";
+import { useWeatherStore } from "@/store/weatherStore";
+import { useAuthStore } from "@/store/authStore";
+import { formatCurrency, formatDate } from "@/lib/utils";
+import type { ReportTable } from "@/lib/reportTables";
+import { buildProcurementSummaryTable } from "@/lib/reportTables";
+import type { Project } from "@/types/project";
+import type { WarehouseStockItem } from "@/types/warehouseStock";
+import type { WarehouseRequest } from "@/types/warehouseRequest";
+import { canSeeCostImpact, shareOfPurchases, type ExcessCostImpact, type ExcessWasteRecord } from "@/types/excess";
+import type { ForecastResult, ForecastAccuracyReport, ModelStatus } from "@/types/forecast";
+import type { RedistributionRecommendation, RedistributionStatus } from "@/types/procurement";
+import type { PurchaseOrder } from "@/types/purchaseOrder";
 import {
   LayoutDashboard, TrendingUp, Package, ShoppingCart,
-  Trash2, FolderKanban, Users, DollarSign,
+  Trash2, FolderKanban, Network,
   Eye, Download, FileText, Search, Filter, X, Zap, BarChart3,
 } from "lucide-react";
 import {
@@ -12,29 +26,37 @@ import {
   Tooltip, ResponsiveContainer,
 } from "recharts";
 
-// ── Report definitions ────────────────────────────────────────────────────────
+// ── Report definitions — one per sidebar page, in the same order ────────────
 
 interface Report {
   id: string;
   title: string;
   desc: string;
   icon: React.ElementType;
-  date: string;
   category: string;
 }
 
 const REPORTS: Report[] = [
-  { id:"dashboard",   title:"Dashboard",        desc:"KPI summaries, alerts, overall system health",       icon:LayoutDashboard, date:"Today",   category:"Overview"   },
-  { id:"forecasting", title:"Forecasting",       desc:"Demand predictions, model accuracy, shortage risks",  icon:TrendingUp,      date:"Today",   category:"Analytics"  },
-  { id:"inventory",   title:"Inventory",         desc:"Stock levels, movements, alerts, shelf-life",         icon:Package,         date:"May 25",  category:"Operations" },
-  { id:"procurement", title:"Procurement",       desc:"POs, supplier performance, delivery tracking",        icon:ShoppingCart,    date:"May 24",  category:"Operations" },
-  { id:"waste",       title:"Waste Analytics",   desc:"Waste rate, costs, redistribution savings",           icon:Trash2,          date:"May 23",  category:"Analytics"  },
-  { id:"projects",    title:"Projects",          desc:"Timeline, budget, material status per project",       icon:FolderKanban,    date:"May 22",  category:"Management" },
-  { id:"users",       title:"User Management",   desc:"User activity, logins, role changes, audit log",      icon:Users,           date:"May 20",  category:"Management" },
-  { id:"cost",        title:"Cost Impact",       desc:"Waste costs, over-order losses, savings potential",   icon:DollarSign,      date:"May 19",  category:"Analytics"  },
+  { id: "projects",    title: "Projects",          desc: "Timeline, status, and phase progress across every project",   icon: FolderKanban,    category: "Management" },
+  { id: "inventory",   title: "Inventory",         desc: "Warehouse stock balance, zero-stock items, pending requests", icon: Package,         category: "Operations" },
+  { id: "forecasting", title: "Forecasting",       desc: "Demand forecasts and model accuracy",                         icon: TrendingUp,      category: "Analytics"  },
+  { id: "excess",      title: "Excess",            desc: "Waste rate, excess rate, reusable materials",                 icon: Trash2,          category: "Analytics"  },
+  { id: "redistribution", title: "Redistribution", desc: "Dead-stock opportunities, approvals, and priority",           icon: Network,         category: "Operations" },
+  { id: "procurement", title: "Procurement",       desc: "Purchase order status, supplier performance and ratings",     icon: ShoppingCart,    category: "Operations" },
+  { id: "system",      title: "System Overview",   desc: "Cross-system snapshot — projects, stock, orders, weather",    icon: LayoutDashboard, category: "Overview"   },
 ];
 
-// ── Per-report view data ──────────────────────────────────────────────────────
+// Mirrors the shape returned by GET /v1/activity-logs (see
+// components/auth/ActivityLogView.tsx) — only the fields this report uses.
+interface ActivityLog {
+  id: number;
+  userDisplay: string;
+  action: string;
+  details?: string;
+  createdAt: string;
+}
+
+// ── Per-report view data (computed live from real API data) ─────────────────
 
 interface ReportViewData {
   subtitle: string;
@@ -44,162 +66,494 @@ interface ReportViewData {
   healthTitle: string;
   health: { label: string; pct: string; color: string }[];
   aiInsight: string;
+  // Full underlying detail — the actual lists/records behind the summary
+  // stats above, not just aggregates. Rendered as real tables in both the
+  // View modal and the exported PDF.
+  detailTables: { title: string; table: ReportTable }[];
 }
 
-const VIEW_DATA: Record<string, ReportViewData> = {
-  dashboard: {
-    subtitle: "System overview · Today",
+function pct(count: number, total: number): number {
+  return total > 0 ? Math.round((count / total) * 100) : 0;
+}
+function avg(nums: number[]): number {
+  return nums.length > 0 ? nums.reduce((s, n) => s + n, 0) / nums.length : 0;
+}
+function truncate(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+// Material/money quantities are always whole units in practice in this
+// system (see BOQService.cs, forecasting_service.py) — a display-layer
+// backstop, same convention lib/reportTables.ts already uses.
+function num(n: number | undefined | null): number {
+  return Math.round(n ?? 0);
+}
+const PROJECT_STATUS_COLORS: Record<string, string> = {
+  Active: "#22c55e", Planning: "#f97316", OnHold: "#f59e0b", Completed: "#9ca3af", Cancelled: "#ef4444",
+};
+
+function buildProjectsData(projects: Project[]): ReportViewData {
+  const tracked = projects;
+  const byStatus = new Map<string, number>([["Active", 0], ["Planning", 0], ["Completed", 0]]);
+  for (const p of tracked) byStatus.set(p.status, (byStatus.get(p.status) ?? 0) + 1);
+
+  const allPhases = tracked.flatMap(p => p.phases);
+  const avgProgress = avg(allPhases.map(ph => ph.progressPercent));
+  const active = byStatus.get("Active") ?? 0;
+
+  // Every project, including historical ones (flagged) — the report is
+  // meant to be a comprehensive record, not just the live board.
+  const projectsTable: ReportTable = {
+    columns: ["Name", "Type", "Status", "Progress %", "Location", "Project Manager", "Site Engineer/PIC", "Start Date", "Target End Date", "Historical"],
+    rows: projects.map(p => [
+      p.name, p.type, p.status,
+      `${num(avg(p.phases.map(ph => ph.progressPercent)))}%`,
+      p.location, p.projectManagerName, p.siteEngineerName ?? "—",
+      formatDate(p.startDate), formatDate(p.targetEndDate),
+      p.isHistorical ? "Yes" : "No",
+    ]),
+  };
+
+  return {
+    subtitle: `${tracked.length} project(s) tracked`,
     stats: [
-      { label:"TOTAL ALERTS",      value:"14",   sub:"Require attention"      },
-      { label:"AI ACCURACY",       value:"93.4%",sub:"Forecast model"         },
-      { label:"COST SAVINGS",      value:"₱248K",sub:"This month"             },
+      { label: "TOTAL PROJECTS", value: String(tracked.length), sub: "All projects, including completed records" },
+      { label: "ACTIVE",         value: String(active),      sub: `${pct(active, tracked.length)}% of total` },
+      { label: "AVG PHASE PROGRESS", value: `${avgProgress.toFixed(0)}%`, sub: `Across ${allPhases.length} phase(s)` },
     ],
-    chartTitle: "Alert Distribution",
-    chartData: [{ name:"Inventory",value:5 },{ name:"Forecast",value:3 },{ name:"Procurement",value:4 },{ name:"Waste",value:2 }],
-    healthTitle: "System Health",
-    health: [
-      { label:"Operational", pct:"87%", color:"#22c55e" },
-      { label:"Warning",     pct:"9%",  color:"#f59e0b" },
-      { label:"Critical",    pct:"4%",  color:"#ef4444" },
-    ],
-    aiInsight: "ConstructIQ AI: System performance is stable. Procurement alerts are the primary driver of open issues this week — resolving 3 delayed POs will clear 60% of current alerts.",
-  },
-  forecasting: {
-    subtitle: "Demand predictions & model accuracy · Today",
+    chartTitle: "Projects by Status",
+    chartData: Array.from(byStatus.entries()).map(([name, value]) => ({ name, value })),
+    healthTitle: "Project Status",
+    health: Array.from(byStatus.entries()).map(([label, count]) => ({
+      label, pct: `${pct(count, tracked.length)}%`, color: PROJECT_STATUS_COLORS[label] ?? "#9ca3af",
+    })),
+    aiInsight: tracked.length === 0
+      ? "No projects tracked yet — create a project to start seeing real progress data here."
+      : `${active} of ${tracked.length} project(s) are active, averaging ${avgProgress.toFixed(0)}% phase completion.`,
+    detailTables: [{ title: "All Projects", table: projectsTable }],
+  };
+}
+
+function buildInventoryData(items: WarehouseStockItem[], requests: WarehouseRequest[]): ReportViewData {
+  const zeroStock = items.filter(i => i.balance <= 0).length;
+  const pendingRequests = requests.filter(r => r.status === "Pending").length;
+  const lastSynced = items.length > 0 ? items[0].syncedAt : null;
+  const topItems = [...items].sort((a, b) => b.balance - a.balance).slice(0, 8);
+
+  const stockTable: ReportTable = {
+    columns: ["Material", "Unit", "Balance", "Last Synced"],
+    rows: items.map(i => [i.materialName, i.unit, num(i.balance), i.syncedAt ? formatDate(i.syncedAt) : "—"]),
+  };
+  const requestsTable: ReportTable = {
+    columns: ["Project", "Material", "Requested Qty", "Approved Qty", "Status", "Requested By", "Approved By"],
+    rows: requests.map(r => [
+      r.projectName, r.materialName, num(r.requestedQuantity),
+      r.approvedQuantity != null ? num(r.approvedQuantity) : "—",
+      r.status, r.requestedBy, r.approvedBy ?? "—",
+    ]),
+  };
+
+  return {
+    subtitle: lastSynced ? `Last synced ${new Date(lastSynced).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" })}` : "Not synced yet",
     stats: [
-      { label:"MODEL ACCURACY",    value:"93.4%",sub:"R² score"               },
-      { label:"SHORTAGE RISKS",    value:"4",    sub:"Next 30 days"            },
-      { label:"FORECAST HORIZON",  value:"90 days",sub:"Prediction window"    },
+      { label: "TOTAL STOCK ITEMS", value: String(items.length),    sub: "Synced from warehouse sheet" },
+      { label: "ZERO-STOCK ITEMS",  value: String(zeroStock),       sub: "Need reorder" },
+      { label: "PENDING REQUESTS",  value: String(pendingRequests), sub: "Awaiting warehouse approval" },
     ],
-    chartTitle: "Demand vs Predicted (units)",
-    chartData: [{ name:"Jan",value:3800 },{ name:"Feb",value:4100 },{ name:"Mar",value:4300 },{ name:"Apr",value:4500 },{ name:"May",value:4800 },{ name:"Jun",value:5100 }],
-    healthTitle: "Model Performance",
-    health: [
-      { label:"High Confidence",   pct:"72%", color:"#22c55e" },
-      { label:"Moderate",          pct:"21%", color:"#f59e0b" },
-      { label:"Low Confidence",    pct:"7%",  color:"#ef4444" },
-    ],
-    aiInsight: "ConstructIQ AI: Cement and steel demand are trending upward at +18.4% over the next 30 days. Recommend pre-positioning procurement orders for these materials within the next 7 days.",
-  },
-  inventory: {
-    subtitle: "Stock levels, alerts & movements · Today",
-    stats: [
-      { label:"TOTAL STOCK ITEMS", value:"247",  sub:"Across 5 projects"      },
-      { label:"LOW STOCK ALERTS",  value:"12",   sub:"Require reorder"         },
-      { label:"OVERSTOCK ITEMS",   value:"5",    sub:"Recommend redistribution"},
-    ],
-    chartTitle: "Trend Overview",
-    chartData: [{ name:"Cement",value:1240 },{ name:"Steel",value:3200 },{ name:"Sand",value:88 },{ name:"Gravel",value:42 },{ name:"CHB",value:4500 },{ name:"Paint",value:320 },{ name:"Lumber",value:280 },{ name:"Rebar",value:600 }],
+    chartTitle: "Top Stock Items by Balance",
+    chartData: topItems.map(i => ({ name: truncate(i.materialName, 14), value: i.balance })),
     healthTitle: "Stock Health",
     health: [
-      { label:"Available",   pct:"72%", color:"#22c55e" },
-      { label:"In Use",      pct:"17%", color:"#9ca3af" },
-      { label:"Damaged",     pct:"6%",  color:"#ef4444" },
-      { label:"Expired",     pct:"3%",  color:"#ef4444" },
-      { label:"Transferred", pct:"2%",  color:"#9ca3af" },
+      { label: "In Stock",   pct: `${pct(items.length - zeroStock, items.length)}%`, color: "#22c55e" },
+      { label: "Zero Stock", pct: `${pct(zeroStock, items.length)}%`,                color: "#ef4444" },
     ],
-    aiInsight: "ConstructIQ AI: Based on current data trends, reviewing procurement schedules and enabling dead stock redistribution can reduce costs in the next 30-day cycle.",
-  },
-  procurement: {
-    subtitle: "Purchase orders & supplier performance · May 24",
+    aiInsight: items.length === 0
+      ? "No warehouse stock data yet — sync the warehouse sheet from the Inventory page."
+      : `${zeroStock} item(s) are at zero balance and may need reordering. ${pendingRequests} warehouse request(s) are awaiting approval.`,
+    detailTables: [
+      { title: "Full Warehouse Stock", table: stockTable },
+      { title: "Warehouse Requests", table: requestsTable },
+    ],
+  };
+}
+
+function buildForecastingData(
+  forecasts: ForecastResult[],
+  accuracyReports: ForecastAccuracyReport[],
+  projects: Project[],
+  modelStatus: ModelStatus | null,
+): ReportViewData {
+  const materials = forecasts.flatMap(f => f.forecastedMaterials);
+  const forecastByMaterial = new Map<string, number>();
+  for (const material of materials) {
+    forecastByMaterial.set(material.materialName, (forecastByMaterial.get(material.materialName) ?? 0) + material.forecastedQuantity);
+  }
+
+  // Real accuracy, not the forecast run's own ModelAccuracy field (the
+  // ml-service never sets it) — /forecast/accuracy/{id} compares each
+  // confirmed-actual BOQ row against the project's forecast directly.
+  // Only projects with at least one confirmed comparison count toward the
+  // average; a project with a forecast but no confirmed usage yet
+  // contributes nothing (there's genuinely nothing to score it against).
+  const withComparisons = accuracyReports.filter(a => a.comparisons.length > 0);
+  const avgAccuracy = withComparisons.length > 0 ? avg(withComparisons.map(a => a.overallAccuracy)) : null;
+  const forecastedProjectIds = new Set(forecasts.map(f => f.projectId));
+  const eligibleProjects = projects.filter(p => !p.isHistorical);
+  const forecastCoverage = pct(forecastedProjectIds.size, eligibleProjects.length);
+  const modelR2 = modelStatus?.model.manifest?.projectHoldout?.r2
+    ?? modelStatus?.model.manifest?.metrics.ensemble.r2;
+  const trainedModelAccuracy = modelR2 != null
+    ? Math.max(0, Math.min(100, modelR2 * 100))
+    : null;
+
+  const projectName = (id: number) => projects.find(p => p.id === id)?.name ?? `Project #${id}`;
+
+  const comparisonTable: ReportTable = {
+    columns: ["Project", "Material", "Forecasted Qty", "Actual Qty", "Variance", "Variance %", "Accuracy %"],
+    rows: withComparisons.flatMap(a => a.comparisons.map(c => [
+      a.projectName, c.materialName, num(c.forecastedQuantity), num(c.actualQuantity),
+      num(c.variance), `${num(c.variancePercent)}%`, `${num(c.accuracyPercent)}%`,
+    ])),
+  };
+  const forecastDetailTable: ReportTable = {
+    columns: ["Project", "Material", "Forecasted Qty"],
+    rows: forecasts.flatMap(f => f.forecastedMaterials.map(m => [
+      projectName(f.projectId), m.materialName, num(m.forecastedQuantity),
+    ])),
+  };
+
+  return {
+    subtitle: `${forecasts.length} project forecast(s) · most recent run per project`,
     stats: [
-      { label:"TOTAL POs",         value:"18",   sub:"This month"             },
-      { label:"ON-TIME DELIVERY",  value:"89%",  sub:"Supplier avg"           },
-      { label:"PENDING APPROVAL",  value:"3",    sub:"Awaiting sign-off"       },
+      { label: "PROJECTS FORECASTED", value: String(forecasts.length), sub: "Most recent run each" },
+      { label: "FORECASTED MATERIALS", value: String(materials.length), sub: "Current forecast rows" },
+      { label: "FORECAST COVERAGE", value: `${forecastCoverage}%`, sub: `${forecastedProjectIds.size} of ${eligibleProjects.length} active project(s)` },
+      { label: "MODEL ACCURACY",      value: avgAccuracy != null ? `${avgAccuracy.toFixed(1)}%` : trainedModelAccuracy != null ? `${trainedModelAccuracy.toFixed(1)}%` : "—", sub: avgAccuracy != null ? `Avg across ${withComparisons.length} project(s) with confirmed usage` : trainedModelAccuracy != null ? "Trained-model evaluation (R²)" : "Model evaluation unavailable" },
+    ],
+    chartTitle: "Forecasted Quantity by Material",
+    chartData: Array.from(forecastByMaterial.entries())
+      .map(([name, value]) => ({ name: truncate(name, 14), value: Math.round(value * 100) / 100 }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 8),
+    healthTitle: "Forecast Run Coverage",
+    health: forecasts.map(f => ({
+      label: projectName(f.projectId),
+      pct: "100%",
+      color: "#f97316",
+    })),
+    aiInsight: forecasts.length === 0
+      ? "No forecasts have been generated yet — run a forecast from a project's Material Plan tab."
+      : `${materials.length} forecast material row(s) across ${forecasts.length} project(s). Accuracy measures how close the forecast was to confirmed actual usage (100% is an exact match). Variance is the difference between actual and forecasted quantity; a positive value means actual usage was higher, while a negative value means it was lower.`,
+    detailTables: [
+      { title: "Predicted vs. Actual Usage", table: comparisonTable },
+      { title: "Current Forecast Detail", table: forecastDetailTable },
+    ],
+  };
+}
+
+const EXCESS_TYPE_COLORS: Record<string, string> = {
+  Unused: "#9ca3af", Damaged: "#ef4444", Expired: "#f59e0b", Overordered: "#f97316",
+};
+
+// costImpact is null for roles that can't see costs — the report is then
+// exactly the quantity-only version.
+function buildExcessData(records: ExcessWasteRecord[], costImpact: ExcessCostImpact | null): ReportViewData {
+  const totalWasteRate = avg(records.filter(e => !e.isReusable).map(e => e.excessPercent));
+  const totalExcessRate = avg(records.map(e => e.excessPercent));
+  const reusableMaterialsCount = new Set(records.filter(e => e.isReusable).map(e => e.materialId)).size;
+
+  const byProject = new Map<string, number[]>();
+  for (const r of records) {
+    const arr = byProject.get(r.projectName) ?? [];
+    arr.push(r.excessPercent);
+    byProject.set(r.projectName, arr);
+  }
+  const chartData = Array.from(byProject.entries())
+    .map(([name, pcts]) => ({ name: truncate(name, 14), value: Math.round(avg(pcts) * 10) / 10 }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8);
+
+  const byType = new Map<string, number>();
+  for (const r of records) byType.set(r.excessType, (byType.get(r.excessType) ?? 0) + 1);
+
+  // Excess (reusable surplus) first, highest-impact first — waste
+  // (non-reusable) still included, just lower priority in the ordering.
+  const excessTable: ReportTable = {
+    columns: ["Project", "Material", "Type", "Quantity", "Unit", "Excess %", "Reusable", "Redistribution", "Recorded By", "Recorded At"],
+    rows: [...records]
+      .sort((a, b) => Number(b.isReusable) - Number(a.isReusable) || b.excessPercent - a.excessPercent)
+      .map(r => [
+        r.projectName, r.materialName, r.excessType, num(r.quantity), r.unit,
+        `${num(r.excessPercent)}%`,
+        r.isReusable ? "Yes" : "No", r.redistributionStatus ?? "—",
+        r.recordedBy, formatDate(r.recordedAt),
+      ]),
+  };
+
+  const hasCost = costImpact !== null
+    && (costImpact.pricedRecords > 0 || costImpact.redistributedValue > 0 || costImpact.purchasedValue > 0);
+  const share = hasCost ? shareOfPurchases(costImpact.excessValue, costImpact.wasteCost, costImpact.purchasedValue) : null;
+  const costTables: { title: string; table: ReportTable }[] = !hasCost ? [] : [
+    {
+      title: "Cost Impact by Project (material cost, latest recorded price)",
+      table: {
+        columns: ["Project", "Purchased", "Excess Value", "Waste Cost", "% of Purchases", "Redistributed", "Unpriced Entries"],
+        rows: costImpact.byProject.map(p => {
+          const projectShare = shareOfPurchases(p.excessValue, p.wasteCost, p.purchasedValue);
+          return [
+            p.projectName, formatCurrency(p.purchasedValue), formatCurrency(p.excessValue), formatCurrency(p.wasteCost),
+            projectShare != null ? `${projectShare.toFixed(1)}%` : "—", formatCurrency(p.redistributedValue), p.unpricedRecords,
+          ];
+        }),
+      },
+    },
+    ...(costImpact.monthlyTrend.length === 0 ? [] : [{
+      title: "Cost Impact by Month (excess/waste by month logged, redistribution by month approved)",
+      table: {
+        columns: ["Month", "Excess Value", "Waste Cost", "Redistributed"],
+        rows: costImpact.monthlyTrend.map(t => [
+          t.month, formatCurrency(t.excessValue), formatCurrency(t.wasteCost), formatCurrency(t.redistributedValue),
+        ]),
+      },
+    }]),
+    ...(costImpact.byMaterial.length === 0 ? [] : [{
+      title: "Cost Impact by Material",
+      table: {
+        columns: ["Material", "Unit Price", "Excess Qty", "Excess Value", "Waste Qty", "Waste Cost"],
+        rows: costImpact.byMaterial.map(m => [
+          m.materialName, `${formatCurrency(m.unitPrice)}/${m.unit}`,
+          `${num(m.excessQuantity)} ${m.unit}`, formatCurrency(m.excessValue),
+          `${num(m.wasteQuantity)} ${m.unit}`, formatCurrency(m.wasteCost),
+        ]),
+      },
+    }]),
+  ];
+  const costInsight = !hasCost ? "" :
+    ` Excess still on hand is worth ${formatCurrency(costImpact.excessValue)} and waste has cost ${formatCurrency(costImpact.wasteCost)}` +
+    (share != null ? ` — ${share.toFixed(1)}% of the ${formatCurrency(costImpact.purchasedValue)} purchased` : "") +
+    `; redistributing excess has saved ${formatCurrency(costImpact.redistributedValue)}` +
+    (costImpact.unpricedRecords > 0 ? ` (${costImpact.unpricedRecords} excess/waste entr${costImpact.unpricedRecords === 1 ? "y has" : "ies have"} no recorded price and ${costImpact.unpricedRecords === 1 ? "is" : "are"} not included).` : ".");
+
+  return {
+    subtitle: `${records.length} excess/waste record(s) across ${byProject.size} project(s)`,
+    stats: [
+      { label: "TOTAL WASTE RATE",   value: `${totalWasteRate.toFixed(1)}%`, sub: "Non-reusable excess" },
+      { label: "TOTAL EXCESS RATE",  value: `${totalExcessRate.toFixed(1)}%`, sub: "All recorded excess" },
+      { label: "REUSABLE MATERIALS", value: String(reusableMaterialsCount),  sub: "Distinct materials flagged reusable" },
+      ...(hasCost ? [
+        { label: "EXCESS VALUE", value: formatCurrency(costImpact.excessValue), sub: "Reusable excess, at latest price" },
+        { label: "WASTE COST",   value: formatCurrency(costImpact.wasteCost),   sub: "Non-reusable waste, at latest price" },
+        { label: "SAVED BY REDISTRIBUTING", value: formatCurrency(costImpact.redistributedValue), sub: "Excess reused instead of bought again" },
+        { label: "SHARE OF PURCHASES", value: share != null ? `${share.toFixed(1)}%` : "—",
+          sub: share != null ? `Excess + waste of ${formatCurrency(costImpact.purchasedValue)} delivered` : "No priced deliveries yet" },
+      ] : []),
+    ],
+    chartTitle: "Avg Excess Rate by Project",
+    chartData,
+    healthTitle: "Excess by Type",
+    health: Array.from(byType.entries()).map(([label, count]) => ({
+      label, pct: `${pct(count, records.length)}%`, color: EXCESS_TYPE_COLORS[label] ?? "#9ca3af",
+    })),
+    aiInsight: records.length === 0
+      ? "No excess or waste has been recorded yet."
+      : `Waste rate is running at ${totalWasteRate.toFixed(1)}%. ${reusableMaterialsCount} distinct material(s) are flagged reusable and are good redistribution candidates.${costInsight}`,
+    detailTables: [...costTables, { title: "Excess & Waste Records (excess prioritized)", table: excessTable }],
+  };
+}
+
+const REDISTRIBUTION_ACTIVE: RedistributionStatus[] = ["AiSuggested", "PendingApproval", "Approved", "InTransit"];
+const REDISTRIBUTION_APPROVABLE: RedistributionStatus[] = ["AiSuggested", "PendingApproval"];
+const PRIORITY_COLORS: Record<string, string> = { Low: "#22c55e", Medium: "#f59e0b", High: "#ef4444" };
+
+function buildRedistributionData(items: RedistributionRecommendation[]): ReportViewData {
+  // items here is the FULL history (see /redistribution/history) — includes
+  // Completed and Rejected, which the live Redistribution page never shows.
+  const active = items.filter(r => REDISTRIBUTION_ACTIVE.includes(r.status));
+  const approvable = items.filter(r => REDISTRIBUTION_APPROVABLE.includes(r.status));
+  const deadStockCount = new Set(items.map(r => `${r.sourceProjectId}-${r.sourceMaterialId}`)).size;
+
+  const byStatus = new Map<string, number>();
+  for (const r of items) byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
+  const byPriority = new Map<string, number>([["Low", 0], ["Medium", 0], ["High", 0]]);
+  for (const r of items) byPriority.set(r.priority, (byPriority.get(r.priority) ?? 0) + 1);
+
+  const redisTable: ReportTable = {
+    columns: ["Material", "Source Project", "Target Project", "Available Qty", "Needed Qty", "Transfer Qty", "Priority", "Status", "AI-Recommended", "Generated At"],
+    rows: items.map(r => [
+      r.materialName, r.sourceProjectName, r.targetProjectName,
+      num(r.availableQuantity), num(r.neededQuantity), num(r.transferQuantity),
+      r.priority, r.status, r.isAiRecommended ? "Yes" : "No", formatDate(r.generatedAt),
+    ]),
+  };
+
+  return {
+    subtitle: `${items.length} recommendation(s) · ${deadStockCount} dead-stock item(s)`,
+    stats: [
+      { label: "ACTIVE OPPORTUNITIES", value: String(active.length),      sub: "AI-suggested through in-transit" },
+      { label: "PENDING APPROVAL",     value: String(approvable.length), sub: "Awaiting review" },
+      { label: "DEAD STOCK ITEMS",     value: String(deadStockCount),    sub: "Distinct source materials" },
+    ],
+    chartTitle: "Recommendations by Status",
+    chartData: Array.from(byStatus.entries()).map(([name, value]) => ({ name, value })),
+    healthTitle: "By Priority",
+    health: Array.from(byPriority.entries()).map(([label, count]) => ({
+      label, pct: `${pct(count, items.length)}%`, color: PRIORITY_COLORS[label],
+    })),
+    aiInsight: items.length === 0
+      ? "No redistribution opportunities detected yet."
+      : `${approvable.length} recommendation(s) are awaiting approval across ${deadStockCount} dead-stock item(s).`,
+    detailTables: [{ title: "Redistribution Log — All Statuses", table: redisTable }],
+  };
+}
+
+interface ApiSupplier { id: number; name: string; rating: number; onTimePct: number; deliveries: number; }
+
+function poEffectiveStatus(po: PurchaseOrder): string {
+  if (po.status === "Delivered" || po.status === "DeliveryInProgress") return po.status;
+  return new Date(po.expectedDate).getTime() < Date.now() ? "Delayed" : po.status;
+}
+function isPreferredSupplier(s: ApiSupplier): boolean {
+  return s.deliveries > 0 && s.rating >= 4.5 && s.onTimePct >= 90;
+}
+
+// Wide-open range so buildProcurementSummaryTable (lib/reportTables.ts,
+// already built for the per-project date-filtered report) includes every
+// order regardless of date instead of duplicating that builder here.
+const ALL_TIME_FROM = new Date(2000, 0, 1);
+const ALL_TIME_TO   = new Date(2100, 0, 1);
+
+function buildProcurementData(
+  orders: PurchaseOrder[],
+  suppliers: ApiSupplier[],
+  weatherRisk: string | null,
+  weatherAdvisory: string | null,
+): ReportViewData {
+  const byStatus = new Map<string, number>([["Pending", 0], ["Approved", 0], ["DeliveryInProgress", 0], ["Delivered", 0], ["Delayed", 0]]);
+  for (const po of orders) {
+    const s = poEffectiveStatus(po);
+    byStatus.set(s, (byStatus.get(s) ?? 0) + 1);
+  }
+  const delayed = byStatus.get("Delayed") ?? 0;
+  const avgOnTime = avg(suppliers.map(s => s.onTimePct));
+  const preferredCount = suppliers.filter(isPreferredSupplier).length;
+
+  const poTable = buildProcurementSummaryTable(orders, ALL_TIME_FROM, ALL_TIME_TO);
+  const supplierTable: ReportTable = {
+    columns: ["Supplier", "Rating", "On-Time %", "Deliveries", "Preferred"],
+    rows: suppliers.map(s => [s.name, s.rating.toFixed(1), `${num(s.onTimePct)}%`, s.deliveries, isPreferredSupplier(s) ? "Yes" : "No"]),
+  };
+
+  const weatherNote = weatherAdvisory
+    ? ` Current weather conditions (${weatherRisk ?? "unknown"} risk): ${weatherAdvisory} — factor this into supplier lead-time expectations on top of each supplier's own on-time history below.`
+    : "";
+
+  return {
+    subtitle: `${orders.length} purchase order(s) · ${suppliers.length} supplier(s)`,
+    stats: [
+      { label: "TOTAL POs",        value: String(orders.length), sub: "All statuses" },
+      { label: "DELAYED",          value: String(delayed),       sub: "Past expected delivery date" },
+      { label: "AVG ON-TIME RATE", value: suppliers.length > 0 ? `${avgOnTime.toFixed(0)}%` : "—", sub: "Across rated suppliers" },
     ],
     chartTitle: "PO Status Breakdown",
-    chartData: [{ name:"Pending",value:3 },{ name:"Approved",value:1 },{ name:"Transit",value:3 },{ name:"Delivered",value:10 },{ name:"Delayed",value:1 }],
-    healthTitle: "Supplier Performance",
+    chartData: Array.from(byStatus.entries()).filter(([, v]) => v > 0 || byStatus.size <= 5).map(([name, value]) => ({ name, value })),
+    healthTitle: "Supplier Tier",
     health: [
-      { label:"PREFERRED",  pct:"60%", color:"#22c55e" },
-      { label:"ACTIVE",     pct:"30%", color:"#3b82f6" },
-      { label:"AT RISK",    pct:"10%", color:"#ef4444" },
+      { label: "Preferred", pct: `${pct(preferredCount, suppliers.length)}%`, color: "#22c55e" },
+      { label: "Active",    pct: `${pct(suppliers.length - preferredCount, suppliers.length)}%`, color: "#3b82f6" },
     ],
-    aiInsight: "ConstructIQ AI: PO-2025-0839 is 6 days delayed from PhilCon Aggregates. Recommend escalation or alternative sourcing from PolyCon Philippines to avoid site shutdown.",
-  },
-  waste: {
-    subtitle: "Waste rate, costs & redistribution · May 23",
+    aiInsight: (orders.length === 0
+      ? "No purchase orders yet."
+      : `${delayed} PO(s) are past their expected delivery date. ${preferredCount} of ${suppliers.length} supplier(s) qualify as Preferred (4.5+ rating, 90%+ on-time).`) + weatherNote,
+    detailTables: [
+      { title: "Purchase Orders (by material line)", table: poTable },
+      { title: "Suppliers", table: supplierTable },
+    ],
+  };
+}
+
+function buildSystemData(
+  projects: Project[], stockItems: WarehouseStockItem[], orders: PurchaseOrder[],
+  redistribution: RedistributionRecommendation[], excessRecords: ExcessWasteRecord[],
+  weatherRisk: string | null, weatherAdvisory: string | null,
+  activityLogs: ActivityLog[], isAdmin: boolean,
+): ReportViewData {
+  const real = projects.filter(p => !p.isHistorical);
+  const active = real.filter(p => p.status === "Active").length;
+  const zeroStock = stockItems.filter(i => i.balance <= 0).length;
+  const activePOs = orders.filter(po => poEffectiveStatus(po) !== "Delivered").length;
+  const activeRedistribution = redistribution.filter(r => REDISTRIBUTION_ACTIVE.includes(r.status)).length;
+
+  const summaryTable: ReportTable = {
+    columns: ["Domain", "Key Metric", "Value"],
+    rows: [
+      ["Projects", "Active", String(active)],
+      ["Projects", "Total Tracked", String(real.length)],
+      ["Inventory", "Zero-Stock Items", String(zeroStock)],
+      ["Procurement", "Open Purchase Orders", String(activePOs)],
+      ["Excess", "Records Logged", String(excessRecords.length)],
+      ["Redistribution", "Active Opportunities", String(activeRedistribution)],
+      ["Weather", "Current Risk", weatherRisk ?? "—"],
+    ],
+  };
+  const activityTable: ReportTable = isAdmin
+    ? {
+        columns: ["Time", "User", "Action", "Details"],
+        rows: activityLogs.length > 0
+          ? activityLogs.map(l => [formatDate(l.createdAt), l.userDisplay, l.action, l.details ?? "—"])
+          : [["—", "—", "No activity recorded yet", "—"]],
+      }
+    : {
+        columns: ["Note"],
+        rows: [["Activity logs are only included in this report when generated by a System Administrator."]],
+      };
+
+  return {
+    subtitle: "Live cross-system snapshot",
     stats: [
-      { label:"EXCESS RATE",       value:"3.8%", sub:"June average"           },
-      { label:"EXCESS COST",       value:"₱48k", sub:"This period"            },
-      { label:"DEAD STOCK",        value:"6",    sub:"Items flagged"           },
+      { label: "ACTIVE PROJECTS",  value: String(active),   sub: `${real.length} total tracked` },
+      { label: "OPEN PURCHASE ORDERS", value: String(activePOs), sub: `${orders.length} total` },
+      { label: "WEATHER RISK",     value: weatherRisk ?? "—", sub: weatherRisk ? "Current delivery risk" : "Not available" },
     ],
-    chartTitle: "Waste by Project",
-    chartData: [{ name:"Metro Stn",value:32000 },{ name:"BGC Tower",value:18000 },{ name:"Harbor",value:38000 },{ name:"Southgate",value:24000 },{ name:"PUP ICTC",value:12000 }],
-    healthTitle: "Waste Categories",
+    chartTitle: "System Totals",
+    chartData: [
+      { name: "Projects", value: real.length },
+      { name: "Stock Items", value: stockItems.length },
+      { name: "POs", value: orders.length },
+      { name: "Redistribution", value: redistribution.length },
+      { name: "Excess Records", value: excessRecords.length },
+    ],
+    healthTitle: "Attention Needed",
     health: [
-      { label:"Overordering", pct:"42%", color:"#f97316" },
-      { label:"Spoilage",     pct:"28%", color:"#ef4444" },
-      { label:"Breakage",     pct:"18%", color:"#f59e0b" },
-      { label:"Theft",        pct:"12%", color:"#9ca3af" },
+      { label: "Zero-Stock Items",       pct: String(zeroStock),            color: zeroStock > 0 ? "#ef4444" : "#22c55e" },
+      { label: "Delayed POs",            pct: String(orders.filter(po => poEffectiveStatus(po) === "Delayed").length), color: "#f97316" },
+      { label: "Redistribution Pending", pct: String(activeRedistribution), color: "#3b82f6" },
     ],
-    aiInsight: "ConstructIQ AI: Harbor Bridge Renovation has the highest waste cost at ₱38k. Reviewing material delivery schedules and on-site storage could reduce waste by an estimated 22%.",
-  },
-  projects: {
-    subtitle: "Project timelines & budget status · May 22",
-    stats: [
-      { label:"TOTAL PROJECTS",    value:"5",    sub:"Across all sites"       },
-      { label:"ON SCHEDULE",       value:"3",    sub:"Active projects"         },
-      { label:"BUDGET UTILIZED",   value:"68%",  sub:"Avg across projects"    },
+    aiInsight: weatherAdvisory
+      ? `${weatherAdvisory} ${activePOs} purchase order(s) are still open and ${zeroStock} stock item(s) are at zero balance.`
+      : `${active} of ${real.length} project(s) are active. ${activePOs} purchase order(s) are still open and ${zeroStock} stock item(s) are at zero balance.`,
+    detailTables: [
+      { title: "Cross-System Summary", table: summaryTable },
+      { title: "Recent Activity Log (latest 100)", table: activityTable },
     ],
-    chartTitle: "Progress by Project (%)",
-    chartData: [{ name:"Metro",value:62 },{ name:"BGC",value:38 },{ name:"Harbor",value:81 },{ name:"Southgate",value:12 },{ name:"PUP ICTC",value:100 }],
-    healthTitle: "Project Status",
-    health: [
-      { label:"Active",    pct:"60%", color:"#22c55e" },
-      { label:"Planning",  pct:"20%", color:"#f97316" },
-      { label:"Completed", pct:"20%", color:"#9ca3af" },
-    ],
-    aiInsight: "ConstructIQ AI: Harbor Bridge Renovation is at 81% completion and on track to finish by December 2025. BGC Tower has material procurement risks that may delay Phase 2 by 2-3 weeks.",
-  },
-  users: {
-    subtitle: "User activity, logins & audit log · May 20",
-    stats: [
-      { label:"ACTIVE USERS",      value:"12",   sub:"This month"             },
-      { label:"TOTAL LOGINS",      value:"248",  sub:"Last 30 days"           },
-      { label:"ROLE CHANGES",      value:"2",    sub:"Pending review"         },
-    ],
-    chartTitle: "Login Activity (Last 7 Days)",
-    chartData: [{ name:"Mon",value:8 },{ name:"Tue",value:12 },{ name:"Wed",value:6 },{ name:"Thu",value:15 },{ name:"Fri",value:10 },{ name:"Sat",value:3 },{ name:"Sun",value:2 }],
-    healthTitle: "User Roles",
-    health: [
-      { label:"Admin",             pct:"8%",  color:"#f97316" },
-      { label:"Project Manager",   pct:"25%", color:"#3b82f6" },
-      { label:"Site Engineer",     pct:"33%", color:"#22c55e" },
-      { label:"Warehouse",         pct:"25%", color:"#f59e0b" },
-      { label:"Procurement",       pct:"9%",  color:"#9ca3af" },
-    ],
-    aiInsight: "ConstructIQ AI: 2 accounts have been inactive for over 30 days. Recommend deactivating to maintain system security and license compliance.",
-  },
-  cost: {
-    subtitle: "Cost impact & savings analysis · May 19",
-    stats: [
-      { label:"TOTAL WASTE COST",  value:"₱124k",sub:"This quarter"          },
-      { label:"AI COST SAVINGS",   value:"₱248K",sub:"Via optimization"      },
-      { label:"OVER-ORDER LOSSES", value:"₱36k", sub:"Last 30 days"          },
-    ],
-    chartTitle: "Cost Breakdown (₱k)",
-    chartData: [{ name:"Waste",value:124 },{ name:"Over-order",value:36 },{ name:"Expired",value:18 },{ name:"Breakage",value:12 },{ name:"Savings",value:248 }],
-    healthTitle: "Cost Distribution",
-    health: [
-      { label:"Procurement", pct:"45%", color:"#3b82f6" },
-      { label:"Waste",       pct:"28%", color:"#ef4444" },
-      { label:"Labor",       pct:"17%", color:"#f59e0b" },
-      { label:"Logistics",   pct:"10%", color:"#9ca3af" },
-    ],
-    aiInsight: "ConstructIQ AI: Optimizing reorder points across all 5 projects could save ₱62k in the next quarter. Dead stock redistribution from PVC Pipes (2,800 units) is the single highest-impact action available.",
-  },
-};
+  };
+}
 
 // ── PDF generator ─────────────────────────────────────────────────────────────
 
-function generatePDF(report: Report) {
-  const data = VIEW_DATA[report.id];
+// Several of the strings interpolated below (project names, material names)
+// come from user-entered data, and this HTML is injected via document.write
+// into a same-origin window — unescaped, a project named e.g. `<script>...`
+// would execute in that window. Escaped here rather than trusting every
+// upstream string builder to have done it already.
+function esc(value: string | number): string {
+  return String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+}
+
+function generatePDF(report: Report, data: ReportViewData, userName: string) {
   const html = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>ConstructIQ — ${report.title} Report</title>
+  <title>ConstructIQ — ${esc(report.title)} Report</title>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body { font-family: Arial, sans-serif; color: #111827; padding: 40px; }
@@ -215,9 +569,13 @@ function generatePDF(report: Report) {
     .section { margin-bottom:20px; }
     .section-title { font-size:13px; font-weight:700; color:#374151; margin-bottom:12px; }
     .health-row { display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid #f3f4f6; font-size:12px; }
-    .ai-box { background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:14px; margin-top:24px; font-size:12px; color:#92400e; line-height:1.6; }
+    .ai-box { background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:14px; margin-top:24px; margin-bottom:24px; font-size:12px; color:#92400e; line-height:1.6; }
+    .detail-table { width:100%; border-collapse:collapse; font-size:10px; }
+    .detail-table th { background:#f9fafb; text-align:left; padding:6px 8px; border-bottom:2px solid #e5e7eb; color:#374151; white-space:nowrap; }
+    .detail-table td { padding:5px 8px; border-bottom:1px solid #f3f4f6; color:#374151; }
+    .detail-table tr { page-break-inside:avoid; }
     .footer { margin-top:32px; padding-top:12px; border-top:1px solid #e5e7eb; font-size:11px; color:#9ca3af; display:flex; justify-content:space-between; }
-    @media print { body { padding:20px; } }
+    @media print { body { padding:20px; } .section { page-break-inside:auto; } }
   </style>
 </head>
 <body>
@@ -227,28 +585,41 @@ function generatePDF(report: Report) {
       <div class="subtitle">Automated Material Intelligence Platform</div>
     </div>
     <div style="text-align:right">
-      <h1>${report.title} Report</h1>
-      <div class="subtitle">${data.subtitle}</div>
+      <h1>${esc(report.title)} Report</h1>
+      <div class="subtitle">${esc(data.subtitle)}</div>
     </div>
   </div>
   <div class="stats">
-    ${data.stats.map(s => `<div class="stat-box"><div class="stat-label">${s.label}</div><div class="stat-value">${s.value}</div><div class="stat-sub">${s.sub}</div></div>`).join("")}
+    ${data.stats.map(s => `<div class="stat-box"><div class="stat-label">${esc(s.label)}</div><div class="stat-value">${esc(s.value)}</div><div class="stat-sub">${esc(s.sub)}</div></div>`).join("")}
   </div>
   <div class="section">
-    <div class="section-title">${data.healthTitle}</div>
-    ${data.health.map(h => `<div class="health-row"><span>${h.label}</span><span style="font-weight:700;color:${h.color}">${h.pct}</span></div>`).join("")}
+    <div class="section-title">${esc(data.healthTitle)}</div>
+    ${data.health.map(h => `<div class="health-row"><span>${esc(h.label)}</span><span style="font-weight:700;color:${esc(h.color)}">${esc(h.pct)}</span></div>`).join("")}
   </div>
   <div class="ai-box">
-    <strong>⚡ AI Insight:</strong><br>${data.aiInsight}
+    <strong>⚡ Insight:</strong><br>${esc(data.aiInsight)}
   </div>
+  ${data.detailTables.map(dt => `
+  <div class="section">
+    <div class="section-title">${esc(dt.title)}</div>
+    <table class="detail-table">
+      <thead><tr>${dt.table.columns.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>
+      <tbody>${dt.table.rows.length > 0
+        ? dt.table.rows.map(row => `<tr>${row.map(v => `<td>${esc(v)}</td>`).join("")}</tr>`).join("")
+        : `<tr><td colspan="${dt.table.columns.length}">No data available.</td></tr>`}</tbody>
+    </table>
+  </div>`).join("")}
   <div class="footer">
-    <span>Generated by ConstructIQ · ${new Date().toLocaleDateString("en-PH", { year:"numeric", month:"long", day:"numeric" })}</span>
+    <span>Generated by ${esc(userName)} · ${new Date().toLocaleDateString("en-PH", { year:"numeric", month:"long", day:"numeric" })}</span>
     <span>Confidential — For internal use only</span>
   </div>
 </body>
 </html>`;
   const win = window.open("", "_blank");
-  if (!win) return;
+  if (!win) {
+    toast.error("Pop-up blocked — allow pop-ups for this site to generate the report.");
+    return;
+  }
   win.document.write(html);
   win.document.close();
   win.focus();
@@ -257,73 +628,42 @@ function generatePDF(report: Report) {
 
 // ── Generate Report modal ─────────────────────────────────────────────────────
 
-function GenerateModal({ report, onClose }: { report: Report; onClose: () => void }) {
-  const [from,      setFrom]      = useState("2026-05-01");
-  const [to,        setTo]        = useState("2026-06-01");
-  const [project,   setProject]   = useState("All Projects");
-  const [format,    setFormat]    = useState(".CSV");
-  const [requester, setRequester] = useState("Remy Santos");
-  const [approver,  setApprover]  = useState("Ana Bonifacio");
-  const [checks,    setChecks]    = useState({ cost:true, material:true, labor:false, audit:false });
+function GenerateModal({ report, data, userName, onClose }: { report: Report; data: ReportViewData; userName: string; onClose: () => void }) {
+  const [format,    setFormat]    = useState(".PDF");
   const [generated, setGenerated] = useState(false);
 
-  const darkIn: React.CSSProperties = {
-    background:"#1e2d50", color:"#fff", border:"1px solid rgba(255,255,255,0.1)",
-    borderRadius:8, padding:"9px 12px", fontSize:"0.875rem", outline:"none",
-    width:"100%", boxSizing:"border-box" as const,
+  const lightIn: React.CSSProperties = {
+    background: "#fff", color: "#111827", border: "1px solid #e5e7eb",
+    borderRadius: 8, padding: "9px 12px", fontSize: "0.875rem", outline: "none",
+    width: "100%", boxSizing: "border-box" as const,
   };
 
   function handleGenerate() {
     setGenerated(true);
-    setTimeout(() => { generatePDF(report); onClose(); }, 600);
+    setTimeout(() => { generatePDF(report, data, userName); onClose(); }, 600);
   }
 
   return (
-    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }}>
-      <div onClick={e=>e.stopPropagation()} style={{ background:"#1a2235", borderRadius:16, padding:"1.75rem", width:500, maxHeight:"90vh", overflowY:"auto" }}>
-        <div style={{ marginBottom:"1.25rem" }}>
-          <p style={{ fontWeight:800, fontSize:"1.05rem", color:"#fff" }}>Generate Report</p>
-          <p style={{ fontSize:"0.78rem", color:"#9ca3af", marginTop:2 }}>{report.title}</p>
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 440, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ marginBottom: "1.25rem" }}>
+          <p style={{ fontWeight: 800, fontSize: "1.05rem", color: "#111827" }}>Generate Report</p>
+          <p style={{ fontSize: "0.78rem", color: "#9ca3af", marginTop: 2 }}>{report.title} · {data.subtitle}</p>
         </div>
-        <div style={{ display:"flex", flexDirection:"column", gap:"0.875rem" }}>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-            <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>From</p><input type="date" value={from} onChange={e=>setFrom(e.target.value)} style={darkIn} suppressHydrationWarning /></div>
-            <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>To</p><input type="date" value={to} onChange={e=>setTo(e.target.value)} style={darkIn} suppressHydrationWarning /></div>
-          </div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>Projects</p>
-            <select value={project} onChange={e=>setProject(e.target.value)} style={{ ...darkIn, appearance:"none" as any }}>
-              {["All Projects","Metro Station Phase 3","BGC Tower Complex","Harbor Bridge Renovation","Southgate Mall Expansion","PUP ICTC Building"].map(p=><option key={p}>{p}</option>)}
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.875rem" }}>
+          <div>
+            <p style={{ fontSize: "0.65rem", color: "#6b7280", marginBottom: 4 }}>Format</p>
+            <select value={format} onChange={e => setFormat(e.target.value)} style={{ ...lightIn, appearance: "none" as const, cursor: "pointer" }}>
+              {[".PDF"].map(f => <option key={f}>{f}</option>)}
             </select>
           </div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:"0.5rem" }}>Include in Report</p>
-            {([["cost","Cost Breakdown"],["material","Material Usage"],["labor","Labor Analysis"],["audit","Audit Log"]] as [keyof typeof checks,string][]).map(([k,label])=>(
-              <label key={k} style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", marginBottom:8 }}>
-                <input type="checkbox" checked={checks[k]} onChange={e=>setChecks(c=>({...c,[k]:e.target.checked}))} style={{ width:16, height:16, accentColor:"#22c55e" }} />
-                <span style={{ fontSize:"0.8rem", color:"#d1d5db" }}>{label}</span>
-              </label>
-            ))}
-          </div>
-          <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>Format</p>
-            <select value={format} onChange={e=>setFormat(e.target.value)} style={{ ...darkIn, appearance:"none" as any }}>
-              {[".CSV",".PDF",".XLSX"].map(f=><option key={f}>{f}</option>)}
-            </select>
-          </div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
-            <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>Requested by:</p>
-              <select value={requester} onChange={e=>setRequester(e.target.value)} style={{ ...darkIn, appearance:"none" as any }}>
-                {["Remy Santos","Ana Bonifacio","Jose Reyes"].map(m=><option key={m}>{m}</option>)}
-              </select>
-            </div>
-            <div><p style={{ fontSize:"0.65rem", color:"#9ca3af", marginBottom:4 }}>Approved by:</p>
-              <select value={approver} onChange={e=>setApprover(e.target.value)} style={{ ...darkIn, appearance:"none" as any }}>
-                {["Ana Bonifacio","Remy Santos","Jose Reyes"].map(m=><option key={m}>{m}</option>)}
-              </select>
-            </div>
+          <div style={{ background: "#f9fafb", borderRadius: 8, padding: "0.75rem 1rem" }}>
+            <p style={{ fontSize: "0.72rem", color: "#6b7280" }}>This will export the full {report.title} report — summary stats plus the complete underlying detail, attributed to you ({userName}).</p>
           </div>
         </div>
-        <div style={{ display:"flex", gap:"0.75rem", justifyContent:"flex-end", marginTop:"1.5rem" }}>
-          <button onClick={onClose} style={{ padding:"9px 20px", borderRadius:8, border:"1px solid rgba(255,255,255,0.2)", background:"transparent", color:"#d1d5db", fontSize:"0.875rem", cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleGenerate} style={{ padding:"9px 24px", borderRadius:8, border:"none", background: generated ? "#22c55e" : "#f97316", color:"#fff", fontSize:"0.875rem", fontWeight:700, cursor:"pointer", transition:"background 0.2s" }}>
+        <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end", marginTop: "1.5rem" }}>
+          <button onClick={onClose} style={{ padding: "9px 20px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.875rem", cursor: "pointer" }}>Cancel</button>
+          <button onClick={handleGenerate} style={{ padding: "9px 24px", borderRadius: 8, border: "none", background: generated ? "#22c55e" : "#f97316", color: "#fff", fontSize: "0.875rem", fontWeight: 700, cursor: "pointer", transition: "background 0.2s" }}>
             {generated ? "✓ Generating..." : "Generate"}
           </button>
         </div>
@@ -332,82 +672,120 @@ function GenerateModal({ report, onClose }: { report: Report; onClose: () => voi
   );
 }
 
+// ── Shared detail-table renderer (View modal) ────────────────────────────────
+
+function DetailTableSection({ title, table }: { title: string; table: ReportTable }) {
+  return (
+    <div style={{ marginBottom: "1.25rem" }}>
+      <p style={{ fontSize: "0.8rem", fontWeight: 700, color: "#374151", marginBottom: "0.5rem" }}>{title}</p>
+      <div style={{ overflowX: "auto", border: "1px solid #e5e7eb", borderRadius: 8, maxHeight: 280, overflowY: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.72rem" }}>
+          <thead>
+            <tr>
+              {table.columns.map(c => (
+                <th key={c} style={{ textAlign: "left", padding: "6px 10px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb", color: "#6b7280", fontWeight: 600, whiteSpace: "nowrap", position: "sticky", top: 0 }}>{c}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {table.rows.length === 0 ? (
+              <tr><td colSpan={table.columns.length} style={{ padding: "10px 10px", color: "#d1d5db" }}>No data available.</td></tr>
+            ) : table.rows.map((row, i) => (
+              <tr key={i}>
+                {row.map((v, j) => <td key={j} style={{ padding: "6px 10px", borderTop: "1px solid #f3f4f6", color: "#374151", whiteSpace: "nowrap" }}>{v}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ── View Report modal ─────────────────────────────────────────────────────────
 
-function ViewModal({ report, onClose }: { report: Report; onClose: () => void }) {
-  const data = VIEW_DATA[report.id];
-  const Icon = report.icon;
-
+function ViewModal({ report, data, lastUpdated, userName, onClose }: { report: Report; data: ReportViewData; lastUpdated: Date | null; userName: string; onClose: () => void }) {
   return (
-    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:"1rem" }}>
-      <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, padding:"1.75rem", width:640, maxHeight:"90vh", overflowY:"auto", boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "1rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 780, maxWidth: "95vw", maxHeight: "90vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
         {/* Header */}
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.5rem" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-            <div style={{ width:36, height:36, background:"#ffedd5", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <BarChart3 style={{ width:18, height:18, color:"#f97316" }} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 36, height: 36, background: "#ffedd5", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <BarChart3 style={{ width: 18, height: 18, color: "#f97316" }} />
             </div>
             <div>
-              <p style={{ fontWeight:800, fontSize:"1.05rem" }}>{report.title} Status Report</p>
-              <p style={{ fontSize:"0.72rem", color:"#9ca3af" }}>{data.subtitle}</p>
+              <p style={{ fontWeight: 800, fontSize: "1.05rem" }}>{report.title} Summary</p>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af" }}>{data.subtitle}</p>
             </div>
           </div>
-          <div style={{ display:"flex", gap:"0.5rem", alignItems:"center" }}>
-            <button onClick={()=>generatePDF(report)} style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.8rem", fontWeight:700, cursor:"pointer" }}>
-              <Download style={{ width:13, height:13 }} /> Export PDF
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+            <button onClick={() => generatePDF(report, data, userName)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer" }}>
+              <Download style={{ width: 13, height: 13 }} /> Export PDF
             </button>
-            <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer", padding:4 }}><X style={{ width:20, height:20 }} /></button>
+            <button onClick={onClose} style={{ color: "#9ca3af", background: "none", border: "none", cursor: "pointer", padding: 4 }}><X style={{ width: 20, height: 20 }} /></button>
           </div>
         </div>
 
         {/* Stats */}
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:"0.75rem", marginBottom:"1.25rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "0.75rem", marginBottom: "1.25rem" }}>
           {data.stats.map(s => (
-            <div key={s.label} style={{ border:"1px solid #e5e7eb", borderRadius:8, padding:"0.875rem" }}>
-              <p style={{ fontSize:"0.62rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.06em" }}>{s.label}</p>
-              <p style={{ fontSize:"1.8rem", fontWeight:800, color:"#111827", lineHeight:1.1, margin:"4px 0" }}>{s.value}</p>
-              <p style={{ fontSize:"0.7rem", color:"#9ca3af" }}>{s.sub}</p>
+            <div key={s.label} style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: "0.875rem" }}>
+              <p style={{ fontSize: "0.62rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.06em" }}>{s.label}</p>
+              <p style={{ fontSize: "1.8rem", fontWeight: 800, color: "#111827", lineHeight: 1.1, margin: "4px 0" }}>{s.value}</p>
+              <p style={{ fontSize: "0.7rem", color: "#9ca3af" }}>{s.sub}</p>
             </div>
           ))}
         </div>
 
         {/* Chart + Health */}
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 180px", gap:"1rem", marginBottom:"1.25rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 180px", gap: "1rem", marginBottom: "1.25rem" }}>
           <div>
-            <p style={{ fontSize:"0.8rem", fontWeight:700, color:"#374151", marginBottom:"0.75rem" }}>{data.chartTitle}</p>
-            <ResponsiveContainer width="100%" height={160}>
-              <BarChart data={data.chartData} margin={{ top:0, right:0, left:-30, bottom:0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-                <XAxis dataKey="name" tick={{ fontSize:10, fill:"#9ca3af" }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize:10, fill:"#9ca3af" }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={{ borderRadius:8, border:"1px solid #e5e7eb", fontSize:"0.72rem" }} />
-                <Bar dataKey="value" fill="#f97316" radius={[4,4,0,0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            <p style={{ fontSize: "0.8rem", fontWeight: 700, color: "#374151", marginBottom: "0.75rem" }}>{data.chartTitle}</p>
+            {data.chartData.length === 0 ? (
+              <p style={{ fontSize: "0.78rem", color: "#d1d5db", padding: "2.5rem 0", textAlign: "center" }}>No data yet</p>
+            ) : (
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart data={data.chartData} margin={{ top: 0, right: 0, left: -30, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                  <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                  <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #e5e7eb", fontSize: "0.72rem" }} />
+                  <Bar dataKey="value" fill="#f97316" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </div>
           <div>
-            <p style={{ fontSize:"0.8rem", fontWeight:700, color:"#374151", marginBottom:"0.75rem" }}>{data.healthTitle}</p>
-            <div style={{ display:"flex", flexDirection:"column", gap:"0.5rem" }}>
-              {data.health.map(h => (
-                <div key={h.label} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:"0.75rem" }}>
-                  <span style={{ color:"#6b7280" }}>{h.label}</span>
-                  <span style={{ fontWeight:700, color:h.color }}>{h.pct}</span>
-                </div>
-              ))}
+            <p style={{ fontSize: "0.8rem", fontWeight: 700, color: "#374151", marginBottom: "0.75rem" }}>{data.healthTitle}</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              {data.health.length === 0
+                ? <p style={{ fontSize: "0.75rem", color: "#d1d5db" }}>No data yet</p>
+                : data.health.map(h => (
+                  <div key={h.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.75rem" }}>
+                    <span style={{ color: "#6b7280" }}>{h.label}</span>
+                    <span style={{ fontWeight: 700, color: h.color }}>{h.pct}</span>
+                  </div>
+                ))}
             </div>
           </div>
         </div>
 
-        {/* AI insight */}
-        <div style={{ background:"#fff7ed", border:"1px solid #fed7aa", borderRadius:8, padding:"0.875rem 1rem", marginBottom:"1.25rem", display:"flex", gap:8 }}>
-          <Zap style={{ width:14, height:14, color:"#f97316", flexShrink:0, marginTop:2 }} />
-          <p style={{ fontSize:"0.78rem", color:"#92400e", lineHeight:1.5 }}>{data.aiInsight}</p>
+        {/* Insight */}
+        <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "0.875rem 1rem", marginBottom: "1.25rem", display: "flex", gap: 8 }}>
+          <Zap style={{ width: 14, height: 14, color: "#f97316", flexShrink: 0, marginTop: 2 }} />
+          <p style={{ fontSize: "0.78rem", color: "#92400e", lineHeight: 1.5 }}>{data.aiInsight}</p>
         </div>
 
+        {/* Full detail */}
+        {data.detailTables.map(dt => <DetailTableSection key={dt.title} title={dt.title} table={dt.table} />)}
+
         {/* Footer */}
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <p style={{ fontSize:"0.72rem", color:"#9ca3af" }}>Data refreshed: May 27, 2026</p>
-          <button onClick={onClose} style={{ padding:"9px 24px", borderRadius:8, border:"none", background:"#111827", color:"#fff", fontSize:"0.875rem", fontWeight:600, cursor:"pointer" }}>Close</button>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <p style={{ fontSize: "0.72rem", color: "#9ca3af" }}>
+            Data refreshed: {lastUpdated ? lastUpdated.toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" }) : "—"}
+          </p>
+          <button onClick={onClose} style={{ padding: "9px 24px", borderRadius: 8, border: "none", background: "#111827", color: "#fff", fontSize: "0.875rem", fontWeight: 600, cursor: "pointer" }}>Close</button>
         </div>
       </div>
     </div>
@@ -416,12 +794,126 @@ function ViewModal({ report, onClose }: { report: Report; onClose: () => void })
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type ModalState = { type:"view"|"generate"; report:Report } | null;
+type ModalState = { type: "view" | "generate"; report: Report } | null;
 
 export default function ReportsPage() {
   const [modal,    setModal]    = useState<ModalState>(null);
   const [search,   setSearch]   = useState("");
   const [category, setCategory] = useState("All Categories");
+  const [loading,  setLoading]  = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [stockItems, setStockItems] = useState<WarehouseStockItem[]>([]);
+  const [warehouseRequests, setWarehouseRequests] = useState<WarehouseRequest[]>([]);
+  const [redistribution, setRedistribution] = useState<RedistributionRecommendation[]>([]);
+  const [orders, setOrders] = useState<PurchaseOrder[]>([]);
+  const [suppliers, setSuppliers] = useState<ApiSupplier[]>([]);
+  const [excessRecords, setExcessRecords] = useState<ExcessWasteRecord[]>([]);
+  const [excessCostImpact, setExcessCostImpact] = useState<ExcessCostImpact | null>(null);
+  const [forecasts, setForecasts] = useState<ForecastResult[]>([]);
+  const [accuracyReports, setAccuracyReports] = useState<ForecastAccuracyReport[]>([]);
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
+
+  const risk = useWeatherStore(s => s.risk);
+  const user = useAuthStore(s => s.user);
+  const isAdmin = user?.role === "Admin";
+  const showCostImpact = canSeeCostImpact(user?.role);
+  const userName = user ? `${user.firstName} ${user.lastName}`.trim() : "ConstructIQ System";
+
+  useEffect(() => {
+    async function loadAll() {
+      setLoading(true);
+      try {
+        const [projectsRes, stockRes, whReqRes, redisRes, poRes, supRes] = await Promise.all([
+          api.get<Project[]>("/projects"),
+          api.get<WarehouseStockItem[]>("/warehouse-stock"),
+          api.get<WarehouseRequest[]>("/warehouse-requests"),
+          // Full history (incl. Completed/Rejected) — the live Redistribution
+          // page keeps using the active-only GET /redistribution elsewhere.
+          api.get<RedistributionRecommendation[]>("/redistribution/history"),
+          api.get<PurchaseOrder[]>("/purchase-orders"),
+          api.get<ApiSupplier[]>("/suppliers"),
+        ]);
+        setProjects(projectsRes.data);
+        setStockItems(stockRes.data);
+        setWarehouseRequests(whReqRes.data);
+        setRedistribution(redisRes.data);
+        setOrders(poRes.data);
+        setSuppliers(supRes.data);
+        api.get<ModelStatus>("/forecast/model-status").then(r => setModelStatus(r.data)).catch(() => setModelStatus(null));
+        // Only roles allowed to see costs — others skip the call (it would 403)
+        // and get the quantity-only Excess report.
+        if (showCostImpact) {
+          api.get<ExcessCostImpact>("/excess-waste/cost-impact").then(r => setExcessCostImpact(r.data)).catch(() => setExcessCostImpact(null));
+        } else {
+          setExcessCostImpact(null);
+        }
+
+        // Excess/waste records belong to every project, including historical
+        // projects. Forecasts remain scoped to live projects so stale
+        // historical runs do not distort the forecasting report.
+        const allProjects = projectsRes.data;
+        const activeProjects = allProjects.filter(p => !p.isHistorical);
+        const [excessLists, forecastLists, accuracyLists] = await Promise.all([
+          Promise.all(allProjects.map(p =>
+            api.get<ExcessWasteRecord[]>(`/excess-waste/project/${p.id}`).then(r => r.data).catch(() => []))),
+          Promise.all(activeProjects.map(p =>
+            // Most recent forecast run only (index 0 — backend returns newest first) so
+            // stale historical runs don't skew the current risk/accuracy picture.
+            api.get<ForecastResult[]>(`/forecast/project/${p.id}`).then(r => r.data.slice(0, 1)).catch(() => []))),
+          Promise.all(activeProjects.map(p =>
+            api.get<ForecastAccuracyReport>(`/forecast/accuracy/${p.id}`).then(r => r.data).catch(() => null))),
+        ]);
+        setExcessRecords(excessLists.flat());
+        setForecasts(forecastLists.flat());
+        setAccuracyReports(accuracyLists.filter((a): a is ForecastAccuracyReport => a !== null));
+
+        // Admin-only, same gate as components/auth/ActivityLogView.tsx —
+        // skipped entirely for other roles rather than firing a call that
+        // would 403.
+        if (isAdmin) {
+          try {
+            const { data } = await api.get<{ items: ActivityLog[]; total: number }>("/v1/activity-logs", { params: { page: 1, pageSize: 100 } });
+            setActivityLogs(data.items);
+          } catch {
+            setActivityLogs([]);
+          }
+        } else {
+          setActivityLogs([]);
+        }
+
+        setLastUpdated(new Date());
+      } catch {
+        toast.error("Failed to load report data.");
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadAll();
+    const refreshOnFocus = () => { void loadAll(); };
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnFocus);
+    return () => {
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, showCostImpact]);
+
+  const REPORT_DATA = useMemo<Record<string, ReportViewData>>(() => ({
+    projects: buildProjectsData(projects),
+    inventory: buildInventoryData(stockItems, warehouseRequests),
+    forecasting: buildForecastingData(forecasts, accuracyReports, projects, modelStatus),
+    excess: buildExcessData(excessRecords, excessCostImpact),
+    redistribution: buildRedistributionData(redistribution),
+    procurement: buildProcurementData(orders, suppliers, risk?.level ?? null, risk?.advisory ?? null),
+    system: buildSystemData(
+      projects, stockItems, orders, redistribution, excessRecords,
+      risk?.level ?? null, risk?.advisory ?? null, activityLogs, isAdmin,
+    ),
+  }), [projects, stockItems, warehouseRequests, forecasts, accuracyReports, modelStatus, excessRecords, excessCostImpact, redistribution, orders, suppliers, risk, activityLogs, isAdmin]);
 
   const filtered = useMemo(() => REPORTS.filter(r => {
     const matchSearch   = r.title.toLowerCase().includes(search.toLowerCase()) || r.desc.toLowerCase().includes(search.toLowerCase());
@@ -430,75 +922,84 @@ export default function ReportsPage() {
   }), [search, category]);
 
   const btnOutline: React.CSSProperties = {
-    display:"flex", alignItems:"center", gap:5,
-    padding:"6px 12px", borderRadius:7, border:"1px solid #e5e7eb",
-    background:"#fff", color:"#374151", fontSize:"0.75rem",
-    fontWeight:500, cursor:"pointer",
+    display: "flex", alignItems: "center", gap: 5,
+    padding: "6px 12px", borderRadius: 7, border: "1px solid #e5e7eb",
+    background: "#fff", color: "#374151", fontSize: "0.75rem",
+    fontWeight: 500, cursor: "pointer",
   };
   const btnDark: React.CSSProperties = {
-    display:"flex", alignItems:"center", gap:6,
-    padding:"6px 14px", borderRadius:7, border:"none",
-    background:"#111827", color:"#fff", fontSize:"0.75rem",
-    fontWeight:600, cursor:"pointer",
+    display: "flex", alignItems: "center", gap: 6,
+    padding: "6px 14px", borderRadius: 7, border: "none",
+    background: "#111827", color: "#fff", fontSize: "0.75rem",
+    fontWeight: 600, cursor: "pointer",
   };
 
   return (
-    <div style={{ background:"#f5f4f0" }}>
-      {modal?.type === "view"     && <ViewModal     report={modal.report} onClose={()=>setModal(null)} />}
-      {modal?.type === "generate" && <GenerateModal report={modal.report} onClose={()=>setModal(null)} />}
+    <div style={{ background: "#f5f4f0" }}>
+      {modal?.type === "view"     && <ViewModal     report={modal.report} data={REPORT_DATA[modal.report.id]} lastUpdated={lastUpdated} userName={userName} onClose={() => setModal(null)} />}
+      {modal?.type === "generate" && <GenerateModal report={modal.report} data={REPORT_DATA[modal.report.id]} userName={userName} onClose={() => setModal(null)} />}
 
       <Header title="Reports" />
 
-      <div style={{ padding:"1.25rem 1.5rem" }}>
+      <div className="responsive-page" style={{ padding: "1.25rem 1.5rem" }}>
 
         {/* Filter bar */}
-        <div style={{ display:"flex", gap:"0.75rem", alignItems:"center", marginBottom:"1.25rem" }}>
-          <div style={{ position:"relative", flex:1 }}>
-            <Search style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)", width:14, height:14, color:"#9ca3af", pointerEvents:"none" }} />
+        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", marginBottom: "1.25rem" }}>
+          <div style={{ position: "relative", flex: 1 }}>
+            <Search style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "#9ca3af", pointerEvents: "none" }} />
             <input
               suppressHydrationWarning
-              value={search} onChange={e=>setSearch(e.target.value)}
+              value={search} onChange={e => setSearch(e.target.value)}
               placeholder="Search reports..."
-              style={{ width:"100%", boxSizing:"border-box" as const, paddingLeft:34, paddingRight:12, paddingTop:9, paddingBottom:9, borderRadius:8, background:"#fff", border:"1px solid #e5e7eb", fontSize:"0.875rem", outline:"none" }}
+              style={{ width: "100%", boxSizing: "border-box" as const, paddingLeft: 34, paddingRight: 12, paddingTop: 9, paddingBottom: 9, borderRadius: 8, background: "#fff", border: "1px solid #e5e7eb", fontSize: "0.875rem", outline: "none" }}
             />
           </div>
-          <select value={category} onChange={e=>setCategory(e.target.value)} style={{ padding:"8px 14px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff", fontSize:"0.875rem", color:"#374151", outline:"none", cursor:"pointer", appearance:"none" as any }}>
-            {["All Categories","Overview","Analytics","Operations","Management"].map(c=><option key={c}>{c}</option>)}
+          <select value={category} onChange={e => setCategory(e.target.value)} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", fontSize: "0.875rem", color: "#374151", outline: "none", cursor: "pointer", appearance: "none" as const }}>
+            {["All Categories", "Overview", "Analytics", "Operations", "Management"].map(c => <option key={c}>{c}</option>)}
           </select>
-          <button style={btnOutline}><Filter style={{ width:13, height:13 }} /> Filter by Date</button>
-          <button style={{ ...btnOutline, background:"#f97316", border:"none", color:"#fff", fontWeight:700 }}>
-            <Download style={{ width:13, height:13 }} /> Export All
-          </button>
+          <span style={{ ...btnOutline, cursor: "default" }} title="Report data reflects the current state of each page — there's no historical date range to filter yet">
+            <Filter style={{ width: 13, height: 13 }} /> {loading ? "Loading…" : lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" })}` : "Live"}
+          </span>
         </div>
 
         {/* Report cards grid */}
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
           {filtered.map(report => {
             const Icon = report.icon;
+            const data = REPORT_DATA[report.id];
             return (
-              <div key={report.id} style={{ background:"#fff", borderRadius:14, padding:"1.25rem", boxShadow:"0 1px 3px rgba(0,0,0,0.07)" }}>
-                <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:"0.875rem" }}>
-                  <div style={{ width:36, height:36, borderRadius:8, background:"#f9fafb", border:"1px solid #e5e7eb", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                    <Icon style={{ width:18, height:18, color:"#6b7280" }} />
+              <div key={report.id} style={{ background: "#fff", borderRadius: 14, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: "0.875rem" }}>
+                  <div style={{ width: 36, height: 36, borderRadius: 8, background: "#f9fafb", border: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <Icon style={{ width: 18, height: 18, color: "#6b7280" }} />
                   </div>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <p style={{ fontWeight:700, fontSize:"0.95rem", color:"#111827" }}>{report.title}</p>
-                    <p style={{ fontSize:"0.72rem", color:"#9ca3af", marginTop:2 }}>{report.desc}</p>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontWeight: 700, fontSize: "0.95rem", color: "#111827" }}>{report.title}</p>
+                    <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginTop: 2 }}>{report.desc}</p>
                   </div>
                 </div>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                  <div style={{ display:"flex", gap:"0.5rem" }}>
-                    <button onClick={()=>setModal({ type:"view", report })} style={btnOutline}>
-                      <Eye style={{ width:12, height:12 }} /> View
+                {!loading && data && (
+                  <div style={{ display: "flex", gap: "0.75rem", marginBottom: "0.875rem" }}>
+                    {data.stats.slice(0, 2).map(s => (
+                      <div key={s.label} style={{ flex: 1, background: "#f9fafb", borderRadius: 8, padding: "0.5rem 0.7rem" }}>
+                        <p style={{ fontSize: "0.58rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.04em" }}>{s.label}</p>
+                        <p style={{ fontSize: "1.1rem", fontWeight: 800, color: "#111827" }}>{s.value}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ display: "flex", gap: "0.5rem" }}>
+                    <button disabled={loading} onClick={() => setModal({ type: "view", report })} style={{ ...btnOutline, opacity: loading ? 0.5 : 1, cursor: loading ? "default" : "pointer" }}>
+                      <Eye style={{ width: 12, height: 12 }} /> View
                     </button>
-                    <button onClick={()=>generatePDF(report)} style={btnOutline}>
-                      <Download style={{ width:12, height:12 }} /> PDF
+                    <button disabled={loading} onClick={() => generatePDF(report, REPORT_DATA[report.id], userName)} style={{ ...btnOutline, opacity: loading ? 0.5 : 1, cursor: loading ? "default" : "pointer" }}>
+                      <Download style={{ width: 12, height: 12 }} /> PDF
                     </button>
-                    <button onClick={()=>setModal({ type:"generate", report })} style={btnDark}>
-                      <FileText style={{ width:12, height:12 }} /> Generate Report
+                    <button disabled={loading} onClick={() => setModal({ type: "generate", report })} style={{ ...btnDark, opacity: loading ? 0.5 : 1, cursor: loading ? "default" : "pointer" }}>
+                      <FileText style={{ width: 12, height: 12 }} /> Generate Report
                     </button>
                   </div>
-                  <span style={{ fontSize:"0.72rem", color:"#9ca3af" }}>{report.date}</span>
                 </div>
               </div>
             );

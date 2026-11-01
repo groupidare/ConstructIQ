@@ -44,30 +44,82 @@ public class ProcurementService(AppDbContext db) : IProcurementService
 
         foreach (var inv in inventory)
         {
+            // Matched on unit too — a forecast run can now carry more than
+            // one entry per material (one per distinct unit forecasted; see
+            // ForecastedMaterial.Unit). Inventory itself has no unit of its
+            // own (it's always expressed in the catalog Material's unit), so
+            // that's the only unit a stock-level comparison against it can
+            // be meaningful in.
             var forecasted = forecastResult?.ForecastedMaterials
-                .FirstOrDefault(fm => fm.MaterialId == inv.MaterialId);
+                .FirstOrDefault(fm => fm.MaterialId == inv.MaterialId
+                    && string.Equals(fm.Unit, inv.Material.Unit, StringComparison.OrdinalIgnoreCase));
             if (forecasted is null) continue;
 
+            // Real delivery history for this exact material — mirrors the
+            // ml-service's own supplier_lead_time_days subquery (average
+            // ActualLeadDays from Delivered POs), instead of always assuming
+            // a flat 7-day default regardless of how this supplier/material
+            // has actually performed. Falls back to the default only when
+            // there's no delivery history yet for this material.
+            var deliveryHistory = await db.PurchaseOrderMaterials
+                .Where(pom => pom.MaterialId == inv.MaterialId)
+                .Join(db.PurchaseOrders.Where(po => po.Status == PurchaseOrderStatus.Delivered),
+                      pom => pom.PurchaseOrderId, po => po.Id, (pom, po) => po)
+                .Where(po => po.Evaluation != null)
+                .Select(po => new { po.OrderDate, po.ExpectedDate, ActualLeadDays = po.Evaluation!.ActualLeadDays })
+                .ToListAsync();
+
+            var baseLeadTimeDays = deliveryHistory.Count > 0
+                ? (int)Math.Ceiling(deliveryHistory.Average(d => d.ActualLeadDays))
+                : DefaultLeadTimeDays;
+
+            // Ratio of actual vs promised delivery time — 1.0 (on schedule)
+            // when there's no history yet or a promised lead time of 0 days
+            // (can't form a meaningful ratio against that).
+            var performanceRatios = deliveryHistory
+                .Select(d => new { PromisedDays = (d.ExpectedDate - d.OrderDate).Days, d.ActualLeadDays })
+                .Where(x => x.PromisedDays > 0)
+                .Select(x => (double)x.ActualLeadDays / x.PromisedDays)
+                .ToList();
+            var deliveryPerformanceRatio = performanceRatios.Count > 0 ? performanceRatios.Average() : 1.0;
+
             var leadTime = DynamicLeadTimeCalc.Calculate(
-                DefaultLeadTimeDays,
+                baseLeadTimeDays,
+                deliveryPerformanceRatio: deliveryPerformanceRatio,
                 daysUntilPhaseStart: daysUntilPhase,
                 isUrgent: forecasted.RiskLevel == RiskLevel.Critical);
 
+            var avgDailyUsage = forecasted.ForecastedQuantity / 30;
+
             var rop = ReorderPointCalculator.Calculate(
-                avgDailyUsage: forecasted.ForecastedQuantity / 30,
+                avgDailyUsage: avgDailyUsage,
                 leadTimeDays:  leadTime);
 
             var tsl = TargetStockLevelCalc.Calculate(
-                reorderPoint:      rop,
-                annualDemand:      forecasted.ForecastedQuantity * 12,
-                orderingCost:      500,
-                holdingCostPerUnit: inv.Material.UnitCost * 0.2m > 0
-                    ? inv.Material.UnitCost * 0.2m
-                    : 1m);
+                reorderPoint:   rop,
+                avgDailyUsage:  avgDailyUsage,
+                leadTimeDays:   leadTime);
 
             if (inv.AvailableQuantity > rop) continue;
 
             var recommended = tsl - inv.AvailableQuantity;
+
+            // Already at/below the reorder point by the time this runs (the
+            // continue above only lets urgent-enough items through), so the
+            // honest suggestion is "as soon as possible" — scaled back a day
+            // for a Low/Medium item that isn't yet critical, same signal
+            // DynamicLeadTimeCalc itself uses for urgency.
+            var suggestedReorderDate = forecasted.RiskLevel is RiskLevel.Critical or RiskLevel.High
+                ? DateTime.UtcNow
+                : DateTime.UtcNow.AddDays(1);
+
+            var urgencyLevel = forecasted.RiskLevel switch
+            {
+                RiskLevel.Critical => UrgencyLevel.Critical,
+                RiskLevel.High     => UrgencyLevel.High,
+                RiskLevel.Medium   => UrgencyLevel.Medium,
+                _                  => UrgencyLevel.Low,
+            };
 
             var existing = await db.ProcurementRecommendations
                 .FirstOrDefaultAsync(r => r.ProjectId == projectId && r.MaterialId == inv.MaterialId);
@@ -81,14 +133,8 @@ public class ProcurementService(AppDbContext db) : IProcurementService
                 existing.RecommendedQuantity  = recommended;
                 existing.EstimatedCost        = recommended * inv.Material.UnitCost;
                 existing.EstimatedLeadTimeDays= leadTime;
-                existing.SuggestedReorderDate = DateTime.UtcNow.AddDays(2);
-                existing.UrgencyLevel         = forecasted.RiskLevel switch
-                {
-                    RiskLevel.Critical => UrgencyLevel.Critical,
-                    RiskLevel.High     => UrgencyLevel.High,
-                    RiskLevel.Medium   => UrgencyLevel.Medium,
-                    _                  => UrgencyLevel.Low,
-                };
+                existing.SuggestedReorderDate = suggestedReorderDate;
+                existing.UrgencyLevel         = urgencyLevel;
                 existing.GeneratedAt = DateTime.UtcNow;
             }
             else
@@ -104,8 +150,8 @@ public class ProcurementService(AppDbContext db) : IProcurementService
                     RecommendedQuantity   = recommended,
                     EstimatedCost         = recommended * inv.Material.UnitCost,
                     EstimatedLeadTimeDays = leadTime,
-                    SuggestedReorderDate  = DateTime.UtcNow.AddDays(2),
-                    UrgencyLevel          = UrgencyLevel.Medium,
+                    SuggestedReorderDate  = suggestedReorderDate,
+                    UrgencyLevel          = urgencyLevel,
                 });
             }
         }

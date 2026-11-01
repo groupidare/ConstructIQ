@@ -4,7 +4,7 @@ import type { Project, ProjectCreateRequest } from '@/types/project';
 import { useProjectStore } from '@/store/projectStore';
 
 export function useProjects() {
-  const { projects, setProjects, addProject, updateProject } = useProjectStore();
+  const { projects, setProjects, addProject, updateProject, removeProject } = useProjectStore();
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState<string | null>(null);
 
@@ -37,7 +37,12 @@ export function useProjects() {
     return data;
   }
 
+  async function deleteProject(id: number): Promise<void> {
+    await api.delete(`/projects/${id}`);
+    removeProject(id);
+  }
+
   useEffect(() => { fetchProjects(); }, []);
 
-  return { projects, loading, error, fetchProject, createProject, editProject, refresh: fetchProjects };
+  return { projects, loading, error, fetchProject, createProject, editProject, deleteProject, refresh: fetchProjects };
 }

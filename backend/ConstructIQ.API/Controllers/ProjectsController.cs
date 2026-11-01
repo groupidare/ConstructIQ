@@ -9,14 +9,14 @@ namespace ConstructIQ.API.Controllers;
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
-public class ProjectsController(IProjectService projectService) : ControllerBase
+public class ProjectsController(IProjectService projectService, IProjectAccessService projectAccess, IMaterialCostService materialCost) : ControllerBase
 {
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? User.FindFirst("sub")?.Value ?? "0");
 
     private string CurrentRole =>
-        User.FindFirst("role")?.Value ?? string.Empty;
+        User.FindFirst(ClaimTypes.Role)?.Value ?? string.Empty;
 
     [HttpGet]
     public async Task<IActionResult> GetAll() =>
@@ -30,17 +30,31 @@ public class ProjectsController(IProjectService projectService) : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin,ProjectManager")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> Create([FromBody] ProjectCreateDto dto)
     {
-        var created = await projectService.CreateAsync(dto, CurrentUserId);
+        var created = await projectService.CreateAsync(dto, CurrentUserId, CurrentRole);
         return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
     }
 
+    // Same ownership rule as editing: Admin/ProjectManager any project, a
+    // SiteEngineer only the one they're assigned to.
+    [HttpGet("{id:int}/estimated-material-cost")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> GetEstimatedMaterialCost(int id)
+    {
+        if (!await projectAccess.CanEditProjectAsync(id, CurrentUserId, CurrentRole))
+            return Forbid();
+        var cost = await materialCost.GetEstimatedMaterialCostAsync(id);
+        return cost is null ? NotFound() : Ok(cost);
+    }
+
     [HttpPut("{id:int}")]
-    [Authorize(Roles = "Admin,ProjectManager")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> Update(int id, [FromBody] ProjectCreateDto dto)
     {
+        if (!await projectAccess.CanEditProjectAsync(id, CurrentUserId, CurrentRole))
+            return Forbid();
         var updated = await projectService.UpdateAsync(id, dto);
         return updated is null ? NotFound() : Ok(updated);
     }
@@ -51,5 +65,29 @@ public class ProjectsController(IProjectService projectService) : ControllerBase
     {
         var deleted = await projectService.DeleteAsync(id);
         return deleted ? NoContent() : NotFound();
+    }
+
+    [HttpGet("{id:int}/progress-updates")]
+    public async Task<IActionResult> GetProgressUpdates(int id) =>
+        Ok(await projectService.GetProgressUpdatesAsync(id));
+
+    // Same roles as create/update — whoever can manage a project's details
+    // can also log its on-site progress. WarehousePersonnel/ProcurementOfficer
+    // don't touch construction progress at all.
+    [HttpPost("{id:int}/progress-updates")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> LogProgress(int id, [FromForm] SubmitProgressUpdateDto dto)
+    {
+        if (!await projectAccess.CanEditProjectAsync(id, CurrentUserId, CurrentRole))
+            return Forbid();
+        try
+        {
+            var result = await projectService.LogProgressAsync(id, dto, CurrentUserId);
+            return result is null ? NotFound() : Ok(result);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 }

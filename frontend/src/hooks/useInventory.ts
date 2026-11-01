@@ -7,10 +7,12 @@ export function useInventory(projectId: number) {
   const [loading, setLoading]     = useState(false);
   const [error, setError]         = useState<string | null>(null);
 
-  async function fetchInventory() {
+  async function fetchInventory(inStockOnly = false) {
     setLoading(true);
     try {
-      const { data } = await api.get<InventoryRecord[]>(`/inventory/project/${projectId}`);
+      const { data } = await api.get<InventoryRecord[]>(`/inventory/project/${projectId}`, {
+        params: { inStockOnly },
+      });
       setInventory(data);
     } catch {
       setError('Failed to load inventory.');

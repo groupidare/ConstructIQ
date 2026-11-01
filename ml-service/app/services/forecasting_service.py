@@ -1,49 +1,135 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+import math
 import os
+import threading
 from datetime import datetime, date
 
-from app.models.schemas import ForecastRequest, ForecastResponse, ForecastedMaterial, RiskLevel
-from app.ml import random_forest, xgboost_model
+from dotenv import load_dotenv
+from app.models.schemas import ForecastRequest, ForecastResponse, ForecastedMaterial, ForecastedLine, RiskLevel
+from app.ml import random_forest, xgboost_model, material_ratios, model_registry, demand_factor
 from app.ml.model_evaluator import ensemble_predict, classify_risk
+
+# Loaded here (not just in main.py) so DB access works from any entrypoint —
+# a standalone script/test, not just the running FastAPI app. Idempotent.
+load_dotenv()
+
+
+# ONE engine (and so one small connection pool) for the whole process.
+# This used to create a brand-new engine on every call — every forecast,
+# training run and training-data report opened its own pool, whose
+# connections stayed open until garbage collection got around to them. On a
+# managed MySQL with a low connection limit (Aiven) they piled up until the
+# server refused new ones: "(1040, 'Too many connections')". The pool is kept
+# small on purpose; requests queue briefly for a free connection instead of
+# opening more. pool_pre_ping drops connections the server has already closed.
+_engine: Engine | None = None
+_engine_lock = threading.Lock()
 
 
 def get_engine() -> Engine:
-    url = os.getenv(
-        "DATABASE_URL",
-        "mysql+pymysql://root:password@db:3306/constructiq"
-    )
-    return create_engine(url, pool_recycle=300)
+    global _engine
+    with _engine_lock:
+        if _engine is None:
+            url = os.getenv(
+                "DATABASE_URL",
+                "mysql+pymysql://root:password@db:3306/constructiq"
+            )
+            # Aiven (and most managed MySQL hosts) require TLS. Set DB_SSL_CA to the
+            # path of the provider's downloaded CA certificate to enable it — unset
+            # by default, so local/docker-compose (no TLS configured) is unaffected.
+            ssl_ca = os.getenv("DB_SSL_CA")
+            connect_args = {"ssl": {"ca": ssl_ca}} if ssl_ca else {}
+            _engine = create_engine(
+                url,
+                pool_size=int(os.getenv("DB_POOL_SIZE", "2")),
+                max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "3")),
+                pool_timeout=30,
+                pool_recycle=300,
+                pool_pre_ping=True,
+                connect_args=connect_args,
+            )
+        return _engine
 
 
-def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> list[dict]:
+# The catalog material's physical properties — read by demand_factor/
+# baseline_engine to compute the engineering baseline (never stored). Shared
+# with training_service's query so training and prediction see the same thing.
+MATERIAL_PROPERTY_COLUMNS = """
+            m.Unit             AS material_unit,
+            m.CalculationType  AS calculation_type,
+            m.LengthMm         AS length_mm,
+            m.WidthMm          AS width_mm,
+            m.ThicknessMm      AS thickness_mm,
+            m.PiecesPerPackage AS pieces_per_package,
+            m.CoveragePerUnit  AS coverage_per_unit,
+            m.CoverageUnit     AS coverage_unit,
+            m.UnitLengthM      AS unit_length_m,
+            m.Coats            AS coats,
+            m.PurchaseUnit     AS baseline_purchase_unit,"""
+
+
+def fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> list[dict]:
     phase_filter = "AND bi.PhaseId = :phase_id" if phase_id else ""
     sql = text(f"""
         SELECT
+            bi.Id        AS boq_item_id,
             m.Id         AS material_id,
             m.Name       AS material_name,
-            m.Unit       AS unit,
+            -- The row's purchase unit (pcs/bag/box/...) when it has one —
+            -- the unit the models predict in (see training_service.py's
+            -- target). Final output unit is decided in Python
+            -- (material_ratios.resolve_output_unit): this, else the
+            -- material's most common training unit, else boq_unit below.
+            NULLIF(TRIM(bi.EstimatedPurchaseUnit), '') AS purchase_unit,
+            -- The BOQ row's own unit, not the catalog Material's default
+            -- unit, unless the row has none — the unit boq_quantity is in.
+            COALESCE(NULLIF(bi.Unit, ''), m.Unit) AS boq_unit,
+            {MATERIAL_PROPERTY_COLUMNS}
             m.UnitCost   AS unit_cost,
+            -- The BOQ measure (sq.m/l.m/...), exactly as training_service.py
+            -- feeds it — NOT EstimatedPurchaseQuantity. On a live project
+            -- that's the very Est. Qty this forecast is about to fill in, and
+            -- on a historical one it's the PO total (≈ the answer); the
+            -- models are trained on the BOQ quantity known at planning time.
             bi.EstimatedQuantity AS boq_quantity,
             COALESCE(bi.ActualQuantity, 0) AS actual_used,
             COALESCE(ir.AvailableQuantity, 0) AS current_stock,
             COALESCE(ir.ExcessQuantity, 0) AS excess_quantity,
             COALESCE(ir.WastedQuantity, 0) AS wasted_quantity,
-            COALESCE(ph.Name, '') AS phase_name,
+            COALESCE(bi.PrimarySection, '') AS primary_section,
+            COALESCE(bi.CoverageArea, 0) AS coverage_area,
             p.Type AS project_type_encoded,
-            DATEDIFF(NOW(), COALESCE(ph.StartDate, p.StartDate)) AS days_into_phase,
+            -- The forecast is a row's total demand over its whole planned
+            -- phase, and the models only ever see finished phases in
+            -- training (training_service._ROW_SELECT: days_into_phase =
+            -- phase duration, progress 100). Feeding today's date/progress
+            -- instead put a not-yet-started project outside anything the
+            -- models had seen (negative days, planned_usage_rate ~90x the
+            -- training range) and inflated its factor towards the cap.
+            DATEDIFF(COALESCE(ph.EndDate, p.TargetEndDate),
+                     COALESCE(ph.StartDate, p.StartDate)) AS days_into_phase,
             DATEDIFF(COALESCE(ph.EndDate, p.TargetEndDate),
                      COALESCE(ph.StartDate, p.StartDate)) AS phase_duration_days,
-            COALESCE(ph.ProgressPercent, 0) AS progress_percent
-        FROM boqitems bi
-        JOIN materials m ON m.Id = bi.MaterialId
-        JOIN projects p  ON p.Id = bi.ProjectId
-        LEFT JOIN phases ph ON ph.Id = bi.PhaseId
-        LEFT JOIN inventoryrecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
+            100 AS progress_percent,
+            COALESCE((
+                SELECT AVG(de.ActualLeadDays)
+                FROM PurchaseOrderMaterials pom
+                JOIN PurchaseOrders po ON po.Id = pom.PurchaseOrderId AND po.Status = 2
+                JOIN DeliveryEvaluations de ON de.PurchaseOrderId = po.Id
+                WHERE pom.BOQItemId = bi.Id
+                   OR (pom.BOQItemId IS NULL AND pom.MaterialId = bi.MaterialId
+                       AND (pom.PhaseId = bi.PhaseId OR (pom.PhaseId IS NULL AND bi.PhaseId IS NULL)))
+            ), 7) AS supplier_lead_time_days
+        FROM BOQItems bi
+        JOIN Materials m ON m.Id = bi.MaterialId
+        JOIN Projects p  ON p.Id = bi.ProjectId
+        LEFT JOIN Phases ph ON ph.Id = bi.PhaseId
+        LEFT JOIN InventoryRecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
         WHERE bi.ProjectId = :project_id
         {phase_filter}
-        GROUP BY m.Id, bi.EstimatedQuantity, bi.ActualQuantity, ir.AvailableQuantity,
-                 ir.ExcessQuantity, ir.WastedQuantity, ph.Name, p.Type,
+        GROUP BY m.Id, bi.Id, bi.Unit, bi.EstimatedPurchaseUnit, bi.EstimatedQuantity, bi.ActualQuantity, ir.AvailableQuantity,
+                 ir.ExcessQuantity, ir.WastedQuantity, bi.PrimarySection, bi.CoverageArea, p.Type,
                  ph.StartDate, ph.EndDate, p.StartDate, p.TargetEndDate, ph.ProgressPercent
     """)
 
@@ -56,9 +142,122 @@ def _fetch_records(engine: Engine, project_id: int, phase_id: int | None) -> lis
     return [dict(r) for r in rows]
 
 
+def _round_up(x: float) -> int:
+    """Purchase quantities are always rounded UP to whole units (tolerant of
+    float noise, so 34.0000001 stays 34)."""
+    return int(math.ceil(x - 1e-6)) if x > 0 else 0
+
+
+def predict_quantities(records: list[dict], rf, xgb) -> tuple[list[float], list[dict]]:
+    """Models → demand factors → quantities. Records need material_ratio and
+    demand_factor.attach_reference applied. Returns (quantities, per-row
+    details for build_response)."""
+    factors = ensemble_predict(random_forest.predict(records, rf), xgboost_model.predict(records, xgb))
+    quantities, clipped, flags = demand_factor.to_quantities(records, factors)
+    details = [{
+        "baseline_quantity": r.get("baseline_quantity"),
+        "reference_source":  r.get("reference_source"),
+        "predicted_factor":  round(c, 4),
+        "flag":              flag,
+    } for r, c, flag in zip(records, clipped, flags)]
+    return quantities, details
+
+
+def build_response(
+    project_id: int, phase_id: int | None, period: str,
+    records: list[dict], preds, table: dict, details: list[dict] | None = None,
+) -> ForecastResponse:
+    """Shapes one prediction per BOQ row into the API response — shared by
+    run_forecast (persisted models) and training_service's leave-one-
+    project-out evaluations (fold models), so both come out identically."""
+    # One prediction per BOQ line item (each carries its own section/phase/
+    # coverage-area features), but the same material commonly shows up on
+    # more than one line (e.g. CHB used for both "Exterior Wall" and
+    # "Interior Partition") — collapse those into one entry per material
+    # here, as the forecasted_materials contract has always been.
+    #
+    # Grouped by (material_id, output unit) rather than material_id alone —
+    # two rows of the same material can still predict in different units
+    # (one row's own purchase unit is "box", another's "pc"). Summing those
+    # together under one label would silently combine incompatible units
+    # into a single meaningless number. The unit is folded the same way the
+    # backend folds it (pc/pcs/piece/pieces, case, whitespace) so label
+    # variants of one unit don't split into separate entries.
+    #
+    # line_forecasts keeps the same predictions un-collapsed, one per BOQ
+    # row (boq_item_id), for callers that need a row's own figure — e.g.
+    # filling a live row's Est. Qty with ITS prediction, not the material's
+    # total repeated on every row of that material.
+    by_material: dict[tuple[int, str], ForecastedMaterial] = {}
+    line_forecasts: list[ForecastedLine] = []
+    for i, record in enumerate(records):
+        qty         = float(max(preds[i], 0))
+        stock       = float(record["current_stock"])
+        material_id = record["material_id"]
+        unit        = material_ratios.resolve_output_unit(table, record)
+        key = (material_id, material_ratios.normalize_unit(unit))
+
+        line_forecasts.append(ForecastedLine(
+            boq_item_id         = record["boq_item_id"],
+            material_id         = material_id,
+            unit                = unit,
+            forecasted_quantity = _round_up(qty),
+            purchase_unit_known = material_ratios.has_purchase_unit(table, record),
+            **(details[i] if details else {}),
+        ))
+
+        existing = by_material.get(key)
+        if existing is not None:
+            existing.forecasted_quantity += qty
+        else:
+            by_material[key] = ForecastedMaterial(
+                material_id         = material_id,
+                material_name       = record["material_name"],
+                unit                = unit,
+                forecasted_quantity = qty,
+                current_stock       = stock,   # per-material fact — identical across this material's rows
+                shortage            = 0,       # recomputed below, once the total is known
+                reorder_suggestion  = 0,
+                risk_level          = RiskLevel.low,
+            )
+
+    forecasted_materials = list(by_material.values())
+    for fm in forecasted_materials:
+        fm.shortage           = max(fm.forecasted_quantity - fm.current_stock, 0)
+        fm.reorder_suggestion = fm.shortage * 1.1
+        fm.risk_level         = RiskLevel(classify_risk(fm.shortage, fm.current_stock))
+        # Material quantities are always whole purchase units, rounded UP —
+        # only after shortage/reorder/risk are derived from the precise float,
+        # so the rounding itself never skews the risk classification.
+        fm.forecasted_quantity = _round_up(fm.forecasted_quantity)
+        fm.current_stock       = round(fm.current_stock)
+        fm.shortage            = _round_up(fm.shortage)
+        fm.reorder_suggestion  = _round_up(fm.reorder_suggestion)
+
+    return ForecastResponse(
+        project_id=project_id,
+        phase_id=phase_id,
+        period=period,
+        model_accuracy=None,
+        forecasted_materials=forecasted_materials,
+        line_forecasts=line_forecasts,
+    )
+
+
+class ModelNotAvailable(Exception):
+    """No trained model to forecast with (never trained, or the active one
+    can't be loaded) — the route turns this into a 409 so the caller can tell
+    it apart from a real failure. AI forecasting is blocked rather than
+    answered with a fallback calculation dressed up as a model prediction."""
+
+
 def run_forecast(request: ForecastRequest) -> ForecastResponse:
+    active, problem = model_registry.load_active()
+    if active is None:
+        raise ModelNotAvailable(problem or "No trained model is available.")
+
     engine  = get_engine()
-    records = _fetch_records(engine, request.project_id, request.phase_id)
+    records = fetch_records(engine, request.project_id, request.phase_id)
 
     if not records:
         return ForecastResponse(
@@ -67,33 +266,17 @@ def run_forecast(request: ForecastRequest) -> ForecastResponse:
             period=request.period.value,
             model_accuracy=None,
             forecasted_materials=[],
+            model_version=active.version,
+            model_confidence=active.manifest.get("confidence"),
         )
 
-    rf_preds  = random_forest.predict(records)
-    xgb_preds = xgboost_model.predict(records)
-    preds     = ensemble_predict(rf_preds, xgb_preds)
+    # The same ratio table the active models were trained against, then the
+    # reference each row's factor is applied to.
+    material_ratios.attach(records, active.ratio_table)
+    demand_factor.attach_reference(records, active.ratio_table)
+    preds, details = predict_quantities(records, active.rf, active.xgb)
 
-    forecasted_materials = []
-    for i, record in enumerate(records):
-        qty     = float(max(preds[i], 0))
-        stock   = float(record["current_stock"])
-        shortage= max(qty - stock, 0)
-
-        forecasted_materials.append(ForecastedMaterial(
-            material_id         = record["material_id"],
-            material_name       = record["material_name"],
-            unit                = record["unit"],
-            forecasted_quantity = qty,
-            current_stock       = stock,
-            shortage            = shortage,
-            reorder_suggestion  = shortage * 1.1,
-            risk_level          = RiskLevel(classify_risk(shortage, stock)),
-        ))
-
-    return ForecastResponse(
-        project_id=request.project_id,
-        phase_id=request.phase_id,
-        period=request.period.value,
-        model_accuracy=None,
-        forecasted_materials=forecasted_materials,
-    )
+    response = build_response(request.project_id, request.phase_id, request.period.value, records, preds, active.ratio_table, details)
+    response.model_version    = active.version
+    response.model_confidence = active.manifest.get("confidence")
+    return response

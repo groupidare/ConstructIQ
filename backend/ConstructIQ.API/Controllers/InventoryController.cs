@@ -16,8 +16,8 @@ public class InventoryController(IInventoryService inventoryService) : Controlle
             ?? User.FindFirst("sub")?.Value ?? "0");
 
     [HttpGet("project/{projectId:int}")]
-    public async Task<IActionResult> GetByProject(int projectId) =>
-        Ok(await inventoryService.GetByProjectAsync(projectId));
+    public async Task<IActionResult> GetByProject(int projectId, [FromQuery] bool inStockOnly = false) =>
+        Ok(await inventoryService.GetByProjectAsync(projectId, inStockOnly));
 
     [HttpGet("{id:int}")]
     public async Task<IActionResult> GetById(int id)
@@ -26,8 +26,10 @@ public class InventoryController(IInventoryService inventoryService) : Controlle
         return record is null ? NotFound() : Ok(record);
     }
 
+    // SiteEngineer's Inventory access is view-only — only Warehouse (and
+    // Admin) actually record stock movements.
     [HttpPost("movement")]
-    [Authorize(Roles = "Admin,SiteEngineer,WarehousePersonnel")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> RecordMovement([FromBody] MovementCreateDto dto)
     {
         await inventoryService.RecordMovementAsync(dto, CurrentUserId);

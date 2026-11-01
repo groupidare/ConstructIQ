@@ -8,6 +8,7 @@ interface ProjectStore {
   setSelectedProject: (project: Project | null) => void;
   addProject: (project: Project) => void;
   updateProject: (project: Project) => void;
+  removeProject: (id: number) => void;
 }
 
 export const useProjectStore = create<ProjectStore>((set) => ({
@@ -21,4 +22,6 @@ export const useProjectStore = create<ProjectStore>((set) => ({
     set((state) => ({
       projects: state.projects.map((p) => (p.id === project.id ? project : p)),
     })),
+  removeProject: (id) =>
+    set((state) => ({ projects: state.projects.filter((p) => p.id !== id) })),
 }));

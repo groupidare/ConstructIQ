@@ -1,0 +1,89 @@
+{
+  "_comment": "Shared by ml-service/tests/test_baseline_engine.py and backend/ConstructIQ.Tests/BaselineCalculatorTests.cs so the Python engine and its C# mirror can't drift. baseline_quantity is exact (4 dp), purchase_quantity is rounded up to whole purchase units.",
+  "cases": [
+    {
+      "name": "fiber cement board sheets from sq.m",
+      "material": { "unit": "sq.m", "calculation_type": "UnitArea", "length_mm": 2400, "width_mm": 1200, "purchase_unit": "sht" },
+      "boq_unit": "sq.m", "boq_quantity": 708.5,
+      "expected": { "baseline_quantity": 246.0069, "purchase_quantity": 247, "purchase_unit": "sht", "formula_text": "708.5 m² ÷ 2.88 m²/sht", "reason": null }
+    },
+    {
+      "name": "CHB 400x200 is 12.5 pcs per sq.m",
+      "material": { "unit": "pc", "calculation_type": "UnitArea", "length_mm": 400, "width_mm": 200, "thickness_mm": 100 },
+      "boq_unit": "sqm", "boq_quantity": 10,
+      "expected": { "baseline_quantity": 125, "purchase_quantity": 125, "purchase_unit": "pc", "formula_text": "10 m² ÷ 0.08 m²/pc", "reason": null }
+    },
+    {
+      "name": "600x600 tiles packed 4 per box",
+      "material": { "unit": "sq.m", "calculation_type": "UnitArea", "length_mm": 600, "width_mm": 600, "pieces_per_package": 4, "purchase_unit": "box" },
+      "boq_unit": "m2", "boq_quantity": 63.1,
+      "expected": { "baseline_quantity": 43.8194, "purchase_quantity": 44, "purchase_unit": "box", "formula_text": "63.1 m² ÷ 0.36 m²/pc ÷ 4 pc/box", "reason": null }
+    },
+    {
+      "name": "paint two coats",
+      "material": { "unit": "gal", "calculation_type": "CoverageRate", "coverage_per_unit": 25, "coverage_unit": "sq.m", "coats": 2 },
+      "boq_unit": "sq.m", "boq_quantity": 100,
+      "expected": { "baseline_quantity": 8, "purchase_quantity": 8, "purchase_unit": "gal", "formula_text": "100 m² × 2 coats ÷ 25 m²/gal", "reason": null }
+    },
+    {
+      "name": "tile adhesive one coat by default",
+      "material": { "unit": "bag", "calculation_type": "CoverageRate", "coverage_per_unit": 4 },
+      "boq_unit": "sq.m", "boq_quantity": 63.1,
+      "expected": { "baseline_quantity": 15.775, "purchase_quantity": 16, "purchase_unit": "bag", "formula_text": "63.1 m² ÷ 4 m²/bag", "reason": null }
+    },
+    {
+      "name": "cement bags per cu.m of concrete",
+      "material": { "unit": "bag", "calculation_type": "Volume", "coverage_per_unit": 0.1111, "coverage_unit": "cu.m" },
+      "boq_unit": "cu.m", "boq_quantity": 3.2,
+      "expected": { "baseline_quantity": 28.8029, "purchase_quantity": 29, "purchase_unit": "bag", "formula_text": "3.2 m³ ÷ 0.1111 m³/bag", "reason": null }
+    },
+    {
+      "name": "doors are counted",
+      "material": { "unit": "pc", "calculation_type": "Count" },
+      "boq_unit": "set", "boq_quantity": 6,
+      "expected": { "baseline_quantity": 6, "purchase_quantity": 6, "purchase_unit": "pc", "formula_text": "6 pc", "reason": null }
+    },
+    {
+      "name": "rebar 204 l.m in 6 m bars",
+      "material": { "unit": "pcs", "calculation_type": "Length", "unit_length_m": 6 },
+      "boq_unit": "l.m", "boq_quantity": 204,
+      "expected": { "baseline_quantity": 34, "purchase_quantity": 34, "purchase_unit": "pcs", "formula_text": "204 m ÷ 6 m/pcs", "reason": null }
+    },
+    {
+      "name": "exact multiple is not bumped up by float noise",
+      "material": { "unit": "pc", "calculation_type": "UnitArea", "length_mm": 300, "width_mm": 300 },
+      "boq_unit": "sq.m", "boq_quantity": 0.27,
+      "expected": { "baseline_quantity": 3, "purchase_quantity": 3, "purchase_unit": "pc", "formula_text": "0.27 m² ÷ 0.09 m²/pc", "reason": null }
+    },
+    {
+      "name": "no calculation type",
+      "material": { "unit": "sq.m" },
+      "boq_unit": "sq.m", "boq_quantity": 50,
+      "expected": { "baseline_quantity": null, "purchase_quantity": null, "purchase_unit": null, "formula_text": null, "reason": "no properties" }
+    },
+    {
+      "name": "unit area missing a dimension",
+      "material": { "unit": "pc", "calculation_type": "UnitArea", "length_mm": 400 },
+      "boq_unit": "sq.m", "boq_quantity": 50,
+      "expected": { "baseline_quantity": null, "purchase_quantity": null, "purchase_unit": null, "formula_text": null, "reason": "no properties" }
+    },
+    {
+      "name": "area material on a length row",
+      "material": { "unit": "pc", "calculation_type": "UnitArea", "length_mm": 400, "width_mm": 200 },
+      "boq_unit": "l.m", "boq_quantity": 50,
+      "expected": { "baseline_quantity": null, "purchase_quantity": null, "purchase_unit": null, "formula_text": null, "reason": "unit mismatch" }
+    },
+    {
+      "name": "volume material on an area row needs thickness",
+      "material": { "unit": "bag", "calculation_type": "Volume", "coverage_per_unit": 0.1111 },
+      "boq_unit": "sq.m", "boq_quantity": 50,
+      "expected": { "baseline_quantity": null, "purchase_quantity": null, "purchase_unit": null, "formula_text": null, "reason": "needs thickness/volume" }
+    },
+    {
+      "name": "no BOQ quantity",
+      "material": { "unit": "pc", "calculation_type": "Count" },
+      "boq_unit": "pc", "boq_quantity": null,
+      "expected": { "baseline_quantity": null, "purchase_quantity": null, "purchase_unit": null, "formula_text": null, "reason": "no quantity" }
+    }
+  ]
+}

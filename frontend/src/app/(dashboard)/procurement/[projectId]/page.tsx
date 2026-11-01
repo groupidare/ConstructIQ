@@ -11,7 +11,7 @@ import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
 import Spinner from '@/components/ui/Spinner';
 import { Table, Th, Td, Tr } from '@/components/ui/Table';
-import { formatCurrency, formatDate } from '@/lib/utils';
+import { formatDate } from '@/lib/utils';
 import type { Project } from '@/types/project';
 
 const urgencyVariant: Record<string, 'default' | 'success' | 'warning' | 'danger' | 'info'> = {
@@ -92,7 +92,6 @@ export default function ProjectProcurementPage() {
                 <Th>ROP</Th>
                 <Th>TSL</Th>
                 <Th>Recommended Qty</Th>
-                <Th>Est. Cost</Th>
                 <Th>Lead Time</Th>
                 <Th>Reorder Date</Th>
                 <Th>Urgency</Th>
@@ -109,7 +108,6 @@ export default function ProjectProcurementPage() {
                   <Td className="text-gray-500">{r.reorderPoint.toLocaleString()}</Td>
                   <Td className="text-gray-500">{r.targetStockLevel.toLocaleString()}</Td>
                   <Td className="font-medium">{r.recommendedQuantity.toLocaleString()}</Td>
-                  <Td>{formatCurrency(r.estimatedCost)}</Td>
                   <Td>{r.estimatedLeadTimeDays}d</Td>
                   <Td>{r.suggestedReorderDate ? formatDate(r.suggestedReorderDate) : '—'}</Td>
                   <Td><Badge variant={urgencyVariant[r.urgencyLevel]}>{r.urgencyLevel}</Badge></Td>

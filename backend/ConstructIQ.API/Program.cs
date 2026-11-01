@@ -1,3 +1,4 @@
+using ConstructIQ.API.Helpers;
 using System.Text;
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Middleware;
@@ -10,54 +11,120 @@ using Microsoft.IdentityModel.Tokens;
 var builder = WebApplication.CreateBuilder(args);
 
 // ── Database ────────────────────────────────────────────────────────────────
+// SslMode defaults to "Preferred" (MySqlConnector's own default: opportunistic
+// TLS, works unchanged against a local dev MySQL with no SSL configured) — set
+// DB_SSL_MODE=Required (or VerifyCA/VerifyFull) via env var for a managed host
+// like Aiven that enforces TLS.
 var connStr = $"Server={builder.Configuration["DB_HOST"] ?? "localhost"};" +
               $"Port={builder.Configuration["DB_PORT"] ?? "3306"};" +
               $"Database={builder.Configuration["DB_NAME"] ?? "constructiq"};" +
               $"Uid={builder.Configuration["DB_USER"] ?? "root"};" +
-              $"Pwd={builder.Configuration["DB_PASSWORD"]};";
+              $"Pwd={builder.Configuration["DB_PASSWORD"]};" +
+              $"SslMode={builder.Configuration["DB_SSL_MODE"] ?? "Preferred"};" +
+              // MySqlConnector allows up to 100 pooled connections by default —
+              // more than a small managed MySQL plan (Aiven) accepts in total,
+              // shared with the ML service. Capped so the backend can't use up
+              // the server's limit ("Too many connections"); requests briefly
+              // wait for a free connection instead. Override with DB_MAX_POOL_SIZE.
+              $"Maximum Pool Size={builder.Configuration["DB_MAX_POOL_SIZE"] ?? "15"};";
 
 builder.Services.AddDbContext<AppDbContext>(opts =>
-    opts.UseMySql(connStr, new MySqlServerVersion(new Version(8, 0, 0))));
+    opts.UseMySql(connStr, new MySqlServerVersion(new Version(8, 0, 0)), mysql =>
+        // A brief connection blip to Aiven (network hiccup, not a real
+        // outage) used to surface as a raw 500 straight to the user instead
+        // of just quietly retrying — this is EF Core's own built-in retry
+        // policy for exactly that class of transient failure.
+        mysql.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorNumbersToAdd: null)));
 
 // ── JWT Authentication ───────────────────────────────────────────────────────
-var jwtSecret = builder.Configuration["JWT_SECRET"]
-    ?? throw new InvalidOperationException("JWT_SECRET not configured.");
-
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(opts =>
-    {
-        opts.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer           = true,
-            ValidateAudience         = true,
-            ValidateLifetime         = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer              = builder.Configuration["JWT_ISSUER"],
-            ValidAudience            = builder.Configuration["JWT_AUDIENCE"],
-            IssuerSigningKey         = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
-        };
-    });
-
-builder.Services.AddAuthorization();
+builder.Services.AddConstructIqSecurity(builder.Configuration);
 
 // ── Services ─────────────────────────────────────────────────────────────────
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IEmailService, EmailService>();
+builder.Services.AddScoped<DatabaseBackupService>();
 builder.Services.AddScoped<IProjectService, ProjectService>();
+builder.Services.AddScoped<IProjectAccessService, ProjectAccessService>();
+builder.Services.AddScoped<IMaterialCostService, MaterialCostService>();
 builder.Services.AddScoped<IInventoryService, InventoryService>();
 builder.Services.AddScoped<IExcessWasteService, ExcessWasteService>();
 builder.Services.AddScoped<IForecastService, ForecastService>();
 builder.Services.AddScoped<IProcurementService, ProcurementService>();
 builder.Services.AddScoped<IRedistributionService, RedistributionService>();
+builder.Services.AddScoped<IWarehouseRequestService, WarehouseRequestService>();
+builder.Services.AddScoped<IDocumentService, DocumentService>();
+builder.Services.AddScoped<IMeasurementService, MeasurementService>();
+builder.Services.AddScoped<IBOQService, BOQService>();
+builder.Services.AddScoped<INotificationService, NotificationService>();
+builder.Services.AddScoped<IBackupJobService, BackupJobService>();
+builder.Services.AddScoped<IPhaseService, PhaseService>();
+builder.Services.AddScoped<IWarehouseStockService, WarehouseStockService>();
+// R2 credentials only exist on the deployed instance; local dev without them
+// falls back to wwwroot/uploads instead of failing every controller that
+// depends on file storage. Outside Development, R2 stays mandatory so missing
+// config fails loudly rather than writing uploads to ephemeral container disk.
+var useR2Storage = !builder.Environment.IsDevelopment()
+    || !string.IsNullOrWhiteSpace(builder.Configuration["R2_BUCKET_NAME"]);
+if (useR2Storage)
+    builder.Services.AddSingleton<IFileStorageService, R2FileStorageService>();
+else
+    builder.Services.AddSingleton<IFileStorageService, LocalFileStorageService>();
+builder.Services.AddScoped<IWeatherGeocodingService, WeatherGeocodingService>();
+builder.Services.AddHostedService<WeatherWatcherService>();
 builder.Services.AddHttpClient("MLService", client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["ML_SERVICE_URL"] ?? "http://localhost:8000");
+    // ml-service runs as a public Web Service (Render's free tier has no
+    // Private Service option), so this proves the request actually came from
+    // this backend rather than an arbitrary caller — see ml-service's
+    // app/utils/auth.py, which only enforces this when ML_API_KEY is set
+    // (unset for local dev, where there's nothing public to protect).
+    var mlApiKey = builder.Configuration["ML_API_KEY"];
+    if (!string.IsNullOrWhiteSpace(mlApiKey))
+        client.DefaultRequestHeaders.Add("X-API-Key", mlApiKey);
+});
+// Same ML service, for blueprint extraction: reading every page of a large
+// CAD plan set takes a minute or more the first time (later calls on the same
+// file are cached by the ML service), past HttpClient's 100 s default.
+builder.Services.AddHttpClient("MLServiceLong", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["ML_SERVICE_URL"] ?? "http://localhost:8000");
+    client.Timeout = TimeSpan.FromMinutes(5);
+    var mlApiKey = builder.Configuration["ML_API_KEY"];
+    if (!string.IsNullOrWhiteSpace(mlApiKey))
+        client.DefaultRequestHeaders.Add("X-API-Key", mlApiKey);
+});
+builder.Services.AddScoped<IBlueprintService, BlueprintService>();
+builder.Services.AddHostedService<MlServiceKeepAliveService>();
+builder.Services.AddHostedService<DbKeepAliveService>();
+builder.Services.AddHttpClient("Resend", client =>
+{
+    client.BaseAddress = new Uri("https://api.resend.com/");
+    var resendKey = builder.Configuration["RESEND_API_KEY"];
+    if (!string.IsNullOrWhiteSpace(resendKey))
+        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", resendKey);
+});
+builder.Services.AddHttpClient("GoogleSheets", client =>
+{
+    client.BaseAddress = new Uri("https://sheets.googleapis.com/");
+});
+builder.Services.AddHttpClient("OpenMeteoGeocoding", client =>
+{
+    client.BaseAddress = new Uri("https://geocoding-api.open-meteo.com/");
+});
+builder.Services.AddHttpClient("OpenMeteoWeather", client =>
+{
+    client.BaseAddress = new Uri("https://api.open-meteo.com/");
 });
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
+var frontendOrigins = (builder.Configuration["FRONTEND_URL"] ?? "http://localhost:3000")
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
 builder.Services.AddCors(opts =>
     opts.AddPolicy("FrontendPolicy", policy =>
-        policy.WithOrigins(
-                builder.Configuration["FRONTEND_URL"] ?? "http://localhost:3000")
+        policy.WithOrigins(frontendOrigins)
               .AllowAnyMethod()
               .AllowAnyHeader()
               .AllowCredentials()));
@@ -74,31 +141,21 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// TEMP debug endpoints
-app.MapGet("/dev/hash", () => BCrypt.Net.BCrypt.HashPassword("Admin@123"));
-app.MapGet("/dev/debug", (AppDbContext db) =>
-{
-    try
-    {
-        var admin = db.Users.FirstOrDefault(u => u.Username == "admin");
-        if (admin is null) return Results.Ok("NO ADMIN USER IN DATABASE");
-        var hashOk = BCrypt.Net.BCrypt.Verify("Admin@123", admin.PasswordHash);
-        return Results.Ok(new {
-            Found      = true,
-            IsActive   = admin.IsActive,
-            Role       = admin.Role.ToString(),
-            HashOk     = hashOk,
-            HashStored = admin.PasswordHash
-        });
-    }
-    catch (Exception ex) { return Results.Ok($"DB ERROR: {ex.Message}"); }
-});
-
+// With R2, uploads are served directly from Cloudflare, not proxied through
+// this app's own (ephemeral, Render-free-tier) disk. Only the local fallback
+// needs this app to serve /uploads itself.
+if (!useR2Storage)
+    app.UseStaticFiles();
 app.UseCors("FrontendPolicy");
 app.UseMiddleware<ActivityLoggingMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// Unauthenticated on purpose — an external uptime monitor (BetterStack etc.)
+// needs to hit this without credentials to keep the free-tier instance from
+// idling out, which otherwise resets the container's filesystem on wake-up.
+app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "ConstructIQ API" }));
 
 // Apply pending migrations and seed admin user
 using (var scope = app.Services.CreateScope())
@@ -107,6 +164,11 @@ using (var scope = app.Services.CreateScope())
     {
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         db.Database.Migrate();
+        // Typical physical properties for any material that has none yet (the
+        // engineering baseline needs them; an Admin's own values are kept).
+        var filled = db.Materials.Where(m => m.CalculationType == null).ToList()
+            .Count(ConstructIQ.API.Algorithms.MaterialPropertyDefaults.TryApply);
+        if (filled > 0) Console.WriteLine($"[SEEDER] Filled default properties for {filled} material(s).");
         var admin = db.Users.FirstOrDefault(u => u.Username == "admin");
         if (admin is null)
         {
@@ -121,15 +183,51 @@ using (var scope = app.Services.CreateScope())
                 IsActive     = true,
             });
         }
-        else
-        {
-            admin.PasswordHash = ConstructIQ.API.Helpers.PasswordHasher.Hash("Admin@123");
-            admin.IsActive     = true;
-            admin.Role         = ConstructIQ.API.Models.Entities.UserRole.Admin;
-        }
+
         db.SaveChanges();
     }
     catch (Exception ex) { Console.WriteLine($"[SEEDER ERROR] {ex.Message}"); }
+}
+
+// One-off historical data backfill for the Forecasting chart: `dotnet run
+// --seed-excess` runs it and exits, never as part of a normal app start.
+if (args.Contains("--seed-excess"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await ConstructIQ.API.Data.DbInitializer.SeedHistoricalExcessAndWasteAsync(db);
+    return;
+}
+
+if (args.Contains("--seed-forecasts"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await ConstructIQ.API.Data.DbInitializer.SeedHistoricalForecastsAsync(db);
+    return;
+}
+
+// One-off: gives existing historical BOQ rows the purchase quantity/unit of
+// their own PO lines (see DbInitializer.BackfillHistoricalPurchaseUnitsAsync).
+// Opt-in only — `dotnet run --backfill-historical-purchase-units` runs it,
+// prints every row it changed, and exits.
+if (args.Contains("--backfill-historical-purchase-units"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await ConstructIQ.API.Data.DbInitializer.BackfillHistoricalPurchaseUnitsAsync(db);
+    return;
+}
+
+// One-off: removes saved forecasts no trained model produced (see
+// DbInitializer.CleanupFallbackForecastsAsync). `dotnet run
+// --cleanup-fallback-forecasts` only lists them; add `--confirm` to delete.
+if (args.Contains("--cleanup-fallback-forecasts"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await ConstructIQ.API.Data.DbInitializer.CleanupFallbackForecastsAsync(db, confirm: args.Contains("--confirm"));
+    return;
 }
 
 app.Run();

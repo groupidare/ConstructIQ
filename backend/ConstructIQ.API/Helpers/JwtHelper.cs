@@ -26,6 +26,7 @@ public static class JwtHelper
             new Claim("role",     user.Role.ToString()),
             new Claim("firstName",user.FirstName),
             new Claim("lastName", user.LastName),
+            new Claim("security_stamp", user.SecurityStamp ?? ""),
         };
 
         var token = new JwtSecurityToken(

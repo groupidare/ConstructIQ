@@ -39,8 +39,12 @@ export default function ProjectForecastingPage() {
     try {
       await generateForecast({ projectId: pid, period, planningWeeks: 4 });
       toast.success('Forecast generated!');
-    } catch {
-      toast.error('Failed to generate forecast. Ensure the ML service is running.');
+    } catch (error) {
+      // The backend's own message when it has one — e.g. "AI forecasting is
+      // unavailable until an administrator trains the model" (409, no trained
+      // model) rather than a generic failure.
+      const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message || 'Failed to generate forecast. Ensure the ML service is running.');
     } finally {
       setGenerating(false);
     }
@@ -93,18 +97,27 @@ export default function ProjectForecastingPage() {
                 </tr>
               </thead>
               <tbody>
+                {/* key includes unit, not just materialId — one forecast can
+                    now carry more than one entry per material (one per
+                    distinct unit forecasted), which would otherwise collide
+                    on a bare materialId key. */}
                 {latest.forecastedMaterials?.map(m => (
-                  <Tr key={m.materialId}>
+                  <Tr key={`${m.materialId}-${m.unit}`}>
                     <Td className="font-medium">{m.materialName}</Td>
                     <Td>{m.unit}</Td>
-                    <Td>{m.forecastedQuantity.toLocaleString()}</Td>
+                    {/* Always round up, never down — under-displaying a forecast
+                        could read as "that's enough" when it isn't. Comparisons
+                        below still use the raw values, so a difference too small
+                        to survive rounding (e.g. 3337.4 vs 3337.0) still shows
+                        the right color even if both display the same whole number. */}
+                    <Td>{Math.ceil(m.forecastedQuantity).toLocaleString()}</Td>
                     <Td className={m.currentStock < m.forecastedQuantity ? 'text-red-600 font-medium' : ''}>
-                      {m.currentStock.toLocaleString()}
+                      {Math.ceil(m.currentStock).toLocaleString()}
                     </Td>
                     <Td className={m.shortage > 0 ? 'text-red-600 font-medium' : 'text-gray-400'}>
-                      {m.shortage > 0 ? m.shortage.toLocaleString() : '—'}
+                      {m.shortage > 0 ? Math.ceil(m.shortage).toLocaleString() : '—'}
                     </Td>
-                    <Td>{m.reorderSuggestion > 0 ? m.reorderSuggestion.toLocaleString() : '—'}</Td>
+                    <Td>{m.reorderSuggestion > 0 ? Math.ceil(m.reorderSuggestion).toLocaleString() : '—'}</Td>
                     <Td><Badge variant={riskVariant[m.riskLevel]}>{m.riskLevel}</Badge></Td>
                   </Tr>
                 ))}

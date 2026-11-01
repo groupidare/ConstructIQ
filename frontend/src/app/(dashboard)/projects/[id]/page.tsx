@@ -9,7 +9,7 @@ import { Card, CardHeader, CardBody } from '@/components/ui/Card';
 import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
 import Spinner from '@/components/ui/Spinner';
-import { formatDate, formatCurrency } from '@/lib/utils';
+import { formatDate } from '@/lib/utils';
 import type { Project } from '@/types/project';
 
 export default function ProjectDetailPage() {
@@ -32,7 +32,7 @@ export default function ProjectDetailPage() {
   const quickLinks = [
     { label: 'Inventory',         icon: Package,       href: `/inventory/${id}` },
     { label: 'Forecasting',       icon: BarChart2,      href: `/forecasting/${id}` },
-    { label: 'Excess Analytics',  icon: AlertTriangle,  href: `/excess-analytics/${id}` },
+    { label: 'Excess',            icon: AlertTriangle,  href: `/excess-analytics/${id}` },
     { label: 'Procurement',       icon: ShoppingCart,   href: `/procurement/${id}` },
   ];
 
@@ -71,7 +71,6 @@ export default function ProjectDetailPage() {
         <Card>
           <CardHeader><h2 className="font-semibold">Overview</h2></CardHeader>
           <CardBody className="space-y-2 text-sm">
-            <Row label="Budget"        value={project.budget ? formatCurrency(project.budget) : '—'} />
             <Row label="Start Date"    value={formatDate(project.startDate)} />
             <Row label="Target End"    value={formatDate(project.targetEndDate)} />
             <Row label="Contractor"    value={project.assignedContractor ?? '—'} />

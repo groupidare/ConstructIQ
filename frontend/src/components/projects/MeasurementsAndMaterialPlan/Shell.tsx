@@ -1,0 +1,630 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import toast from 'react-hot-toast';
+import { Pencil, Eye, FileText, Folder } from 'lucide-react';
+import { useDocuments } from '@/hooks/useDocuments';
+import { useBOQ } from '@/hooks/useBOQ';
+import { useInventory } from '@/hooks/useInventory';
+import { useForecasting } from '@/hooks/useForecasting';
+import { useNotifications } from '@/hooks/useNotifications';
+import { useMaterialRequests } from '@/hooks/useMaterialRequests';
+import { useWarehouseRequests } from '@/hooks/useWarehouseRequests';
+import { useAlertStore } from '@/store/alertStore';
+import { useProjects } from '@/hooks/useProjects';
+import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
+import type { Project, ProjectType } from '@/types/project';
+import type { BOQItem, BOQItemRow } from '@/types/boq';
+import { PURCHASE_UNITS } from '@/types/boq';
+import type { PurchaseOrderMaterial } from '@/types/purchaseOrder';
+import type { ProjectDocument } from '@/types/document';
+import MeasurementsTab from './MeasurementsTab';
+import MaterialPlanTab from './MaterialPlanTab';
+import BlueprintWizard from './BlueprintWizard';
+import ScanCoveredDialog from './ScanCoveredDialog';
+import { knownSection, splitScannedRows } from '@/lib/boqSections';
+
+function apiErrorMessage(error: unknown, fallback: string): string {
+  const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+  return message || fallback;
+}
+
+// The backend answers Generate Forecast with 409 / code "ModelNotTrained"
+// when no trained model exists — AI forecasting is blocked rather than
+// answered with an untrained fallback (see ForecastService).
+function isModelNotTrained(error: unknown): boolean {
+  const response = (error as { response?: { status?: number; data?: { code?: string } } })?.response;
+  return response?.status === 409 && response.data?.code === 'ModelNotTrained';
+}
+
+export type Tab = 'measurements' | 'materialPlan';
+
+export interface ShellProps {
+  project: Project;
+  initialEditable?: boolean;
+  initialTab?: Tab;
+  onProjectSaved?: (p: Project) => void;
+  showEditToggle?: boolean;
+  headerExtra?: React.ReactNode;
+}
+
+export function useMeasurementsAndMaterialPlan({ project, initialEditable = true, initialTab = 'measurements', onProjectSaved }: ShellProps) {
+  const [tab, setTab] = useState<Tab>(initialTab);
+  const [editable, setEditable] = useState(initialEditable);
+
+  const [projectType, setProjectType] = useState<ProjectType>(project.type);
+  const [otherTypeSpecify, setOtherTypeSpecify] = useState(project.otherTypeSpecify ?? '');
+  const [savingProjectType, setSavingProjectType] = useState(false);
+  const [boqRows, setBoqRows] = useState<BOQItemRow[]>([]);
+  const [savingBoq, setSavingBoq] = useState(false);
+  const [forecasting, setForecasting] = useState(false);
+  const [uploadingBlueprint, setUploadingBlueprint] = useState(false);
+  const [blueprintDoc, setBlueprintDoc] = useState<ProjectDocument | null>(null);
+  // Scanned BOQ rows held back because the blueprint already filled their section.
+  const [coveredRows, setCoveredRows] = useState<BOQItemRow[] | null>(null);
+  const [uploadingBoq, setUploadingBoq] = useState(false);
+  const [uploadingPo, setUploadingPo] = useState(false);
+  const [savingPo, setSavingPo] = useState(false);
+  const [poDraftRows, setPoDraftRows] = useState<PurchaseOrderMaterial[]>([]);
+  const [poSupplierName, setPoSupplierName] = useState('');
+  const [poOrderDate, setPoOrderDate] = useState('');
+  const [poExpectedDate, setPoExpectedDate] = useState('');
+
+  const { documents, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument } = useDocuments(project.id);
+  const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems, getHistoricalEstimate } = useBOQ(project.id);
+  const { inventory, fetchInventory } = useInventory(project.id);
+  const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
+  const { sendNotification } = useNotifications();
+  const { createRequest: createMaterialRequest } = useMaterialRequests();
+  const { createRequest: createWarehouseRequest } = useWarehouseRequests();
+  const addAlert = useAlertStore(s => s.addAlert);
+  const { editProject } = useProjects();
+  const { items: purchaseOrders, fetchItems: fetchPurchaseOrders, createOrder, linkMaterial } = usePurchaseOrders(project.id);
+
+  const seededBoq = useRef(false);
+
+  // Shared by the initial-load seed effect below and by every save — reused
+  // so the draft rows always carry the server-assigned Id afterward. Without
+  // that, BOQService.BulkSaveAsync (Id.HasValue decides update-vs-insert) has
+  // no way to tell "this row already exists" on the *next* save, and creates
+  // a full duplicate set of BOQItems every single time Save/Run Forecast is
+  // clicked again — exactly what silently happened before this was added.
+  function boqItemToRow(b: BOQItem): BOQItemRow {
+    return {
+      id: b.id, phaseId: b.phaseId, primarySection: b.primarySection, subCategory: b.subCategory,
+      specification: b.specification, materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, isUsageConfirmed: b.isUsageConfirmed, notes: b.notes,
+      historicalSupply: b.historicalSupply,
+      estimatedPurchaseQuantity: b.estimatedPurchaseQuantity, estimatedPurchaseUnit: b.estimatedPurchaseUnit,
+      baselineQuantity: b.baselineQuantity, baselinePurchaseQuantity: b.baselinePurchaseQuantity,
+      baselineUnit: b.baselineUnit, baselineFormula: b.baselineFormula, baselineReason: b.baselineReason,
+      requestedQuantity: b.requestedQuantity,
+      // A value already saved server-side was either a prior suggestion the
+      // user accepted or one they typed themselves — either way, don't let
+      // the auto-suggest effect silently overwrite it on this fresh load.
+      estimatePurchaseManuallySet: b.estimatedPurchaseQuantity != null,
+      netLeftToOrder: b.netLeftToOrder,
+      warehouseApproved: b.warehouseApproved,
+      remainingRequestable: b.remainingRequestable,
+    };
+  }
+
+  useEffect(() => {
+    fetchDocuments();
+    fetchBoqItems();
+    fetchInventory(true);
+    fetchForecasts();
+    fetchPurchaseOrders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
+
+  useEffect(() => {
+    if (seededBoq.current || boqItems.length === 0) return;
+    seededBoq.current = true;
+    setBoqRows(boqItems.map(boqItemToRow));
+  }, [boqItems]);
+
+  const blueprints = documents.filter(d => d.category === 'Blueprint');
+  const boqDocs = documents.filter(d => d.category === 'BOQ');
+  const poDocs = documents.filter(d => d.category === 'PurchaseOrder');
+  const forecastedMaterials = forecasts[0]?.forecastedMaterials ?? [];
+
+  async function handleUploadBlueprint(file: File) {
+    setUploadingBlueprint(true);
+    try {
+      await uploadDocument(file, 'Blueprint');
+      toast.success('File uploaded.');
+    } catch {
+      toast.error('Failed to upload file.');
+    } finally {
+      setUploadingBlueprint(false);
+    }
+  }
+
+  async function handleUploadBoq(file: File) {
+    setUploadingBoq(true);
+    try {
+      await uploadDocument(file, 'BOQ');
+      toast.success(`${file.name} uploaded.`);
+    } catch {
+      toast.error(`Failed to upload ${file.name}.`);
+    } finally {
+      setUploadingBoq(false);
+    }
+  }
+
+  async function handleRemoveDocument(documentId: number) {
+    try {
+      await deleteDocument(documentId);
+      toast.success('File removed.');
+    } catch {
+      toast.error('Failed to remove file.');
+    }
+  }
+
+  async function handleParseBoq(documentId: number) {
+    try {
+      const result = await parseDocument(documentId);
+      if (result.items.length === 0) {
+        toast.error(result.parseErrors[0] || 'No line items detected in that document.');
+        return;
+      }
+      const scanned: BOQItemRow[] = result.items.map(item => {
+        return {
+          phaseId: item.phaseHint
+            ? project.phases.find(p => p.name.toLowerCase() === item.phaseHint!.toLowerCase())?.id
+            : undefined,
+          // "III. ELECTRICAL WORKS" → "Electrical Works", the plan's own section name.
+          primarySection: knownSection(item.primarySection) ?? (item.primarySection || 'Others'),
+          subCategory: item.subCategory,
+          // The parser can only split spec text into its own column when the
+          // source sheet has one distinct from the material/description
+          // column — most BOQ templates (like this one) put the whole spec
+          // string ("150mm CHB + 25mm plaster + paint") in the description
+          // cell itself, so this comes back "" and newMaterialName carries
+          // it instead. Store undefined, not "", so every fallback below
+          // (which reads specification || newMaterialName) actually falls
+          // through to it instead of "" winning as an already-defined value.
+          specification: item.specification || undefined,
+          materialId: item.matchedMaterialId,
+          // Keep the scanned name even when a catalog match was found — it's
+          // the only display text available until this row is saved and the
+          // real catalog name comes back from the backend on refetch.
+          newMaterialName: item.materialName,
+          unit: item.unit,
+          estimatedQuantity: item.estimatedQuantity,
+          historicalSupply: item.historicalSupply,
+          notes: 'Auto-scanned',
+        };
+      });
+
+      // Sections the blueprint filled keep the blueprint's rows; rows already
+      // in the plan (the same BOQ scanned again) are skipped.
+      const { add, covered, duplicates } = splitScannedRows(scanned, boqRows);
+      if (add.length) setBoqRows(prev => [...prev, ...add]);
+      if (covered.length) setCoveredRows(covered);
+      const notes = [
+        covered.length ? `${covered.length} held back (already covered by blueprint)` : '',
+        duplicates ? `${duplicates} already in the plan` : '',
+      ].filter(Boolean).join(', ');
+      if (add.length) toast.success(`${add.length} line item(s) added${notes ? ` — ${notes}` : ''}. Review them, then Save.`);
+      else if (!covered.length) toast(`Nothing new — all ${duplicates} line item(s) are already in the plan.`);
+      if (result.parseErrors.length > 0) toast.error(result.parseErrors[0]);
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to scan document.'));
+    }
+  }
+
+  // Rows generated from a blueprint join the Material Plan as unsaved rows,
+  // the same way "Scan & Fill Rows" adds a scanned BOQ — reviewed there and
+  // saved with the normal Save.
+  function handleBlueprintRows(rows: BOQItemRow[]) {
+    seededBoq.current = true; // never let the initial-load seed replace them
+    setBoqRows(prev => [...prev, ...rows]);
+    setTab('materialPlan');
+  }
+
+  async function handleUploadPO(file: File) {
+    setUploadingPo(true);
+    try {
+      await uploadDocument(file, 'PurchaseOrder');
+      toast.success(`${file.name} uploaded.`);
+    } catch {
+      toast.error(`Failed to upload ${file.name}.`);
+    } finally {
+      setUploadingPo(false);
+    }
+  }
+
+  async function handleParsePO(documentId: number) {
+    try {
+      const result = await parsePO(documentId);
+      if (result.items.length === 0) {
+        toast.error(result.parseErrors[0] || 'No line items detected in that document.');
+        return;
+      }
+      const first = result.items[0];
+      setPoSupplierName(prev => prev || first.supplierName || '');
+      setPoOrderDate(prev => prev || first.orderDate || '');
+      setPoExpectedDate(prev => prev || first.promisedDeliveryDate || '');
+      setPoDraftRows(prev => [
+        ...prev,
+        ...result.items.map(item => ({
+          name: item.materialName,
+          quantity: item.actualQuantityOrdered,
+          unit: item.unit,
+          materialId: item.matchedMaterialId,
+        })),
+      ]);
+      toast.success(`${result.items.length} line item(s) scanned — review and edit as needed.`);
+      if (result.parseErrors.length > 0) toast.error(result.parseErrors[0]);
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to scan document.'));
+    }
+  }
+
+  async function handleSavePO() {
+    if (!poSupplierName.trim()) { toast.error('Supplier name is required.'); return; }
+    if (!poExpectedDate) { toast.error('Expected delivery date is required.'); return; }
+    if (poDraftRows.length === 0) { toast.error('Add at least one material.'); return; }
+
+    setSavingPo(true);
+    try {
+      await createOrder({
+        projectId: project.id,
+        supplierName: poSupplierName.trim(),
+        orderDate: poOrderDate || undefined,
+        expectedDate: poExpectedDate,
+        materials: poDraftRows,
+      });
+      setPoDraftRows([]);
+      setPoSupplierName('');
+      setPoOrderDate('');
+      setPoExpectedDate('');
+      toast.success('Purchase order created.');
+    } catch {
+      toast.error('Failed to create purchase order.');
+    } finally {
+      setSavingPo(false);
+    }
+  }
+
+  async function handleLinkPoMaterial(materialId: number, boqItemId: number | null) {
+    try {
+      await linkMaterial(materialId, boqItemId);
+      await fetchPurchaseOrders();
+      toast.success(boqItemId ? 'Linked to BOQ line.' : 'Link removed.');
+    } catch {
+      toast.error('Failed to update link.');
+    }
+  }
+
+  async function persistProjectType(type: ProjectType, otherSpecify: string) {
+    setSavingProjectType(true);
+    try {
+      await editProject(project.id, {
+        name: project.name, type, otherTypeSpecify: type === 'Others' ? otherSpecify : undefined,
+        location: project.location, description: project.description, budget: project.budget,
+        startDate: project.startDate, targetEndDate: project.targetEndDate,
+        assignedContractor: project.assignedContractor, siteEngineerId: project.siteEngineerId,
+        phases: [],
+      });
+      onProjectSaved?.({ ...project, type, otherTypeSpecify: otherSpecify });
+      toast.success('Project type saved.');
+    } catch {
+      toast.error('Failed to save project type.');
+    } finally {
+      setSavingProjectType(false);
+    }
+  }
+
+  function handleProjectTypeChange(type: ProjectType, otherSpecify: string) {
+    setProjectType(type);
+    setOtherTypeSpecify(otherSpecify);
+    if (type !== 'Others') persistProjectType(type, otherSpecify);
+  }
+
+  function handleOtherTypeSpecifyBlur() {
+    if (projectType === 'Others') persistProjectType(projectType, otherTypeSpecify);
+  }
+
+  // overrideRows lets a caller (the partial-request split in MaterialPlanTab)
+  // save an exact freshly-computed rows array immediately, instead of
+  // relying on boqRows from this closure — which, called any other way,
+  // wouldn't yet reflect a split that just happened in the same tick.
+  async function handleSaveBoq(overrideRows?: BOQItemRow[], opts?: { silent?: boolean }) {
+    const rowsToSave = overrideRows ?? boqRows;
+    setSavingBoq(true);
+    try {
+      const saved = await saveBoqItems(rowsToSave);
+      setBoqRows(saved.map(boqItemToRow));
+      if (!opts?.silent) toast.success('Material plan saved.');
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to save material plan.'));
+      throw error;
+    } finally {
+      setSavingBoq(false);
+    }
+  }
+
+  // The AI's unit comes from real PO data, so it can be any spelling of a
+  // unit ("PCS", "pieces") — folded onto the Est. Qty unit dropdown's own
+  // option (same pc/pcs/piece/pieces folding the backend uses) so the
+  // dropdown can actually show it. A unit with no dropdown option at all
+  // returns undefined: the row then gets the historical-average suggestion,
+  // which is limited to those same units server-side (BOQService.PurchaseUnits).
+  function toPurchaseUnitOption(unit: string): string | undefined {
+    const lower = unit.trim().toLowerCase();
+    const folded = lower === 'pcs' || lower === 'piece' || lower === 'pieces' ? 'pc' : lower;
+    return (PURCHASE_UNITS as readonly string[]).find(u => u === folded);
+  }
+
+  async function handleRunForecast() {
+    setForecasting(true);
+    try {
+      // Run Forecast should reflect exactly what's on screen — save any
+      // reviewed/edited BOQ rows first so a forecast never silently runs
+      // against stale (or missing) data just because "Save Material Plan"
+      // wasn't clicked separately. Also gives every new row the id its
+      // per-row prediction comes back keyed by.
+      //
+      // A row the user deliberately cleared Est. Qty on is remembered by id
+      // before saving (the client-only estimatePurchaseManuallySet flag
+      // doesn't survive the save's refetch) — a manual value is never
+      // overwritten, an intentionally blank one included.
+      const manuallySetIds = new Set(boqRows.filter(r => r.estimatePurchaseManuallySet && r.id != null).map(r => r.id!));
+      let rows = boqRows;
+      if (rows.length > 0) {
+        const saved = await saveBoqItems(rows);
+        rows = saved.map(boqItemToRow);
+        setBoqRows(rows);
+      }
+      // No trained model → no AI forecast at all (never an untrained
+      // fallback shown as one); Est. Qty below then only gets the non-AI
+      // historical-average suggestion.
+      let forecast: Awaited<ReturnType<typeof generateForecast>> | null = null;
+      try {
+        forecast = await generateForecast({ projectId: project.id, period: 'Monthly', planningWeeks: 4 });
+      } catch (error) {
+        if (!isModelNotTrained(error)) throw error;
+      }
+
+      // Est. Qty/Unit stay blank until this point — filling them in is part
+      // of what "running a forecast" does, never a background side-effect
+      // of typing. Each still-empty row gets the AI's prediction for THAT
+      // row (the purchase quantity, in its purchase unit), not its
+      // material's total — or, with no trained model, no AI value at all.
+      // Only when the AI has no usable prediction for a row (none returned,
+      // zero, or only in the BOQ's own measurement unit because no purchase
+      // unit is known for that material yet) does the historical-average
+      // suggestion stand in. A row with any value already in Est. Qty — or
+      // one the user cleared themselves — is left exactly as it is.
+      // Historical projects record what was actually bought instead (their
+      // PO lines, set server-side), so nothing is filled there.
+      if (!project.isHistorical && rows.length > 0) {
+        const lineByBoqItemId = new Map((forecast?.lineForecasts ?? []).map(l => [l.boqItemId, l]));
+        const materialNameById = new Map(boqItems.map(b => [b.materialId, b.materialName]));
+        let changed = false;
+        const filledRows = await Promise.all(rows.map(async row => {
+          if (row.estimatedPurchaseQuantity != null || (row.id != null && manuallySetIds.has(row.id))) return row;
+
+          const line = row.id != null ? lineByBoqItemId.get(row.id) : undefined;
+          const lineUnit = line ? toPurchaseUnitOption(line.unit) : undefined;
+          if (line && line.purchaseUnitKnown && line.forecastedQuantity > 0 && lineUnit) {
+            changed = true;
+            return { ...row, estimatedPurchaseQuantity: line.forecastedQuantity, estimatedPurchaseUnit: lineUnit };
+          }
+
+          const section = (row.primarySection || '').trim();
+          const spec = (row.specification || row.newMaterialName || (row.materialId ? materialNameById.get(row.materialId) : undefined) || '').trim();
+          if (!section || !spec) return row;
+          try {
+            const result = await getHistoricalEstimate(section, spec, projectType);
+            if (result.estimatedQuantity == null || !result.unit) return row;
+            changed = true;
+            return { ...row, estimatedPurchaseQuantity: result.estimatedQuantity, estimatedPurchaseUnit: result.unit };
+          } catch {
+            return row; // no historical match available - stays blank, not an error
+          }
+        }));
+
+        // Persisted like any other Material Plan edit.
+        if (changed) {
+          const saved = await saveBoqItems(filledRows);
+          setBoqRows(saved.map(boqItemToRow));
+        }
+      }
+
+      if (forecast) {
+        toast.success('Material plan saved and forecast generated.');
+      } else {
+        toast('AI forecasting is unavailable until an administrator trains the model. The material plan was saved, and empty Est. Qty rows were filled from historical averages where available — not an AI forecast.', { icon: 'ℹ️', duration: 8000 });
+      }
+      setTab('materialPlan');
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to generate forecast — no historical or BOQ data available yet.'));
+    } finally {
+      setForecasting(false);
+    }
+  }
+
+  // Returns whether the request actually went through — MaterialPlanTab's
+  // partial-quantity dialog needs this to know whether it's safe to shrink
+  // the row to what was requested and spin the leftover into a new row, vs.
+  // leaving the row untouched on failure/validation.
+  async function handleNotify(kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string): Promise<boolean> {
+    const isProcurement = kind === 'ProcurementOrder';
+
+    // Both flows raise a real, trackable request now — that needs a resolved
+    // catalog material and an actual shortage to make sense (a request for a
+    // not-yet-linked material can't be matched against supplier history, and
+    // a zero/negative quantity is nothing to fulfill or release).
+    if (!materialId) {
+      toast.error(isProcurement
+        ? 'Link this row to a catalog material before requesting it from Procurement.'
+        : 'Link this row to a catalog material before requesting it from the warehouse.');
+      return false;
+    }
+    if (quantity <= 0) {
+      toast.error('Nothing to request — current stock already covers the estimated quantity.');
+      return false;
+    }
+
+    const message = isProcurement
+      ? `${materialName}: order ${quantity.toLocaleString()} more for "${project.name}".`
+      : `Please verify stock/quality of ${materialName} for "${project.name}".`;
+
+    try {
+      if (isProcurement) {
+        await createMaterialRequest({ projectId: project.id, materialId, quantity, unit });
+        await sendNotification({
+          projectId: project.id, materialId,
+          recipientRole: 'ProcurementOfficer',
+          kind, message, quantity,
+        });
+        addAlert({ kind: 'delay', title: 'Procurement Alert', body: message });
+        toast.success('Procurement notified — request added to their queue.');
+      } else {
+        await createWarehouseRequest({ projectId: project.id, materialId, requestedQuantity: quantity });
+        addAlert({ kind: 'overstock', title: 'Warehouse Alert', body: message });
+        toast.success(`Material request sent for ${materialName}.`);
+        // Deliberately no longer navigates away to /inventory — a partial
+        // request needs the user to stay right here to act on the leftover
+        // (e.g. notify Procurement next for what the warehouse couldn't cover).
+      }
+      return true;
+    } catch (error) {
+      toast.error(apiErrorMessage(error, isProcurement ? 'Failed to send the material request.' : 'Failed to create warehouse request.'));
+      return false;
+    }
+  }
+
+  return {
+    tab, setTab, editable, setEditable,
+    projectType, otherTypeSpecify,
+    onProjectTypeChange: handleProjectTypeChange, onOtherTypeSpecifyBlur: handleOtherTypeSpecifyBlur, savingProjectType,
+    boqRows, setBoqRows, boqItems,
+    blueprints, boqDocs, poDocs, inventory, forecastedMaterials,
+    savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
+    blueprintDoc, setBlueprintDoc, handleBlueprintRows, coveredRows, setCoveredRows,
+    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
+    handleSaveBoq, handleRunForecast, handleNotify,
+    purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
+    poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
+    poOrderDate, setPoOrderDate, poExpectedDate, setPoExpectedDate,
+  };
+}
+
+export function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
+  const tabBtn = (t: Tab, label: string, Icon: typeof Folder) => (
+    <button
+      onClick={() => setTab(t)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 6, padding: '10px 18px', border: 'none', cursor: 'pointer',
+        fontSize: '0.875rem', fontWeight: tab === t ? 700 : 400, background: 'transparent',
+        color: tab === t ? '#f97316' : '#9ca3af', borderBottom: tab === t ? '2px solid #f97316' : '2px solid transparent',
+      }}
+    >
+      <Icon style={{ width: 14, height: 14 }} /> {label}
+    </button>
+  );
+  return (
+    <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', marginTop: '0.75rem' }}>
+      {tabBtn('measurements', 'Files', Folder)}
+      {tabBtn('materialPlan', 'Material Plan', FileText)}
+    </div>
+  );
+}
+
+export function EditToggle({ editable, onToggle }: { editable: boolean; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', borderRadius: 999, border: '1px solid #e5e7eb', background: editable ? '#fff7ed' : '#f9fafb', color: editable ? '#f97316' : '#374151', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer' }}
+    >
+      {editable ? <Pencil style={{ width: 12, height: 12 }} /> : <Eye style={{ width: 12, height: 12 }} />}
+      {editable ? 'Editing' : 'View only'}
+    </button>
+  );
+}
+
+export function TabBody({ project, state }: { project: Project; state: ReturnType<typeof useMeasurementsAndMaterialPlan> }) {
+  return state.tab === 'measurements' ? (
+    <>
+      <MeasurementsTab
+        editable={state.editable}
+        isHistorical={project.isHistorical}
+        projectType={state.projectType}
+        otherTypeSpecify={state.otherTypeSpecify}
+        onProjectTypeChange={state.onProjectTypeChange}
+        onOtherTypeSpecifyBlur={state.onOtherTypeSpecifyBlur}
+        savingProjectType={state.savingProjectType}
+        blueprints={state.blueprints}
+        uploading={state.uploadingBlueprint}
+        onUploadBlueprint={state.handleUploadBlueprint}
+        onOpenBlueprint={state.setBlueprintDoc}
+        onRemoveDocument={state.handleRemoveDocument}
+      />
+      {state.blueprintDoc && (
+        <BlueprintWizard
+          project={project}
+          document={state.blueprintDoc}
+          savedBoq={state.boqItems}
+          existingRows={state.boqRows}
+          onClose={() => state.setBlueprintDoc(null)}
+          onAddRows={state.handleBlueprintRows}
+        />
+      )}
+    </>
+  ) : (
+    <>
+    <MaterialPlanTab
+      project={project}
+      editable={state.editable}
+      projectType={state.projectType}
+      otherTypeSpecify={state.otherTypeSpecify}
+      inventory={state.inventory}
+      forecastedMaterials={state.forecastedMaterials}
+      boqDocs={state.boqDocs}
+      uploading={state.uploadingBoq}
+      onUploadBoq={state.handleUploadBoq}
+      onParseBoq={state.handleParseBoq}
+      onRemoveDocument={state.handleRemoveDocument}
+      rows={state.boqRows}
+      boqItems={state.boqItems}
+      onRowsChange={state.setBoqRows}
+      onSave={state.handleSaveBoq}
+      saving={state.savingBoq}
+      onNotify={state.handleNotify}
+      onRunForecast={state.handleRunForecast}
+      forecasting={state.forecasting}
+      purchaseOrders={state.purchaseOrders}
+      poDocs={state.poDocs}
+      uploadingPo={state.uploadingPo}
+      savingPo={state.savingPo}
+      onUploadPO={state.handleUploadPO}
+      onParsePO={state.handleParsePO}
+      onSavePO={state.handleSavePO}
+      onLinkPoMaterial={state.handleLinkPoMaterial}
+      poDraftRows={state.poDraftRows}
+      onPoDraftRowsChange={state.setPoDraftRows}
+      poSupplierName={state.poSupplierName}
+      onPoSupplierNameChange={state.setPoSupplierName}
+      poOrderDate={state.poOrderDate}
+      onPoOrderDateChange={state.setPoOrderDate}
+      poExpectedDate={state.poExpectedDate}
+      onPoExpectedDateChange={state.setPoExpectedDate}
+    />
+    {state.coveredRows && (
+      <ScanCoveredDialog
+        rows={state.coveredRows}
+        onClose={() => state.setCoveredRows(null)}
+        onAdd={rows => {
+          state.setBoqRows(prev => [...prev, ...rows]);
+          state.setCoveredRows(null);
+          toast.success(`${rows.length} more row(s) added — review them, then Save.`);
+        }}
+      />
+    )}
+    </>
+  );
+}

@@ -1,58 +1,578 @@
+import math
+from datetime import datetime, timezone
+
+import numpy as np
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import train_test_split
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from app.services.forecasting_service import get_engine
-from app.ml import random_forest, xgboost_model
+from app.services.forecasting_service import (
+    get_engine, fetch_records, build_response, predict_quantities, MATERIAL_PROPERTY_COLUMNS,
+)
+from app.ml import random_forest, xgboost_model, material_ratios, model_registry, demand_factor
+from app.ml.model_evaluator import ensemble_predict
 
-# PhaseStatus enum (backend): Pending = 0, Active = 1, Completed = 2.
-# Only completed phases have a final, trustworthy ActualQuantity to learn from.
-_TRAINING_SQL = text("""
+# ProjectStatus enum (backend): Planning=0, Active=1, OnHold=2, Completed=3, Cancelled=4.
+# PurchaseOrderStatus enum (backend): Pending=0, Approved=1, Delivered=2.
+# Historical training data comes from whole completed projects (backfilled via the
+# "add a completed project" flow), not individual completed phases.
+# LEFT JOIN phases: a BOQ row without a phase assigned still has a usable target.
+#
+# Target quantity: the row's PO quantity — EstimatedPurchaseQuantity of a row
+# backed by real PO-report lines (HistoricalMaterialSupply), which the backend
+# sets to those lines' total when they're all in one unit (BOQService.
+# BulkSaveAsync). That's what was actually BOUGHT for the BOQ line, and it's
+# exactly what a live project's Est. Qty is: how much to order. Every
+# historical row with PO lines is usable as-is — no hand-typed Actual Qty
+# needed first.
+#
+# Projects completed THROUGH THE APP have no PO-report lines; their rows learn
+# from what was really supplied to them in the app instead — delivered
+# Purchase Orders + approved warehouse releases + approved redistributions in,
+# minus approved redistributions out (see app_supply_records). Never from
+# their EstimatedPurchaseQuantity: that's their Est. Qty, typed by hand or
+# filled in by this very model on Run Forecast, and training on it would
+# teach the model to predict its own past predictions.
+#
+# supplier_lead_time_days is a correlated scalar subquery, not a JOIN+GROUP BY —
+# a BOQ row can match several PurchaseOrderMaterial rows (multiple deliveries of
+# the same material), and a plain join would fan that out into duplicate BOQ
+# rows, breaking the 1:1 alignment train_models() assumes between records/targets.
+# Only Delivered POs count — Pending/Approved aren't real actuals yet.
+#
+# What's learned: BOQ quantity (sq.m/l.m/..., known at planning time) → PO
+# quantity in the purchase unit (pcs/bag/box/...). So:
+#  - Input boq_quantity is bi.EstimatedQuantity, never EstimatedPurchaseQuantity:
+#    that's the target itself here (and, on a live project, the Est. Qty this
+#    model fills in). Using it as an input would be leakage.
+#  - Only rows whose purchase unit is known — both EstimatedPurchaseUnit and
+#    EstimatedPurchaseQuantity set (mixed-unit PO lines leave both null) — so
+#    the target's unit is never ambiguous.
+#  - purchase_unit is returned with each row; material_ratios.py learns the
+#    per-material conversion from it.
+# One definition of "a row the model can learn from", shared by the training
+# query and the eligibility report below, so the report can never disagree
+# with what training actually uses.
+_ELIGIBLE_ROW_PREDICATE = """
+    EXISTS (SELECT 1 FROM HistoricalMaterialSupplies h WHERE h.BOQItemId = bi.Id)
+    AND bi.EstimatedPurchaseQuantity IS NOT NULL AND bi.EstimatedPurchaseQuantity > 0
+    AND bi.EstimatedPurchaseUnit IS NOT NULL AND TRIM(bi.EstimatedPurchaseUnit) <> ''
+"""
+
+_ROW_SELECT = f"""
     SELECT
+        bi.Id        AS boq_item_id,
+        bi.ProjectId AS project_id,
+        p.IsHistorical AS is_historical,
         m.Id         AS material_id,
         m.Name       AS material_name,
         m.Unit       AS unit,
+        COALESCE(NULLIF(bi.Unit, ''), m.Unit) AS boq_unit,
+        {MATERIAL_PROPERTY_COLUMNS}
+        TRIM(bi.EstimatedPurchaseUnit) AS purchase_unit,
         m.UnitCost   AS unit_cost,
         bi.EstimatedQuantity AS boq_quantity,
-        bi.ActualQuantity   AS actual_used,
+        bi.EstimatedPurchaseQuantity AS purchased_quantity,
         COALESCE(ir.AvailableQuantity, 0) AS current_stock,
         COALESCE(ir.ExcessQuantity, 0)    AS excess_quantity,
         COALESCE(ir.WastedQuantity, 0)    AS wasted_quantity,
-        ph.Name AS phase_name,
-        p.Type  AS project_type_encoded,
-        DATEDIFF(ph.EndDate, ph.StartDate) AS days_into_phase,
-        DATEDIFF(ph.EndDate, ph.StartDate) AS phase_duration_days,
-        ph.ProgressPercent AS progress_percent
-    FROM boqitems bi
-    JOIN phases ph   ON ph.Id = bi.PhaseId AND ph.Status = 2
-    JOIN materials m ON m.Id = bi.MaterialId
-    JOIN projects p  ON p.Id = bi.ProjectId
-    LEFT JOIN inventoryrecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
+        COALESCE(bi.PrimarySection, '') AS primary_section,
+        COALESCE(bi.CoverageArea, 0) AS coverage_area,
+        p.Type AS project_type_encoded,
+        DATEDIFF(COALESCE(ph.EndDate, p.TargetEndDate), COALESCE(ph.StartDate, p.StartDate)) AS days_into_phase,
+        DATEDIFF(COALESCE(ph.EndDate, p.TargetEndDate), COALESCE(ph.StartDate, p.StartDate)) AS phase_duration_days,
+        COALESCE(ph.ProgressPercent, 100) AS progress_percent,
+        COALESCE((
+            SELECT AVG(de.ActualLeadDays)
+            FROM PurchaseOrderMaterials pom
+            JOIN PurchaseOrders po ON po.Id = pom.PurchaseOrderId AND po.Status = 2
+            JOIN DeliveryEvaluations de ON de.PurchaseOrderId = po.Id
+            WHERE pom.BOQItemId = bi.Id
+               OR (pom.BOQItemId IS NULL AND pom.MaterialId = bi.MaterialId
+                   AND (pom.PhaseId = bi.PhaseId OR (pom.PhaseId IS NULL AND bi.PhaseId IS NULL)))
+        ), 7) AS supplier_lead_time_days
+    FROM BOQItems bi
+    JOIN Materials m ON m.Id = bi.MaterialId
+    JOIN Projects p  ON p.Id = bi.ProjectId AND p.Status = 3
+    LEFT JOIN Phases ph ON ph.Id = bi.PhaseId
+    LEFT JOIN InventoryRecords ir ON ir.ProjectId = bi.ProjectId AND ir.MaterialId = bi.MaterialId
+"""
+
+# Rows backed by PO-report lines: the target is their PO total.
+_TRAINING_SQL = text(f"{_ROW_SELECT} WHERE {_ELIGIBLE_ROW_PREDICATE}")
+
+# Completed-project rows WITHOUT PO-report lines (projects completed through
+# the app): their purchased_quantity column (= Est. Qty) is ignored — the
+# target is computed from in-app supply by app_supply_records.
+_APP_ROWS_SQL = text(f"""{_ROW_SELECT}
+    WHERE NOT EXISTS (SELECT 1 FROM HistoricalMaterialSupplies h WHERE h.BOQItemId = bi.Id)
+""")
+
+# In-app supply per completed project + material. Status values are the
+# backend enums' int values: PurchaseOrderStatus.Delivered = 2,
+# WarehouseRequestStatus.Approved = 1, RedistributionStatus.Approved = 2
+# (InTransit = 3 / Completed = 4 counted too, though the app never sets them).
+# A warehouse release counts what was actually approved, not what was asked.
+_DELIVERED_PO_SQL = text("""
+    SELECT po.ProjectId AS project_id, pom.MaterialId AS material_id, pom.Unit AS unit, SUM(pom.Quantity) AS quantity
+    FROM PurchaseOrderMaterials pom
+    JOIN PurchaseOrders po ON po.Id = pom.PurchaseOrderId AND po.Status = 2
+    JOIN Projects p ON p.Id = po.ProjectId AND p.Status = 3
+    WHERE pom.MaterialId IS NOT NULL
+    GROUP BY po.ProjectId, pom.MaterialId, pom.Unit
+""")
+_WAREHOUSE_SQL = text("""
+    SELECT w.ProjectId AS project_id, w.MaterialId AS material_id,
+           SUM(COALESCE(w.ApprovedQuantity, w.RequestedQuantity)) AS quantity
+    FROM WarehouseRequests w
+    JOIN Projects p ON p.Id = w.ProjectId AND p.Status = 3
+    WHERE w.Status = 1
+    GROUP BY w.ProjectId, w.MaterialId
+""")
+_REDISTRIBUTED_IN_SQL = text("""
+    SELECT r.TargetProjectId AS project_id, r.MaterialId AS material_id, SUM(r.Quantity) AS quantity
+    FROM RedistributionRequests r
+    JOIN Projects p ON p.Id = r.TargetProjectId AND p.Status = 3
+    WHERE r.Status IN (2, 3, 4)
+    GROUP BY r.TargetProjectId, r.MaterialId
+""")
+_REDISTRIBUTED_OUT_SQL = text("""
+    SELECT r.SourceProjectId AS project_id, r.MaterialId AS material_id, SUM(r.Quantity) AS quantity
+    FROM RedistributionRequests r
+    JOIN Projects p ON p.Id = r.SourceProjectId AND p.Status = 3
+    WHERE r.Status IN (2, 3, 4)
+    GROUP BY r.SourceProjectId, r.MaterialId
 """)
 
 
-def fetch_training_data(engine: Engine) -> list[dict]:
+def _rows(conn, sql) -> list[dict]:
+    return [dict(r) for r in conn.execute(sql).mappings().all()]
+
+
+def _fetch_app_supply_inputs(engine: Engine) -> tuple[list[dict], dict]:
     with engine.connect() as conn:
-        rows = conn.execute(_TRAINING_SQL).mappings().all()
-    return [dict(r) for r in rows]
+        rows = _rows(conn, _APP_ROWS_SQL)
+        supplies = {
+            "delivered":         _rows(conn, _DELIVERED_PO_SQL),
+            "warehouse":         _rows(conn, _WAREHOUSE_SQL),
+            "redistributed_in":  _rows(conn, _REDISTRIBUTED_IN_SQL),
+            "redistributed_out": _rows(conn, _REDISTRIBUTED_OUT_SQL),
+        }
+    return rows, supplies
 
 
-def train_models(min_samples: int = 10) -> dict:
+def app_supply_records(rows: list[dict], supplies: dict) -> tuple[list[dict], list[dict]]:
+    """Training rows for completed projects WITHOUT PO-report lines, with
+    purchased_quantity set to what the project really needed of each
+    material, from in-app records:
+
+        delivered POs + approved warehouse releases
+          + approved redistributions in − approved redistributions out
+
+    e.g. CHB: 1,345 from Procurement + 200 from the warehouse + 10
+    redistributed in = 1,555 pcs (less any excess later sent to another
+    project). Outgoing redistributions are subtracted so excess that was
+    reused elsewhere doesn't teach the model to over-order.
+
+    Warehouse releases and redistributions are recorded per project +
+    material, not per BOQ row, so a material on several BOQ rows has its
+    total split across them in proportion to their BOQ quantities.
+
+    Returns (records, skipped). A (project, material) is skipped — with the
+    reason — rather than guessed at when: its rows have no purchase unit, or
+    disagree on one; a delivered PO line is in a different unit (pieces and
+    bags are never added together); its BOQ quantities are all zero; or
+    nothing net was supplied. Warehouse/redistribution quantities have no
+    unit of their own and are taken to be in the rows' purchase unit."""
+    def key_map(items):
+        out: dict[tuple[int, int], float] = {}
+        for it in items:
+            k = (int(it["project_id"]), int(it["material_id"]))
+            out[k] = out.get(k, 0.0) + float(it["quantity"] or 0)
+        return out
+
+    warehouse = key_map(supplies.get("warehouse", []))
+    redist_in = key_map(supplies.get("redistributed_in", []))
+    redist_out = key_map(supplies.get("redistributed_out", []))
+    delivered: dict[tuple[int, int], list[tuple[str, float]]] = {}
+    for it in supplies.get("delivered", []):
+        k = (int(it["project_id"]), int(it["material_id"]))
+        delivered.setdefault(k, []).append((material_ratios.normalize_unit(it["unit"]), float(it["quantity"] or 0)))
+
+    groups: dict[tuple[int, int], list[dict]] = {}
+    for r in rows:
+        groups.setdefault((int(r["project_id"]), int(r["material_id"])), []).append(r)
+
+    records, skipped = [], []
+
+    def skip(key, group, reason):
+        skipped.append({"project_id": key[0], "material_id": key[1],
+                        "material_name": group[0].get("material_name"), "rows": len(group), "reason": reason})
+
+    for key, group in groups.items():
+        units = {material_ratios.normalize_unit(r.get("purchase_unit")) for r in group}
+        if "" in units:
+            skip(key, group, "no purchase unit (Est. Qty unit) on its BOQ row(s)")
+            continue
+        if len(units) > 1:
+            skip(key, group, "its BOQ rows use different purchase units")
+            continue
+        unit = units.pop()
+
+        po_lines = delivered.get(key, [])
+        other_units = sorted({u or "(none)" for u, _ in po_lines if u != unit})
+        if other_units:
+            skip(key, group, f"delivered PO line(s) in {', '.join(other_units)}, not {unit}")
+            continue
+
+        total = (sum(q for _, q in po_lines) + warehouse.get(key, 0.0)
+                 + redist_in.get(key, 0.0) - redist_out.get(key, 0.0))
+        if total <= 0:
+            skip(key, group, "nothing supplied in the app (no delivered PO, warehouse release or redistribution)")
+            continue
+
+        boq_total = sum(float(r.get("boq_quantity") or 0) for r in group)
+        if boq_total <= 0:
+            skip(key, group, "its BOQ quantities are zero, so the supply can't be split across rows")
+            continue
+
+        for r in group:
+            share = float(r.get("boq_quantity") or 0) / boq_total
+            if share <= 0:
+                continue
+            records.append({**r, "purchased_quantity": total * share})
+
+    return records, skipped
+
+
+def fetch_training_data(engine: Engine) -> list[dict]:
+    """Every row the model learns from: PO-report-backed rows (target = PO
+    total) plus rows of projects completed through the app (target = in-app
+    supply, see app_supply_records)."""
+    with engine.connect() as conn:
+        po_backed = _rows(conn, _TRAINING_SQL)
+    app_rows, supplies = _fetch_app_supply_inputs(engine)
+    app_records, _ = app_supply_records(app_rows, supplies)
+    return po_backed + app_records
+
+
+# Quality gate. Below the reject thresholds a run is refused outright and the
+# current model stays active; below the low-confidence ones it's accepted but
+# marked "Low" (shown wherever the model's status/forecasts are).
+MIN_ROWS            = 10
+MIN_PROJECTS        = 2
+LOW_CONF_PROJECTS   = 5
+LOW_CONF_R2         = 0.50
+
+
+class TrainingRejected(ValueError):
+    """The data can't produce a trustworthy model — the message says why.
+    The previously active model (if any) is left in place."""
+
+
+_ELIGIBILITY_SQL = text(f"""
+    SELECT
+        p.Id   AS project_id,
+        p.Name AS project_name,
+        COUNT(bi.Id) AS boq_rows,
+        COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM HistoricalMaterialSupplies h WHERE h.BOQItemId = bi.Id)
+                          THEN 1 ELSE 0 END), 0) AS rows_with_po_lines,
+        COALESCE(SUM(CASE WHEN {_ELIGIBLE_ROW_PREDICATE} THEN 1 ELSE 0 END), 0) AS eligible_rows
+    FROM Projects p
+    LEFT JOIN BOQItems bi ON bi.ProjectId = p.Id
+    WHERE p.Status = 3
+    GROUP BY p.Id, p.Name
+    ORDER BY p.Name
+""")
+
+
+def training_data_report() -> dict:
+    """Which completed projects/rows training can use, and why the rest
+    can't — read-only, safe to call any time (GET /forecast/training-data)."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        rows = [dict(r) for r in conn.execute(_ELIGIBILITY_SQL).mappings().all()]
+
+    # Rows learned from in-app supply (projects completed through the app),
+    # computed exactly as training computes them.
+    app_rows, supplies = _fetch_app_supply_inputs(engine)
+    app_records, app_skipped = app_supply_records(app_rows, supplies)
+    app_eligible: dict[int, int] = {}
+    for rec in app_records:
+        app_eligible[int(rec["project_id"])] = app_eligible.get(int(rec["project_id"]), 0) + 1
+    app_skips: dict[int, list[dict]] = {}
+    for sk in app_skipped:
+        app_skips.setdefault(int(sk["project_id"]), []).append(sk)
+
+    def describe_skips(skips: list[dict]) -> str:
+        shown = "; ".join(f"{sk['material_name']}: {sk['reason']}" for sk in skips[:3])
+        more = f"; and {len(skips) - 3} more" if len(skips) > 3 else ""
+        return shown + more
+
+    projects = []
+    for r in rows:
+        boq_rows, with_lines, eligible = int(r["boq_rows"]), int(r["rows_with_po_lines"]), int(r["eligible_rows"])
+        project_id = int(r["project_id"])
+        from_app = app_eligible.get(project_id, 0)
+        skips = app_skips.get(project_id, [])
+        eligible += from_app
+        if boq_rows == 0:
+            reason = "No BOQ rows."
+        elif with_lines == 0:
+            # Completed through the app — learned from its delivered POs,
+            # warehouse releases and redistributions instead.
+            if from_app == 0:
+                reason = ("No PO-report lines, and no usable in-app supply"
+                          + (f" — {describe_skips(skips)}." if skips else "."))
+            elif skips:
+                reason = (f"Learned from in-app supply (delivered POs, warehouse releases, redistributions); "
+                          f"{len(skips)} material(s) skipped — {describe_skips(skips)}.")
+            else:
+                reason = None
+        elif eligible == 0:
+            reason = ("Its PO lines haven't produced a purchase quantity — mixed units on every row, or saved "
+                      "before purchase units were derived (run the purchase-unit backfill or re-save its Material Plan).")
+        elif eligible < with_lines:
+            reason = f"{with_lines - eligible} row(s) with PO lines skipped — mixed units or no purchase quantity."
+        else:
+            reason = None
+        projects.append({
+            "project_id":         r["project_id"],
+            "project_name":       r["project_name"],
+            "boq_rows":           boq_rows,
+            "rows_with_po_lines": with_lines,
+            "eligible_rows":      eligible,
+            "eligible":           eligible > 0,
+            "reason":             reason,
+        })
+
+    eligible_projects = [p for p in projects if p["eligible"]]
+    eligible_rows = sum(p["eligible_rows"] for p in eligible_projects)
+    return {
+        "completed_projects": len(projects),
+        "eligible_projects":  len(eligible_projects),
+        "eligible_rows":      eligible_rows,
+        "excluded_projects":  len(projects) - len(eligible_projects),
+        "min_rows":           MIN_ROWS,
+        "min_projects":       MIN_PROJECTS,
+        "can_train":          eligible_rows >= MIN_ROWS and len(eligible_projects) >= MIN_PROJECTS,
+        "projects":           projects,
+    }
+
+
+def _finite(x: float | None) -> float | None:
+    """Metrics go out as JSON — NaN/inf (e.g. R² of a constant holdout) aren't
+    valid JSON, so they become null ("couldn't be computed")."""
+    if x is None:
+        return None
+    x = float(x)
+    return x if math.isfinite(x) else None
+
+
+def _metrics(y_true, y_pred) -> dict:
+    y_true, y_pred = np.asarray(y_true, dtype=float), np.asarray(y_pred, dtype=float)
+    r2 = r2_score(y_true, y_pred) if len(y_true) >= 2 and np.ptp(y_true) > 0 else None
+    return {
+        "mae":  _finite(mean_absolute_error(y_true, y_pred)),
+        "rmse": _finite(math.sqrt(mean_squared_error(y_true, y_pred))),
+        "r2":   _finite(r2),
+        "n":    int(len(y_true)),
+    }
+
+
+def _prepare(records: list[dict], targets: list[float]) -> tuple[list[dict], list[float]]:
+    """Attaches each row's reference (baseline or historical ratio — needs
+    material_ratio attached first) and drops rows a factor can't be
+    expressed for, or whose factor is an encoding error."""
+    demand_factor.attach_reference(records)
+    records, targets = demand_factor.usable(records, targets)
+    return demand_factor.without_outliers(records, targets)
+
+
+def _fit(records: list[dict], targets: list[float]):
+    """Both models, fitted on the demand factor (target ÷ reference), never
+    on the absolute quantity."""
+    factors = demand_factor.to_factors(records, targets)
+    return random_forest.fit(records, factors), xgboost_model.fit(records, factors)
+
+
+def _quantities(records: list[dict], factors) -> list[float]:
+    return demand_factor.to_quantities(records, factors)[0]
+
+
+def _row_holdout_metrics(records: list[dict], targets: list[float]) -> dict:
+    """Random 80/20 row split: per-model and ensemble error on rows the
+    models didn't see, in purchase-unit quantities (reference × factor).
+    Optimistic (other rows of the same project are in training) — the
+    project-level holdout below is the stricter check."""
+    idx = np.arange(len(records))
+    train_idx, test_idx = train_test_split(idx, test_size=0.2, random_state=42)
+    train_r = [records[i] for i in train_idx]
+    train_t = [targets[i] for i in train_idx]
+    test_r  = [records[i] for i in test_idx]
+    test_t  = [targets[i] for i in test_idx]
+
+    rf, xgb = _fit(train_r, train_t)
+    rf_f, xgb_f = random_forest.predict(test_r, rf), xgboost_model.predict(test_r, xgb)
+    return {
+        "random_forest": _metrics(test_t, _quantities(test_r, rf_f)),
+        "xgboost":       _metrics(test_t, _quantities(test_r, xgb_f)),
+        "ensemble":      _metrics(test_t, _quantities(test_r, ensemble_predict(rf_f, xgb_f))),
+    }
+
+
+def train_models(min_rows: int = MIN_ROWS, min_projects: int = MIN_PROJECTS) -> dict:
+    """One full training run: validate the data, measure quality, fit the
+    final models on every eligible row, and publish them as the new active
+    version (model_registry.publish — only after everything succeeded).
+    Raises TrainingRejected when the data fails the quality gate."""
     engine  = get_engine()
     records = fetch_training_data(engine)
+    project_ids = {r["project_id"] for r in records}
 
-    if len(records) < min_samples:
-        raise ValueError(
-            f"Not enough completed-phase BOQ records to train on "
-            f"({len(records)} found, need at least {min_samples})."
+    if len(records) < min_rows or len(project_ids) < min_projects:
+        raise TrainingRejected(
+            f"Not enough training data: {len(records)} eligible row(s) across {len(project_ids)} project(s) "
+            f"— need at least {min_rows} rows from at least {min_projects} projects. Eligible rows come from "
+            f"completed projects uploaded from a combined BOQ+PO report, with PO lines in a single unit."
         )
 
-    targets = [float(r["actual_used"]) for r in records]
+    targets = [float(r["purchased_quantity"]) for r in records]
 
-    rf_metrics  = random_forest.train(records, targets)
-    xgb_metrics = xgboost_model.train(records, targets)
+    # Feature: each row's material ratio from OTHER projects only (see
+    # material_ratios.attach_out_of_project — the full table would leak the
+    # target). The table persisted for forecasting is fitted on every row.
+    material_ratios.attach_out_of_project(records, targets)
+    table = material_ratios.fit(records, targets)
+    # Each row's reference (engineering baseline, else the historical ratio
+    # estimate) — the models learn the factor actual ÷ reference.
+    records, targets = _prepare(records, targets)
+    if len(records) < min_rows:
+        raise TrainingRejected(
+            f"Only {len(records)} row(s) have a non-zero BOQ quantity to anchor a forecast on — need at least {min_rows}.")
+    project_ids = {r["project_id"] for r in records}
 
-    return {
-        "sample_count":  len(records),
-        "random_forest": rf_metrics,
-        "xgboost":       xgb_metrics,
+    row_holdout = _row_holdout_metrics(records, targets)
+    evaluations, skipped, holdout = _leave_one_project_out(engine, records, targets, min_rows)
+    project_holdout = holdout["ai"]
+
+    # The models that actually forecast: fitted on every eligible row (the
+    # holdout fits above exist only to measure quality).
+    rf, xgb = _fit(records, targets)
+
+    # Confidence is judged on the project-level holdout — a whole unseen
+    # project, exactly what forecasting a new project is.
+    reasons = []
+    if len(project_ids) < LOW_CONF_PROJECTS:
+        reasons.append(f"Trained on only {len(project_ids)} project(s) (fewer than {LOW_CONF_PROJECTS}).")
+    holdout_r2 = project_holdout["r2"] if project_holdout else None
+    if holdout_r2 is None:
+        reasons.append("Project-level R² couldn't be computed.")
+    elif holdout_r2 < LOW_CONF_R2:
+        reasons.append(f"Project-level R² is {holdout_r2:.2f} (below {LOW_CONF_R2:.2f}).")
+
+    version  = model_registry.new_version()
+    manifest = model_registry.publish(version, rf, xgb, table, metadata={
+        "trained_at":         datetime.now(timezone.utc).isoformat(),
+        "sample_count":       len(records),
+        "project_count":      len(project_ids),
+        "metrics":            row_holdout,
+        "project_holdout":    project_holdout,
+        # Same leave-one-project-out rows, with no model at all: the
+        # reference alone (factor 1), and — on rows that have one — the
+        # engineering baseline alone vs the AI forecast.
+        "reference_holdout":  holdout["reference"],
+        "baseline_comparison": holdout["baseline_comparison"],
+        "baseline_rows":      sum(r["has_baseline"] for r in records),
+        "demand_factor_range": [demand_factor.FACTOR_MIN, demand_factor.FACTOR_MAX],
+        "evaluated_projects": len(evaluations),
+        "skipped_evaluations": skipped,
+        "confidence":         "Low" if reasons else "Normal",
+        "confidence_reasons": reasons,
+    })
+    return {"model": manifest, "evaluations": evaluations}
+
+
+def _leave_one_project_out(engine, records: list[dict], targets: list[float], min_rows: int):
+    """An honest evaluation forecast for every historical project in the
+    training set: its predictions come from models AND a ratio table fitted
+    WITHOUT any of that project's own rows, so the chart's AI Predicted line
+    for it is a genuine out-of-sample figure rather than the model echoing
+    data it was trained on. Nothing here is persisted by this service — the
+    backend (ForecastService) saves each as that project's evaluation
+    ForecastResult, replacing the previous one.
+
+    Predicted over the same rows and features an ordinary forecast run for
+    that project uses (forecasting_service.fetch_records/build_response), so
+    the two are directly comparable. Also scores each fold's models on the
+    held-out project's own training rows — pooled, that's the project-level
+    holdout metric.
+
+    A project whose other projects together have fewer than min_rows rows
+    gets NO evaluation (listed in `skipped`): no model can be fitted for it,
+    and a non-model estimate must not be shown as AI Predicted."""
+    evaluations, skipped = [], []
+    holdout_true, holdout_pred, holdout_ref = [], [], []
+    baseline_true, baseline_only, baseline_ai = [], [], []
+    historical_ids = sorted({r["project_id"] for r in records if r["is_historical"]})
+
+    for project_id in historical_ids:
+        fold = [(dict(r), t) for r, t in zip(records, targets) if r["project_id"] != project_id]
+        fold_records = [r for r, _ in fold]
+        fold_targets = [t for _, t in fold]
+        if len(fold_records) < min_rows:
+            skipped.append({
+                "project_id": project_id,
+                "reason": f"Only {len(fold_records)} training row(s) from other projects (need {min_rows}).",
+            })
+            continue
+
+        material_ratios.attach_out_of_project(fold_records, fold_targets)
+        table = material_ratios.fit(fold_records, fold_targets)
+        fold_records, fold_targets = _prepare(fold_records, fold_targets)
+        if len(fold_records) < min_rows:
+            skipped.append({"project_id": project_id,
+                            "reason": f"Only {len(fold_records)} usable training row(s) from other projects (need {min_rows})."})
+            continue
+        rf, xgb = _fit(fold_records, fold_targets)
+
+        # The held-out project's own rows, with references computed from the
+        # fold's ratio table — never from its own targets.
+        held_out = [(dict(r), t) for r, t in zip(records, targets) if r["project_id"] == project_id]
+        held_records = [r for r, _ in held_out]
+        material_ratios.attach(held_records, table)
+        demand_factor.attach_reference(held_records)
+        ai = _quantities(held_records, ensemble_predict(random_forest.predict(held_records, rf),
+                                                        xgboost_model.predict(held_records, xgb)))
+        for r, (_, t), q in zip(held_records, held_out, ai):
+            holdout_true.append(t)
+            holdout_pred.append(q)
+            holdout_ref.append(r["reference_quantity"])
+            if r["has_baseline"]:
+                baseline_true.append(t)
+                baseline_only.append(r["baseline_quantity"])
+                baseline_ai.append(q)
+
+        project_records = fetch_records(engine, project_id, None)
+        if not project_records:
+            continue
+        material_ratios.attach(project_records, table)
+        demand_factor.attach_reference(project_records, table)
+        preds, details = predict_quantities(project_records, rf, xgb)
+        response = build_response(project_id, None, "Monthly", project_records, preds, table, details)
+        evaluations.append({
+            "project_id":           project_id,
+            "forecasted_materials": [fm.model_dump(mode="json") for fm in response.forecasted_materials],
+        })
+
+    holdout = {
+        "ai":        _metrics(holdout_true, holdout_pred) if holdout_true else None,
+        "reference": _metrics(holdout_true, holdout_ref) if holdout_true else None,
+        "baseline_comparison": {
+            "rows":          len(baseline_true),
+            "baseline_only": _metrics(baseline_true, baseline_only) if baseline_true else None,
+            "ai":            _metrics(baseline_true, baseline_ai) if baseline_true else None,
+        },
     }
+    return evaluations, skipped, holdout

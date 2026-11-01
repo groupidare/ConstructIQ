@@ -1,54 +1,42 @@
 import joblib
 import numpy as np
-import pandas as pd
 from pathlib import Path
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-from app.ml.feature_engineering import records_to_dataframe
+from app.ml.feature_engineering import records_to_dataframe, FEATURE_COLS
 
-MODEL_PATH = Path("trained_models/rf_model.pkl")
-FEATURE_COLS = [
-    "boq_quantity", "actual_used", "current_stock", "excess_quantity",
-    "wasted_quantity", "phase_order", "project_type_encoded",
-    "days_into_phase", "phase_duration_days", "progress_percent", "usage_rate",
-]
+# Persisting/loading is model_registry's job (versioned files + manifest, so a
+# half-finished training run can never become the active model) — this module
+# only builds, fits, saves/loads a given path, and predicts.
+FILE_NAME = "rf_model.pkl"
 
 
-def train(records: list[dict], targets: list[float]) -> dict:
-    df = records_to_dataframe(records)
-    X  = df[FEATURE_COLS].values
-    y  = np.array(targets)
-
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    model = RandomForestRegressor(
+def _new_model() -> RandomForestRegressor:
+    return RandomForestRegressor(
         n_estimators=200,
         max_depth=10,
         min_samples_split=5,
         random_state=42,
         n_jobs=-1,
     )
-    model.fit(X_train, y_train)
-
-    preds = model.predict(X_test)
-    mae   = mean_absolute_error(y_test, preds)
-    rmse  = mean_squared_error(y_test, preds, squared=False)
-    r2    = model.score(X_test, y_test)
-
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, MODEL_PATH)
-
-    return {"mae": mae, "rmse": rmse, "r2": r2}
 
 
-def predict(records: list[dict]) -> np.ndarray:
-    if not MODEL_PATH.exists():
-        # Fallback: return BOQ quantity as naive forecast
-        return np.array([float(r.get("boq_quantity", 0)) for r in records])
+def fit(records: list[dict], targets: list[float]) -> RandomForestRegressor:
+    """Fits on every given row. Records need material_ratio attached
+    (material_ratios.attach / attach_out_of_project) first."""
+    model = _new_model()
+    model.fit(records_to_dataframe(records)[FEATURE_COLS].values, np.array(targets))
+    return model
 
-    model = joblib.load(MODEL_PATH)
-    df    = records_to_dataframe(records)
-    X     = df[FEATURE_COLS].values
-    return model.predict(X)
+
+def predict(records: list[dict], model: RandomForestRegressor) -> np.ndarray:
+    """Records need material_ratio attached (material_ratios.attach) first."""
+    return model.predict(records_to_dataframe(records)[FEATURE_COLS].values)
+
+
+def save(model: RandomForestRegressor, path: Path) -> None:
+    joblib.dump(model, path)
+
+
+def load(path: Path) -> RandomForestRegressor:
+    return joblib.load(path)
