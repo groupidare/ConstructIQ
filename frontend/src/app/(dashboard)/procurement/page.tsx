@@ -16,7 +16,7 @@ import { RISK_VISUALS, RISK_VISUALS_DARK } from "@/lib/weather";
 import { computeWeatherAtRiskOrders } from "@/lib/deliveryRisk";
 import api from "@/lib/api";
 import { resolveUploadUrl } from "@/lib/avatar";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, formatDate } from "@/lib/utils";
 
 // Formats an ISO date string as a short calendar date (e.g. "Sep 18").
 function formatShortDate(dateStr: string): string {
@@ -302,14 +302,33 @@ interface ProjectWithRequests {
   pendingCount: number;
 }
 
+// Up to three suppliers quoted per material, as on the client's Material
+// Request Form — one is chosen for the PO.
+const MAX_QUOTES = 3;
+
+interface QuoteDraft {
+  supplierName: string;
+  // Kept as text so the field can be cleared.
+  price: string;
+  // True while the price is the supplier's last recorded price, untouched.
+  fromHistory: boolean;
+}
+
 interface RequestRow {
   id: number;
   materialId: number;
   materialName: string;
+  specification: string;
   quantity: number;
   unit: string;
   requestedByName: string;
+  createdAt: string;
   lastUnitPrice: number | null;
+  lastUnitPriceSupplier: string | null;
+  remarks: string;
+  quotes: QuoteDraft[];
+  // Slot index chosen for the PO, or null to use the lowest-priced quote.
+  chosen: number | null;
 }
 
 interface SuggestedSupplier {
@@ -319,28 +338,94 @@ interface SuggestedSupplier {
   onTimePct: number;
   deliveries: number;
   hasHistoryWithMaterial: boolean;
+  lastUnitPrice: number | null;
+  lastPriceDate: string | null;
 }
 
 interface ApiProjectWithRequests { projectId: number; projectName: string; pendingCount: number; }
+interface ApiQuote { slot: number; supplierName: string; unitPrice: number | null; priceFromHistory: boolean; isSelected: boolean; }
 interface ApiMaterialRequest {
-  id: number; materialId: number; materialName: string;
+  id: number; materialId: number; materialName: string; specification?: string;
   quantity: number; unit: string; requestedByName: string; createdAt: string;
-  lastUnitPrice?: number | null;
+  lastUnitPrice?: number | null; lastUnitPriceSupplier?: string | null;
+  remarks?: string | null; quotes?: ApiQuote[];
 }
 interface ApiSuggestedSupplier {
   id: number; name: string; rating: number; onTimePct: number; deliveries: number; hasHistoryWithMaterial: boolean;
+  lastUnitPrice?: number | null; lastPriceDate?: string | null;
 }
 interface ApiGeneratedResult {
   purchaseOrders: unknown[];
   requestPoNumbers: Record<number, string>;
 }
 
+const emptyQuote = (): QuoteDraft => ({ supplierName: "", price: "", fromHistory: false });
+
 function mapRequestRow(a: ApiMaterialRequest): RequestRow {
+  const quotes = Array.from({ length: MAX_QUOTES }, emptyQuote);
+  let chosen: number | null = null;
+  for (const q of a.quotes ?? []) {
+    const i = q.slot - 1;
+    if (i < 0 || i >= MAX_QUOTES) continue;
+    quotes[i] = { supplierName: q.supplierName, price: q.unitPrice != null ? String(q.unitPrice) : "", fromHistory: q.priceFromHistory };
+    if (q.isSelected) chosen = i;
+  }
   return {
-    id: a.id, materialId: a.materialId, materialName: a.materialName,
-    quantity: a.quantity, unit: a.unit, requestedByName: a.requestedByName,
-    lastUnitPrice: a.lastUnitPrice ?? null,
+    id: a.id, materialId: a.materialId, materialName: a.materialName, specification: a.specification ?? "",
+    quantity: a.quantity, unit: a.unit, requestedByName: a.requestedByName, createdAt: a.createdAt,
+    lastUnitPrice: a.lastUnitPrice ?? null, lastUnitPriceSupplier: a.lastUnitPriceSupplier ?? null,
+    remarks: a.remarks ?? "", quotes, chosen,
   };
+}
+
+function quotePrice(q: QuoteDraft): number | null {
+  const text = q.price.trim();
+  if (!text) return null;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : null;
+}
+
+// The quote the PO is raised against: the one picked, else the lowest
+// priced named quote, else the first named one. -1 when none is named.
+function selectedSlot(row: RequestRow): number {
+  const named = row.quotes.map((q, i) => ({ q, i })).filter(x => x.q.supplierName.trim());
+  if (row.chosen != null && row.quotes[row.chosen]?.supplierName.trim()) return row.chosen;
+  const priced = named.filter(x => quotePrice(x.q) != null);
+  if (priced.length > 0) return priced.reduce((a, b) => (quotePrice(b.q)! < quotePrice(a.q)! ? b : a)).i;
+  return named.length > 0 ? named[0].i : -1;
+}
+
+function lowestSlot(row: RequestRow): number {
+  const priced = row.quotes.map((q, i) => ({ q, i })).filter(x => x.q.supplierName.trim() && quotePrice(x.q) != null);
+  if (priced.length < 2) return -1;
+  return priced.reduce((a, b) => (quotePrice(b.q)! < quotePrice(a.q)! ? b : a)).i;
+}
+
+// The quotes as the API takes them: named ones only, slot = column 1–3.
+function apiQuotes(row: RequestRow, includeSelection: boolean) {
+  const sel = selectedSlot(row);
+  return row.quotes
+    .map((q, i) => ({ q, i }))
+    .filter(x => x.q.supplierName.trim())
+    .map(x => ({
+      slot: x.i + 1,
+      supplierName: x.q.supplierName.trim(),
+      unitPrice: quotePrice(x.q),
+      priceFromHistory: x.q.fromHistory,
+      isSelected: includeSelection && x.i === sel,
+    }));
+}
+
+// Null when the row's quotes can be saved / used.
+function quoteProblem(row: RequestRow): string | null {
+  const named = row.quotes.filter(q => q.supplierName.trim());
+  const names = named.map(q => q.supplierName.trim().toLowerCase());
+  if (new Set(names).size !== names.length) return `${row.materialName}: the same supplier is listed twice.`;
+  for (const q of named) {
+    if (q.price.trim() && (quotePrice(q) == null || quotePrice(q)! < 0))
+      return `${row.materialName}: prices must be zero or more.`;
+  }
+  return null;
 }
 
 // ── Export CSV ────────────────────────────────────────────────────────────────
@@ -357,28 +442,33 @@ function exportPOs(orders: PO[]) {
   toast.success("Purchase orders exported");
 }
 
-// ── Requests Overlay Modal ───────────────────────────────────────────────────
-// Reviews every pending material request for one project: pick a supplier
-// per material (ranked by order history + rating, or type a new one), then
-// generate real purchase orders — one per unique supplier chosen, grouping
-// every material assigned to that supplier onto the same PO/number.
+// ── Material Request Form (Requests Overlay) ─────────────────────────────────
+// Follows the client's paper Material Request Form: numbered particulars with
+// size, unit and qty, up to three suppliers quoted per material, and remarks.
+// Picking a supplier fills in its last price for that material and unit (from
+// past POs), which stays editable. The chosen quote per material — the
+// lowest price unless another is picked — becomes the PO; materials sharing a
+// supplier land on one PO with the next sequential number.
 
-function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: {
+function RequestsOverlayModal({ projectId, projectName, processedBy, onClose, onGenerated }: {
   projectId: number;
   projectName: string;
+  processedBy: string;
   onClose: () => void;
   onGenerated: () => void;
 }) {
   const [rows, setRows] = useState<RequestRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [suggestionsByMaterial, setSuggestionsByMaterial] = useState<Record<number, SuggestedSupplier[]>>({});
-  const [assignments, setAssignments] = useState<Record<number, string>>({});
-  // Price per unit as typed (kept as text so the field can be cleared);
-  // pre-filled with the last price paid for that material in that unit.
-  const [unitPrices, setUnitPrices] = useState<Record<number, string>>({});
+  // Keyed by `${materialId}|${unit}` — a supplier's last price is per unit.
+  const [suggestions, setSuggestions] = useState<Record<string, SuggestedSupplier[]>>({});
   const [expectedDate, setExpectedDate] = useState("");
+  const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [poNumbers, setPoNumbers] = useState<Record<number, string>>({});
+
+  const suggestionKey = (r: { materialId: number; unit: string }) => `${r.materialId}|${r.unit}`;
+  // An element id can't hold spaces ("sq m") — keep it to safe characters.
+  const datalistId = (key: string) => `mrf-suppliers-${key.replace(/[^A-Za-z0-9]+/g, "-")}`;
 
   useEffect(() => {
     (async () => {
@@ -387,16 +477,13 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: 
         const { data } = await api.get<ApiMaterialRequest[]>(`/material-requests/project/${projectId}`);
         const mapped = data.map(mapRequestRow);
         setRows(mapped);
-        setUnitPrices(Object.fromEntries(mapped.filter(r => r.lastUnitPrice != null).map(r => [r.id, String(r.lastUnitPrice)])));
 
-        const uniqueMaterialIds = [...new Set(mapped.map(r => r.materialId))];
-        const entries = await Promise.all(
-          uniqueMaterialIds.map(async id => {
-            const res = await api.get<ApiSuggestedSupplier[]>(`/material-requests/suggested-suppliers/${id}`);
-            return [id, res.data] as const;
-          })
-        );
-        setSuggestionsByMaterial(Object.fromEntries(entries));
+        const keys = [...new Map(mapped.map(r => [suggestionKey(r), r])).values()];
+        const entries = await Promise.all(keys.map(async r => {
+          const res = await api.get<ApiSuggestedSupplier[]>(`/material-requests/suggested-suppliers/${r.materialId}`, { params: { unit: r.unit } });
+          return [suggestionKey(r), res.data.map(s => ({ ...s, lastUnitPrice: s.lastUnitPrice ?? null, lastPriceDate: s.lastPriceDate ?? null }))] as const;
+        }));
+        setSuggestions(Object.fromEntries(entries));
       } catch {
         toast.error("Failed to load material requests.");
       } finally {
@@ -406,23 +493,87 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: 
   }, [projectId]);
 
   const generated = Object.keys(poNumbers).length > 0;
-  const allAssigned = rows.length > 0 && rows.every(r => assignments[r.id]?.trim());
-  const priceOf = (id: number) => {
-    const text = unitPrices[id]?.trim();
-    return text ? Number(text) : null;
-  };
-  const invalidPrice = rows.some(r => { const p = priceOf(r.id); return p != null && (!Number.isFinite(p) || p < 0); });
+
+  function updateRow(id: number, change: (r: RequestRow) => RequestRow) {
+    setRows(prev => prev.map(r => (r.id === id ? change(r) : r)));
+  }
+
+  function historyFor(row: RequestRow, supplierName: string): SuggestedSupplier | undefined {
+    const name = supplierName.trim().toLowerCase();
+    return name ? (suggestions[suggestionKey(row)] ?? []).find(s => s.name.toLowerCase() === name) : undefined;
+  }
+
+  function setSupplier(row: RequestRow, slot: number, supplierName: string) {
+    updateRow(row.id, r => {
+      const quotes = [...r.quotes];
+      const current = quotes[slot];
+      const past = historyFor(r, supplierName);
+      // Auto-fill only an empty or still-auto-filled price — never one typed in.
+      const canFill = !current.price.trim() || current.fromHistory;
+      if (canFill && past?.lastUnitPrice != null) {
+        quotes[slot] = { supplierName, price: String(past.lastUnitPrice), fromHistory: true };
+      } else if (current.fromHistory) {
+        quotes[slot] = { supplierName, price: "", fromHistory: false };
+      } else {
+        quotes[slot] = { ...current, supplierName };
+      }
+      return { ...r, quotes };
+    });
+  }
+
+  function setPrice(row: RequestRow, slot: number, price: string) {
+    updateRow(row.id, r => {
+      const quotes = [...r.quotes];
+      quotes[slot] = { ...quotes[slot], price, fromHistory: false };
+      return { ...r, quotes };
+    });
+  }
+
+  function firstProblem(forGenerate: boolean): string | null {
+    for (const r of rows) {
+      const problem = quoteProblem(r);
+      if (problem) return problem;
+      if (forGenerate && selectedSlot(r) < 0) return `Add at least one supplier for ${r.materialName}.`;
+    }
+    return null;
+  }
+
+  async function handleSave() {
+    const problem = firstProblem(false);
+    if (problem) { toast.error(problem); return; }
+    setSaving(true);
+    try {
+      await api.put(`/material-requests/project/${projectId}/quotes`, {
+        requests: rows.map(r => ({ requestId: r.id, remarks: r.remarks, quotes: apiQuotes(r, r.chosen != null) })),
+      });
+      toast.success("Quotations saved.");
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to save quotations.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function handleGenerate() {
     if (!expectedDate) { toast.error("Pick an expected delivery date."); return; }
-    if (!allAssigned) { toast.error("Choose a supplier for every material."); return; }
-    if (invalidPrice) { toast.error("Unit prices must be zero or more."); return; }
+    const problem = firstProblem(true);
+    if (problem) { toast.error(problem); return; }
     setGenerating(true);
     try {
       const { data } = await api.post<ApiGeneratedResult>("/material-requests/generate-pos", {
         projectId,
         expectedDate,
-        assignments: rows.map(r => ({ requestId: r.id, supplierName: assignments[r.id], unitPrice: priceOf(r.id) })),
+        assignments: rows.map(r => {
+          const sel = r.quotes[selectedSlot(r)];
+          return {
+            requestId: r.id,
+            supplierName: sel.supplierName.trim(),
+            unitPrice: quotePrice(sel),
+            remarks: r.remarks,
+            quotes: apiQuotes(r, true),
+          };
+        }),
       });
       setPoNumbers(data.requestPoNumbers);
       toast.success("Purchase order(s) generated.");
@@ -439,108 +590,181 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: 
     onClose();
   }
 
+  const requesters = [...new Set(rows.map(r => r.requestedByName))].join(", ");
+  const earliest = rows.length > 0 ? rows.reduce((a, b) => (a.createdAt < b.createdAt ? a : b)).createdAt : null;
+
   const fieldStyle: React.CSSProperties = {
-    width: "100%", boxSizing: "border-box", padding: "7px 9px", borderRadius: 7,
-    border: "1px solid #e5e7eb", fontSize: "0.82rem", outline: "none", color: "#111827",
+    width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6,
+    border: "1px solid #e5e7eb", fontSize: "0.78rem", outline: "none", color: "#111827", background: "#fff",
   };
+  const th: React.CSSProperties = {
+    padding: "7px 8px", textAlign: "left", fontSize: "0.6rem", fontWeight: 700, color: "#6b7280",
+    letterSpacing: "0.05em", whiteSpace: "nowrap", borderBottom: "1px solid #e5e7eb", background: "#f9fafb",
+  };
+  const td: React.CSSProperties = { padding: "8px", fontSize: "0.8rem", color: "#374151", verticalAlign: "top", borderBottom: "1px solid #f3f4f6" };
+  const busy = saving || generating || loading;
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: 780, maxWidth: "100%", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1.5rem 1.5rem 1rem", flexShrink: 0 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: 1180, maxWidth: "100%", maxHeight: "90vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "1.25rem 1.5rem 0.75rem", flexShrink: 0, gap: "1rem" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 38, height: 38, borderRadius: 10, background: "#fff7ed", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: 38, height: 38, borderRadius: 10, background: "#fff7ed", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
               <ClipboardList style={{ width: 18, height: 18, color: "#f97316" }} />
             </div>
             <div>
-              <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>{projectName}</h2>
-              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>Requested materials</p>
+              <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>Material Request Form</h2>
+              <p style={{ fontSize: "0.75rem", color: "#6b7280", margin: 0 }}>
+                <span style={{ fontWeight: 600, color: "#374151" }}>Project Store:</span> {projectName}
+              </p>
             </div>
           </div>
-          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
+          <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
         </div>
 
-        <div style={{ padding: "0 1.5rem", flex: 1, overflowY: "auto", overflowX: "auto" }}>
+        <div style={{ padding: "0 1.5rem", flex: 1, overflow: "auto" }}>
           {loading ? (
             <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "2rem 0" }}>Loading requested materials…</p>
           ) : (
             <>
-              <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginBottom: "0.75rem" }}>
-                Supplier suggestions are ranked by past orders of that exact material first, then overall rating — or type a new supplier name.
-                Unit prices start from the last price paid for that material; change them to the supplier&apos;s quote, or leave blank if unknown.
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginBottom: "0.75rem", maxWidth: 820 }}>
+                Quote up to three suppliers per material. Picking a supplier fills in its last price for that material and unit — change it to the current quotation if it&apos;s different.
+                The lowest price is used unless you pick another supplier with the radio button.
               </p>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <table style={{ width: "100%", minWidth: 1100, borderCollapse: "collapse" }}>
                 <thead>
-                  <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
-                    {["MATERIAL", "UNIT", "QTY", "SUPPLIER", "UNIT PRICE (₱)", "PO #"].map(h => (
-                      <th key={h} style={{ padding: "6px 8px", textAlign: "left", fontSize: "0.62rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{h}</th>
-                    ))}
+                  <tr>
+                    <th style={{ ...th, width: 28 }}>#</th>
+                    <th style={th}>PARTICULARS</th>
+                    <th style={th}>SIZE</th>
+                    <th style={th}>UNIT</th>
+                    <th style={th}>QTY</th>
+                    {Array.from({ length: MAX_QUOTES }, (_, i) => <th key={i} style={{ ...th, minWidth: 170 }}>SUPPLIER {i + 1}</th>)}
+                    <th style={{ ...th, minWidth: 140 }}>REMARKS</th>
+                    <th style={th}>PO #</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r, i) => {
-                    const suggestions = suggestionsByMaterial[r.materialId] ?? [];
+                  {rows.map((r, idx) => {
                     const poNumber = poNumbers[r.id];
+                    const sel = selectedSlot(r);
+                    const lowest = lowestSlot(r);
+                    const listId = datalistId(suggestionKey(r));
                     return (
-                      <tr key={r.id} style={{ borderBottom: i < rows.length - 1 ? "1px solid #f9fafb" : "none" }}>
-                        <td style={{ padding: "8px", fontSize: "0.82rem", fontWeight: 600, color: "#111827" }}>{r.materialName}</td>
-                        <td style={{ padding: "8px", fontSize: "0.78rem", color: "#6b7280" }}>{r.unit}</td>
-                        <td style={{ padding: "8px", fontSize: "0.78rem", color: "#6b7280" }}>{r.quantity}</td>
-                        <td style={{ padding: "8px", minWidth: 180 }}>
-                          {poNumber ? (
-                            <span style={{ fontSize: "0.8rem", color: "#111827" }}>{assignments[r.id]}</span>
-                          ) : (
-                            <>
-                              <input
-                                list={`suppliers-for-material-${r.materialId}`}
-                                value={assignments[r.id] ?? ""}
-                                onChange={e => setAssignments(prev => ({ ...prev, [r.id]: e.target.value }))}
-                                placeholder="Pick or type a supplier"
-                                style={fieldStyle}
-                              />
-                              <datalist id={`suppliers-for-material-${r.materialId}`}>
-                                {suggestions.map(s => <option key={s.id} value={s.name} />)}
-                              </datalist>
-                            </>
+                      <tr key={r.id}>
+                        <td style={{ ...td, color: "#9ca3af" }}>{idx + 1}</td>
+                        <td style={{ ...td, fontWeight: 600, color: "#111827", minWidth: 150 }}>
+                          {r.materialName}
+                          {r.lastUnitPrice != null && (
+                            <p style={{ fontSize: "0.65rem", fontWeight: 400, color: "#9ca3af", margin: "3px 0 0" }}>
+                              Last paid {formatCurrency(r.lastUnitPrice)}/{r.unit}{r.lastUnitPriceSupplier ? ` · ${r.lastUnitPriceSupplier}` : ""}
+                            </p>
                           )}
                         </td>
-                        <td style={{ padding: "8px", minWidth: 120 }}>
-                          {poNumber ? (
-                            <span style={{ fontSize: "0.8rem", color: "#111827", whiteSpace: "nowrap" }}>
-                              {priceOf(r.id) != null ? `${formatCurrency(priceOf(r.id)!)}/${r.unit}` : "—"}
-                            </span>
-                          ) : (
-                            <>
-                              <input
-                                type="number" min="0" step="0.01" inputMode="decimal"
-                                value={unitPrices[r.id] ?? ""}
-                                onChange={e => setUnitPrices(prev => ({ ...prev, [r.id]: e.target.value }))}
-                                placeholder={`₱ per ${r.unit || "unit"}`}
-                                aria-label={`Unit price (₱ per ${r.unit || "unit"}) for ${r.materialName}`}
-                                style={fieldStyle}
-                              />
-                              {priceOf(r.id) != null && priceOf(r.id)! >= 0 && (
-                                <p style={{ fontSize: "0.65rem", color: "#9ca3af", margin: "3px 0 0", whiteSpace: "nowrap" }}>
-                                  Total {formatCurrency(priceOf(r.id)! * r.quantity)}
-                                </p>
+                        <td style={{ ...td, color: "#6b7280", minWidth: 80 }}>{r.specification || "—"}</td>
+                        <td style={{ ...td, color: "#6b7280" }}>{r.unit}</td>
+                        <td style={{ ...td, color: "#6b7280" }}>{r.quantity.toLocaleString()}</td>
+                        {r.quotes.map((q, slot) => {
+                          const named = !!q.supplierName.trim();
+                          const price = quotePrice(q);
+                          const isSelected = slot === sel;
+                          const past = named ? historyFor(r, q.supplierName) : undefined;
+                          return (
+                            <td key={slot} style={{ ...td, background: named && isSelected ? "#fff7ed" : undefined }}>
+                              {poNumber ? (
+                                named ? (
+                                  <div style={{ fontSize: "0.78rem" }}>
+                                    <span style={{ fontWeight: isSelected ? 700 : 400, color: "#111827" }}>{q.supplierName}</span>
+                                    <span style={{ display: "block", color: "#6b7280" }}>{price != null ? `${formatCurrency(price)}/${r.unit}` : "—"}{isSelected ? " · ordered" : ""}</span>
+                                  </div>
+                                ) : <span style={{ color: "#d1d5db" }}>—</span>
+                              ) : (
+                                <div style={{ display: "grid", gap: 4 }}>
+                                  <input
+                                    list={listId}
+                                    value={q.supplierName}
+                                    onChange={e => setSupplier(r, slot, e.target.value)}
+                                    placeholder="Supplier"
+                                    aria-label={`Supplier ${slot + 1} for ${r.materialName}`}
+                                    style={fieldStyle}
+                                  />
+                                  <input
+                                    type="number" min="0" step="0.01" inputMode="decimal"
+                                    value={q.price}
+                                    onChange={e => setPrice(r, slot, e.target.value)}
+                                    placeholder={`₱ per ${r.unit || "unit"}`}
+                                    aria-label={`Price from supplier ${slot + 1} (₱ per ${r.unit || "unit"}) for ${r.materialName}`}
+                                    disabled={!named}
+                                    style={{ ...fieldStyle, opacity: named ? 1 : 0.5 }}
+                                  />
+                                  {named && (
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, flexWrap: "wrap" }}>
+                                      <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.68rem", color: isSelected ? "#c2410c" : "#6b7280", fontWeight: isSelected ? 700 : 500, cursor: "pointer" }}>
+                                        <input type="radio" name={`mrf-choice-${r.id}`} checked={isSelected}
+                                          onChange={() => updateRow(r.id, x => ({ ...x, chosen: slot }))} />
+                                        Order from
+                                      </label>
+                                      <span style={{ fontSize: "0.62rem", color: "#9ca3af", textAlign: "right" }}>
+                                        {slot === lowest && <span style={{ color: "#15803d", fontWeight: 700 }}>Lowest · </span>}
+                                        {q.fromHistory && past?.lastPriceDate ? `Last PO ${formatDate(past.lastPriceDate)}` : q.price.trim() && !q.fromHistory ? "Entered" : past?.hasHistoryWithMaterial ? "" : "New supplier"}
+                                      </span>
+                                    </div>
+                                  )}
+                                  {named && price != null && price >= 0 && (
+                                    <span style={{ fontSize: "0.62rem", color: "#9ca3af" }}>Total {formatCurrency(price * r.quantity)}</span>
+                                  )}
+                                </div>
                               )}
-                            </>
+                            </td>
+                          );
+                        })}
+                        <td style={td}>
+                          {poNumber ? (
+                            <span style={{ fontSize: "0.78rem" }}>{r.remarks || "—"}</span>
+                          ) : (
+                            <textarea
+                              value={r.remarks}
+                              onChange={e => updateRow(r.id, x => ({ ...x, remarks: e.target.value }))}
+                              rows={2} maxLength={300}
+                              placeholder="Remarks"
+                              aria-label={`Remarks for ${r.materialName}`}
+                              style={{ ...fieldStyle, resize: "vertical", fontFamily: "inherit" }}
+                            />
                           )}
                         </td>
-                        <td style={{ padding: "8px", fontSize: "0.8rem", fontWeight: 700, color: "#f97316", whiteSpace: "nowrap" }}>{poNumber ?? "—"}</td>
+                        <td style={{ ...td, fontWeight: 700, color: "#f97316", whiteSpace: "nowrap" }}>{poNumber ?? "—"}</td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
+              {/* One suggestion list per material + unit, shared by its supplier fields. */}
+              {Object.entries(suggestions).map(([key, list]) => (
+                <datalist key={key} id={datalistId(key)}>
+                  {list.map(s => <option key={s.id} value={s.name} />)}
+                </datalist>
+              ))}
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.75rem", margin: "1rem 0 0.5rem" }}>
+                <div style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: "0.6rem 0.8rem" }}>
+                  <p style={{ fontSize: "0.62rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", margin: 0 }}>REQUESTED BY</p>
+                  <p style={{ fontSize: "0.82rem", fontWeight: 600, color: "#111827", margin: "2px 0 0" }}>{requesters || "—"}</p>
+                  <p style={{ fontSize: "0.7rem", color: "#6b7280", margin: 0 }}>Date: {earliest ? formatDate(earliest) : "—"}</p>
+                </div>
+                <div style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: "0.6rem 0.8rem" }}>
+                  <p style={{ fontSize: "0.62rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", margin: 0 }}>PROCESSED BY (PURCHASER)</p>
+                  <p style={{ fontSize: "0.82rem", fontWeight: 600, color: "#111827", margin: "2px 0 0" }}>{processedBy}</p>
+                  <p style={{ fontSize: "0.7rem", color: "#6b7280", margin: 0 }}>Date: {formatDate(new Date().toISOString())}</p>
+                </div>
+              </div>
             </>
           )}
         </div>
 
-        <div style={{ padding: "1rem 1.5rem 1.5rem", flexShrink: 0, borderTop: "1px solid #f3f4f6", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem" }}>
+        <div style={{ padding: "1rem 1.5rem 1.25rem", flexShrink: 0, borderTop: "1px solid #f3f4f6", display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
           <div>
-            <label style={{ display: "block", fontSize: "0.68rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>Expected Delivery</label>
-            <input type="date" value={expectedDate} onChange={e => setExpectedDate(e.target.value)} disabled={generated}
+            <label htmlFor="mrf-expected-date" style={{ display: "block", fontSize: "0.68rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>Expected Delivery</label>
+            <input id="mrf-expected-date" type="date" value={expectedDate} onChange={e => setExpectedDate(e.target.value)} disabled={generated}
               style={{ ...fieldStyle, width: 170, opacity: generated ? 0.6 : 1 }} />
           </div>
           {generated ? (
@@ -548,14 +772,21 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onGenerated }: 
               Purchase Order <ArrowRight style={{ width: 14, height: 14 }} />
             </button>
           ) : (
-            <button onClick={handleGenerate} disabled={generating || loading || rows.length === 0} style={{
-              display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 8, border: "none",
-              background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.85rem",
-              cursor: (generating || loading || rows.length === 0) ? "not-allowed" : "pointer",
-              opacity: (generating || loading || rows.length === 0) ? 0.7 : 1,
-            }}>
-              {generating ? "Generating…" : "Generate P.O. Number"}
-            </button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button onClick={handleSave} disabled={busy || rows.length === 0} style={{
+                padding: "10px 16px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151",
+                fontWeight: 700, fontSize: "0.85rem", cursor: (busy || rows.length === 0) ? "not-allowed" : "pointer", opacity: (busy || rows.length === 0) ? 0.7 : 1,
+              }}>
+                {saving ? "Saving…" : "Save Quotations"}
+              </button>
+              <button onClick={handleGenerate} disabled={busy || rows.length === 0} style={{
+                display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 8, border: "none",
+                background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.85rem",
+                cursor: (busy || rows.length === 0) ? "not-allowed" : "pointer", opacity: (busy || rows.length === 0) ? 0.7 : 1,
+              }}>
+                {generating ? "Generating…" : "Generate P.O. Number"}
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -1593,6 +1824,7 @@ export default function ProcurementPage() {
         <RequestsOverlayModal
           projectId={openRequestsProject.projectId}
           projectName={openRequestsProject.projectName}
+          processedBy={user ? `${user.firstName} ${user.lastName}`.trim() : "—"}
           onClose={() => setOpenRequestsProjectId(null)}
           onGenerated={() => { refetch(); setTab("po"); }}
         />

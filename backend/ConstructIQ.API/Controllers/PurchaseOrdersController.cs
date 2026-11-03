@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using ConstructIQ.API.Algorithms;
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Models.DTOs.PurchaseOrders;
 using ConstructIQ.API.Models.Entities;
@@ -89,7 +90,7 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
 
         var po = new PurchaseOrder
         {
-            Number = $"PO-{DateTime.UtcNow.Year}-{Random.Shared.Next(1000, 9999)}",
+            // Assigned on save — see PoNumberGenerator.
             Project = project,
             Supplier = supplier,
             Status = PurchaseOrderStatus.Pending,
@@ -113,7 +114,7 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
         };
 
         db.PurchaseOrders.Add(po);
-        await db.SaveChangesAsync();
+        await PoNumberGenerator.SaveWithNumbersAsync(db, [po]);
 
         await notifications.CreateForRoleAsync(UserRole.ProjectManager, NotificationKind.PurchaseOrderCreated,
             $"{po.Number} was created for {project.Name} ({supplierName}).", CurrentUserId,
