@@ -49,6 +49,8 @@ public record RequestQuotesDto
     public int RequestId { get; init; }
     public string? Remarks { get; init; }
     public List<MaterialRequestQuoteDto> Quotes { get; init; } = [];
+    // The requested quantity as edited on the form; null leaves it unchanged.
+    public decimal? Quantity { get; init; }
 }
 
 public record ProjectWithRequestsDto
@@ -86,12 +88,16 @@ public record GeneratePOAssignmentDto
     // are kept on the request as its price comparison.
     public List<MaterialRequestQuoteDto> Quotes { get; init; } = [];
     public string? Remarks { get; init; }
+    // The requested quantity as edited on the form; null leaves it unchanged.
+    public decimal? Quantity { get; init; }
 }
 
 public record GeneratePOsFromRequestsDto
 {
     public int ProjectId { get; init; }
-    public DateTime ExpectedDate { get; init; }
+    // Optional: when left out, each PO's expected delivery is today plus that
+    // supplier's average actual lead time (7 days for a supplier with none).
+    public DateTime? ExpectedDate { get; init; }
     public List<GeneratePOAssignmentDto> Assignments { get; init; } = [];
 }
 

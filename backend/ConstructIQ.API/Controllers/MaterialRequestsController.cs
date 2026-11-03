@@ -136,6 +136,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         {
             if (ValidateQuotes(r.Quotes, requireSelection: false) is { } error)
                 return BadRequest(new { message = error });
+            if (r.Quantity is <= 0)
+                return BadRequest(new { message = "Quantity must be greater than zero." });
         }
 
         var ids = dto.Requests.Select(r => r.RequestId).ToList();
@@ -147,8 +149,28 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             return BadRequest(new { message = "One or more materials were already turned into a purchase order — refresh and try again." });
 
         foreach (var r in dto.Requests)
-            ApplyQuotes(requests.First(x => x.Id == r.RequestId), r.Quotes, r.Remarks);
+        {
+            var request = requests.First(x => x.Id == r.RequestId);
+            ApplyQuotes(request, r.Quotes, r.Remarks);
+            if (r.Quantity is { } qty) request.Quantity = qty;
+        }
 
+        await db.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // Removes a request that's no longer needed. Only a pending one — once a
+    // PO covers it, the PO is the record of what was ordered.
+    [HttpDelete("{id:int}")]
+    [Authorize(Roles = ManageRoles)]
+    public async Task<IActionResult> Delete(int id)
+    {
+        var request = await db.MaterialRequests.FindAsync(id);
+        if (request is null) return NotFound(new { message = "Request not found." });
+        if (request.FulfilledByPurchaseOrderId is not null)
+            return BadRequest(new { message = "This material is already on a purchase order and can't be deleted." });
+
+        db.MaterialRequests.Remove(request);  // its quotes cascade
         await db.SaveChangesAsync();
         return NoContent();
     }
@@ -225,6 +247,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         {
             if (ValidateQuotes(a.Quotes, requireSelection: true) is { } error)
                 return BadRequest(new { message = error });
+            if (a.Quantity is <= 0)
+                return BadRequest(new { message = "Quantity must be greater than zero." });
             // The selected quote is what the PO is raised against — it must
             // be the supplier and price sent for this material.
             var selected = a.Quotes.FirstOrDefault(q => q.IsSelected);
@@ -243,8 +267,13 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         if (requests.Count != dto.Assignments.Count)
             return BadRequest(new { message = "One or more materials were already turned into a purchase order — refresh and try again." });
 
-        foreach (var a in dto.Assignments.Where(a => a.Quotes.Count > 0 || a.Remarks is not null))
-            ApplyQuotes(requests.First(r => r.Id == a.RequestId), a.Quotes, a.Remarks);
+        foreach (var a in dto.Assignments)
+        {
+            var request = requests.First(r => r.Id == a.RequestId);
+            if (a.Quotes.Count > 0 || a.Remarks is not null)
+                ApplyQuotes(request, a.Quotes, a.Remarks);
+            if (a.Quantity is { } qty) request.Quantity = qty;
+        }
 
         var requestPos = new Dictionary<int, PurchaseOrder>();
         var createdPOs = new List<PurchaseOrder>();
@@ -265,7 +294,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
                 Project = project,
                 Supplier = supplier,
                 Status = PurchaseOrderStatus.Pending,
-                ExpectedDate = dto.ExpectedDate,
+                ExpectedDate = dto.ExpectedDate ?? await DefaultExpectedDateAsync(supplier),
                 CreatedByUserId = CurrentUserId,
             };
 
@@ -316,6 +345,20 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
     }
 
     private sealed record SupplierPrice(int SupplierId, string Unit, decimal Price, DateTime Date);
+
+    public const int DefaultLeadDays = 7;
+
+    // Today plus the supplier's average actual lead time from its rated
+    // deliveries, rounded up; DefaultLeadDays for a supplier with none (or a
+    // brand-new one). It's what marks a PO "Delayed" once it passes.
+    private async Task<DateTime> DefaultExpectedDateAsync(Supplier supplier)
+    {
+        double? avg = supplier.Id == 0 ? null : await db.DeliveryEvaluations
+            .Where(e => e.PurchaseOrder.SupplierId == supplier.Id && e.ActualLeadDays > 0)
+            .AverageAsync(e => (double?)e.ActualLeadDays);
+        var days = avg is { } a ? (int)Math.Ceiling(a) : DefaultLeadDays;
+        return DateTime.UtcNow.Date.AddDays(days);
+    }
 
     // pc/pcs/piece variants and case count as the same unit — never a
     // conversion between different units.
