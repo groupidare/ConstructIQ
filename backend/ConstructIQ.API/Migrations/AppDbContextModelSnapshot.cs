@@ -741,6 +741,10 @@ namespace ConstructIQ.API.Migrations
                     b.Property<decimal>("Quantity")
                         .HasColumnType("decimal(18,4)");
 
+                    b.Property<string>("Remarks")
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
                     b.Property<int>("RequestedByUserId")
                         .HasColumnType("int");
 
@@ -760,6 +764,45 @@ namespace ConstructIQ.API.Migrations
                     b.HasIndex("RequestedByUserId");
 
                     b.ToTable("MaterialRequests");
+                });
+
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.MaterialRequestQuote", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("IsSelected")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<int>("MaterialRequestId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("PriceFromHistory")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<int>("Slot")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SupplierName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<decimal?>("UnitPrice")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MaterialRequestId", "Slot")
+                        .IsUnique();
+
+                    b.ToTable("MaterialRequestQuotes");
                 });
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.Measurement", b =>
@@ -1982,6 +2025,17 @@ namespace ConstructIQ.API.Migrations
                     b.Navigation("RequestedBy");
                 });
 
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.MaterialRequestQuote", b =>
+                {
+                    b.HasOne("ConstructIQ.API.Models.Entities.MaterialRequest", "MaterialRequest")
+                        .WithMany("Quotes")
+                        .HasForeignKey("MaterialRequestId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("MaterialRequest");
+                });
+
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.Measurement", b =>
                 {
                     b.HasOne("ConstructIQ.API.Models.Entities.Phase", "Phase")
@@ -2375,6 +2429,11 @@ namespace ConstructIQ.API.Migrations
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.MaterialCategory", b =>
                 {
                     b.Navigation("Materials");
+                });
+
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.MaterialRequest", b =>
+                {
+                    b.Navigation("Quotes");
                 });
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.Notification", b =>

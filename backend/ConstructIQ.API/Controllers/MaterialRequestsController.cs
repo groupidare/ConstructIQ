@@ -107,6 +107,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         var requests = await db.MaterialRequests
             .Include(r => r.Material)
             .Include(r => r.RequestedBy)
+            .Include(r => r.Quotes)
             .Where(r => r.ProjectId == projectId && r.FulfilledByPurchaseOrderId == null)
             .OrderBy(r => r.CreatedAt)
             .ToListAsync();
@@ -115,24 +116,74 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         var pricedLines = await db.PurchaseOrderMaterials
             .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value))
             .OrderByDescending(m => m.PurchaseOrder.OrderDate).ThenByDescending(m => m.Id)
-            .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value })
+            .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Supplier = m.PurchaseOrder.Supplier.Name })
             .ToListAsync();
 
-        return Ok(requests.Select(r => ToDto(r) with
+        return Ok(requests.Select(r =>
         {
-            LastUnitPrice = pricedLines
-                .FirstOrDefault(p => p.MaterialId == r.MaterialId && string.Equals(p.Unit.Trim(), r.Unit.Trim(), StringComparison.OrdinalIgnoreCase))
-                ?.Price,
+            var last = pricedLines.FirstOrDefault(p => p.MaterialId == r.MaterialId && SameUnit(p.Unit, r.Unit));
+            return ToDto(r) with { LastUnitPrice = last?.Price, LastUnitPriceSupplier = last?.Supplier };
         }));
+    }
+
+    // Saves the supplier quotes and remarks on the form without generating a
+    // PO, so a half-finished comparison isn't lost when the form is closed.
+    [HttpPut("project/{projectId:int}/quotes")]
+    [Authorize(Roles = ManageRoles)]
+    public async Task<IActionResult> SaveQuotes(int projectId, [FromBody] SaveRequestQuotesDto dto)
+    {
+        foreach (var r in dto.Requests)
+        {
+            if (ValidateQuotes(r.Quotes, requireSelection: false) is { } error)
+                return BadRequest(new { message = error });
+            if (r.Quantity is <= 0)
+                return BadRequest(new { message = "Quantity must be greater than zero." });
+        }
+
+        var ids = dto.Requests.Select(r => r.RequestId).ToList();
+        var requests = await db.MaterialRequests
+            .Include(r => r.Quotes)
+            .Where(r => ids.Contains(r.Id) && r.ProjectId == projectId && r.FulfilledByPurchaseOrderId == null)
+            .ToListAsync();
+        if (requests.Count != ids.Distinct().Count())
+            return BadRequest(new { message = "One or more materials were already turned into a purchase order — refresh and try again." });
+
+        foreach (var r in dto.Requests)
+        {
+            var request = requests.First(x => x.Id == r.RequestId);
+            ApplyQuotes(request, r.Quotes, r.Remarks);
+            if (r.Quantity is { } qty) request.Quantity = qty;
+        }
+
+        await db.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // Removes a request that's no longer needed. Only a pending one — once a
+    // PO covers it, the PO is the record of what was ordered.
+    [HttpDelete("{id:int}")]
+    [Authorize(Roles = ManageRoles)]
+    public async Task<IActionResult> Delete(int id)
+    {
+        var request = await db.MaterialRequests.FindAsync(id);
+        if (request is null) return NotFound(new { message = "Request not found." });
+        if (request.FulfilledByPurchaseOrderId is not null)
+            return BadRequest(new { message = "This material is already on a purchase order and can't be deleted." });
+
+        db.MaterialRequests.Remove(request);  // its quotes cascade
+        await db.SaveChangesAsync();
+        return NoContent();
     }
 
     // Ranks every supplier for the dropdown next to one material row: suppliers
     // who've actually been ordered this exact material before come first
     // (by rating), then everyone else by overall rating — so a material with
     // no order history yet still gets a usable, non-empty list.
+    // With ?unit=, each supplier also carries its own last price for this
+    // material in that unit — what the quote auto-fills when it's picked.
     [HttpGet("suggested-suppliers/{materialId:int}")]
     [Authorize(Roles = ManageRoles)]
-    public async Task<IActionResult> GetSuggestedSuppliers(int materialId)
+    public async Task<IActionResult> GetSuggestedSuppliers(int materialId, [FromQuery] string? unit = null)
     {
         var supplierIdsWithHistory = (await db.PurchaseOrderMaterials
             .Include(m => m.PurchaseOrder)
@@ -141,6 +192,15 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             .Distinct()
             .ToListAsync())
             .ToHashSet();
+
+        var lastPrices = (string.IsNullOrWhiteSpace(unit) ? [] : await db.PurchaseOrderMaterials
+                .Where(m => m.MaterialId == materialId && m.UnitPrice != null)
+                .OrderByDescending(m => m.PurchaseOrder.OrderDate).ThenByDescending(m => m.Id)
+                .Select(m => new SupplierPrice(m.PurchaseOrder.SupplierId, m.Unit, m.UnitPrice!.Value, m.PurchaseOrder.OrderDate))
+                .ToListAsync())
+            .Where(p => SameUnit(p.Unit, unit))
+            .GroupBy(p => p.SupplierId)
+            .ToDictionary(g => g.Key, g => g.First());
 
         var suppliers = await db.Suppliers
             .Include(s => s.PurchaseOrders).ThenInclude(po => po.Evaluation)
@@ -154,6 +214,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
                 {
                     Id = s.Id, Name = s.Name, Rating = rating, OnTimePct = onTimePct, Deliveries = deliveries,
                     HasHistoryWithMaterial = supplierIdsWithHistory.Contains(s.Id),
+                    LastUnitPrice = lastPrices.GetValueOrDefault(s.Id)?.Price,
+                    LastPriceDate = lastPrices.GetValueOrDefault(s.Id)?.Date,
                 };
             })
             .OrderByDescending(s => s.HasHistoryWithMaterial)
@@ -181,16 +243,39 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         var project = await db.Projects.FindAsync(dto.ProjectId);
         if (project is null) return BadRequest(new { message = "Project not found." });
 
+        foreach (var a in dto.Assignments)
+        {
+            if (ValidateQuotes(a.Quotes, requireSelection: true) is { } error)
+                return BadRequest(new { message = error });
+            if (a.Quantity is <= 0)
+                return BadRequest(new { message = "Quantity must be greater than zero." });
+            // The selected quote is what the PO is raised against — it must
+            // be the supplier and price sent for this material.
+            var selected = a.Quotes.FirstOrDefault(q => q.IsSelected);
+            if (selected is not null && (!string.Equals(selected.SupplierName.Trim(), a.SupplierName.Trim(), StringComparison.OrdinalIgnoreCase)
+                                         || selected.UnitPrice != a.UnitPrice))
+                return BadRequest(new { message = "The selected supplier quote doesn't match the supplier and price for one of the materials." });
+        }
+
         var requestIds = dto.Assignments.Select(a => a.RequestId).ToList();
         var requests = await db.MaterialRequests
             .Include(r => r.Material)
+            .Include(r => r.Quotes)
             .Where(r => requestIds.Contains(r.Id) && r.ProjectId == dto.ProjectId && r.FulfilledByPurchaseOrderId == null)
             .ToListAsync();
 
         if (requests.Count != dto.Assignments.Count)
             return BadRequest(new { message = "One or more materials were already turned into a purchase order — refresh and try again." });
 
-        var requestPoNumbers = new Dictionary<int, string>();
+        foreach (var a in dto.Assignments)
+        {
+            var request = requests.First(r => r.Id == a.RequestId);
+            if (a.Quotes.Count > 0 || a.Remarks is not null)
+                ApplyQuotes(request, a.Quotes, a.Remarks);
+            if (a.Quantity is { } qty) request.Quantity = qty;
+        }
+
+        var requestPos = new Dictionary<int, PurchaseOrder>();
         var createdPOs = new List<PurchaseOrder>();
 
         foreach (var group in dto.Assignments.GroupBy(a => a.SupplierName.Trim(), StringComparer.OrdinalIgnoreCase))
@@ -205,11 +290,11 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
 
             var po = new PurchaseOrder
             {
-                Number = $"PO-{DateTime.UtcNow.Year}-{Random.Shared.Next(1000, 9999)}",
+                // Assigned on save — see PoNumberGenerator.
                 Project = project,
                 Supplier = supplier,
                 Status = PurchaseOrderStatus.Pending,
-                ExpectedDate = dto.ExpectedDate,
+                ExpectedDate = dto.ExpectedDate ?? await DefaultExpectedDateAsync(supplier),
                 CreatedByUserId = CurrentUserId,
             };
 
@@ -225,14 +310,15 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
                     UnitPrice = assignment.UnitPrice,
                 });
                 request.FulfilledByPurchaseOrder = po;
-                requestPoNumbers[request.Id] = po.Number;
+                requestPos[request.Id] = po;
             }
 
             db.PurchaseOrders.Add(po);
             createdPOs.Add(po);
         }
 
-        await db.SaveChangesAsync();
+        await PoNumberGenerator.SaveWithNumbersAsync(db, createdPOs);
+        var requestPoNumbers = requestPos.ToDictionary(kv => kv.Key, kv => kv.Value.Number);
 
         var reloadedIds = createdPOs.Select(p => p.Id).ToList();
         var reloaded = await db.PurchaseOrders
@@ -258,15 +344,93 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         return (Math.Round(rating, 1), onTimePct, deliveries);
     }
 
+    private sealed record SupplierPrice(int SupplierId, string Unit, decimal Price, DateTime Date);
+
+    public const int DefaultLeadDays = 7;
+
+    // Today plus the supplier's average actual lead time from its rated
+    // deliveries, rounded up; DefaultLeadDays for a supplier with none (or a
+    // brand-new one). It's what marks a PO "Delayed" once it passes.
+    private async Task<DateTime> DefaultExpectedDateAsync(Supplier supplier)
+    {
+        double? avg = supplier.Id == 0 ? null : await db.DeliveryEvaluations
+            .Where(e => e.PurchaseOrder.SupplierId == supplier.Id && e.ActualLeadDays > 0)
+            .AverageAsync(e => (double?)e.ActualLeadDays);
+        var days = avg is { } a ? (int)Math.Ceiling(a) : DefaultLeadDays;
+        return DateTime.UtcNow.Date.AddDays(days);
+    }
+
+    // pc/pcs/piece variants and case count as the same unit — never a
+    // conversion between different units.
+    private static bool SameUnit(string? a, string? b) =>
+        CompletedProjectDemandRules.NormalizeUnit(a) == CompletedProjectDemandRules.NormalizeUnit(b);
+
+    // Null when valid. requireSelection: generating a PO needs exactly one
+    // chosen quote (when any are given); saving a draft allows none.
+    private static string? ValidateQuotes(List<MaterialRequestQuoteDto> quotes, bool requireSelection)
+    {
+        if (quotes.Count > MaterialRequest.MaxQuotes)
+            return $"At most {MaterialRequest.MaxQuotes} suppliers can be quoted per material.";
+        if (quotes.Any(q => string.IsNullOrWhiteSpace(q.SupplierName)))
+            return "Every quote needs a supplier name.";
+        if (quotes.Any(q => q.Slot < 1 || q.Slot > MaterialRequest.MaxQuotes) || quotes.Select(q => q.Slot).Distinct().Count() != quotes.Count)
+            return "Each supplier quote needs its own column (1 to 3).";
+        if (quotes.Select(q => q.SupplierName.Trim().ToLowerInvariant()).Distinct().Count() != quotes.Count)
+            return "The same supplier is quoted twice for one material.";
+        if (quotes.Any(q => q.UnitPrice < 0))
+            return "Unit prices can't be negative.";
+        var selected = quotes.Count(q => q.IsSelected);
+        if (selected > 1)
+            return "Only one supplier can be chosen per material.";
+        if (requireSelection && quotes.Count > 0 && selected == 0)
+            return "Choose which supplier to order each material from.";
+        return null;
+    }
+
+    // Makes the request's quotes match the given ones (an empty list clears
+    // them). Updated in place by slot rather than deleted and re-inserted, so
+    // the (request, slot) unique index can't trip mid-save.
+    private void ApplyQuotes(MaterialRequest request, List<MaterialRequestQuoteDto> quotes, string? remarks)
+    {
+        var bySlot = quotes.ToDictionary(q => q.Slot);
+        foreach (var stale in request.Quotes.Where(q => !bySlot.ContainsKey(q.Slot)).ToList())
+        {
+            request.Quotes.Remove(stale);
+            db.MaterialRequestQuotes.Remove(stale);
+        }
+        foreach (var q in quotes)
+        {
+            var quote = request.Quotes.FirstOrDefault(x => x.Slot == q.Slot);
+            if (quote is null)
+            {
+                quote = new MaterialRequestQuote { Slot = q.Slot };
+                request.Quotes.Add(quote);
+            }
+            quote.SupplierName = q.SupplierName.Trim();
+            quote.UnitPrice = q.UnitPrice;
+            quote.PriceFromHistory = q.PriceFromHistory;
+            quote.IsSelected = q.IsSelected;
+            quote.UpdatedAt = DateTime.UtcNow;
+        }
+        request.Remarks = string.IsNullOrWhiteSpace(remarks) ? null : remarks.Trim();
+    }
+
     private static MaterialRequestDto ToDto(MaterialRequest r) => new()
     {
         Id = r.Id,
         MaterialId = r.MaterialId,
         MaterialName = r.Material.Name,
+        Specification = r.Material.Specification,
         Quantity = r.Quantity,
         Unit = r.Unit,
         RequestedByName = $"{r.RequestedBy.FirstName} {r.RequestedBy.LastName}",
         CreatedAt = r.CreatedAt,
+        Remarks = r.Remarks,
+        Quotes = r.Quotes.OrderBy(q => q.Slot).Select(q => new MaterialRequestQuoteDto
+        {
+            Slot = q.Slot, SupplierName = q.SupplierName, UnitPrice = q.UnitPrice,
+            PriceFromHistory = q.PriceFromHistory, IsSelected = q.IsSelected,
+        }).ToList(),
     };
 
     private static PurchaseOrderDto ToPoDto(PurchaseOrder po) => new()
