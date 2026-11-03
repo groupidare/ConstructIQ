@@ -9,6 +9,7 @@ points, like pdfplumber's, and join the normal text pipeline.
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import math
 import re
@@ -31,6 +32,47 @@ COMMON_SCALES = {5, 10, 20, 25, 30, 40, 50, 60, 75, 80, 100, 125, 150, 200, 250,
 _TITLE_NUMBER = re.compile(r"^\(?\d{1,2}\)?\s+(?=[A-Z]{3,}\s+[A-Z])")
 _LOOSE_SCALE = re.compile(r"(?:SCALE\s*:?\s*)?1\s*[:;,.]?\s+(\d{1,4})\.?", re.I)
 
+# Words that name a room. Small room names drawn over tile hatching come
+# back garbled ("TOLET", "TOILE", "TORET") or under the confidence cut; one
+# close to a word here is read as that word (room_words) and kept.
+ROOM_WORDS = frozenset("""
+    TOILET TOILETS BATH BATHROOM CR POWDER SHOWER LAVATORY WC T&B
+    BEDROOM BEDROOMS MASTER GUEST GUESTROOM ROOM ROOMS MAID MAIDS KIDS
+    KITCHEN DIRTY PANTRY DINING LIVING FAMILY LOUNGE STUDY OFFICE LIBRARY GYM
+    LAUNDRY SERVICE UTILITY STORAGE STORE STOCK CLOSET WALK-IN W.I.C. WIC
+    BALCONY TERRACE LANAI PORCH VERANDA DECK PATIO FOYER LOBBY ENTRY RECEPTION
+    HALL HALLWAY CORRIDOR PASSAGE STAIR STAIRS LANDING GARAGE CARPORT PARKING
+    AREA SALES FITTING TILLS DATA ROOM MEZZANINE ATTIC ROOF
+""".split())
+# Plan notes a letter away from a room word ("STORM DRAIN" ~ STORE) — never corrected.
+NOT_ROOM_WORDS = frozenset("""
+    STORM DRAIN PIPE LINE PROPERTY SCALE PLAN FLOOR DOOR WINDOW WALL SLAB BEAM COLUMN TILE TILES FINISH
+    CEILING LEVEL SINK SECTION DETAIL NOTE NOTES ELEVATION RAILING CANOPY GUTTER
+""".split())
+ROOM_WORD_CUTOFF = 0.7      # difflib ratio: TOLET/TOILE → TOILET, but PLAN ≠ LANAI
+LOW_CONFIDENCE_ROOM_WORD = 0.4  # a room word is kept down to this confidence
+
+
+def room_word(token: str) -> str | None:
+    """The room word an OCR token is a misreading of, if any. Digits read
+    for letters (BACONY with a zero) count as the letter."""
+    if not any(ch.isalpha() for ch in token):
+        return None
+    t = token.upper().translate(str.maketrans("0156", "OISG")).strip(".,:;()'\"")
+    if t in ROOM_WORDS:
+        return t
+    if len(t) < 4 or not t.isalpha() or t in NOT_ROOM_WORDS:
+        return None
+    # A misread keeps its first letter far more often than not: "TORET" is
+    # TOILET, though STORE scores a little closer.
+    matches = difflib.get_close_matches(t, ROOM_WORDS, n=3, cutoff=ROOM_WORD_CUTOFF)
+    return next((m for m in matches if m[0] == t[0]), matches[0] if matches else None)
+
+
+def room_words(text: str) -> str:
+    """`text` with each garbled room word replaced by the word it reads as."""
+    return " ".join(room_word(w) or w for w in text.split())
+
 
 def _tesseract_available() -> bool:
     try:
@@ -51,6 +93,10 @@ def render(page):
     return page_image(page, dpi).convert("L"), 72 / dpi
 
 
+def _confident(text: str, confidence: float) -> bool:
+    return confidence >= MIN_CONFIDENCE / 100 or (confidence >= LOW_CONFIDENCE_ROOM_WORD and room_word(text) is not None)
+
+
 def _covered(cx: float, cy: float, boxes: list[tuple]) -> bool:
     return any(x0 - 1 <= cx <= x1 + 1 and top - 1 <= cy <= bottom + 1 for x0, top, x1, bottom in boxes)
 
@@ -65,7 +111,7 @@ def _azure_words(image, pt_per_px: float, real_text: list[tuple]) -> list[dict]:
         k = pt_per_px * image.width / float(page.get("width") or image.width)
         for w in page.get("words") or []:
             text, poly = (w.get("content") or "").strip(), w.get("polygon") or []
-            if not text or len(poly) < 8 or float(w.get("confidence", 1)) < MIN_CONFIDENCE / 100:
+            if not text or len(poly) < 8 or not _confident(text, float(w.get("confidence", 1))):
                 continue
             if not any(ch.isalnum() for ch in text):
                 continue
@@ -100,7 +146,7 @@ def _tesseract_words(image, pt_per_px: float, real_text: list[tuple]) -> list[di
     words = []
     for i, text in enumerate(data["text"]):
         text = text.strip()
-        if not text or float(data["conf"][i]) < MIN_CONFIDENCE or not any(ch.isalnum() for ch in text):
+        if not text or not _confident(text, float(data["conf"][i]) / 100) or not any(ch.isalnum() for ch in text):
             continue
         x0, top = data["left"][i] * pt_per_px, data["top"][i] * pt_per_px
         x1, bottom = x0 + data["width"][i] * pt_per_px, top + data["height"][i] * pt_per_px
@@ -119,9 +165,28 @@ def _normalise(text: str) -> str:
     return _TITLE_NUMBER.sub("", text)
 
 
+def _tag_words(words: list[dict]) -> set[int]:
+    """Door/window tags — a short code over its number ("PD" over "2") in a
+    small hexagon or circle. Their words never join a neighbour on the row,
+    or a tag beside a room name turns "COMMON" into "COMMON 2"."""
+    codes = [w for w in words if re.fullmatch(r"[A-Z]{1,3}", w["text"])]
+    tags: set[int] = set()
+    for w in words:
+        if not re.fullmatch(r"\d{1,2}[A-Z]?", w["text"]):
+            continue
+        cx = (w["x0"] + w["x1"]) / 2
+        for c in codes:
+            size = max(c["size"], w["size"])
+            if abs((c["x0"] + c["x1"]) / 2 - cx) < 0.8 * size and -0.4 * size <= w["top"] - c["bottom"] < 0.8 * size:
+                tags.update((id(w), id(c)))
+                break
+    return tags
+
+
 def _lines(words: list[dict]) -> list[tuple[str, float, float, float, float, float]]:
     """Words on one row, close together, as (text, x0, top, x1, bottom, size).
     No same-size rule (unlike real text): OCR box heights vary word to word."""
+    tags = _tag_words(words)
     # Rows first, then left to right — sorting by top alone puts a word a
     # fraction higher ("60" of "1 60") ahead of its left neighbour.
     rows: list[list[dict]] = []
@@ -136,7 +201,8 @@ def _lines(words: list[dict]) -> list[tuple[str, float, float, float, float, flo
             last = lines[-1][-1]
             # "1 : 60" with the colon dropped leaves a wide gap after the "1".
             reach = 3.0 if last["text"].rstrip(":;") == "1" and w["text"].rstrip(".").isdigit() else 1.2
-            if -0.2 * w["size"] <= w["x0"] - last["x1"] < reach * max(last["size"], w["size"]):
+            if (id(w) not in tags and id(last) not in tags
+                    and -0.2 * w["size"] <= w["x0"] - last["x1"] < reach * max(last["size"], w["size"])):
                 lines[-1].append(w)
             else:
                 lines.append([w])

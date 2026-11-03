@@ -13,19 +13,22 @@ DXF: real layer names (WALL / DOOR / GLZ, WIN / ROOM…) are used directly.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import logging
 import math
 import re
 import statistics
 import threading
 from collections import Counter, OrderedDict, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from app.services import blueprint_ocr
 from app.services.blueprint_geometry import Label, RoomResult, best_rooms
+from app.utils.pdf_render import page_image
 
 logger = logging.getLogger(__name__)
 
@@ -203,11 +206,50 @@ def _finish_notes(lines: list[str]) -> list[str]:
     return notes[:25]
 
 
-def _labels_from(lines: list[TextLine], exclude: list[TextLine]) -> list[TextLine]:
-    """Room names: the largest in-drawing text (not titles, dimensions, grid
-    callouts or annotations), stacked lines joined ("FITTING" over "ROOM")."""
-    candidates = [l for l in lines if l not in exclude
-                  and sum(ch.isalpha() for ch in l.text) >= max(3, 0.5 * len(l.text.replace(" ", "")))
+def _stack_letters(lines: list[TextLine]) -> list[TextLine]:
+    """A name written down a narrow space one upright letter per line ("B"
+    over "A" over "L"… beside a balcony) joined into one word."""
+    singles = sorted((l for l in lines if len(l.text.strip()) == 1 and l.text.strip().isalnum()), key=lambda l: l.top)
+    used: set[int] = set()
+    stacks: list[TextLine] = []
+    for first in singles:
+        if id(first) in used:
+            continue
+        run = [first]
+        for c in singles:
+            last = run[-1]
+            size = max(c.size, last.size)
+            if (id(c) not in used and c is not last and c.top > last.top and abs(c.cx - last.cx) < 0.6 * size
+                    and -0.5 * size <= c.top - last.bottom < 1.3 * size and 0.6 < c.size / last.size < 1.6):
+                run.append(c)
+        if len(run) >= 3 and sum(c.text.strip().isalpha() for c in run) >= 2:
+            used.update(id(c) for c in run)
+            stacks.append(TextLine("".join(c.text.strip() for c in run), min(c.x0 for c in run), run[0].top,
+                                   max(c.x1 for c in run), run[-1].bottom, statistics.median(c.size for c in run),
+                                   ocr=any(c.ocr for c in run)))
+    return [l for l in lines if id(l) not in used] + stacks
+
+
+# Room words too general to name a room on their own when written small.
+_GENERIC_ROOM_WORDS = {"AREA", "ROOM", "ROOMS", "DATA", "SALES", "STOCK", "ROOF"}
+
+
+def _is_room_word(text: str) -> bool:
+    return any(w in blueprint_ocr.ROOM_WORDS and w not in _GENERIC_ROOM_WORDS
+               for w in re.split(r"[\s/]+", text.upper()))
+
+
+def _labels_from(lines: list[TextLine], exclude: list[TextLine]) -> list[tuple[TextLine, bool]]:
+    """Room names, as (label, minor): the largest in-drawing text (not
+    titles, dimensions, grid callouts or annotations), stacked lines joined
+    ("FITTING" over "ROOM"). Smaller text that reads as a room word —
+    "TOILET" lettered smaller than "BEDROOM" — comes back as a minor label.
+    OCR'd labels are read through the room vocabulary first, so a garbled
+    "TOLET" or a stacked "BAC0NY" names the room it belongs to."""
+    lines = [replace(l, text=blueprint_ocr.room_words(l.text)) if l.ocr else l
+             for l in _stack_letters([l for l in lines if l not in exclude])]
+    candidates = [l for l in lines
+                  if sum(ch.isalpha() for ch in l.text) >= max(3, 0.5 * len(l.text.replace(" ", "")))
                   and not _GRID_REF.match(l.text.strip()) and not _SCALE.search(l.text)]
     if not candidates:
         return []
@@ -218,16 +260,19 @@ def _labels_from(lines: list[TextLine], exclude: list[TextLine]) -> list[TextLin
         # that at least two labels have.
         shared = [size for size, n in Counter(round(l.size * 2) / 2 for l in candidates).items() if n >= 2]
         biggest = max(shared, default=biggest)
-    big = sorted([l for l in candidates if l.size >= 0.85 * biggest], key=lambda l: (l.top, l.x0))
-    merged: list[TextLine] = []
-    for l in big:
-        prev = next((m for m in reversed(merged)
-                     if 0 <= l.top - m.bottom < 0.9 * l.size and abs(l.cx - m.cx) < 3 * l.size), None)
-        if prev:
+    labels = [(l, False) for l in candidates if l.size >= 0.85 * biggest]
+    labels += [(l, True) for l in candidates if 0.45 * biggest <= l.size < 0.85 * biggest and _is_room_word(l.text)]
+    merged: list[tuple[TextLine, bool]] = []
+    for l, minor in sorted(labels, key=lambda x: (x[0].top, x[0].x0)):
+        k = next((k for k in range(len(merged) - 1, -1, -1)
+                  if 0 <= l.top - merged[k][0].bottom < 0.9 * l.size and abs(l.cx - merged[k][0].cx) < 3 * l.size), None)
+        if k is not None:
+            prev, prev_minor = merged[k]
             prev.text = f"{prev.text} {l.text}"
             prev.x0, prev.x1, prev.bottom = min(prev.x0, l.x0), max(prev.x1, l.x1), l.bottom
+            merged[k] = (prev, prev_minor and minor)
         else:
-            merged.append(TextLine(l.text, l.x0, l.top, l.x1, l.bottom, l.size))
+            merged.append((TextLine(l.text, l.x0, l.top, l.x1, l.bottom, l.size, l.ocr), minor))
     return merged
 
 
@@ -305,6 +350,9 @@ def _drawings(sheet_id: str, page, lines: list[TextLine], code: TextLine | None)
 
     titles = [(l, scale_of.get(id(l))) for l in title_lines
               if id(l) in scale_of or (l.size >= big_cut and _DRAWING_WORDS.search(l.text))]
+    # A title drawn twice on top of itself (CAD text duplicated) is one drawing.
+    titles = [(t, s) for i, (t, s) in enumerate(titles)
+              if not any(o.text == t.text and abs(o.x0 - t.x0) < 2 and abs(o.top - t.top) < 2 for o, _ in titles[:i])]
     for t, _ in titles:
         t.text = _spaced_title(t.text)
 
@@ -358,6 +406,107 @@ def _default_drawing(drawings: list[Drawing]) -> Drawing | None:
                 else 1 if "PLAN" in t and not _NOT_THE_FLOOR_PLAN.search(t)
                 else 2 if "PLAN" in t else 3)
     return min(drawings, key=rank) if drawings else None
+
+
+# ── floors ────────────────────────────────────────────────────────────────────
+
+# (title pattern, key, name, order) — the level a floor plan's title names.
+_LEVELS = [
+    (re.compile(r"\bBASEMENT\b"), "B1", "Basement", -1),
+    (re.compile(r"\bGROUND\b|\bG/F\b"), "GF", "Ground Floor", 0),
+    (re.compile(r"\b(FIRST|1ST)\b"), "1F", "First Floor", 1),
+    (re.compile(r"\bMEZZANINE\b"), "MZ", "Mezzanine", 1.5),
+    (re.compile(r"\b(SECOND|2ND)\b"), "2F", "Second Floor", 2),
+    (re.compile(r"\b(THIRD|3RD)\b"), "3F", "Third Floor", 3),
+    (re.compile(r"\b(FOURTH|4TH)\b"), "4F", "Fourth Floor", 4),
+    (re.compile(r"\b(FIFTH|5TH)\b"), "5F", "Fifth Floor", 5),
+    (re.compile(r"\bATTIC\b"), "AT", "Attic", 80),
+    (re.compile(r"\bROOF\s*DECK\b"), "RD", "Roof Deck", 90),
+]
+# Plan views of a floor drawn for another trade or another purpose — the
+# same walls again (ceiling, framing, power…), or not a floor at all.
+_NOT_A_FLOOR = re.compile(_NOT_THE_FLOOR_PLAN.pattern + r"|FRAMING|FOUNDATION|STRUCTURAL|BEAM|SLAB|FOOTING|KEY|"
+                          r"\bLOT\b|DRAINAGE|SEWER|WATER|SEPTIC|DETAIL|BLOW|TILE|ENLARGED|STAIR|SCHEDULE|ELEVATION|"
+                          r"SECTION|CELING|REFLECTED", re.I)
+_PLAN_VIEW = re.compile(r"\bPLAN\b|LAYOUT", re.I)
+_NOT_A_PLAN_VIEW = re.compile(r"ELEVATION|SECTION|DETAIL|SCHEDULE|ISOMETRIC|ISOMENTRIC", re.I)
+DETAIL_SCALE_BELOW = 40  # 1:25, 1:20… are enlarged details, not a whole floor
+
+
+def _level(title: str) -> tuple[str, str, float] | None:
+    t = title.upper()
+    return next(((key, name, order) for pattern, key, name, order in _LEVELS if pattern.search(t)), None)
+
+
+def _is_floor_plan(d: Drawing) -> bool:
+    t = d.title.text.upper()
+    if not re.search(r"\bPLAN\b", t) or (d.scale and d.scale < DETAIL_SCALE_BELOW):
+        return False
+    if _NOT_A_FLOOR.search(re.sub(r"ROOF\s*DECK", "", t)):
+        return False
+    return "FLOOR" in t or _level(t) is not None
+
+
+def _floor_plans(sheets: list[Sheet]) -> tuple[list[dict], list[str]]:
+    """One drawing per floor, to read every floor of the plan set at once,
+    and the plan views left out. A floor is drawn several times — floor
+    plan, ceiling plan, framing, power layout — and reading more than one
+    would count it again, so only floor-plan titles count and each level
+    ("GROUND", "SECOND"…) is taken once. A second drawing with the same
+    level, or titled just "FLOOR PLAN" when other floors are named, comes
+    back unticked (`confirm`) for the user to decide — never guessed."""
+    drawings = [(d, s) for s in sheets for d in s.drawings]
+    candidates = [(d, s) for d, s in drawings if _is_floor_plan(d)]
+    if not candidates:
+        d = _default_drawing([d for d, _ in drawings])
+        return ([{"floor": "Floor plan", "drawing_id": d.id, "confirm": False, "note": None, "alternatives": []}]
+                if d else []), []
+
+    main: dict[str | None, tuple[Drawing, Sheet]] = {}
+    extra: list[tuple[Drawing, Sheet]] = []
+    for d, s in candidates:
+        level = _level(d.title.text)
+        key = level[0] if level else None
+        if key in main:
+            extra.append((d, s))
+        else:
+            main[key] = (d, s)
+    if None in main and len(main) > 1:
+        extra.insert(0, main.pop(None))
+
+    def same_floor(o: Drawing, o_sheet: Sheet, level, sheet: Sheet) -> bool:
+        """Another plan view that can stand in for this floor's drawing: one
+        naming the same level, or naming none and on the same sheet."""
+        if not _PLAN_VIEW.search(o.title.text) or _NOT_A_PLAN_VIEW.search(o.title.text):
+            return False
+        other = _level(o.title.text)
+        if other:
+            return other == level
+        return o_sheet is sheet or level is None
+
+    def entry(d: Drawing, s: Sheet, confirm: bool, name: str, note: str | None) -> dict:
+        level = _level(d.title.text)
+        alternatives = [o.id for o, o_sheet in sorted(drawings, key=lambda x: x[1] is not s)
+                        if o is not d and same_floor(o, o_sheet, level, s)]
+        return {"floor": name, "drawing_id": d.id, "confirm": confirm, "note": note, "alternatives": alternatives}
+
+    floors = []
+    for key, (d, s) in sorted(main.items(), key=lambda kv: _level(kv[1][0].title.text)[2] if kv[0] else 0):
+        floors.append(entry(d, s, False, _level(d.title.text)[1] if key else "Floor plan", None))
+    names = [f["floor"] for f in floors]
+    for d, s in extra:
+        level = _level(d.title.text)
+        base = level[1] if level else "Floor plan"
+        n = 2
+        while f"{base} ({n})" in names:
+            n += 1
+        names.append(f"{base} ({n})")
+        floors.append(entry(d, s, True, names[-1],
+                            f"Also titled \"{d.title.text}\" (sheet {s.id}) — tick it only if it's a different floor."))
+    used = {f["drawing_id"] for f in floors}
+    skipped = [d.id for d, _ in drawings if d.id not in used and _PLAN_VIEW.search(d.title.text)
+               and not _NOT_A_PLAN_VIEW.search(d.title.text)]
+    return floors, skipped
 
 
 def _style(o: dict) -> tuple:
@@ -442,17 +591,106 @@ def _openings(door_widths: list[float], window_count: int, window_widths: list[f
     return out
 
 
-def _rooms_json(result: RoomResult | None) -> list[dict]:
+def _rooms_json(result: RoomResult | None, to_px=None) -> list[dict]:
+    """to_px: metres → preview-image pixels, for each room's outline."""
     if not result:
         return []
     def bbox(r):
         x0, y0, x1, y1 = r.polygon.bounds
         return round(max(x1 - x0, y1 - y0), 2), round(min(x1 - x0, y1 - y0), 2)
+    def outline(r):
+        if to_px is None:
+            return []
+        return [[round(v, 1) for v in to_px(x, y)] for x, y in r.polygon.simplify(0.02).exterior.coords]
     # length_m/width_m: the room's bounding box — what a measurement row's
     # L × W holds; floor_area_sqm is the real (possibly non-rectangular) area.
     return [{"name": r.name, "floor_area_sqm": round(r.area_sqm, 2), "perimeter_m": round(r.perimeter_m, 2),
              "length_m": bbox(r)[0], "width_m": bbox(r)[1],
-             "confidence": r.confidence, "labels": r.labels} for r in result.rooms]
+             "confidence": r.confidence, "labels": r.labels, "outline": outline(r)} for r in result.rooms]
+
+
+# ── preview ───────────────────────────────────────────────────────────────────
+
+PREVIEW_MAX_PX = 1600   # the drawing's longer side in the wizard's preview
+PREVIEW_MAX_DPI = 200
+
+
+def _png_data_url(image) -> str:
+    buf = io.BytesIO()
+    image.convert("L").save(buf, "PNG", optimize=True)
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _pdf_preview(region, width_pt: float, height_pt: float) -> tuple[dict | None, float]:
+    """The drawing's area of the sheet as an image, and its pixels per PDF
+    point. A failed render costs the preview, never the result."""
+    dpi = min(PREVIEW_MAX_DPI, PREVIEW_MAX_PX * 72 / max(width_pt, height_pt, 1))
+    try:
+        image = page_image(region, dpi)
+    except Exception:
+        logger.exception("Blueprint preview render failed")
+        return None, dpi / 72
+    return {"image": _png_data_url(image), "width": image.width, "height": image.height}, image.width / width_pt
+
+
+def _segments_preview(segments: list[tuple], rooms: list) -> tuple[dict | None, Any]:
+    """A DXF has no page to render: its line work drawn as an image, fitted
+    around the rooms (or all of it), y flipped to point down."""
+    from PIL import Image, ImageDraw
+    from shapely import box
+    from shapely.ops import unary_union
+
+    if not segments:
+        return None, None
+    if rooms:
+        x0, y0, x1, y1 = unary_union([r.polygon for r in rooms]).buffer(2.0).bounds
+        area = box(x0, y0, x1, y1)
+        segments = [s for s in segments if area.intersects(box(min(s[0], s[2]), min(s[1], s[3]), max(s[0], s[2]), max(s[1], s[3])))]
+    else:
+        xs = [v for s in segments for v in (s[0], s[2])]
+        ys = [v for s in segments for v in (s[1], s[3])]
+        x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+    k = PREVIEW_MAX_PX / max(x1 - x0, y1 - y0, 1e-6)
+    to_px = lambda x, y: ((x - x0) * k, (y1 - y) * k)
+    image = Image.new("L", (max(1, round((x1 - x0) * k)), max(1, round((y1 - y0) * k))), 255)
+    draw = ImageDraw.Draw(image)
+    for s in segments:
+        draw.line((*to_px(s[0], s[1]), *to_px(s[2], s[3])), fill=40, width=1)
+    return {"image": _png_data_url(image), "width": image.width, "height": image.height}, to_px
+
+
+# ── walls ─────────────────────────────────────────────────────────────────────
+
+SMALL_CURVE_M = 1.5  # arcs smaller than this are fixtures and door swings, never walls
+
+
+def _wall_objects(objs: list[dict], region_lines: list[TextLine], m_per_pt: float) -> list[dict]:
+    """The drawing's objects that can be walls. Left out: the strokes of
+    text drawn as lines — an OCR'd label, a door tag's "SD 2" — which drawn
+    with the wall pen fence a narrow balcony in two; and door swings and
+    other small arcs (WC bowls, basins). Fixtures drawn as straight pieces
+    stay: telling a WC's tank from a column or a wall stub takes more than
+    its size, and dropping columns pushes the footprint out."""
+    ocr = [l for l in region_lines if l.ocr]
+    boxes = []
+    if ocr:
+        median = statistics.median(l.size for l in ocr)
+        for l in ocr:
+            if l.size > 3 * median:
+                continue  # a "word" boxed around a symbol or a car, not text
+            pad = (0.6 if len(l.text.replace(" ", "")) <= 3 else 0.3) * l.size
+            boxes.append((l.x0 - pad, l.top - pad, l.x1 + pad, l.bottom + pad))
+
+    def is_text(o: dict) -> bool:
+        return any(o["x0"] >= b[0] and o["x1"] <= b[2] and o["top"] >= b[1] and o["bottom"] <= b[3] for b in boxes)
+
+    def is_swing(o: dict) -> bool:
+        # pdfplumber calls every multi-segment path a curve — walls drawn as
+        # polylines included; only one with real arcs ("c") is curved.
+        return (o["object_type"] == "curve" and any(step[0] == "c" for step in o.get("path") or [])
+                and max(o["x1"] - o["x0"], o["bottom"] - o["top"]) * m_per_pt < SMALL_CURVE_M)
+
+    return [o for o in objs if not is_text(o) and not is_swing(o)]
 
 
 def _schedule_check(plan_total: float | None, result: RoomResult | None) -> dict | None:
@@ -584,7 +822,11 @@ def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_ov
 
         sheet = next((s for s in plan_sheets if s.id == sheet_id), None) if sheet_id else None
         all_drawings = [d for s in plan_sheets for d in s.drawings]
+        floors, skipped_plans = _floor_plans(plan_sheets)
         drawing = next((d for d in all_drawings if d.id == drawing_id), None) if drawing_id else None
+        if drawing is None and sheet is None and floors:
+            # The plan set's first floor — the wizard then reads the others.
+            drawing = next(d for d in all_drawings if d.id == floors[0]["drawing_id"])
         if drawing is None:
             pool = sheet.drawings if sheet else all_drawings
             drawing = _default_drawing(pool)
@@ -595,19 +837,23 @@ def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_ov
                         "drawings": [{"id": d.id, "title": d.title.text, "scale": f"1:{d.scale}" if d.scale else None}
                                      for d in s.drawings]} for s in plan_sheets],
             "selected_drawing": drawing.id,
+            "floor_plans": floors,
+            "skipped_plans": skipped_plans,
             "ceiling_heights_m": _heights(all_text),
             "finish_notes": _finish_notes([l.text for l in sheet.lines]),
             "warnings": warnings,
             "errors": [],
-            "rooms": [], "openings": [], "schedule_check": None,
+            "rooms": [], "openings": [], "schedule_check": None, "preview": None, "scale_used": None,
         }
 
         page = pages[sheet.page_index]
         x0, top, x1, bottom = drawing.region
-        region = page.within_bbox((max(0, x0), max(0, top), min(page.width, x1), min(page.height, bottom)))
+        ox, oy = max(0, x0), max(0, top)
+        region = page.within_bbox((ox, oy, min(page.width, x1), min(page.height, bottom)))
         objs = [dict(o, object_type="line") for o in region.lines] + [dict(o, object_type="curve") for o in region.curves] \
             + [dict(o, object_type="rect") for o in region.rects]
         region_lines = [l for l in sheet.lines if x0 <= l.cx <= x1 and top <= l.cy <= bottom]
+        response["preview"], px_per_pt = _pdf_preview(region, min(page.width, x1) - ox, min(page.height, bottom) - oy)
 
         entered = _scale_denominator(scale_override)
         measured = _scale_from_dimensions(region_lines, objs)
@@ -630,11 +876,13 @@ def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_ov
             response["errors"].append(f"No scale found under \"{drawing.title.text}\". Enter the scale (e.g. 1:50).")
             return response
         m_per_pt = PT_TO_M * scale
+        response["scale_used"] = f"1:{scale:g}"
         labels = _labels_from(region_lines, [drawing.title])
-        label_pts = [Label(l.text, l.cx * m_per_pt, l.cy * m_per_pt) for l in labels]
+        label_pts = [Label(l.text, l.cx * m_per_pt, l.cy * m_per_pt, minor) for l, minor in labels]
 
         plan_total = _plan_total(_rows(sheet.lines)) or _plan_total(all_text)
-        result = best_rooms(_wall_candidates(objs, m_per_pt), label_pts, plan_total)
+        walls = _wall_objects(objs, region_lines, m_per_pt)
+        result = best_rooms(_wall_candidates(walls, m_per_pt), label_pts, plan_total)
         if result is None or not result.rooms:
             response["errors"].append("No closed rooms could be traced on this drawing — enter the measurements by hand.")
             result = None
@@ -642,8 +890,9 @@ def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_ov
             warnings.append("Room label(s) not inside a traced room: " + ", ".join(result.unplaced_labels[:8]) + ".")
 
         windows = sum(1 for l in region_lines if _WINDOW_TAG.search(l.text.strip()))
+        to_px = lambda x, y: ((x / m_per_pt - ox) * px_per_pt, (y / m_per_pt - oy) * px_per_pt)
         response.update({
-            "rooms": _rooms_json(result),
+            "rooms": _rooms_json(result, to_px if response["preview"] else None),
             "openings": _openings(_doors_from_arcs(region.curves, m_per_pt), windows),
             "schedule_check": _schedule_check(plan_total, result),
         })
@@ -707,6 +956,9 @@ def _parse_dxf(path: str) -> dict:
 
     plan_total = _plan_total(all_text)
     result = None
+    by_layer: dict[str, list[tuple]] = defaultdict(list)
+    for e in msp.query("LINE LWPOLYLINE POLYLINE ARC"):
+        by_layer[e.dxf.layer].extend(_dxf_segments(e, f))
     # Closed outlines drawn on a room/area layer are the rooms themselves.
     outlines = []
     for e in msp.query("LWPOLYLINE POLYLINE"):
@@ -732,9 +984,6 @@ def _parse_dxf(path: str) -> dict:
             r.name = f"Unlabelled room {n}"
         result = RoomResult(rooms, unary_union(outlines).area, 0.0, [l.text for i, l in enumerate(labels) if i not in placed])
     else:
-        by_layer: dict[str, list[tuple]] = defaultdict(list)
-        for e in msp.query("LINE LWPOLYLINE POLYLINE ARC"):
-            by_layer[e.dxf.layer].extend(_dxf_segments(e, f))
         wall_layers = [l for l in by_layer if _WALL_LAYER.search(l)]
         if wall_layers:
             closers = [l for l in by_layer if _DOOR_LAYER.search(l) or _WINDOW_LAYER.search(l)]
@@ -771,10 +1020,16 @@ def _parse_dxf(path: str) -> dict:
                     door_widths.append(round(r * 20) / 20)
 
     name = Path(path).stem
+    preview, to_px = _segments_preview([s for l, segs in by_layer.items() if not re.search(r"HATCH", l, re.I) for s in segs],
+                                       result.rooms if result else [])
     return {
         "sheets": [{"id": "DXF", "title": name, "drawings": [{"id": "DXF:A", "title": "Model space", "scale": "1:1"}]}],
         "selected_drawing": "DXF:A",
-        "rooms": _rooms_json(result),
+        "floor_plans": [{"floor": "Floor plan", "drawing_id": "DXF:A", "confirm": False, "note": None, "alternatives": []}],
+        "skipped_plans": [],
+        "preview": preview,
+        "scale_used": "1:1",
+        "rooms": _rooms_json(result, to_px),
         "openings": _openings(door_widths, 0, window_widths),
         "ceiling_heights_m": _heights(all_text),
         "finish_notes": _finish_notes(all_text),
@@ -791,7 +1046,8 @@ def parse_blueprint(path: str, filename: str, sheet: str | None = None, drawing_
     """Never raises for a bad/unsupported file — the problem comes back in
     `errors` (with empty results), so the wizard can show it."""
     ext = Path(filename or path).suffix.lower()
-    empty = {"sheets": [], "selected_drawing": None, "rooms": [], "openings": [], "ceiling_heights_m": [],
+    empty = {"sheets": [], "selected_drawing": None, "floor_plans": [], "skipped_plans": [], "preview": None,
+             "scale_used": None, "rooms": [], "openings": [], "ceiling_heights_m": [],
              "finish_notes": [], "schedule_check": None, "warnings": [], "errors": []}
     try:
         if ext == ".dxf":
