@@ -36,6 +36,26 @@ public class BlueprintRoomDto
     public double  WidthM       { get; set; }
     public double  Confidence   { get; set; }
     public List<string> Labels  { get; set; } = [];
+    // The traced outline in the preview image's pixels, as [x, y] points.
+    public List<List<double>> Outline { get; set; } = [];
+}
+
+// One floor of the plan set and the drawing it is read from. Confirm: a
+// second drawing naming the same floor — shown unticked for the user to decide.
+public class BlueprintFloorPlanDto
+{
+    public string  Floor     { get; set; } = string.Empty;
+    public string  DrawingId { get; set; } = string.Empty;
+    public bool    Confirm   { get; set; }
+    public string? Note      { get; set; }
+    public List<string> Alternatives { get; set; } = [];
+}
+
+public class BlueprintPreviewDto
+{
+    public string Image  { get; set; } = string.Empty; // PNG data URL
+    public int    Width  { get; set; }
+    public int    Height { get; set; }
 }
 
 public class BlueprintOpeningDto
@@ -60,6 +80,10 @@ public class BlueprintResultDto
 {
     public List<BlueprintSheetDto>   Sheets          { get; set; } = [];
     public string?                   SelectedDrawing { get; set; }
+    public List<BlueprintFloorPlanDto> FloorPlans    { get; set; } = [];
+    public List<string>              SkippedPlans    { get; set; } = [];
+    public BlueprintPreviewDto?      Preview         { get; set; }
+    public string?                   ScaleUsed       { get; set; }
     public List<BlueprintRoomDto>    Rooms           { get; set; } = [];
     public List<BlueprintOpeningDto> Openings        { get; set; } = [];
     public List<double>              CeilingHeightsM { get; set; } = [];

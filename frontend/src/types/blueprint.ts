@@ -11,7 +11,21 @@ export interface BlueprintRoom {
   widthM: number;
   confidence: number;
   labels: string[];
+  /** Traced outline in the preview image's pixels. */
+  outline: [number, number][];
 }
+
+/** One floor of the plan set and the drawing it is read from. `confirm`: a
+ *  second drawing naming the same floor, shown unticked for the user to decide. */
+export interface BlueprintFloorPlan {
+  floor: string;
+  drawingId: string;
+  confirm: boolean;
+  note: string | null;
+  alternatives: string[];
+}
+
+export interface BlueprintPreview { image: string; width: number; height: number }
 
 export interface BlueprintOpening {
   type: 'door' | 'window' | string;
@@ -32,6 +46,10 @@ export interface BlueprintScheduleCheck {
 export interface BlueprintResult {
   sheets: BlueprintSheet[];
   selectedDrawing: string | null;
+  floorPlans: BlueprintFloorPlan[];
+  skippedPlans: string[];
+  preview: BlueprintPreview | null;
+  scaleUsed: string | null;
   rooms: BlueprintRoom[];
   openings: BlueprintOpening[];
   ceilingHeightsM: number[];

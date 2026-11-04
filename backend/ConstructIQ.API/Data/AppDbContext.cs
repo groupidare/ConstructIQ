@@ -61,6 +61,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<TrustedDevice>            TrustedDevices            => Set<TrustedDevice>();
     public DbSet<WarehouseStockItem>       WarehouseStockItems       => Set<WarehouseStockItem>();
     public DbSet<MaterialRequest>          MaterialRequests          => Set<MaterialRequest>();
+    public DbSet<MaterialRequestQuote>     MaterialRequestQuotes     => Set<MaterialRequestQuote>();
     public DbSet<BackupJobRun>             BackupJobRuns             => Set<BackupJobRun>();
 
     protected override void OnModelCreating(ModelBuilder mb)
@@ -342,5 +343,15 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .WithMany()
             .HasForeignKey(r => r.FulfilledByPurchaseOrderId)
             .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<MaterialRequestQuote>()
+            .HasOne(q => q.MaterialRequest)
+            .WithMany(r => r.Quotes)
+            .HasForeignKey(q => q.MaterialRequestId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<MaterialRequestQuote>()
+            .HasIndex(q => new { q.MaterialRequestId, q.Slot })
+            .IsUnique();
     }
 }

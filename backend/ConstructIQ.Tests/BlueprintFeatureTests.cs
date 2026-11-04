@@ -284,3 +284,42 @@ public class BlueprintFeatureTests(DatabaseFixture fixture)
         },
     };
 }
+
+// The ML service answers parse-blueprint in snake_case; the floor list, the
+// preview and the room outlines must survive the trip to the frontend.
+// No database.
+public class BlueprintJsonTests
+{
+    [Fact]
+    public void ParseResult_FloorsPreviewAndOutlines_MapOntoDtos()
+    {
+        const string json = """
+        {
+          "sheets": [ { "id": "P2", "title": "GROUND FLOOR PLAN / SECOND FLOOR PLAN",
+                        "drawings": [ { "id": "P2:A", "title": "GROUND FLOOR PLAN", "scale": "1:60" } ] } ],
+          "selected_drawing": "P2:A",
+          "floor_plans": [
+            { "floor": "Ground Floor", "drawing_id": "P2:A", "confirm": false, "note": null, "alternatives": [] },
+            { "floor": "Ground Floor (2)", "drawing_id": "P2:B", "confirm": true, "note": "Also titled …", "alternatives": ["P2:A"] } ],
+          "skipped_plans": ["P4:B", "P4:C"],
+          "preview": { "image": "data:image/png;base64,AAAA", "width": 1200, "height": 1300 },
+          "scale_used": "1:95.8",
+          "rooms": [ { "name": "MASTER BEDROOM", "floor_area_sqm": 10.88, "perimeter_m": 13.64, "length_m": 3.6,
+                       "width_m": 3.0, "confidence": 0.87, "labels": ["MASTER BEDROOM"],
+                       "outline": [[10.5, 20.0], [110.0, 20.0], [110.0, 90.5], [10.5, 20.0]] } ],
+          "openings": [], "ceiling_heights_m": [], "finish_notes": [], "schedule_check": null,
+          "warnings": [], "errors": []
+        }
+        """;
+
+        var result = System.Text.Json.JsonSerializer.Deserialize<BlueprintResultDto>(json, ForecastService.MlJson)!;
+
+        Assert.Equal(["P2:A", "P2:B"], result.FloorPlans.Select(f => f.DrawingId));
+        Assert.True(result.FloorPlans[1].Confirm);
+        Assert.Equal(["P2:A"], result.FloorPlans[1].Alternatives);
+        Assert.Equal(["P4:B", "P4:C"], result.SkippedPlans);
+        Assert.Equal(1200, result.Preview!.Width);
+        Assert.Equal("1:95.8", result.ScaleUsed);
+        Assert.Equal([110.0, 90.5], Assert.Single(result.Rooms).Outline[2]);
+    }
+}
