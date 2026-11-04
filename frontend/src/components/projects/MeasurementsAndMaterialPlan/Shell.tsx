@@ -197,10 +197,18 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
         };
       });
 
+      // Historical projects: one row per purchased material, mirroring the
+      // Purchased Order (PO) table — a BOQ line bought as tile (sq.m) +
+      // adhesive (bag) + grout (pack) becomes three rows, each with its own
+      // single-unit Material Quantity and Actual Qty. Each keeps the BOQ
+      // line's section and Total Area (the measure the model learns from).
+      // Lines of the same material + unit (several deliveries) stay together.
+      const rowsToAdd = project.isHistorical ? scanned.flatMap(splitByPurchasedMaterial) : scanned;
+
       // Rows already in the plan (the same BOQ scanned again) are skipped. When
       // the blueprint filled a section, the whole BOQ is compared with it first
       // and nothing is added until the user applies the comparison.
-      const { add, covered, duplicates } = splitScannedRows(scanned, boqRows);
+      const { add, covered, duplicates } = splitScannedRows(rowsToAdd, boqRows);
       const skipped = duplicates ? ` ${duplicates} line item(s) already in the plan were skipped.` : '';
       if (covered.length) {
         setCompareRows([...covered, ...add]);
@@ -215,6 +223,25 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     } catch (error) {
       toast.error(apiErrorMessage(error, 'Failed to scan document.'));
     }
+  }
+
+  function splitByPurchasedMaterial(row: BOQItemRow): BOQItemRow[] {
+    const lines = row.historicalSupply ?? [];
+    if (lines.length === 0) return [row];
+    const groups = new Map<string, NonNullable<BOQItemRow['historicalSupply']>>();
+    lines.forEach(line => {
+      const key = `${line.materialName.trim().toLowerCase()}|${line.unit.trim().toLowerCase()}`;
+      groups.set(key, [...(groups.get(key) ?? []), line]);
+    });
+    return [...groups.values()].map(group => ({
+      ...row,
+      // The BOQ match was for the BOQ description, not this purchased
+      // material — the backend resolves this name to a catalog material on save.
+      materialId: undefined,
+      specification: group[0].materialName,
+      newMaterialName: group[0].materialName,
+      historicalSupply: group,
+    }));
   }
 
   // Rows generated from a blueprint join the Material Plan as unsaved rows,
@@ -512,6 +539,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
     handleSaveBoq, handleRunForecast, handleNotify,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
+    handlePurchaseOrdersImported: () => { fetchPurchaseOrders(); fetchDocuments(); },
     poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
     poOrderDate, setPoOrderDate, poExpectedDate, setPoExpectedDate,
   };
@@ -608,6 +636,7 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onParsePO={state.handleParsePO}
       onSavePO={state.handleSavePO}
       onLinkPoMaterial={state.handleLinkPoMaterial}
+      onPurchaseOrdersImported={state.handlePurchaseOrdersImported}
       poDraftRows={state.poDraftRows}
       onPoDraftRowsChange={state.setPoDraftRows}
       poSupplierName={state.poSupplierName}

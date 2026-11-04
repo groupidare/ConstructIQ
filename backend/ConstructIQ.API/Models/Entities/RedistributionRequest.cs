@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace ConstructIQ.API.Models.Entities;
@@ -73,4 +74,12 @@ public class RedistributionRequest
     public DateTime  RequestedAt { get; set; } = DateTime.UtcNow;
     public DateTime? ApprovedAt  { get; set; }
     public DateTime? CompletedAt { get; set; }
+
+    // Write-out to the warehouse Google Sheet's STOCK OUT columns
+    // (ExcessSheetSyncService). Pending until written; a failed write stays
+    // pending and is retried. SheetSyncError carries the last failure, or why
+    // the row was skipped or won't move a balance.
+    public bool SheetSyncPending { get; set; }
+    public DateTime? SheetSyncedAt { get; set; }
+    [MaxLength(300)] public string? SheetSyncError { get; set; }
 }

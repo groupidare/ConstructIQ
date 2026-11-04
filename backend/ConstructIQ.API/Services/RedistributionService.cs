@@ -7,7 +7,9 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class RedistributionService(AppDbContext db, INotificationService notifications) : IRedistributionService
+// sheetSync is optional so anything constructing this directly doesn't need
+// the Google Sheet writer.
+public class RedistributionService(AppDbContext db, INotificationService notifications, IExcessSheetSync? sheetSync = null) : IRedistributionService
 {
     // Damaged/expired stock isn't safe to redistribute — only unused/overordered excess is.
     private static readonly ExcessType[] ReusableExcessTypes = [ExcessType.Unused, ExcessType.Overordered];
@@ -190,11 +192,16 @@ public class RedistributionService(AppDbContext db, INotificationService notific
         request.Status           = RedistributionStatus.Approved;
         request.ApprovedByUserId = userId;
         request.ApprovedAt       = DateTime.UtcNow;
+        // Goes to the Google Sheet's STOCK OUT once only: approving again after
+        // an undo must not add a second row for the same transfer.
+        request.SheetSyncPending = request.SheetSyncedAt is null && sheetSync?.Enabled == true;
 
         if (request.SourceExcessWasteRecord is not null)
         {
             var excess = request.SourceExcessWasteRecord;
-            excess.Quantity  = Math.Max(0, excess.Quantity - request.Quantity);
+            var moved = Math.Min(excess.Quantity, request.Quantity);
+            excess.Quantity -= moved;
+            excess.RedistributedQuantity += moved;
             excess.TotalCost = excess.Quantity * excess.UnitCost;
         }
         else
@@ -206,6 +213,7 @@ public class RedistributionService(AppDbContext db, INotificationService notific
         }
 
         await db.SaveChangesAsync();
+        if (request.SheetSyncPending) sheetSync!.Trigger();
         await NotifyBothPMsAsync(request, userId, NotificationKind.RedistributionApproved, "was approved and has been transferred.");
         return true;
     }
@@ -220,6 +228,7 @@ public class RedistributionService(AppDbContext db, INotificationService notific
         request.Status           = RedistributionStatus.PendingApproval;
         request.ApprovedByUserId = null;
         request.ApprovedAt       = null;
+        request.SheetSyncPending = false;
 
         await db.SaveChangesAsync();
         return true;
@@ -234,6 +243,7 @@ public class RedistributionService(AppDbContext db, INotificationService notific
         if (request.Status is RedistributionStatus.Completed or RedistributionStatus.Rejected) return false;
 
         request.Status = RedistributionStatus.Rejected;
+        request.SheetSyncPending = false;
 
         await db.SaveChangesAsync();
 
@@ -448,5 +458,8 @@ public class RedistributionService(AppDbContext db, INotificationService notific
         IsAiRecommended   = r.IsAiRecommended,
         Notes             = r.Notes,
         GeneratedAt       = r.RequestedAt,
+        // Stored in UTC but read back unmarked; marked so the browser shows the
+        // local day instead of treating it as local time.
+        ApprovedAt        = r.ApprovedAt is { } approvedAt ? DateTime.SpecifyKind(approvedAt, DateTimeKind.Utc) : null,
     };
 }

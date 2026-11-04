@@ -194,6 +194,8 @@ public class DocumentService(
                 OrderDate             = DateTime.TryParse(i.OrderDate, out var od) ? od : null,
                 PromisedDeliveryDate  = DateTime.TryParse(i.PromisedDeliveryDate, out var pd) ? pd : null,
                 PhaseHint             = i.PhaseHint,
+                UnitPrice             = i.UnitPrice is double price ? (decimal)price : null,
+                PoNumber              = i.PoNumber,
                 MatchedMaterialId     = materialMatches.TryGetValue(i.MaterialName.Trim().ToLower(), out var mid) ? mid : null,
                 MatchedSupplierId     = !string.IsNullOrWhiteSpace(i.SupplierName) && supplierMatches.TryGetValue(i.SupplierName.Trim().ToLower(), out var sid) ? sid : null,
             }).ToList(),
@@ -204,17 +206,23 @@ public class DocumentService(
     // path — the backend and ml-service are separate processes with no
     // shared filesystem in any real deployment (Render, Docker containers),
     // so a path only meaningful on one side would never resolve on the
-    // other. The file now lives on R2, so this just does a plain GET
-    // against its public URL rather than reading local disk.
+    // other. Reads go through the storage service (R2's S3 API) rather than
+    // a GET on the public *.r2.dev URL — some ISPs block r2.dev (see
+    // UploadsController), which made every parse fail on those networks.
     public async Task<byte[]> ReadFileBytesAsync(string storagePath)
     {
-        // R2 files have a public https URL; the local dev fallback stores a
-        // relative "/uploads/..." path that only the storage service can read.
-        var isWebUrl = storagePath.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-            || storagePath.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
-        return isWebUrl
-            ? await httpFactory.CreateClient().GetByteArrayAsync(storagePath)
-            : await storage.ReadAsync(storagePath);
+        try
+        {
+            return await storage.ReadAsync(storagePath);
+        }
+        catch (FileNotFoundException) when (
+            storagePath.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || storagePath.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            // A web URL the current storage backend doesn't own (e.g. an R2
+            // file while running on local storage) — fetch it directly.
+            return await httpFactory.CreateClient().GetByteArrayAsync(storagePath);
+        }
     }
 
     private async Task<MultipartFormDataContent> BuildParseRequestContentAsync(ProjectDocument doc)

@@ -40,7 +40,10 @@ public class ExcessWasteResponseDto
     public string   MaterialName { get; set; } = string.Empty;
     public string   Unit         { get; set; } = string.Empty;
     public string   ExcessType   { get; set; } = string.Empty;
+    // Quantity is what's still available to redistribute; LoggedQuantity is
+    // what was recorded, which a redistribution doesn't change.
     public decimal  Quantity     { get; set; }
+    public decimal  LoggedQuantity { get; set; }
     public decimal  UnitCost     { get; set; }
     public decimal  TotalCost    { get; set; }
     public decimal  ExcessPercent{ get; set; }
@@ -96,4 +99,22 @@ public class PendingBOQItemDto
     // from to preview Actual Usage — prefers the purchase-unit estimate
     // (Est. Qty column) and falls back to the raw BOQ EstimatedQuantity.
     public decimal  EstimatedQuantity { get; set; }
+    // What Actual Usage is computed from on save: the delivered quantity
+    // (EstimatedQuantity until something's been marked Delivered)...
+    public decimal  DeliveredQuantity { get; set; }
+    // ...minus all excess + waste already logged against this line. Lets the
+    // modal preview the same Actual Usage the save will store.
+    public decimal  AlreadyLogged     { get; set; }
+    public decimal  ExcessLogged      { get; set; }
+    public decimal  WasteLogged       { get; set; }
+    // Undecided redistribution request out of this project for the material
+    // — no new excess/waste until it's settled.
+    public bool     RedistributionPending { get; set; }
+}
+
+// Record Material Excess "None": BOQ lines with no excess or waste left.
+public class ConfirmNoExcessWasteDto
+{
+    public int ProjectId { get; set; }
+    public List<int> BOQItemIds { get; set; } = [];
 }

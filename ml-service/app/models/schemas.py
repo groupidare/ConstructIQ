@@ -117,6 +117,8 @@ class ParsedPOItem(BaseModel):
     order_date:              Optional[str] = None  # ISO date string, or None if not found/unparseable
     promised_delivery_date:  Optional[str] = None
     phase_hint:              Optional[str] = None
+    unit_price:              Optional[float] = None  # price per unit, when the PO has a price column
+    po_number:               Optional[str] = None  # the number printed on the PO
 
 
 class DocumentParsePOResponse(BaseModel):

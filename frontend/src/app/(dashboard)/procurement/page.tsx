@@ -72,6 +72,20 @@ interface PO {
   // The master PO document — uploaded once with the first delivery batch,
   // reused by every later one. Null until the first batch is saved.
   poFileUrl: string | null;
+  // Made before the project was in ConstructIQ (numbered IMP-001…), with
+  // the paper PO's own number.
+  isImported: boolean;
+  originalPoNumber: string | null;
+}
+
+// "Imported · PO 2024-118" under an imported PO's number.
+function ImportedTag({ po }: { po: PO }) {
+  if (!po.isImported) return null;
+  return (
+    <span style={{ display: "block", fontSize: "0.65rem", color: "#6b7280", fontWeight: 500, marginTop: 2 }}>
+      Imported{po.originalPoNumber ? ` · original PO ${po.originalPoNumber}` : ""}
+    </span>
+  );
 }
 
 // DELAYED is never manually selectable — it's derived from the expected date
@@ -227,6 +241,8 @@ interface ApiPO {
   deliveryBatches: ApiDeliveryBatch[];
   hasEvaluation: boolean;
   poFileUrl: string | null;
+  isImported?: boolean;
+  originalPoNumber?: string | null;
 }
 interface ApiEvaluation {
   priceRating: number; deliveryRating: number; qualityRating: number;
@@ -264,6 +280,8 @@ function mapPO(a: ApiPO): PO {
     })),
     hasEvaluation: a.hasEvaluation,
     poFileUrl: a.poFileUrl,
+    isImported: !!a.isImported,
+    originalPoNumber: a.originalPoNumber ?? null,
   };
 }
 
@@ -331,6 +349,9 @@ interface RequestRow {
   quotes: QuoteDraft[];
   // Slot index chosen for the PO, or null to use the lowest-priced quote.
   chosen: number | null;
+  // Sent from a project's cost breakdown for a price only — never a PO.
+  // Leaves this form once a price is saved for it.
+  isPriceInquiry: boolean;
 }
 
 interface SuggestedSupplier {
@@ -351,6 +372,7 @@ interface ApiMaterialRequest {
   quantity: number; unit: string; requestedByName: string; createdAt: string;
   lastUnitPrice?: number | null; lastUnitPriceSupplier?: string | null;
   remarks?: string | null; quotes?: ApiQuote[];
+  isPriceInquiry?: boolean;
 }
 interface ApiSuggestedSupplier {
   id: number; name: string; rating: number; onTimePct: number; deliveries: number; hasHistoryWithMaterial: boolean;
@@ -377,6 +399,7 @@ function mapRequestRow(a: ApiMaterialRequest): RequestRow {
     quantity: a.quantity, qty: String(a.quantity), unit: a.unit, requestedByName: a.requestedByName, createdAt: a.createdAt,
     lastUnitPrice: a.lastUnitPrice ?? null, lastUnitPriceSupplier: a.lastUnitPriceSupplier ?? null,
     remarks: a.remarks ?? "", quotes, chosen,
+    isPriceInquiry: !!a.isPriceInquiry,
   };
 }
 
@@ -539,8 +562,11 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
     });
   }
 
+  // Price checks only ever get quotations saved — never a PO.
+  const orderRows = rows.filter(r => !r.isPriceInquiry);
+
   function firstProblem(forGenerate: boolean): string | null {
-    for (const r of rows) {
+    for (const r of forGenerate ? orderRows : rows) {
       const problem = quoteProblem(r);
       if (problem) return problem;
       if (forGenerate && selectedSlot(r) < 0) return `Add at least one supplier for ${r.materialName}.`;
@@ -572,7 +598,15 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
       await api.put(`/material-requests/project/${projectId}/quotes`, {
         requests: rows.map(r => ({ requestId: r.id, quantity: rowQty(r), remarks: r.remarks, quotes: apiQuotes(r, r.chosen != null) })),
       });
-      toast.success("Quotations saved.");
+      const answered = rows.filter(r => r.isPriceInquiry && r.quotes.some(q => q.supplierName.trim() && quotePrice(q) != null));
+      if (answered.length > 0) {
+        // Priced price checks are done: off this form, onto the cost estimate.
+        setRows(prev => prev.filter(r => !answered.some(a => a.id === r.id)));
+        onChanged();
+        toast.success(`Quotations saved. ${answered.length} price check${answered.length === 1 ? "" : "s"} done — now used in the project's cost estimate.`);
+      } else {
+        toast.success("Quotations saved.");
+      }
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(message ?? "Failed to save quotations.");
@@ -588,7 +622,7 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
     try {
       const { data } = await api.post<ApiGeneratedResult>("/material-requests/generate-pos", {
         projectId,
-        assignments: rows.map(r => {
+        assignments: orderRows.map(r => {
           const sel = r.quotes[selectedSlot(r)];
           return {
             requestId: r.id,
@@ -680,6 +714,12 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
                         <td style={{ ...td, color: "#9ca3af" }}>{idx + 1}</td>
                         <td style={{ ...td, fontWeight: 600, color: "#111827", minWidth: 150 }}>
                           {r.materialName}
+                          {r.isPriceInquiry && (
+                            <span title="Sent from the project's cost estimate — only a price is needed, no PO"
+                              style={{ display: "inline-block", marginLeft: 6, padding: "1px 6px", borderRadius: 999, background: "#dbeafe", color: "#1d4ed8", fontSize: "0.6rem", fontWeight: 700, verticalAlign: "middle" }}>
+                              PRICE CHECK
+                            </span>
+                          )}
                           {r.lastUnitPrice != null && (
                             <p style={{ fontSize: "0.65rem", fontWeight: 400, color: "#9ca3af", margin: "3px 0 0" }}>
                               Last paid {formatCurrency(r.lastUnitPrice)}/{r.unit}{r.lastUnitPriceSupplier ? ` · ${r.lastUnitPriceSupplier}` : ""}
@@ -768,7 +808,9 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
                             />
                           )}
                         </td>
-                        <td style={{ ...td, fontWeight: 700, color: "#f97316", whiteSpace: "nowrap" }}>{poNumber ?? "—"}</td>
+                        <td style={{ ...td, fontWeight: 700, color: "#f97316", whiteSpace: "nowrap" }}>
+                          {r.isPriceInquiry ? <span style={{ fontSize: "0.65rem", fontWeight: 500, color: "#6b7280" }}>No PO needed</span> : (poNumber ?? "—")}
+                        </td>
                         <td style={{ ...td, whiteSpace: "nowrap" }}>
                           {!poNumber && (confirmDeleteId === r.id ? (
                             <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
@@ -820,10 +862,10 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
               }}>
                 {saving ? "Saving…" : "Save Quotations"}
               </button>
-              <button onClick={handleGenerate} disabled={busy || rows.length === 0} style={{
+              <button onClick={handleGenerate} disabled={busy || orderRows.length === 0} style={{
                 display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 8, border: "none",
                 background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.85rem",
-                cursor: (busy || rows.length === 0) ? "not-allowed" : "pointer", opacity: (busy || rows.length === 0) ? 0.7 : 1,
+                cursor: (busy || orderRows.length === 0) ? "not-allowed" : "pointer", opacity: (busy || orderRows.length === 0) ? 0.7 : 1,
               }}>
                 {generating ? "Generating…" : "Generate P.O. Number"}
               </button>
@@ -845,6 +887,7 @@ function ViewPOModal({ po, onClose }: { po: PO; onClose: () => void }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>
           <div>
             <p style={{ fontWeight: 800, fontSize: "1.05rem", color: "#f97316" }}>{po.number}</p>
+            <ImportedTag po={po} />
             <p style={{ fontSize: "0.82rem", color: "#111827", fontWeight: 600, marginTop: 2 }}>{po.projectName}</p>
             <p style={{ fontSize: "0.75rem", color: "#9ca3af", marginTop: 2 }}>{po.supplier} · {po.expectedDate}</p>
           </div>
@@ -2117,6 +2160,7 @@ export default function ProcurementPage() {
                     <tr key={po.id} style={{ borderBottom: i < sortedOrders.length - 1 ? "1px solid #f9fafb" : "none" }}>
                       <td style={{ padding: "14px 12px" }}>
                         <span style={{ fontWeight: 700, fontSize: "0.8rem", color: "#f97316" }}>{po.number}</span>
+                        <ImportedTag po={po} />
                       </td>
                       <td style={{ padding: "14px 12px" }}>
                         <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#111827" }}>{po.projectName}</span>

@@ -15,6 +15,7 @@ import type { BOQItem, BOQItemRow } from '@/types/boq';
 import { PRIMARY_SECTIONS, PURCHASE_UNITS } from '@/types/boq';
 import type { PurchaseOrder, PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import { inp, sel, lbl } from './styles';
+import ImportPurchaseOrders from '@/components/projects/ImportPurchaseOrders';
 
 interface Props {
   project: Project;
@@ -52,6 +53,8 @@ interface Props {
   onParsePO: (documentId: number) => Promise<void>;
   onSavePO: () => void;
   onLinkPoMaterial: (materialId: number, boqItemId: number | null) => void;
+  // After POs made outside ConstructIQ are imported — refreshes the PO list.
+  onPurchaseOrdersImported: () => void;
   poDraftRows: PurchaseOrderMaterial[];
   onPoDraftRowsChange: (rows: PurchaseOrderMaterial[]) => void;
   poSupplierName: string;
@@ -66,12 +69,13 @@ export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
   rows, boqItems, onRowsChange, onSave, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
-  purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial,
+  purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial, onPurchaseOrdersImported,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const poFileInputRef = useRef<HTMLInputElement>(null);
+  const [showImport, setShowImport] = useState(false);
   // PO prices are entered and seen only by the roles that manage POs (the
   // backend also nulls them out for everyone else).
   const role = useAuthStore(s => s.user?.role);
@@ -313,6 +317,30 @@ export default function MaterialPlanTab({
     if (units.size !== 1 || units.has('')) return null;
     const quantity = lines.reduce((sum, l) => sum + Math.round(l.quantity || 0), 0);
     return quantity > 0 ? { quantity, unit: lines[0].unit.trim() } : null;
+  }
+
+  // Display-only fallback for a row whose PO lines are in mixed units (e.g.
+  // tile in sq.m + adhesive in bags + grout in packs): the row's own material
+  // — the PO line whose name shares the most words with the row's
+  // specification (first line on a tie) — so "Homogeneous Tile (600mm x
+  // 600mm…)" shows the tile's 68 sq.m, matching its PO line. Repeat
+  // deliveries of that same material + unit are summed. Never stored;
+  // historicalPurchase stays the single-unit rule the backend saves.
+  function primaryPurchase(r: BOQItemRow): { quantity: number; unit: string } | null {
+    const lines = (r.historicalSupply ?? []).filter(l => l.unit?.trim() && l.quantity > 0);
+    if (lines.length === 0) return null;
+    // Material words only — sizes and measure words ("20", "mm", "dia",
+    // "thick") are shared by unrelated lines and would decide the match.
+    const ignored = new Set(['dia', 'thick', 'and', 'with', 'per', 'pcs']);
+    const words = (s?: string) => new Set(((s ?? '').toLowerCase().match(/[a-z]{3,}/g) ?? []).filter(w => !ignored.has(w)));
+    const spec = words(r.specification || r.newMaterialName);
+    const score = (name: string) => [...words(name)].filter(w => spec.has(w)).length;
+    const primary = lines.reduce((best, l) => (score(l.materialName) > score(best.materialName) ? l : best));
+    const same = (l: typeof primary) =>
+      l.materialName.trim().toLowerCase() === primary.materialName.trim().toLowerCase()
+      && l.unit.trim().toLowerCase() === primary.unit.trim().toLowerCase();
+    const quantity = lines.filter(same).reduce((sum, l) => sum + Math.round(l.quantity), 0);
+    return { quantity, unit: primary.unit.trim() };
   }
 
   // A newly-scanned material has no InventoryRecord yet (that only exists
@@ -675,14 +703,20 @@ export default function MaterialPlanTab({
                   )}
                   {isCompleted && isHistorical && (() => {
                     const purchase = historicalPurchase(r);
+                    const primary = purchase ? null : primaryPurchase(r);
+                    const shown = purchase ?? primary;
                     return (
                       <input
                         type="text"
                         readOnly
                         tabIndex={-1}
-                        title={purchase ? 'Total of this row\'s purchase order lines' : 'No purchase order lines in a single unit for this row'}
-                        value={purchase ? `${purchase.quantity.toLocaleString()} ${purchase.unit}` : '—'}
-                        style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', background: '#f9fafb', color: purchase ? '#111827' : '#9ca3af', cursor: 'default' }}
+                        title={purchase
+                          ? 'Total of this row\'s purchase order lines'
+                          : primary
+                            ? 'This row\'s own material from its purchase order lines (other lines are in different units)'
+                            : 'No purchase order lines for this row'}
+                        value={shown ? `${shown.quantity.toLocaleString()} ${shown.unit}` : '—'}
+                        style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', background: '#f9fafb', color: shown ? '#111827' : '#9ca3af', cursor: 'default' }}
                       />
                     );
                   })()}
@@ -721,7 +755,7 @@ export default function MaterialPlanTab({
                       type="number"
                       value={r.actualQuantity || ''}
                       onChange={e => updateRow(i, { actualQuantity: parseFloat(e.target.value) || 0 })}
-                      placeholder={`Actual used (${historicalPurchase(r)?.unit ?? r.unit ?? 'qty'})`}
+                      placeholder={`Actual used (${(historicalPurchase(r) ?? primaryPurchase(r))?.unit ?? r.unit ?? 'qty'})`}
                       style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', background: '#fff7ed', borderColor: '#fed7aa' }}
                     />
                   )}
@@ -914,9 +948,28 @@ export default function MaterialPlanTab({
             <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>What was actually ordered — trains the forecasting model once delivered.</p>
           </div>
           {editable && (
-            <button onClick={() => poFileInputRef.current?.click()} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-              <Upload style={{ width: 12, height: 12 }} /> {uploadingPo ? 'Uploading…' : 'Upload PO'}
-            </button>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button onClick={() => setShowImport(true)} title="POs made before this project was added to ConstructIQ"
+                style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: '1px solid #fed7aa', background: '#fff7ed', color: '#c2410c', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                <FileText style={{ width: 12, height: 12 }} /> Import existing POs
+              </button>
+              <button onClick={() => poFileInputRef.current?.click()} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                <Upload style={{ width: 12, height: 12 }} /> {uploadingPo ? 'Uploading…' : 'Upload PO'}
+              </button>
+            </div>
+          )}
+          {showImport && (
+            <div onClick={() => setShowImport(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: '1rem' }}>
+              <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, width: 1100, maxWidth: '95vw', maxHeight: '90vh', overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                  <p style={{ fontWeight: 700, fontSize: '1rem', color: '#111827' }}>Import existing purchase orders — {project.name}</p>
+                  <button onClick={() => setShowImport(false)} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}>
+                    <X style={{ width: 18, height: 18 }} />
+                  </button>
+                </div>
+                <ImportPurchaseOrders projectId={project.id} onImported={onPurchaseOrdersImported} />
+              </div>
+            </div>
           )}
           <input ref={poFileInputRef} type="file" multiple accept=".pdf,.xlsx,.xls,.csv" onChange={handlePoFilePicked} style={{ display: 'none' }} />
         </div>

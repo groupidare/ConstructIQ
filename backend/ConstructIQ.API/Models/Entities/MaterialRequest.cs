@@ -44,6 +44,13 @@ public class MaterialRequest
     // which suppliers were compared and at what price.
     public ICollection<MaterialRequestQuote> Quotes { get; set; } = [];
 
+    // A price check, not an order: raised from the cost breakdown's "Request
+    // quotation" for a material with no recorded price. Procurement only
+    // enters supplier quotes for it — it never becomes a PO, never counts
+    // against the material's requestable balance, and leaves the Requests
+    // tab once a price is saved (that quote then prices the cost estimate).
+    public bool IsPriceInquiry { get; set; }
+
     public const int MaxQuotes = 3;
 }
 

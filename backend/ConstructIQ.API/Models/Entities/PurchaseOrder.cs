@@ -55,6 +55,15 @@ public class PurchaseOrder
     [MaxLength(255)]
     public string? PoFileUrl { get; set; }
 
+    // A PO placed before its project was entered in ConstructIQ and imported
+    // afterwards (see PurchaseOrdersController.Import). Its Number comes from
+    // its own IMP-001… sequence so the PO-001… sequence stays for POs made in
+    // the system; OriginalPoNumber is the number printed on the paper PO.
+    public bool IsImported { get; set; }
+
+    [MaxLength(50)]
+    public string? OriginalPoNumber { get; set; }
+
     public ICollection<PurchaseOrderMaterial> Materials { get; set; } = [];
     public ICollection<DeliveryBatch> DeliveryBatches { get; set; } = [];
     public DeliveryEvaluation? Evaluation { get; set; }

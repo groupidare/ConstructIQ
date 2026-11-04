@@ -68,3 +68,7 @@ backend/backup/test-scratch/
 
 # Azure Document Intelligence results cache (ml-service)
 azure_cache/
+
+# Google service-account key for the Excess → Google Sheet sync. Keep it
+# outside the repo; this only guards against saving it here by mistake.
+*service-account*.json

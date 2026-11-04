@@ -9,6 +9,7 @@ public interface IExcessWasteService
     Task<ExcessWasteResponseDto> UpdateAsync(int id, ExcessWasteUpdateDto dto);
     Task DeleteAsync(int id);
     Task<ExcessAnalyticsSummaryDto> GetSummaryAsync(int projectId);
-    Task<IEnumerable<PendingBOQItemDto>> GetPendingBOQItemsAsync(int projectId, bool isReusable);
-    Task<IEnumerable<int>> GetProjectIdsWithPendingItemsAsync();
+    Task<IEnumerable<PendingBOQItemDto>> GetLoggableBOQItemsAsync(int projectId);
+    Task<IEnumerable<int>> GetProjectIdsWithBOQItemsAsync();
+    Task ConfirmNoExcessWasteAsync(int projectId, IReadOnlyCollection<int> boqItemIds, int userId);
 }

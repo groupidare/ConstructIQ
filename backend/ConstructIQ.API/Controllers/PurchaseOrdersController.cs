@@ -123,6 +123,118 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
         return Ok(ToDto(po));
     }
 
+    // A PO made before the project was entered in ConstructIQ (an ongoing
+    // project brought in mid-way). Saved as IMP-00n with the paper PO's own
+    // number kept in OriginalPoNumber, as Approved (still to be delivered,
+    // received through the normal delivery flow) or Delivered. It counts like
+    // any other PO — ordered quantities, cost, Net Left to Order — but sends no
+    // notifications: nothing new happened, it's a record of the past.
+    // Procurement may import for any project; the people setting the project
+    // up (Admin / ProjectManager / its SiteEngineer) for the ones they can edit.
+    [HttpPost("import")]
+    [Authorize(Roles = "Admin,ProcurementOfficer,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> Import([FromBody] ImportPurchaseOrderDto dto, [FromServices] Services.Interfaces.IProjectAccessService projectAccess)
+    {
+        var role = User.FindFirst(ClaimTypes.Role)?.Value ?? string.Empty;
+        if (role != "ProcurementOfficer" && !await projectAccess.CanEditProjectAsync(dto.ProjectId, CurrentUserId, role))
+            return Forbid();
+
+        var project = await db.Projects.FindAsync(dto.ProjectId);
+        if (project is null) return BadRequest(new { message = "Project not found." });
+        if (project.IsHistorical)
+            return BadRequest(new { message = "Completed projects record their purchases in the Material Plan instead." });
+
+        var supplierName = dto.SupplierName?.Trim() ?? string.Empty;
+        if (supplierName.Length == 0)
+            return BadRequest(new { message = "Supplier is required." });
+        if (dto.OrderDate == default || dto.OrderDate.Date > DateTime.UtcNow.Date.AddDays(1))
+            return BadRequest(new { message = "Enter the date the PO was made (it can't be in the future)." });
+        if (!dto.Delivered && dto.ExpectedDate is null)
+            return BadRequest(new { message = "Enter the expected delivery date, or mark the PO as delivered." });
+
+        var lines = dto.Materials.Where(m => !string.IsNullOrWhiteSpace(m.Name)).ToList();
+        if (lines.Count == 0)
+            return BadRequest(new { message = "Add at least one material." });
+        var badLine = lines.FirstOrDefault(m => m.Quantity <= 0 || string.IsNullOrWhiteSpace(m.Unit) || m.UnitPrice < 0);
+        if (badLine is not null)
+            return BadRequest(new { message = $"{badLine.Name.Trim()}: enter a quantity above zero, a unit, and a price that isn't negative." });
+
+        var originalNumber = string.IsNullOrWhiteSpace(dto.OriginalPoNumber) ? null : dto.OriginalPoNumber.Trim();
+        if (originalNumber?.Length > 50)
+            return BadRequest(new { message = "The original PO number is too long (50 characters at most)." });
+        if (originalNumber is not null && await db.PurchaseOrders.AnyAsync(p =>
+                p.ProjectId == project.Id && p.OriginalPoNumber == originalNumber && p.Supplier.Name.ToLower() == supplierName.ToLower()))
+            return Conflict(new { message = $"PO {originalNumber} from {supplierName} was already imported for this project." });
+
+        var boqIds = lines.Where(m => m.BOQItemId.HasValue).Select(m => m.BOQItemId!.Value).Distinct().ToList();
+        var boqMaterials = await db.BOQItems
+            .Where(b => boqIds.Contains(b.Id) && b.ProjectId == project.Id)
+            .ToDictionaryAsync(b => b.Id, b => b.MaterialId);
+        if (boqMaterials.Count != boqIds.Count)
+            return BadRequest(new { message = "A material is linked to a Material Plan row from another project." });
+
+        string? poFileUrl = null;
+        if (dto.DocumentId is int documentId)
+        {
+            poFileUrl = await db.ProjectDocuments
+                .Where(d => d.Id == documentId && d.ProjectId == project.Id)
+                .Select(d => d.StoragePath)
+                .FirstOrDefaultAsync();
+            if (poFileUrl is null)
+                return BadRequest(new { message = "The PO file wasn't found for this project." });
+        }
+
+        var supplier = await db.Suppliers.FirstOrDefaultAsync(s => s.Name.ToLower() == supplierName.ToLower());
+        if (supplier is null)
+        {
+            supplier = new Supplier { Name = supplierName };
+            db.Suppliers.Add(supplier);
+        }
+
+        // Same best-effort catalog match as Create; a Material Plan link
+        // supplies the material when the name doesn't match.
+        var names = lines.Select(m => m.Name.Trim().ToLower()).Distinct().ToList();
+        var materialMatches = (await db.Materials
+                .Where(m => names.Contains(m.Name.ToLower()))
+                .ToListAsync())
+            .GroupBy(m => m.Name.ToLower())
+            .ToDictionary(g => g.Key, g => g.First().Id);
+
+        var po = new PurchaseOrder
+        {
+            // Assigned on save — see PoNumberGenerator.
+            Project = project,
+            Supplier = supplier,
+            IsImported = true,
+            OriginalPoNumber = originalNumber,
+            Status = dto.Delivered ? PurchaseOrderStatus.Delivered : PurchaseOrderStatus.Approved,
+            OrderDate = dto.OrderDate,
+            ExpectedDate = dto.ExpectedDate ?? dto.OrderDate,
+            PoFileUrl = poFileUrl,
+            CreatedByUserId = CurrentUserId,
+            Materials = lines
+                .Select(m => new PurchaseOrderMaterial
+                {
+                    Name = m.Name.Trim(),
+                    Quantity = Math.Round(m.Quantity, 0, MidpointRounding.AwayFromZero),
+                    Unit = m.Unit.Trim(),
+                    MaterialId = m.MaterialId
+                        ?? (m.BOQItemId is int boqId ? boqMaterials[boqId] : (int?)null)
+                        ?? (materialMatches.TryGetValue(m.Name.Trim().ToLower(), out var id) ? id : (int?)null),
+                    BOQItemId = m.BOQItemId,
+                    PhaseId = m.PhaseId,
+                    PrimarySection = m.PrimarySection,
+                    SubCategory = m.SubCategory,
+                    UnitPrice = m.UnitPrice,
+                })
+                .ToList(),
+        };
+
+        db.PurchaseOrders.Add(po);
+        await PoNumberGenerator.SaveWithNumbersAsync(db, [po]);
+        return Ok(ToDto(po));
+    }
+
     // Explicit link only — never auto-guessed, so a wrong match can't silently
     // corrupt training data. Used by the BOQ/PO reconciliation review UI.
     [HttpPatch("materials/{materialId:int}/link")]
@@ -397,5 +509,7 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
             }).ToList(),
         HasEvaluation = po.Evaluation is not null,
         PoFileUrl = po.PoFileUrl,
+        IsImported = po.IsImported,
+        OriginalPoNumber = po.OriginalPoNumber,
     };
 }

@@ -7,7 +7,9 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class ExcessWasteService(AppDbContext db) : IExcessWasteService
+// sheetSync is optional so tests (and anything else constructing this
+// directly) don't need the Google Sheet writer.
+public class ExcessWasteService(AppDbContext db, IExcessSheetSync? sheetSync = null) : IExcessWasteService
 {
     public async Task<IEnumerable<ExcessWasteResponseDto>> GetByProjectAsync(int projectId)
     {
@@ -71,7 +73,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
             excessPercent = baseline > 0 ? dto.Quantity / baseline * 100 : 0;
             var alreadyLogged = await db.ExcessWasteRecords
                 .Where(e => e.BOQItemId == boqItem.Id)
-                .SumAsync(e => (decimal?)e.Quantity) ?? 0;
+                .SumAsync(e => (decimal?)(e.Quantity + e.RedistributedQuantity)) ?? 0;
             if (alreadyLogged + dto.Quantity > baseline)
                 throw new InvalidOperationException(
                     $"This entry would bring total logged Excess+Waste to {alreadyLogged + dto.Quantity} {(boqItem.EstimatedPurchaseUnit ?? boqItem.Unit ?? "")}, exceeding the {baseline} delivered (or estimated, if nothing's been delivered yet) — reduce the quantity or confirm the delivery was recorded.");
@@ -94,6 +96,9 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
             IsReusable      = isReusable,
             Notes           = dto.Notes,
             RecordedByUserId= userId,
+            // Excess goes back into warehouse stock, so it's written to the
+            // Google Sheet's STOCK IN; waste never is.
+            SheetSyncPending = isReusable && sheetSync?.Enabled == true,
         };
 
         db.ExcessWasteRecords.Add(record);
@@ -123,7 +128,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
             var baseline = await GetDeliveredBaselineAsync(boqItem);
             var totalLogged = await db.ExcessWasteRecords
                 .Where(e => e.BOQItemId == boqItem.Id)
-                .SumAsync(e => e.Quantity);
+                .SumAsync(e => e.Quantity + e.RedistributedQuantity);
             boqItem.ActualQuantity = Math.Round(Math.Max(0, baseline - totalLogged), 0, MidpointRounding.AwayFromZero);
             // A record was just added above, so a real log now definitely
             // exists for this line — this value is observed, not assumed.
@@ -131,6 +136,8 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
             boqItem.UpdatedAt = DateTime.UtcNow;
             await db.SaveChangesAsync();
         }
+
+        if (record.SheetSyncPending) sheetSync!.Trigger();
 
         var saved = await db.ExcessWasteRecords
             .Include(e => e.Project).Include(e => e.Phase)
@@ -141,84 +148,92 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         return ToDto(saved);
     }
 
-    // Every BOQ line for a project that has no ExcessWasteRecord of the
-    // SAME kind (Excess vs. Waste, per isReusable) linked to it yet. Scoped
-    // per-kind rather than "any record at all" — logging Excess against a
-    // line must not block later logging Waste against that same line, and
-    // vice versa; both are legitimate, independent facts about one BOQ item.
-    public async Task<IEnumerable<PendingBOQItemDto>> GetPendingBOQItemsAsync(int projectId, bool isReusable)
+    // The Record Material Excess table: every BOQ line of a project except
+    // those marked "None" (nothing left over — done). Excess and waste are
+    // recorded weekly, so a line that's had some logged stays listed and can
+    // take more later (CreateAsync caps the running total at what was
+    // delivered). Each line carries its delivered baseline and what's been
+    // logged so far, so the table previews the Actual Usage the save stores.
+    public async Task<IEnumerable<PendingBOQItemDto>> GetLoggableBOQItemsAsync(int projectId)
     {
-        var loggedBoqItemIds = await db.ExcessWasteRecords
-            .Where(e => e.ProjectId == projectId && e.BOQItemId != null && e.IsReusable == isReusable)
-            .Select(e => e.BOQItemId!.Value)
-            .Distinct()
-            .ToListAsync();
-
         // A material with an undecided redistribution request out of this
-        // project can't be re-logged as fresh excess until that request is
-        // settled (approved or rejected) — avoids double-bookkeeping while a
-        // decision is pending. Once approved (a terminal state), the material
-        // is fair game again — e.g. redistributing only part of a batch
-        // shouldn't permanently block logging more of it later.
-        var pendingSourceMaterialIds = await db.RedistributionRequests
-            .Where(r => r.SourceProjectId == projectId && RedistributionStatuses.Pending.Contains(r.Status))
-            .Select(r => r.MaterialId)
-            .Distinct()
-            .ToListAsync();
+        // project can't take fresh excess until that request is settled
+        // (approved or rejected) — avoids double-bookkeeping while a decision
+        // is pending. Listed, but flagged, so the table can say why.
+        var pendingSourceMaterialIds = (await db.RedistributionRequests
+                .Where(r => r.SourceProjectId == projectId && RedistributionStatuses.Pending.Contains(r.Status))
+                .Select(r => r.MaterialId)
+                .Distinct()
+                .ToListAsync())
+            .ToHashSet();
 
         var items = await db.BOQItems
             .Include(b => b.Material)
-            .Where(b => b.ProjectId == projectId
-                && !loggedBoqItemIds.Contains(b.Id)
-                && !pendingSourceMaterialIds.Contains(b.MaterialId))
+            .Include(b => b.HistoricalSupplies)
+            .Where(b => b.ProjectId == projectId && b.NoExcessWasteConfirmedAt == null)
+            .OrderBy(b => b.Id)
             .ToListAsync();
 
-        return items.Select(b => new PendingBOQItemDto
+        var itemIds = items.Select(b => b.Id).ToList();
+        var loggedByItem = (await db.ExcessWasteRecords
+                .Where(e => e.BOQItemId != null && itemIds.Contains(e.BOQItemId.Value))
+                .Select(e => new { BOQItemId = e.BOQItemId!.Value, e.IsReusable, Quantity = e.Quantity + e.RedistributedQuantity })
+                .ToListAsync())
+            .ToLookup(e => e.BOQItemId);
+
+        var result = new List<PendingBOQItemDto>();
+        foreach (var b in items)
         {
-            BOQItemId         = b.Id,
-            MaterialId        = b.MaterialId,
-            MaterialName      = b.Material.Name,
-            Unit              = PreferredUnit(b),
-            EstimatedQuantity = PurchaseQuantity(b),
-        });
+            var logged = loggedByItem[b.Id].ToList();
+            result.Add(new PendingBOQItemDto
+            {
+                BOQItemId                = b.Id,
+                MaterialId               = b.MaterialId,
+                MaterialName             = b.Material.Name,
+                Unit                     = PreferredUnit(b),
+                EstimatedQuantity        = PurchaseQuantity(b),
+                DeliveredQuantity        = await GetDeliveredBaselineAsync(b),
+                AlreadyLogged            = logged.Sum(e => e.Quantity),
+                ExcessLogged             = logged.Where(e => e.IsReusable).Sum(e => e.Quantity),
+                WasteLogged              = logged.Where(e => !e.IsReusable).Sum(e => e.Quantity),
+                RedistributionPending    = pendingSourceMaterialIds.Contains(b.MaterialId),
+            });
+        }
+        return result;
     }
 
-    // Every Project that still has at least one BOQ line missing an Excess OR
-    // a Waste record — one bulk query rather than looping GetPendingBOQItemsAsync
-    // per project, since a project with none of these is a dead end in the
-    // Record Material Excess modal (always lands on "No materials left to
-    // log") and should never appear in its project picker at all.
-    public async Task<IEnumerable<int>> GetProjectIdsWithPendingItemsAsync()
+    // Projects with at least one BOQ line not yet marked "None" — the only
+    // ones the Record Material Excess project picker can do anything with.
+    public async Task<IEnumerable<int>> GetProjectIdsWithBOQItemsAsync() =>
+        await db.BOQItems.Where(b => b.NoExcessWasteConfirmedAt == null)
+            .Select(b => b.ProjectId).Distinct().ToListAsync();
+
+    // "None" in Record Material Excess: no (more) excess or waste for these
+    // BOQ lines — they're done and drop out of later entries. Confirms actual
+    // usage as delivered minus whatever was already logged — exactly what a
+    // logged record would set, just with nothing added.
+    public async Task ConfirmNoExcessWasteAsync(int projectId, IReadOnlyCollection<int> boqItemIds, int userId)
     {
-        var boqItems = await db.BOQItems
-            .Select(b => new { b.Id, b.ProjectId, b.MaterialId })
+        var items = await db.BOQItems
+            .Include(b => b.HistoricalSupplies)
+            .Where(b => b.ProjectId == projectId && boqItemIds.Contains(b.Id))
             .ToListAsync();
+        if (items.Count != boqItemIds.Distinct().Count())
+            throw new InvalidOperationException("One or more of the selected materials were not found in this project.");
 
-        var excessLogged = (await db.ExcessWasteRecords
-                .Where(e => e.BOQItemId != null && e.IsReusable)
-                .Select(e => e.BOQItemId!.Value)
-                .Distinct()
-                .ToListAsync())
-            .ToHashSet();
-        var wasteLogged = (await db.ExcessWasteRecords
-                .Where(e => e.BOQItemId != null && !e.IsReusable)
-                .Select(e => e.BOQItemId!.Value)
-                .Distinct()
-                .ToListAsync())
-            .ToHashSet();
-
-        var pendingRedistributionsByProject = (await db.RedistributionRequests
-                .Where(r => RedistributionStatuses.Pending.Contains(r.Status))
-                .Select(r => new { r.SourceProjectId, r.MaterialId })
-                .ToListAsync())
-            .ToLookup(r => r.SourceProjectId, r => r.MaterialId);
-
-        return boqItems
-            .Where(b => !(excessLogged.Contains(b.Id) && wasteLogged.Contains(b.Id)))
-            .Where(b => !pendingRedistributionsByProject[b.ProjectId].Contains(b.MaterialId))
-            .Select(b => b.ProjectId)
-            .Distinct()
-            .ToList();
+        foreach (var boqItem in items)
+        {
+            var baseline = await GetDeliveredBaselineAsync(boqItem);
+            var totalLogged = await db.ExcessWasteRecords
+                .Where(e => e.BOQItemId == boqItem.Id)
+                .SumAsync(e => (decimal?)(e.Quantity + e.RedistributedQuantity)) ?? 0;
+            boqItem.ActualQuantity = Math.Round(Math.Max(0, baseline - totalLogged), 0, MidpointRounding.AwayFromZero);
+            boqItem.IsUsageConfirmed = true;
+            boqItem.NoExcessWasteConfirmedAt = DateTime.UtcNow;
+            boqItem.NoExcessWasteConfirmedByUserId = userId;
+            boqItem.UpdatedAt = DateTime.UtcNow;
+        }
+        await db.SaveChangesAsync();
     }
 
     public async Task<ExcessWasteResponseDto> UpdateAsync(int id, ExcessWasteUpdateDto dto)
@@ -247,7 +262,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
                 var baseline = await GetDeliveredBaselineAsync(boqItem);
                 var loggedByOthers = await db.ExcessWasteRecords
                     .Where(e => e.BOQItemId == boqItem.Id && e.Id != id)
-                    .SumAsync(e => (decimal?)e.Quantity) ?? 0;
+                    .SumAsync(e => (decimal?)(e.Quantity + e.RedistributedQuantity)) ?? 0;
                 if (loggedByOthers + dto.Quantity > baseline)
                     throw new InvalidOperationException(
                         $"This change would bring total logged Excess+Waste to {loggedByOthers + dto.Quantity} {(boqItem.EstimatedPurchaseUnit ?? boqItem.Unit ?? "")}, exceeding the {baseline} delivered (or estimated, if nothing's been delivered yet).");
@@ -256,6 +271,9 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
 
         record.ExcessType = Enum.Parse<ExcessType>(dto.ExcessType);
         record.Quantity   = dto.Quantity;
+        // Only reachable with no approved transfer (checked above), so the
+        // edited amount is the whole logged amount.
+        record.RedistributedQuantity = 0;
         record.TotalCost  = dto.Quantity * record.UnitCost;
         record.IsReusable = record.ExcessType is ExcessType.Unused or ExcessType.Overordered;
 
@@ -273,7 +291,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
                 var baseline = await GetDeliveredBaselineAsync(boqItem);
                 var totalLogged = await db.ExcessWasteRecords
                     .Where(e => e.BOQItemId == boqItem.Id)
-                    .SumAsync(e => e.Quantity);
+                    .SumAsync(e => e.Quantity + e.RedistributedQuantity);
                 boqItem.ActualQuantity = Math.Round(Math.Max(0, baseline - totalLogged), 0, MidpointRounding.AwayFromZero);
                 boqItem.IsUsageConfirmed = true;
                 boqItem.UpdatedAt = DateTime.UtcNow;
@@ -324,7 +342,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
             var remaining = await db.ExcessWasteRecords
                 .Where(e => e.BOQItemId == boqItem.Id)
                 .ToListAsync();
-            var totalLogged = remaining.Sum(e => e.Quantity);
+            var totalLogged = remaining.Sum(e => e.LoggedQuantity);
             boqItem.ActualQuantity = Math.Round(Math.Max(0, baseline - totalLogged), 0, MidpointRounding.AwayFromZero);
             // Deleting the last remaining record against this line means
             // nothing real is logged anymore — back to unconfirmed, not a
@@ -442,6 +460,7 @@ public class ExcessWasteService(AppDbContext db) : IExcessWasteService
         Unit         = PreferredUnit(e.BOQItem, e.Material?.Unit),
         ExcessType   = e.ExcessType.ToString(),
         Quantity     = e.Quantity,
+        LoggedQuantity = e.LoggedQuantity,
         UnitCost     = e.UnitCost,
         TotalCost    = e.TotalCost,
         ExcessPercent= e.ExcessPercent,

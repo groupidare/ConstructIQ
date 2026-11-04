@@ -234,7 +234,7 @@ export default function ExcessAnalyticsPage() {
   // makes a project with no remaining entries disappear from the log
   // immediately — groupedByProject is derived purely from `records`.
   async function handleDelete(record: ExcessWasteRecord) {
-    if (!window.confirm(`Delete this ${record.materialName} entry (${record.quantity.toLocaleString()} ${record.unit})? This can't be undone.`)) return;
+    if (!window.confirm(`Delete this ${record.materialName} entry (${record.loggedQuantity.toLocaleString()} ${record.unit})? This can't be undone.`)) return;
     setDeletingId(record.id);
     try {
       await api.delete(`/excess-waste/${record.id}`);
@@ -562,7 +562,12 @@ export default function ExcessAnalyticsPage() {
                                               {typeStyle.label}
                                             </span>
                                           </td>
-                                          <td style={{ padding:"10px", fontSize:"0.8rem", color:"#374151" }}>{e.quantity.toLocaleString()}</td>
+                                          <td style={{ padding:"10px", fontSize:"0.8rem", color:"#374151" }}>
+                                            {e.loggedQuantity.toLocaleString()}
+                                            {e.quantity > 0 && e.quantity < e.loggedQuantity && (
+                                              <div style={{ fontSize:"0.68rem", color:"#9ca3af" }}>{e.quantity.toLocaleString()} left</div>
+                                            )}
+                                          </td>
                                           <td style={{ padding:"10px", fontSize:"0.8rem", color:"#9ca3af" }}>{e.unit}</td>
                                           <td style={{ padding:"10px" }}>
                                             {!e.isReusable ? null : e.redistributionTargetProjectName && APPROVED_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "") ? (

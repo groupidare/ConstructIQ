@@ -13,4 +13,9 @@ public interface IProjectAccessService
     Task<bool> CanEditBoqItemAsync(int boqItemId, int userId, string role);
     Task<bool> CanEditDocumentAsync(int documentId, int userId, string role);
     Task<bool> CanEditPhaseAsync(int phaseId, int userId, string role);
+
+    // Stricter than editing, because the cost breakdown shows unit prices:
+    // Admin any project, a ProjectManager or SiteEngineer only a project
+    // they're assigned to.
+    Task<bool> CanViewProjectCostAsync(int projectId, int userId, string role);
 }

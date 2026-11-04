@@ -23,7 +23,7 @@ interface EditExcessModalProps {
 export default function EditExcessModal({ record, onClose, onSuccess }: EditExcessModalProps) {
   const [description, setDescription] = useState(record.materialName);
   const [unit, setUnit]               = useState(record.unit);
-  const [qty, setQty]                 = useState(String(record.quantity));
+  const [qty, setQty]                 = useState(String(record.loggedQuantity));
   const [kind, setKind]               = useState<"Waste" | "Excess">(record.isReusable ? "Excess" : "Waste");
   const [submitting, setSubmitting]   = useState(false);
 

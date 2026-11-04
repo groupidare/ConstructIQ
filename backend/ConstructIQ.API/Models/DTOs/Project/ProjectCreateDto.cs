@@ -19,6 +19,10 @@ public class ProjectCreateDto
     public bool    IsHistorical       { get; set; }
     public string? AssignedContractor { get; set; }
     public int?    SiteEngineerId     { get; set; }
+    // Create only: how far along an ongoing project already is when it's
+    // entered. Logged as its first Progress Tracker entry. Ignored for a
+    // completed/historical project (always 100).
+    [Range(0, 99)] public int? StartingProgress { get; set; }
     public List<PhaseCreateDto> Phases { get; set; } = [];
 }
 

@@ -37,13 +37,13 @@ public class ProjectsController(IProjectService projectService, IProjectAccessSe
         return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
     }
 
-    // Same ownership rule as editing: Admin/ProjectManager any project, a
-    // SiteEngineer only the one they're assigned to.
+    // The breakdown shows unit prices, so: Admin any project, a
+    // ProjectManager or SiteEngineer only a project they're assigned to.
     [HttpGet("{id:int}/estimated-material-cost")]
     [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> GetEstimatedMaterialCost(int id)
     {
-        if (!await projectAccess.CanEditProjectAsync(id, CurrentUserId, CurrentRole))
+        if (!await projectAccess.CanViewProjectCostAsync(id, CurrentUserId, CurrentRole))
             return Forbid();
         var cost = await materialCost.GetEstimatedMaterialCostAsync(id);
         return cost is null ? NotFound() : Ok(cost);
