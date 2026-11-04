@@ -228,5 +228,16 @@ class Preview(unittest.TestCase):
         self.assertEqual(self.dxf["floor_plans"][0]["drawing_id"], "DXF:A")
 
 
+class PlanNotes(unittest.TestCase):
+    def test_finish_notes_of_every_sheet_with_their_page_floor_sheet_first(self):
+        t = lambda text, top, size=7.0: bp.TextLine(text, 100, top, 220, top + size, size)
+        elevations = bp.Sheet("A-5", "A", "ELEVATIONS", 4, [t("GYPSUM WALL IN", 100), t("PAINTED FINISH", 108), t("ELEVATION A", 300)], [])
+        floor = bp.Sheet("A-2", "A", "FLOOR PLAN", 1, [t("600x600mm", 50), t("FLOOR TILES", 58), t("SALES AREA", 200, 12.0)], [])
+        notes = bp._plan_notes([elevations, floor], floor)
+        self.assertEqual([(n["text"], n["page"]) for n in notes],
+                         [("600x600mm FLOOR TILES", 2), ("GYPSUM WALL IN PAINTED FINISH", 5)])
+        self.assertEqual(notes[0]["box"], [100, 50, 220, 65])
+
+
 if __name__ == "__main__":
     unittest.main()

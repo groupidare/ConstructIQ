@@ -73,6 +73,9 @@ namespace ConstructIQ.API.Migrations
                     b.Property<decimal>("ActualQuantity")
                         .HasColumnType("decimal(18,4)");
 
+                    b.Property<string>("BlueprintSource")
+                        .HasColumnType("longtext");
+
                     b.Property<decimal?>("CoverageArea")
                         .HasColumnType("decimal(18,4)");
 
@@ -209,6 +212,39 @@ namespace ConstructIQ.API.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("BackupJobRuns");
+                });
+
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.BlueprintRead", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("DocumentId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ProjectId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ReadJson")
+                        .IsRequired()
+                        .HasColumnType("longtext");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DocumentId");
+
+                    b.HasIndex("ProjectId");
+
+                    b.ToTable("BlueprintReads");
                 });
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.DeliveryBatch", b =>
@@ -1811,6 +1847,25 @@ namespace ConstructIQ.API.Migrations
                     b.Navigation("Material");
 
                     b.Navigation("Phase");
+
+                    b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.BlueprintRead", b =>
+                {
+                    b.HasOne("ConstructIQ.API.Models.Entities.ProjectDocument", "Document")
+                        .WithMany()
+                        .HasForeignKey("DocumentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("ConstructIQ.API.Models.Entities.Project", "Project")
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Document");
 
                     b.Navigation("Project");
                 });

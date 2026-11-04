@@ -9,9 +9,11 @@ using Microsoft.EntityFrameworkCore;
 namespace ConstructIQ.API.Services;
 
 // Blueprint → measurements → generated BOQ, by proxy to the ML service.
-// Nothing here saves anything: extraction, generation and the merge preview
-// are all previews; the wizard saves what the user confirms through the
-// existing /api/measurements/bulk and /api/boq/bulk.
+// Extraction, generation and the merge preview are previews; the wizard saves
+// what the user confirms through the existing /api/measurements/bulk and
+// /api/boq/bulk. The one thing kept here is the read itself (BlueprintRead),
+// so the Material Plan can show a generated row on the plan later — with the
+// blueprint's pages rendered on demand from the stored PDF.
 public class BlueprintService(
     AppDbContext db,
     IDocumentService documents,
@@ -61,15 +63,116 @@ public class BlueprintService(
             {
                 room = m.Room, floor_area_sqm = m.FloorAreaSqm, perimeter_m = m.PerimeterM,
                 height_m = m.HeightM, openings_sqm = m.OpeningsSqm,
+                ceiling_notes = m.CeilingNotes.Select(Note), has_ceiling_plan = m.HasCeilingPlan,
             }),
             finishes = request.Finishes.Select(f => new { room = f.Room, floor = f.Floor, wall = f.Wall, ceiling = f.Ceiling }),
             openings = request.Openings.Select(o => new { type = o.Type, count = o.Count, width_m = o.WidthM, height_m = o.HeightM }),
             materials,
             source = request.Source,
             per_room_floor = request.PerRoomFloor,
+            plan_notes = request.PlanNotes.Select(Note),
         };
         return await CallMl<GeneratedBoqDto>(() => Ml.PostAsJsonAsync("/boq/generate", payload), "generate the BOQ");
     }
+
+    private static object Note(BlueprintNoteDto n) => new { text = n.Text, page = n.Page, box = n.Box };
+
+    // ── Saved reads ──────────────────────────────────────────────────────────
+
+    public async Task<BlueprintReadDto> SaveReadAsync(BlueprintReadCreateDto request, int userId)
+    {
+        var doc = await db.ProjectDocuments.FindAsync(request.DocumentId)
+            ?? throw new KeyNotFoundException("Document not found.");
+        if (doc.ProjectId != request.ProjectId)
+            throw new InvalidOperationException("That blueprint belongs to a different project.");
+        var read = new BlueprintRead
+        {
+            ProjectId = request.ProjectId, DocumentId = request.DocumentId,
+            ReadJson = request.Read, CreatedByUserId = userId,
+        };
+        db.BlueprintReads.Add(read);
+        await db.SaveChangesAsync();
+        return ToDto(read, doc.FileName);
+    }
+
+    public async Task<BlueprintReadDto?> GetReadAsync(int id)
+    {
+        var read = await db.BlueprintReads.Include(r => r.Document).FirstOrDefaultAsync(r => r.Id == id);
+        return read is null ? null : ToDto(read, read.Document.FileName);
+    }
+
+    private static BlueprintReadDto ToDto(BlueprintRead r, string fileName) => new()
+    {
+        Id = r.Id, ProjectId = r.ProjectId, DocumentId = r.DocumentId, FileName = fileName,
+        Read = r.ReadJson, CreatedAt = r.CreatedAt,
+    };
+
+    // ── Pages, for the plan viewer ───────────────────────────────────────────
+
+    // Rendered pages are kept on disk: a page is rendered once per width.
+    private static readonly string PageCache = Path.Combine(Path.GetTempPath(), "constructiq-blueprint-pages");
+    private static readonly int[] PageWidths = [900, 1400, 2200, 3600, 5000];
+
+    private async Task<ProjectDocument> BlueprintPdf(int documentId)
+    {
+        var doc = await db.ProjectDocuments.FindAsync(documentId)
+            ?? throw new KeyNotFoundException("Document not found.");
+        if (doc.Category != DocumentCategory.Blueprint || !doc.FileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Only a PDF blueprint has pages to show.");
+        return doc;
+    }
+
+    public async Task<BlueprintPagesDto> GetPagesAsync(int documentId)
+    {
+        var doc = await BlueprintPdf(documentId);
+        var cached = Path.Combine(PageCache, $"{doc.Id}-{CacheStamp(doc)}.json");
+        if (File.Exists(cached))
+            return System.Text.Json.JsonSerializer.Deserialize<BlueprintPagesDto>(await File.ReadAllTextAsync(cached)) ?? new();
+        var bytes = await documents.ReadFileBytesAsync(doc.StoragePath);
+        using var content = new MultipartFormDataContent { { new ByteArrayContent(bytes), "file", doc.FileName } };
+        var pages = await CallMl<BlueprintPagesDto>(() => Ml.PostAsync("/documents/page-info", content), "read the pages of the blueprint");
+        Directory.CreateDirectory(PageCache);
+        await File.WriteAllTextAsync(cached, System.Text.Json.JsonSerializer.Serialize(pages));
+        return pages;
+    }
+
+    public async Task<byte[]> RenderPageAsync(int documentId, int page, int width)
+    {
+        var doc = await BlueprintPdf(documentId);
+        // Only a few widths, so the cache stays small.
+        width = PageWidths.FirstOrDefault(w => w >= width, PageWidths[^1]);
+        var cached = Path.Combine(PageCache, $"{doc.Id}-{CacheStamp(doc)}-{page}-{width}.png");
+        if (File.Exists(cached)) return await File.ReadAllBytesAsync(cached);
+
+        var bytes = await documents.ReadFileBytesAsync(doc.StoragePath);
+        using var content = new MultipartFormDataContent
+        {
+            { new ByteArrayContent(bytes), "file", doc.FileName },
+            { new StringContent(page.ToString()), "page" },
+            { new StringContent(width.ToString()), "width" },
+        };
+        HttpResponseMessage response;
+        try { response = await Ml.PostAsync("/documents/render-page", content); }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            logger.LogError(ex, "ML service call failed: render a blueprint page.");
+            throw new InvalidOperationException("Couldn't show the blueprint — the forecasting service didn't respond.");
+        }
+        using (response)
+        {
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound) throw new KeyNotFoundException("No such page.");
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"Couldn't show the blueprint (service error {(int)response.StatusCode}).");
+            var png = await response.Content.ReadAsByteArrayAsync();
+            Directory.CreateDirectory(PageCache);
+            await File.WriteAllBytesAsync(cached, png);
+            return png;
+        }
+    }
+
+    // A re-uploaded file under the same id gets fresh pages.
+    private static string CacheStamp(ProjectDocument doc) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.UTF8.GetBytes(doc.StoragePath)))[..12];
 
     public async Task<MergePreviewDto> MergePreviewAsync(MergePreviewRequestDto request)
     {

@@ -63,6 +63,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<MaterialRequest>          MaterialRequests          => Set<MaterialRequest>();
     public DbSet<MaterialRequestQuote>     MaterialRequestQuotes     => Set<MaterialRequestQuote>();
     public DbSet<BackupJobRun>             BackupJobRuns             => Set<BackupJobRun>();
+    public DbSet<BlueprintRead>            BlueprintReads            => Set<BlueprintRead>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -277,6 +278,18 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .WithMany()
             .HasForeignKey(b => b.UploadedByUserId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<BlueprintRead>()
+            .HasOne(b => b.Project)
+            .WithMany()
+            .HasForeignKey(b => b.ProjectId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<BlueprintRead>()
+            .HasOne(b => b.Document)
+            .WithMany()
+            .HasForeignKey(b => b.DocumentId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         mb.Entity<ProjectProgressUpdate>()
             .HasOne(u => u.Project)

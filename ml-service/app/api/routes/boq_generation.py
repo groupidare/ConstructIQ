@@ -9,12 +9,23 @@ from app.services import boq_generator_service
 router = APIRouter()
 
 
+class NoteRef(BaseModel):
+    """A note on the drawing: its words, page (1-based) and box on the page (PDF points)."""
+    text: str
+    page: Optional[int] = None
+    box: Optional[list[float]] = None
+
+
 class RoomMeasurement(BaseModel):
     room: str
     floor_area_sqm: float
     perimeter_m: float = 0
     height_m: Optional[float] = None
     openings_sqm: float = 0
+    # What the floor's reflected ceiling plan says in this room; has_ceiling_plan:
+    # the floor had one, so a room with no note there has no ceiling on the drawing.
+    ceiling_notes: list[NoteRef] = []
+    has_ceiling_plan: bool = False
 
 
 class RoomFinish(BaseModel):
@@ -38,6 +49,7 @@ class GenerateRequest(BaseModel):
     openings: list[Opening] = []
     source: Optional[str] = None
     per_room_floor: bool = False
+    plan_notes: list[NoteRef] = []
 
 
 class BaselineItem(BaseModel):
@@ -64,6 +76,7 @@ def generate(request: GenerateRequest) -> dict:
         [o.model_dump() for o in request.openings],
         request.source,
         per_room_floor=request.per_room_floor,
+        plan_notes=[n.model_dump() for n in request.plan_notes],
     )
 
 

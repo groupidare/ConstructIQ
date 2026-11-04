@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X, AlertTriangle } from 'lucide-react';
+import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X, AlertTriangle, Map as MapIcon } from 'lucide-react';
 import { baselineAlerts, expectedText } from '@/lib/baseline';
 import { resolveUploadUrl } from '@/lib/avatar';
 import { formatCurrency, formatDate } from '@/lib/utils';
@@ -16,6 +16,7 @@ import { PRIMARY_SECTIONS, PURCHASE_UNITS } from '@/types/boq';
 import type { PurchaseOrder, PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import { inp, sel, lbl } from './styles';
 import ImportPurchaseOrders from '@/components/projects/ImportPurchaseOrders';
+import { sourceOf, sourceTooltip } from '@/lib/blueprintSource';
 
 interface Props {
   project: Project;
@@ -35,6 +36,12 @@ interface Props {
   // its patch to whatever the rows array is *then*, not the stale snapshot
   // it closed over when the lookup started.
   onRowsChange: (rows: BOQItemRow[] | ((prev: BOQItemRow[]) => BOQItemRow[])) => void;
+  // "View Plan": the blueprint beside the Material Plan (see index.tsx); a
+  // blueprint-generated row clicked while it's open is shown on it.
+  planOpen: boolean;
+  planFocus: number | null;
+  onViewPlan: () => void;
+  onPlanFocus: (index: number) => void;
   // Accepts an explicit rows array so a partial-request split (which computes
   // a freshly-updated array in the same tick) can save it immediately without
   // depending on this row state having propagated up first.
@@ -68,7 +75,7 @@ interface Props {
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
-  rows, boqItems, onRowsChange, onSave, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
+  rows, boqItems, onRowsChange, planOpen, planFocus, onViewPlan, onPlanFocus, onSave, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial, onPurchaseOrdersImported,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
@@ -89,6 +96,7 @@ export default function MaterialPlanTab({
     ? 'minmax(0,1.4fr) minmax(0,0.5fr) minmax(0,0.6fr) minmax(0,0.8fr) minmax(0,0.8fr) auto'
     : 'minmax(0,1.6fr) minmax(0,0.6fr) minmax(0,0.7fr) auto';
   const [parsingPoId, setParsingPoId] = useState<number | null>(null);
+  const hasPlan = rows.some(r => sourceOf(r)?.readId != null);
   // Partial-quantity request dialog — clicking a row's Notify Procurement/
   // Warehouse button opens this instead of firing the request immediately,
   // so the user can request less than the full Est. Qty (e.g. only what's
@@ -495,11 +503,21 @@ export default function MaterialPlanTab({
       <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
           <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>{isHistorical ? 'Bill of Quantities and Purchased Orders Summary' : 'Bill of Quantities'}</p>
-          {editable && (
-            <button onClick={() => fileInputRef.current?.click()} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer' }}>
-              <Upload style={{ width: 12, height: 12 }} /> {uploading ? 'Uploading…' : 'Upload BOQ'}
-            </button>
-          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            {/* The blueprint the generated rows came from, beside this table. */}
+            {hasPlan && (
+              <button onClick={onViewPlan} disabled={planOpen}
+                title="Open the blueprint beside the Material Plan — click a blueprint row to see it on the plan"
+                style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: planOpen ? '#fff7ed' : '#fff', color: planOpen ? '#c2410c' : '#374151', fontSize: '0.72rem', fontWeight: 600, cursor: planOpen ? 'default' : 'pointer' }}>
+                <MapIcon style={{ width: 12, height: 12 }} /> View Plan
+              </button>
+            )}
+            {editable && (
+              <button onClick={() => fileInputRef.current?.click()} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer' }}>
+                <Upload style={{ width: 12, height: 12 }} /> {uploading ? 'Uploading…' : 'Upload BOQ'}
+              </button>
+            )}
+          </div>
           <input ref={fileInputRef} type="file" multiple accept=".pdf,.xlsx,.xls,.csv" onChange={handleFilePicked} style={{ display: 'none' }} />
         </div>
 
@@ -649,7 +667,11 @@ export default function MaterialPlanTab({
               // rather than as a negative balance.
               const overEstimate = hasPurchaseEstimate ? Math.max(0, (r.requestedQuantity ?? 0) - purchaseQty) : 0;
               return (
-                <div key={i} style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40 }}>
+                <div key={i}
+                  // With the plan open, a blueprint row clicked is shown on it.
+                  onClickCapture={() => { if (planOpen && sourceOf(r)?.readId != null) onPlanFocus(i); }}
+                  style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40,
+                    background: planOpen && planFocus === i ? '#fff7ed' : undefined, cursor: planOpen && sourceOf(r)?.readId != null ? 'pointer' : undefined }}>
                   {editable ? (
                     <input
                       list="primary-section-options"
@@ -677,10 +699,14 @@ export default function MaterialPlanTab({
                       wording, not the catalog's own (possibly differently-worded)
                       name. Only fall back to the catalog name for rows with no
                       scanned text at all (added directly from Stock on Hand). */}
+                  {/* A blueprint-generated row says where its finish came from on hover. */}
                   {r.materialId && !r.specification && !r.newMaterialName ? (
-                    <span style={{ fontSize: '0.78rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{materialLabel(r)}</span>
+                    <span title={sourceTooltip(r)} style={{ fontSize: '0.78rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{materialLabel(r)}</span>
                   ) : (
-                    <input disabled={!editable} value={r.specification || r.newMaterialName || ''} onChange={e => updateRow(i, { newMaterialName: e.target.value })} placeholder="Material specification" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                    <input disabled={!editable} title={sourceTooltip(r)} value={r.specification || r.newMaterialName || ''}
+                      // The field shows the specification when there is one — edit that, not the hidden name.
+                      onChange={e => updateRow(i, r.specification ? { specification: e.target.value } : { newMaterialName: e.target.value })}
+                      placeholder="Material specification" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   )}
                   {!isCompleted && (
                     <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />

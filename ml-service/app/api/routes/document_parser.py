@@ -2,11 +2,11 @@ import os
 import tempfile
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, Form
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Response
 from starlette.concurrency import run_in_threadpool
 
 from app.models.schemas import DocumentParseRequest, DocumentParseResponse, DocumentParsePOResponse
-from app.services.blueprint_parser_service import parse_blueprint
+from app.services.blueprint_parser_service import parse_blueprint, page_sizes, render_page
 from app.services.document_parser_service import parse_boq_document, parse_po_document
 
 router = APIRouter()
@@ -64,6 +64,29 @@ async def parse_blueprint_route(
         return await run_in_threadpool(parse_blueprint, tmp_path, file.filename or tmp_path, sheet, drawing_id, scale_override)
     finally:
         _cleanup_temp_file(tmp_path)
+
+
+@router.post("/page-info")
+async def page_info(file: UploadFile = File(...)) -> dict:
+    """Each page's size in PDF points — for the Material Plan's plan viewer."""
+    tmp_path = await _save_to_temp_file(file)
+    try:
+        return {"pages": await run_in_threadpool(page_sizes, tmp_path)}
+    finally:
+        _cleanup_temp_file(tmp_path)
+
+
+@router.post("/render-page")
+async def render_page_route(file: UploadFile = File(...), page: int = Form(...), width: int = Form(1400)) -> Response:
+    """One page of a PDF as a PNG, `width` pixels wide."""
+    tmp_path = await _save_to_temp_file(file)
+    try:
+        png = await run_in_threadpool(render_page, tmp_path, page, width)
+    except IndexError:
+        raise HTTPException(status_code=404, detail="No such page.")
+    finally:
+        _cleanup_temp_file(tmp_path)
+    return Response(content=png, media_type="image/png")
 
 
 @router.post("/parse-po", response_model=DocumentParsePOResponse)

@@ -3,6 +3,8 @@
 import { X } from 'lucide-react';
 import type { Project } from '@/types/project';
 import { useMeasurementsAndMaterialPlan, TabBar, EditToggle, TabBody, type Tab } from './Shell';
+import BlueprintViewer, { PANEL_WIDTH, type ViewerRow } from './BlueprintViewer';
+import { sourceOf } from '@/lib/blueprintSource';
 
 interface Props {
   project: Project;
@@ -36,9 +38,21 @@ export default function MeasurementsAndMaterialPlan({ project, onClose, initialE
   // leave that same empty gap again.
   const modalWidth = state.tab === 'measurements' ? 640 : state.editable ? 1200 : 900;
 
+  // "View Plan": the blueprint the generated rows came from, docked on the
+  // right; the Material Plan narrows to make room (its table scrolls sideways).
+  // It follows the row clicked; before that, the latest blueprint read.
+  const focused = state.planFocus != null ? sourceOf(state.boqRows[state.planFocus] ?? {}) : null;
+  const readIds = state.boqRows.map(r => sourceOf(r)?.readId).filter((id): id is number => id != null);
+  const readId = focused?.readId ?? (readIds.length ? Math.max(...readIds) : null);
+  const showPlan = state.planOpen && state.tab !== 'measurements' && readId != null;
+  const viewerRows: ViewerRow[] = showPlan ? state.boqRows.flatMap((r, i) => {
+    const s = sourceOf(r);
+    return s?.readId === readId ? [{ key: String(i), label: `${r.subCategory ?? ''} — ${r.specification || r.newMaterialName || ''}`, source: s }] : [];
+  }) : [];
+
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, width: modalWidth, maxWidth: '95vw', transition: 'width 0.2s ease', boxShadow: '0 20px 60px rgba(0,0,0,0.18)', overflow: 'hidden', maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, zIndex: 1000, padding: '1rem' }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, width: showPlan ? `min(${modalWidth}px, calc(100vw - ${PANEL_WIDTH} - 2rem - 12px))` : modalWidth, maxWidth: '95vw', flexShrink: 0, transition: 'width 0.2s ease', boxShadow: '0 20px 60px rgba(0,0,0,0.18)', overflow: 'hidden', maxHeight: '92vh', height: showPlan ? '92vh' : undefined, display: 'flex', flexDirection: 'column' }}>
         {/* Header */}
         <div style={{ padding: '1.5rem 1.5rem 0', flexShrink: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.25rem' }}>
@@ -76,6 +90,10 @@ export default function MeasurementsAndMaterialPlan({ project, onClose, initialE
           <TabBody project={project} state={state} />
         </div>
       </div>
+      {showPlan && (
+        <BlueprintViewer readId={readId!} rows={viewerRows} focusKey={state.planFocus != null ? String(state.planFocus) : ''}
+          onClose={() => { state.setPlanOpen(false); state.setPlanFocus(null); }} />
+      )}
     </div>
   );
 }

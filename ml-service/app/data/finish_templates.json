@@ -1,5 +1,5 @@
 {
-  "_comment": "Finish templates for BOQ generation from a blueprint. Each row names its catalog material by keywords (any one option, all of its words must appear in the material name) — catalog ids differ between databases. basis: floor_area | ceiling_area | wall_net_area | wall_net_area_x2 | perimeter | door_count | window_count. note_pattern pre-selects the template from a finish note on the plan (case-insensitive). Review with app/scripts/build_templates_from_history.py.",
+  "_comment": "Finish templates for BOQ generation from a blueprint. Each row names its catalog material by keywords (any one option, all of its words must appear in the material name) — catalog ids differ between databases. basis: floor_area | ceiling_area | wall_net_area | wall_net_area_x2 | perimeter | door_count | window_count. note_pattern pre-selects the template from a finish note on the plan (case-insensitive); a note counts for the first template it matches, in this order, so specific templates come before general ones. Each template's first row is its main material (read from historical BOQs too, see finish_history.py). Review with app/scripts/build_templates_from_history.py.",
   "templates": [
     {
       "key": "floor_tile_600",
@@ -257,6 +257,40 @@
           "boq_unit": "sq.m",
           "basis": "wall_net_area_x2",
           "sub_category": "Partition"
+        }
+      ]
+    },
+    {
+      "key": "painted_wall",
+      "surface": "wall",
+      "label": "Primer + paint (wall paint finish)",
+      "note_pattern": "\\bwall\\b.*\\bpaint|\\bpaint.*\\bwall\\b",
+      "rows": [
+        {
+          "name": "Paint",
+          "match": [
+            [
+              "paint",
+              "latex"
+            ],
+            [
+              "paint"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area",
+          "sub_category": "Interior Painting"
+        },
+        {
+          "name": "Primer",
+          "match": [
+            [
+              "primer"
+            ]
+          ],
+          "boq_unit": "sq.m",
+          "basis": "wall_net_area",
+          "sub_category": "Interior Painting"
         }
       ]
     },

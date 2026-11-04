@@ -7,18 +7,22 @@ import api from '@/lib/api';
 import type { Project } from '@/types/project';
 import type { ProjectDocument } from '@/types/document';
 import type { BOQItem, BOQItemRow } from '@/types/boq';
-import type { BlueprintResult, FinishTemplate, GeneratedBoq } from '@/types/blueprint';
+import type { BlueprintNote, BlueprintReadData, BlueprintReadRecord, BlueprintResult, GeneratedBoq } from '@/types/blueprint';
 import { matchPhases, measurementWorkType, floorPrefix } from '@/lib/workPhases';
+import { generatedToRows, isGuess } from '@/lib/blueprintSource';
 import { inp, sel, lbl } from './styles';
 
 // Blueprint → rows in the Material Plan. Every floor of the plan set is read
 // at once — one drawing per floor, shown beside its traced rooms — then the
 // rooms are checked floor by floor and the generated rows are added to the
 // Material Plan grid as unsaved rows, exactly like "Scan & Fill Rows", to be
-// edited there and saved with the normal Save. Finishes are chosen
-// automatically (wet rooms get non-slip tiles, the rest the plan's noted or
-// typical finishes); any specification can be changed in the grid afterwards.
-// Historical projects get a read-only "Compare with blueprint" instead.
+// edited there and saved with the normal Save. Finishes aren't picked here:
+// the generator reads them off the drawing (the ceiling plan's note in each
+// room, the plan set's finish notes), else your past projects, else a
+// standard finish — and every row says which. They're reviewed in the
+// Material Plan: hover a specification for its source, open it on the plan,
+// or change a room's finish there. The read itself is kept with the project
+// for that. Historical projects get a read-only "Compare with blueprint" instead.
 
 interface Props {
   project: Project;
@@ -35,8 +39,7 @@ interface EditableRoom {
   include: boolean; name: string; floorAreaSqm: number; perimeterM: number;
   lengthM: number; widthM: number; heightM: number | null; confidence: number;
   traced: number | null;  // index of the traced room it came from (its outline); null for one added by hand
-  ceilingNotes: string[];        // what the ceiling plan says about the room
-  ceilingKey: string | null;     // a ceiling finish picked by hand; null = from the notes or the default
+  ceilingNotes: BlueprintNote[]; // what the ceiling plan says about the room
 }
 interface EditableOpening { type: string; count: number; widthM: number; heightM: number }
 
@@ -54,9 +57,6 @@ interface Floor {
   allHeight: string;
 }
 
-const PRIMARY_SECTION = 'Architectural Works';
-const WET_ROOM = /\b(c\.?r\.?|toilet|t\s*&\s*b|bath|wc|lavatory|kitchen|laundry|powder|shower)\b/i;
-const DEFAULTS = { dryFloor: 'floor_tile_600', wetFloor: 'floor_tile_300', wall: 'painted_plaster', ceiling: 'fiber_cement_ceiling' };
 const FLOOR_NAMES: [RegExp, string][] = [
   [/\bBASEMENT\b/, 'Basement'], [/\bGROUND\b/, 'Ground Floor'], [/\b(FIRST|1ST)\b/, 'First Floor'],
   [/\bMEZZANINE\b/, 'Mezzanine'], [/\b(SECOND|2ND)\b/, 'Second Floor'], [/\b(THIRD|3RD)\b/, 'Third Floor'],
@@ -155,7 +155,7 @@ function editableRooms(data: BlueprintResult): EditableRoom[] {
       // "CH = …" notes, the taller height for the larger spaces.
       heightM: r.ceilingHeightM ?? (heights.length === 0 ? null : heights.length === 1 ? heights[0]
         : r.floorAreaSqm >= 10 ? heights[heights.length - 1] : heights[0]),
-      ceilingNotes: r.ceilingNotes ?? [], ceilingKey: null,
+      ceilingNotes: r.ceilingNoteDetails ?? [],
     };
   });
 }
@@ -172,7 +172,6 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
   const [starting, setStarting] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [openings, setOpenings] = useState<EditableOpening[]>([]);
-  const [templates, setTemplates] = useState<FinishTemplate[]>([]);
   const nextKey = useRef(0);
 
   const drawings = useMemo(() => {
@@ -234,8 +233,6 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
         setStarting(false);
       }
     })();
-    if (!compareMode)
-      api.get<{ templates: FinishTemplate[] }>('/boq/templates').then(r => setTemplates(r.data.templates)).catch(() => {});
     return () => { cancelled = true; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -260,29 +257,14 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
     return Object.entries(counts).map(([t, n]) => (n > 1 ? `${t} ×${n}` : t)).join(', ');
   }, [plan, floors, drawings]);
 
-  // Finishes named on the plan ("600x600mm FLOOR TILES") win over the defaults.
-  const finishNotes = included.flatMap(f => f.result?.finishNotes ?? []);
-  const noted: Partial<Record<'floor' | 'wall' | 'ceiling', string>> = {};
-  for (const t of templates) {
-    if (t.surface === 'openings' || noted[t.surface] || !t.notePattern) continue;
-    try {
-      const re = new RegExp(t.notePattern, 'i');
-      if (finishNotes.some(n => re.test(n))) noted[t.surface] = t.key;
-    } catch { /* a pattern JS can't parse just isn't used */ }
-  }
-  const labelOf = (key: string) => templates.find(t => t.key === key)?.label ?? key;
-  const ceilingTemplates = templates.filter(t => t.surface === 'ceiling');
-  // A room's ceiling: picked by hand, else what the ceiling plan notes in it
-  // ("ACOUSTIC CEILING PANEL"), else the plan's general note or the default.
-  const ceilingFromNotes = (notes: string[]) => ceilingTemplates.find(t => {
-    try { return !!t.notePattern && notes.some(n => new RegExp(t.notePattern!, 'i').test(n)); } catch { return false; }
-  })?.key;
-  const ceilingFor = (room: EditableRoom) => room.ceilingKey ?? ceilingFromNotes(room.ceilingNotes) ?? noted.ceiling ?? DEFAULTS.ceiling;
-  const finishFor = (room: EditableRoom) => ({
-    floor: WET_ROOM.test(room.name) ? DEFAULTS.wetFloor : (noted.floor ?? DEFAULTS.dryFloor),
-    wall: noted.wall ?? DEFAULTS.wall,
-    ceiling: ceilingFor(room),
-  });
+  // The plan set's finish notes — the same sheets for every floor read, so once each.
+  const planNotes = useMemo(() => {
+    const seen = new Set<string>();
+    return included.flatMap(f => f.result?.planNotes ?? []).filter(n => {
+      const k = `${n.page}|${n.text}`;
+      return !seen.has(k) && !!seen.add(k);
+    });
+  }, [included]);
 
   function toRooms() {
     // Doors and windows of every floor read, as one editable total per size.
@@ -301,6 +283,21 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
   const roomName = (f: Floor, name: string) => (multiFloor ? `${f.name} · ${name}` : name);
   const includedRooms = included.flatMap(f => f.rooms.filter(r => r.include).map(r => ({ floor: f, room: r })));
 
+  // What the rows are shown against later, on the plan: each floor's page and
+  // rooms (outlines in PDF points), and what regenerating a room's finish needs.
+  const readData = (): BlueprintReadData => ({
+    version: 1,
+    floors: included.map(f => ({
+      name: f.name, drawingId: f.drawingId, title: drawings[f.drawingId]?.title ?? f.drawingId,
+      page: f.result?.page ?? null, ceilingPlanPage: f.result?.ceilingPlanPage ?? null, hasCeilingPlan: !!f.result?.ceilingPlan,
+      rooms: f.rooms.filter(r => r.include).map(r => ({
+        name: roomName(f, r.name), outline: r.traced != null ? f.result?.rooms[r.traced]?.outlinePt ?? [] : [],
+        floorAreaSqm: r.floorAreaSqm, perimeterM: r.perimeterM, heightM: r.heightM, ceilingNotes: r.ceilingNotes,
+      })),
+    })),
+    planNotes,
+  });
+
   async function addToMaterialPlan() {
     setGenerating(true);
     try {
@@ -308,24 +305,27 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
         projectId: project.id,
         source: included.map(f => f.drawingId).join(', ').slice(0, 60),
         perRoomFloor: true,
-        measurements: includedRooms.map(({ floor, room: r }) => ({ room: roomName(floor, r.name), floorAreaSqm: r.floorAreaSqm, perimeterM: r.perimeterM, heightM: r.heightM, openingsSqm: 0 })),
-        finishes: includedRooms.map(({ floor, room: r }) => ({ room: roomName(floor, r.name), ...finishFor(r) })),
+        measurements: includedRooms.map(({ floor, room: r }) => ({
+          room: roomName(floor, r.name), floorAreaSqm: r.floorAreaSqm, perimeterM: r.perimeterM, heightM: r.heightM, openingsSqm: 0,
+          ceilingNotes: r.ceilingNotes, hasCeilingPlan: !!floor.result?.ceilingPlan,
+        })),
+        finishes: [],
+        planNotes,
         openings: openings.filter(o => o.count > 0).map(o => ({ type: o.type, count: o.count, widthM: o.widthM, heightM: o.heightM })),
       });
       if (data.rows.length === 0) { toast.error('Nothing could be generated from these rooms.'); return; }
 
+      // Kept with the project, so each row can be opened on the plan later.
+      let readId: number | null = null;
+      try {
+        const saved = await api.post<BlueprintReadRecord>('/boq/blueprint-reads', { projectId: project.id, documentId: doc.id, read: JSON.stringify(readData()) });
+        readId = saved.data.id;
+      } catch {
+        toast.error('Rows added, but the blueprint couldn\'t be kept with them — they can\'t be opened on the plan.');
+      }
+
       // Number the work items after any architectural rows already in the plan.
-      let n = existingRows.filter(r => /architectural/i.test(r.primarySection)).length;
-      const rows: BOQItemRow[] = data.rows.map(r => ({
-        primarySection: PRIMARY_SECTION,
-        subCategory: `1.${++n} ${r.subCategory}`,
-        specification: r.materialName ?? r.specification,
-        materialId: r.materialId ?? undefined,
-        newMaterialName: r.materialName ?? r.specification,
-        unit: r.boqUnit,
-        estimatedQuantity: r.boqQuantity,
-        notes: r.sourceNote,
-      } as BOQItemRow));
+      const rows = generatedToRows(data.rows, readId, existingRows.filter(r => /architectural/i.test(r.primarySection)).length);
       onAddRows(rows);
 
       // Room measurements are kept too when the project has phases to file
@@ -345,7 +345,12 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
       }
 
       if (data.warnings.length) toast(data.warnings[0], { icon: '⚠️' });
+      const guessed = data.rows.filter(r => isGuess({ ...r.source, readId, roomNames: r.rooms })).length;
       toast.success(`${rows.length} row(s) added to the Material Plan — review them, then Save.`);
+      if (guessed) {
+        toast(`${guessed} material(s) weren't on the drawing — hover over their specification in the Material Plan to check them.`,
+          { icon: '⚠️', duration: 8000 });
+      }
       onClose();
     } catch (error) {
       toast.error(apiError(error, 'Failed to generate the BOQ.'));
@@ -566,7 +571,7 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                     </div>
                     <div style={{ overflowX: 'auto' }}>
                       <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
-                        <thead><tr>{['', 'Room', 'Floor area (m²)', 'Perimeter (m)', 'Ceiling height (m)', 'Floor finish', 'Ceiling finish'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+                        <thead><tr>{['', 'Room', 'Floor area (m²)', 'Perimeter (m)', 'Ceiling height (m)'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
                         <tbody>
                           {f.rooms.map((r, i) => (
                             <tr key={i} onMouseEnter={() => setHighlight(r.traced)} onMouseLeave={() => setHighlight(null)}
@@ -578,16 +583,6 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                               <td style={td}><input type="number" min="0" step="0.01" value={r.perimeterM} onChange={e => setRoom(i, { perimeterM: Number(e.target.value) || 0 })} style={small} aria-label="Perimeter" /></td>
                               <td style={td}><input type="number" min="0" step="0.01" value={r.heightM ?? ''} placeholder="enter for walls" onChange={e => setRoom(i, { heightM: e.target.value === '' ? null : Number(e.target.value) })}
                                 style={{ ...small, borderColor: r.heightM == null ? '#fbbf24' : '#e5e7eb' }} aria-label="Ceiling height" /></td>
-                              <td style={{ ...td, fontSize: '0.7rem', color: '#6b7280' }}>{labelOf(finishFor(r).floor)}</td>
-                              <td style={td} title={r.ceilingNotes.length ? `Ceiling plan: ${r.ceilingNotes.join(' · ')}` : undefined}>
-                                <select value={ceilingFor(r)} onChange={e => setRoom(i, { ceilingKey: e.target.value })} aria-label="Ceiling finish"
-                                  style={{ ...small, cursor: 'pointer', width: 'auto', maxWidth: 190 }}>
-                                  {(ceilingTemplates.length ? ceilingTemplates : [{ key: ceilingFor(r), label: labelOf(ceilingFor(r)) }]).map(t =>
-                                    <option key={t.key} value={t.key}>{t.label}</option>)}
-                                </select>
-                                {r.ceilingKey == null && ceilingFromNotes(r.ceilingNotes) &&
-                                  <span style={{ display: 'block', fontSize: '0.62rem', color: '#15803d', marginTop: 2 }}>from the ceiling plan</span>}
-                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -595,7 +590,7 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                     </div>
                     <button style={{ ...link, display: 'inline-flex', alignItems: 'center', gap: 4, justifySelf: 'start' }}
                       onClick={() => patchFloor(f.key, { rooms: [...f.rooms, { include: true, name: '', floorAreaSqm: 0, perimeterM: 0, lengthM: 0, widthM: 0,
-                        heightM: Number(f.allHeight) > 0 ? Number(f.allHeight) : null, confidence: 1, traced: null, ceilingNotes: [], ceilingKey: null }] })}>
+                        heightM: Number(f.allHeight) > 0 ? Number(f.allHeight) : null, confidence: 1, traced: null, ceilingNotes: [] }] })}>
                       <Plus style={{ width: 12, height: 12 }} /> Add a room that wasn&apos;t traced (e.g. a toilet)
                     </button>
                   </section>
@@ -615,10 +610,11 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                 })}
               </div>
               <p style={{ fontSize: '0.72rem', color: '#6b7280', lineHeight: 1.5 }}>
-                Rows will use: floors — {labelOf(noted.floor ?? DEFAULTS.dryFloor)} ({labelOf(DEFAULTS.wetFloor)} in CR/toilet/kitchen);
-                walls — {labelOf(noted.wall ?? DEFAULTS.wall)}; ceilings — as chosen per room
-                {included.some(f => f.result?.ceilingPlan) ? ' (read from the reflected ceiling plan where it notes one)' : ''}, otherwise {labelOf(noted.ceiling ?? DEFAULTS.ceiling)}.
-                {multiFloor && ' Each room\'s row is named with its floor ("Ground Floor · Bedroom").'} You can change any specification in the Material Plan afterwards.
+                Floor, wall and ceiling finishes are read from the drawing&apos;s notes
+                {included.some(f => f.result?.ceilingPlan) ? ' (each room\'s ceiling from the reflected ceiling plan)' : ''};
+                where it says nothing, from your past projects, else a standard finish. Check them in the Material Plan:
+                hover over a specification to see where it came from, or open it on the plan.
+                {multiFloor && ' Each room\'s row is named with its floor ("Ground Floor · Bedroom").'}
               </p>
               {includedRooms.some(({ room }) => room.heightM == null) && <p style={{ fontSize: '0.72rem', color: '#b45309' }}>Rooms without a ceiling height get no wall rows.</p>}
             </div>

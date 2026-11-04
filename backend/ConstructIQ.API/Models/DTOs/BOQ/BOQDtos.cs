@@ -22,6 +22,9 @@ public class BOQItemUpsertDto
     // data — live projects derive actual usage from inventory movements instead.
     public decimal? ActualQuantity   { get; set; }
     public string? Notes             { get; set; }
+    // Where a blueprint-generated row's finish came from — see BOQItem.BlueprintSource.
+    [System.ComponentModel.DataAnnotations.MaxLength(20_000)]
+    public string? BlueprintSource   { get; set; }
     // Real purchase lines extracted from a historical project's combined
     // BOQ+PO report — full-replace on every save, see BOQService.BulkSaveAsync.
     public List<HistoricalSupplyLineDto>? HistoricalSupply { get; set; }
@@ -77,6 +80,7 @@ public class BOQItemResponseDto
     // see BOQItem.IsUsageConfirmed.
     public bool     IsUsageConfirmed  { get; set; }
     public string?  Notes             { get; set; }
+    public string?  BlueprintSource   { get; set; }
     public DateTime CreatedAt         { get; set; }
     public List<HistoricalSupplyResponseDto> HistoricalSupply { get; set; } = [];
     public decimal? EstimatedPurchaseQuantity { get; set; }

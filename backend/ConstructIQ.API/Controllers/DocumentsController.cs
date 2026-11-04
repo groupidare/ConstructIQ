@@ -73,6 +73,24 @@ public class DocumentsController(IDocumentService documentService, IProjectAcces
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    // A PDF blueprint's pages, for the Material Plan's plan viewer — readable
+    // by anyone who can see the project's files (like the files themselves).
+    [HttpGet("{id:int}/pages")]
+    public async Task<IActionResult> Pages(int id)
+    {
+        try { return Ok(await blueprints.GetPagesAsync(id)); }
+        catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    [HttpGet("{id:int}/pages/{page:int}")]
+    public async Task<IActionResult> Page(int id, int page, [FromQuery] int width = 1400)
+    {
+        try { return File(await blueprints.RenderPageAsync(id, page, width), "image/png"); }
+        catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
     [HttpPost("{id:int}/parse-po")]
     [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> ParsePO(int id)

@@ -42,6 +42,26 @@ public class BOQController(IBOQService boqService, IProjectAccessService project
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    // The blueprint read behind generated rows — saved when they're added to
+    // the Material Plan, read back to show a row on the plan.
+    [HttpPost("blueprint-reads")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> SaveBlueprintRead([FromBody] Models.DTOs.Blueprint.BlueprintReadCreateDto dto)
+    {
+        if (!await projectAccess.CanEditProjectAsync(dto.ProjectId, CurrentUserId, CurrentRole))
+            return Forbid();
+        try { return Ok(await blueprints.SaveReadAsync(dto, CurrentUserId)); }
+        catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    [HttpGet("blueprint-reads/{id:int}")]
+    public async Task<IActionResult> GetBlueprintRead(int id)
+    {
+        var read = await blueprints.GetReadAsync(id);
+        return read is null ? NotFound(new { message = "This blueprint read was removed." }) : Ok(read);
+    }
+
     [HttpPost("merge-preview")]
     [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
     public async Task<IActionResult> MergePreview([FromBody] Models.DTOs.Blueprint.MergePreviewRequestDto dto)

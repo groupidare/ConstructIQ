@@ -35,6 +35,8 @@ export interface BOQItemRow extends RowBaseline {
   // because nothing was ever confirmed. Never sent to the backend on save.
   isUsageConfirmed?: boolean;
   notes?: string;
+  // A blueprint-generated row: where its finish came from (SavedBlueprintSource as JSON).
+  blueprintSource?: string;
   historicalSupply?: HistoricalSupplyLine[];
   // Predicted procurement qty/unit for new projects — suggested from
   // historical BOQ+PO data, user-editable. Stays blank until the user clicks
@@ -100,6 +102,8 @@ export interface BOQItem {
   // plain response type too.
   isUsageConfirmed: boolean;
   notes?: string;
+  // A blueprint-generated row: where its finish came from (SavedBlueprintSource as JSON).
+  blueprintSource?: string;
   historicalSupply?: HistoricalSupplyLine[];
   estimatedPurchaseQuantity?: number;
   estimatedPurchaseUnit?: string;

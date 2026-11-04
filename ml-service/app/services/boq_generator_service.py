@@ -1,7 +1,19 @@
-"""Generated BOQ: confirmed room measurements × chosen finish templates →
-BOQ rows (work quantities in the BOQ unit), each with its engineering
-baseline. Nothing is saved here — the backend shows a preview and saves
-only what the user confirms.
+"""Generated BOQ: confirmed room measurements × finish templates → BOQ rows
+(work quantities in the BOQ unit), each with its engineering baseline.
+Nothing is saved here — the backend shows a preview and saves only what the
+user confirms.
+
+Each room's floor, wall and ceiling finish is decided here (resolve_finishes),
+first source that has one:
+  1. picked by the user;
+  2. the drawing — the room's own note on the reflected ceiling plan, else a
+     finish note anywhere on the plan set (floor plan, finishing plans,
+     elevations): the template most of the notes name;
+  3. the company's completed historical projects — the finish most of them
+     used for that surface (finish_history);
+  4. a standard default.
+Every row says which one it came from (its `source`), with the note's words
+and page, so it can be checked against the drawing.
 
 Rows are aggregated per template row + material across the rooms that use
 that finish (one "Floor tile 600×600" row for the whole plan, its source note
@@ -17,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from app.ml import baseline_engine
+from app.services import finish_history
 
 TEMPLATES_PATH = Path(__file__).resolve().parent.parent / "data" / "finish_templates.json"
 DEFAULT_PRIMARY_SECTION = "Architectural Works"
@@ -48,20 +61,147 @@ def suggest_finishes(finish_notes: list[str]) -> dict[str, str]:
     return out
 
 
-def match_material(options: list[list[str]], materials: list[dict], boq_unit: str) -> dict | None:
+def match_material(options: list[list[str]], materials: list[dict], boq_unit: str,
+                   used: dict[int, int] | None = None) -> dict | None:
     """First option whose words all appear in a catalog name. Among several
-    matches: one with physical properties, then one already in the BOQ unit
-    or a purchase unit, then the shortest (most generic) name."""
+    matches: the one most past projects used (`used`: material id → projects),
+    then one with physical properties, then one already in the BOQ unit or a
+    purchase unit, then the shortest (most generic) name."""
     want_kind = baseline_engine.work_unit_kind(boq_unit)
+    used = used or {}
     for words in options:
         hits = [m for m in materials if all(w.lower() in str(m.get("name", "")).lower() for w in words)]
         if hits:
             return min(hits, key=lambda m: (
+                -used.get(m.get("id"), 0),
                 baseline_engine.calculation_type_name(m.get("calculation_type")) is None,
                 baseline_engine.work_unit_kind(m.get("unit")) not in (want_kind, "count", None),
                 len(str(m.get("name", ""))),
             ))
     return None
+
+
+WET_ROOM = re.compile(r"\b(c\.?r\.?|toilet|t\s*&\s*b|bath|wc|lavatory|kitchen|laundry|powder|shower)\b", re.I)
+DEFAULTS = {"floor": "floor_tile_600", "wet_floor": "floor_tile_300", "wall": "painted_plaster", "ceiling": "fiber_cement_ceiling"}
+WET_FLOORS = {"floor_tile_300", "vinyl_floor"}
+_SMALL_WORDS = {"in", "of", "on", "at", "the", "and", "with", "to", "for", "c/w", "w/", "or", "a"}
+
+
+def _note_template(text: str, templates: list[dict]) -> str | None:
+    """The template a note names — the first that matches, in file order."""
+    for t in templates:
+        try:
+            if t.get("note_pattern") and re.search(t["note_pattern"], text, re.I):
+                return t["key"]
+        except re.error:
+            continue
+    return None
+
+
+def _by_template(notes: list[dict], templates: list[dict]) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for n in notes:
+        key = _note_template(n.get("text") or "", templates)
+        if key:
+            out.setdefault(key, []).append(n)
+    return out
+
+
+def _most_noted(noted: dict[str, list[dict]], prefer: set[str] | None = None, avoid: set[str] | None = None) -> str | None:
+    """The template most notes name (ties: the one noted first)."""
+    keys = [k for k in noted if (prefer is None or k in prefer) and (avoid is None or k not in avoid)]
+    return max(keys, key=lambda k: len(noted[k]), default=None)
+
+
+def spec_from_note(text: str) -> str:
+    """A drawing note as a material specification: its tag ("L-01") and
+    heights ("CH=2600mm", "SLAB SOFFIT:H=4745mm") dropped, in title case with
+    abbreviations (MDF, RAL) and sizes (600x600mm) kept."""
+    t = re.sub(r"^[A-Z]{1,3}-\d+[A-Z]?\s+", "", text.strip())
+    t = re.sub(r"(SLAB\s+SOFFIT\s*:?\s*)?\bH\s*[=:]\s*\d{3,5}\s*MM\b|\bC\.?\s?H\.?\s*[=:]\s*\d{3,5}\s*MM\b", "", t, flags=re.I)
+    words: list[str] = []
+    for w in " ".join(t.split()).strip(" ,;:-").split(" "):
+        low = w.lower()
+        if any(c.isdigit() for c in w):
+            words.append(low)
+        elif low in _SMALL_WORDS and words:
+            words.append(low)
+        elif (core := w.strip("()[],;:\"'")).isalpha() and len(core) <= 3 and core.isupper():
+            words.append(w)
+        else:
+            # Capitalise the first letter, past any opening bracket or quote.
+            i = next((k for k, c in enumerate(w) if c.isalpha()), 0)
+            words.append(w[:i] + w[i:i + 1].upper() + w[i + 1:].lower())
+    return " ".join(words)
+
+
+def _source(surface: str, kind: str, notes: list[dict] | None = None, reason: str | None = None,
+            projects: int | None = None, of: int | None = None) -> dict:
+    return {"surface": surface, "kind": kind,
+            "notes": [{"text": n.get("text"), "page": n.get("page"), "box": n.get("box")} for n in (notes or [])][:3],
+            "reason": reason, "projects": projects, "of": of}
+
+
+def resolve_finishes(measurements: list[dict], finishes: list[dict], plan_notes: list[dict],
+                     templates: list[dict], history: "finish_history.History") -> dict[str, dict[str, tuple[str, dict]]]:
+    """room → surface → (template key, source). See the module docstring."""
+    by_surface = {s: [t for t in templates if t["surface"] == s] for s in ("floor", "wall", "ceiling")}
+    noted = {s: _by_template(plan_notes, ts) for s, ts in by_surface.items()}
+    chosen = {f["room"]: f for f in finishes}
+    labels = {t["key"]: t["label"] for t in templates}
+
+    def from_history(surface: str, why: str, allowed: set[str] | None = None) -> tuple[str, dict] | None:
+        best = history.best_finish(surface, allowed)
+        if not best:
+            return None
+        key, n, of = best
+        return key, _source(surface, "history", projects=n, of=of,
+                            reason=f"{why} — your past projects used {labels.get(key, key)} ({n} of {of} project{'s' if of != 1 else ''})")
+
+    def fallback(surface: str, why: str, allowed: set[str] | None = None, default: str | None = None,
+                 default_reason: str = "standard finish used") -> tuple[str, dict]:
+        return from_history(surface, why, allowed) or (default or DEFAULTS[surface], _source(
+            surface, "default", reason=f"{why} — {default_reason}, please check"))
+
+    out: dict[str, dict[str, tuple[str, dict]]] = {}
+    for room in measurements:
+        name = room.get("room") or "Room"
+        mine = chosen.get(name, {})
+        wet = bool(WET_ROOM.search(name))
+        picks: dict[str, tuple[str, dict]] = {}
+        for surface in ("floor", "wall", "ceiling"):
+            if mine.get(surface):
+                picks[surface] = (mine[surface], _source(surface, "chosen", reason="Picked by you"))
+                continue
+            if surface == "ceiling":
+                # The room's own notes on the reflected ceiling plan come first;
+                # a ceiling plan with nothing for the room says nothing about it.
+                own = _by_template(room.get("ceiling_notes") or [], by_surface["ceiling"])
+                if own:
+                    key = _most_noted(own)
+                    picks[surface] = (key, _source(surface, "drawing", own[key], "On the reflected ceiling plan, in this room"))
+                    continue
+                if room.get("has_ceiling_plan"):
+                    picks[surface] = fallback(surface, "The ceiling plan has no finish note for this room")
+                    continue
+            if surface == "floor":
+                # A wet room takes only a wet-area floor note — a plan's
+                # general "600x600 floor tiles" isn't the toilet's.
+                key = (_most_noted(noted["floor"], prefer=WET_FLOORS) if wet
+                       else _most_noted(noted["floor"], avoid={"floor_tile_300"}) or _most_noted(noted["floor"]))
+            else:
+                key = _most_noted(noted[surface])
+            if key:
+                # Notes across the plan set: the plainest first — it names the row.
+                notes = sorted(noted[surface][key], key=lambda n: len(n.get("text") or ""))
+                picks[surface] = (key, _source(surface, "drawing", notes, "Finish note on the plan"))
+            elif surface == "floor" and wet:
+                picks[surface] = fallback(surface, "Not on the drawing", WET_FLOORS, DEFAULTS["wet_floor"],
+                                          "wet room, non-slip 300×300 tiles used")
+            else:
+                picks[surface] = fallback(surface, "Not on the drawing")
+        out[name] = picks
+    return out
 
 
 def _quantity(basis: str, room: dict, openings: dict[str, int]) -> float | None:
@@ -84,6 +224,28 @@ def _quantity(basis: str, room: dict, openings: dict[str, int]) -> float | None:
     return None
 
 
+_WEAKEST = ["default", "history", "chosen", "drawing"]
+
+
+def _row_source(sources: list[tuple[str | None, dict]], material: dict | None, used: dict[int, int]) -> dict:
+    """One row's source across the rooms it covers: the weakest of them (a
+    row partly guessed is a guess), with each room's own source listed."""
+    kind = min((s["kind"] for _, s in sources), key=_WEAKEST.index)
+    notes, seen = [], set()
+    for _, s in sources:
+        for n in s["notes"]:
+            if (n["text"], n["page"]) not in seen:
+                seen.add((n["text"], n["page"]))
+                notes.append(n)
+    first = next(s for _, s in sources if s["kind"] == kind)
+    n = used.get(material["id"], 0) if material else 0
+    return {"kind": kind, "surface": first["surface"], "reason": first["reason"], "notes": notes[:4],
+            "projects": first["projects"], "of": first["of"],
+            "rooms": [{"room": room, "kind": s["kind"], "reason": s["reason"], "template": s["template"]} for room, s in sources if room],
+            "template": first["template"],
+            "material_reason": f"Catalog material used in {n} past project{'s' if n != 1 else ''}" if n else None}
+
+
 def _baseline_json(material: dict | None, boq_unit: str, quantity: float) -> dict:
     if material is None:
         return {"baseline_quantity": None, "purchase_quantity": None, "purchase_unit": None,
@@ -97,34 +259,44 @@ def _baseline_json(material: dict | None, boq_unit: str, quantity: float) -> dic
 
 def generate(measurements: list[dict], finishes: list[dict], materials: list[dict],
              openings: list[dict] | None = None, source: str | None = None,
-             primary_section: str = DEFAULT_PRIMARY_SECTION, per_room_floor: bool = False) -> dict:
+             primary_section: str = DEFAULT_PRIMARY_SECTION, per_room_floor: bool = False,
+             plan_notes: list[dict] | None = None, history: "finish_history.History | None" = None) -> dict:
     """per_room_floor: the floor finish itself (each floor template's first
     row) becomes one row per room, its work item named after the room — the
     way a Material Plan lists flooring. Adhesive, grout, walls, ceilings and
-    openings stay one row per work item."""
+    openings stay one row per work item. A room's surface with no finish in
+    `finishes` is decided by resolve_finishes."""
     templates = templates_by_key()
+    if history is None:
+        history = finish_history.load(load_templates())
     warnings: list[str] = []
-    finish_by_room = {f["room"]: f for f in finishes}
+    resolved = resolve_finishes(measurements, finishes, plan_notes or [], load_templates(), history)
     opening_counts: dict[str, int] = {}
     for o in openings or []:
         opening_counts[o["type"]] = opening_counts.get(o["type"], 0) + int(o.get("count") or 0)
 
     rows: dict[tuple, dict] = {}
 
-    def add(template: dict, row_index: int, room_name: str | None, quantity: float):
+    def add(template: dict, row_index: int, room_name: str | None, quantity: float, why: dict):
         spec = template["rows"][row_index]
-        material = match_material(spec["match"], materials, spec["boq_unit"])
+        material = match_material(spec["match"], materials, spec["boq_unit"], history.materials)
         per_room = per_room_floor and room_name and template["surface"] == "floor" and row_index == 0
         # Shared rows merge by work item + material across templates (one
         # "Floor Adhesive" row whether rooms got 600×600 or 300×300 tiles).
+        # The main material of a finish read off the drawing is named in the
+        # drawing's own words — and kept apart from the same material used by
+        # another finish (the painted slab's paint vs a board ceiling's paint).
+        worded = row_index == 0 and why["kind"] == "drawing" and bool(why["notes"])
         key = ((template["key"], row_index, room_name) if per_room
-               else (spec["sub_category"], material["id"] if material else spec["name"]))
+               else (spec["sub_category"], material["id"] if material else spec["name"],
+                     template["key"] if worded else None))
         entry = rows.get(key)
         if entry is None:
             entry = rows[key] = {
                 "material_id": material["id"] if material else None,
                 "material_name": material["name"] if material else None,
-                "specification": spec["name"],
+                "specification": spec_from_note(why["notes"][0]["text"]) if worded else spec["name"],
+                "specification_from_drawing": worded,
                 "boq_unit": spec["boq_unit"],
                 "boq_quantity": 0.0,
                 "primary_section": primary_section,
@@ -133,18 +305,17 @@ def generate(measurements: list[dict], finishes: list[dict], materials: list[dic
                 "template_key": template["key"],
                 "rooms": [],
                 "_material": material,
+                "_sources": [],
             }
         entry["boq_quantity"] += quantity
         if room_name and room_name not in entry["rooms"]:
             entry["rooms"].append(room_name)
+        entry["_sources"].append((room_name, {**why, "template": template["key"]}))
 
     for room in measurements:
         name = room.get("room") or "Room"
-        choice = finish_by_room.get(name, {})
         for surface in ("floor", "wall", "ceiling"):
-            key = choice.get(surface)
-            if not key:
-                continue
+            key, why = resolved[name][surface]
             template = templates.get(key)
             if template is None:
                 warnings.append(f"Unknown finish template '{key}' for {name}.")
@@ -155,16 +326,18 @@ def generate(measurements: list[dict], finishes: list[dict], materials: list[dic
                     warnings.append(f"No ceiling height for {name} — its {template['label']} wall rows were skipped.")
                     break
                 if q > 0:
-                    add(template, i, name, q)
+                    add(template, i, name, q, why)
 
     for kind, key in (("door", "doors"), ("window", "windows")):
         if opening_counts.get(kind) and key in templates:
-            add(templates[key], 0, None, float(opening_counts[kind]))
+            add(templates[key], 0, None, float(opening_counts[kind]),
+                _source("openings", "drawing", reason=f"{kind.title()} count from the plan, as checked in the wizard"))
 
     out = []
     where = f"From blueprint {source}" if source else "From blueprint"
     for entry in rows.values():
         material = entry.pop("_material")
+        entry["source"] = _row_source(entry.pop("_sources"), material, history.materials)
         entry["boq_quantity"] = round(entry["boq_quantity"], 2)
         entry["source_note"] = f"{where} · {', '.join(entry['rooms'])}" if entry["rooms"] else where
         entry["baseline"] = _baseline_json(material, entry["boq_unit"], entry["boq_quantity"])

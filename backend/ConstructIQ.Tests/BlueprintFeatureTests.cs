@@ -322,4 +322,39 @@ public class BlueprintJsonTests
         Assert.Equal("1:95.8", result.ScaleUsed);
         Assert.Equal([110.0, 90.5], Assert.Single(result.Rooms).Outline[2]);
     }
+
+    [Fact]
+    public void NotesPagesAndRowSources_MapOntoDtos()
+    {
+        const string parsed = """
+        {
+          "page": 2, "ceiling_plan_page": 3,
+          "plan_notes": [ { "text": "600x600mm FLOOR TILES", "page": 2, "sheet": "A-2", "box": [10.0, 20.0, 90.0, 30.0] } ],
+          "rooms": [ { "name": "STORAGE", "outline_pt": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+                       "ceiling_note_details": [ { "text": "ACOUSTIC CEILING PANEL", "page": 3, "box": [1.0, 1.0, 2.0, 2.0] } ] } ]
+        }
+        """;
+        var result = System.Text.Json.JsonSerializer.Deserialize<BlueprintResultDto>(parsed, ForecastService.MlJson)!;
+        Assert.Equal((2, 3), (result.Page, result.CeilingPlanPage));
+        Assert.Equal("A-2", Assert.Single(result.PlanNotes).Sheet);
+        Assert.Equal([5.0, 6.0], result.Rooms[0].OutlinePt[2]);
+        Assert.Equal(3, Assert.Single(result.Rooms[0].CeilingNoteDetails).Page);
+
+        const string generated = """
+        { "rows": [ { "specification": "600mmx600mm Acoustic Ceiling Panel", "specification_from_drawing": true,
+                      "source": { "kind": "drawing", "surface": "ceiling", "reason": "On the reflected ceiling plan, in this room",
+                                  "notes": [ { "text": "600mmx600mm ACOUSTIC CEILING PANEL", "page": 3, "box": null } ],
+                                  "projects": null, "of": null, "material_reason": "Catalog material used in 4 past projects",
+                                  "template": "acoustic_panel",
+                                  "rooms": [ { "room": "STORAGE", "kind": "drawing", "reason": null, "template": "acoustic_panel" } ] } } ],
+          "warnings": [] }
+        """;
+        var row = Assert.Single(System.Text.Json.JsonSerializer.Deserialize<GeneratedBoqDto>(generated, ForecastService.MlJson)!.Rows);
+        Assert.True(row.SpecificationFromDrawing);
+        Assert.Equal(("drawing", "ceiling"), (row.Source.Kind, row.Source.Surface));
+        Assert.Equal(3, Assert.Single(row.Source.Notes).Page);
+        Assert.Equal("Catalog material used in 4 past projects", row.Source.MaterialReason);
+        Assert.Equal("STORAGE", Assert.Single(row.Source.Rooms).Room);
+        Assert.Equal(("acoustic_panel", "acoustic_panel"), (row.Source.Template, row.Source.Rooms[0].Template));
+    }
 }

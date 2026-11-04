@@ -56,6 +56,9 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [otherTypeSpecify, setOtherTypeSpecify] = useState(project.otherTypeSpecify ?? '');
   const [savingProjectType, setSavingProjectType] = useState(false);
   const [boqRows, setBoqRows] = useState<BOQItemRow[]>([]);
+  // "View Plan": the blueprint open beside the Material Plan, and the row shown on it.
+  const [planOpen, setPlanOpen] = useState(false);
+  const [planFocus, setPlanFocus] = useState<number | null>(null);
   const [savingBoq, setSavingBoq] = useState(false);
   const [forecasting, setForecasting] = useState(false);
   const [uploadingBlueprint, setUploadingBlueprint] = useState(false);
@@ -92,7 +95,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   function boqItemToRow(b: BOQItem): BOQItemRow {
     return {
       id: b.id, phaseId: b.phaseId, primarySection: b.primarySection, subCategory: b.subCategory,
-      specification: b.specification, materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, isUsageConfirmed: b.isUsageConfirmed, notes: b.notes,
+      specification: b.specification, materialId: b.materialId, unit: b.unit, estimatedQuantity: b.estimatedQuantity, actualQuantity: b.actualQuantity, isUsageConfirmed: b.isUsageConfirmed, notes: b.notes, blueprintSource: b.blueprintSource,
       historicalSupply: b.historicalSupply,
       estimatedPurchaseQuantity: b.estimatedPurchaseQuantity, estimatedPurchaseUnit: b.estimatedPurchaseUnit,
       baselineQuantity: b.baselineQuantity, baselinePurchaseQuantity: b.baselinePurchaseQuantity,
@@ -533,6 +536,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     projectType, otherTypeSpecify,
     onProjectTypeChange: handleProjectTypeChange, onOtherTypeSpecifyBlur: handleOtherTypeSpecifyBlur, savingProjectType,
     boqRows, setBoqRows, boqItems,
+    planOpen, setPlanOpen, planFocus, setPlanFocus,
     blueprints, boqDocs, poDocs, inventory, forecastedMaterials,
     savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
     blueprintDoc, setBlueprintDoc, handleBlueprintRows, compareRows, setCompareRows,
@@ -623,6 +627,10 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       rows={state.boqRows}
       boqItems={state.boqItems}
       onRowsChange={state.setBoqRows}
+      planOpen={state.planOpen}
+      planFocus={state.planFocus}
+      onViewPlan={() => { state.setPlanFocus(null); state.setPlanOpen(true); }}
+      onPlanFocus={state.setPlanFocus}
       onSave={state.handleSaveBoq}
       saving={state.savingBoq}
       onNotify={state.handleNotify}
@@ -656,7 +664,7 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
           const gone = new Set(remove);
           state.setBoqRows(prev => [...prev.filter(r => !gone.has(r)), ...add]);
           state.setCompareRows(null);
-          toast.success(`${add.length} row(s) added${remove.length ? `, ${remove.length} blueprint row(s) replaced` : ''} — review them, then Save.`);
+          toast.success(`${add.length} row(s) added${remove.length ? `, ${remove.length} blueprint row(s) removed or replaced` : ''} — review them, then Save.`);
         }}
       />
     )}

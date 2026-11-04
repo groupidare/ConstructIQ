@@ -219,6 +219,7 @@ public class BOQService(AppDbContext db) : IBOQService
             if (item.ActualQuantity is > 0)
                 entity.IsUsageConfirmed = true;
             entity.Notes             = item.Notes;
+            entity.BlueprintSource   = item.BlueprintSource;
             if (usesPoLines)
             {
                 entity.EstimatedPurchaseQuantity = historicalPurchase?.Quantity;
@@ -425,6 +426,7 @@ public class BOQService(AppDbContext db) : IBOQService
         ActualQuantity    = b.ActualQuantity,
         IsUsageConfirmed  = b.IsUsageConfirmed,
         Notes             = b.Notes,
+        BlueprintSource   = b.BlueprintSource,
         CreatedAt         = b.CreatedAt,
         HistoricalSupply  = b.HistoricalSupplies.Select(h => new HistoricalSupplyResponseDto
         {

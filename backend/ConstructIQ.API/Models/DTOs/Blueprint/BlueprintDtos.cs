@@ -27,6 +27,16 @@ public class BlueprintSheetDto
     public List<BlueprintDrawingDto> Drawings { get; set; } = [];
 }
 
+// A note on the drawing: its words, its page (1-based) and where it sits on
+// the page — [x0, top, x1, bottom] in PDF points. A DXF has no pages (nulls).
+public class BlueprintNoteDto
+{
+    [MaxLength(2000)] public string Text { get; set; } = string.Empty;
+    public int?    Page  { get; set; }
+    [MaxLength(40)] public string? Sheet { get; set; }
+    public List<double>? Box { get; set; }
+}
+
 public class BlueprintRoomDto
 {
     public string  Name         { get; set; } = string.Empty;
@@ -38,8 +48,12 @@ public class BlueprintRoomDto
     public List<string> Labels  { get; set; } = [];
     // The traced outline in the preview image's pixels, as [x, y] points.
     public List<List<double>> Outline { get; set; } = [];
+    // The same outline in PDF points on the drawing's page — for the Material
+    // Plan's plan viewer, which shows whole pages.
+    public List<List<double>> OutlinePt { get; set; } = [];
     // What the floor's reflected ceiling plan says about this room.
     public List<string> CeilingNotes { get; set; } = [];
+    public List<BlueprintNoteDto> CeilingNoteDetails { get; set; } = [];
     public double? CeilingHeightM { get; set; }
 }
 
@@ -92,6 +106,10 @@ public class BlueprintResultDto
     public List<BlueprintOpeningDto> Openings        { get; set; } = [];
     public List<double>              CeilingHeightsM { get; set; } = [];
     public List<string>              FinishNotes     { get; set; } = [];
+    // Every finish note on the plan set's architectural sheets, with its place.
+    public List<BlueprintNoteDto>    PlanNotes       { get; set; } = [];
+    public int?                      Page            { get; set; } // the drawing's page (1-based)
+    public int?                      CeilingPlanPage { get; set; }
     public BlueprintScheduleCheckDto? ScheduleCheck  { get; set; }
     public List<string>              Warnings        { get; set; } = [];
     public List<string>              Errors          { get; set; } = [];
@@ -130,6 +148,10 @@ public class RoomMeasurementInputDto
     [Range(0, 100_000)] public double PerimeterM   { get; set; }
     [Range(0, 50)]      public double? HeightM     { get; set; }
     [Range(0, 100_000)] public double OpeningsSqm  { get; set; }
+    // What the floor's reflected ceiling plan notes in this room; HasCeilingPlan:
+    // the floor had one (a room with no note there then has no ceiling on the drawing).
+    public List<BlueprintNoteDto> CeilingNotes { get; set; } = [];
+    public bool HasCeilingPlan { get; set; }
 }
 
 public class RoomFinishInputDto
@@ -157,6 +179,8 @@ public class GenerateFromBlueprintDto
     public List<RoomMeasurementInputDto> Measurements { get; set; } = [];
     public List<RoomFinishInputDto> Finishes { get; set; } = [];
     public List<OpeningInputDto> Openings { get; set; } = [];
+    // Finish notes on the plan set — what each room's finish is read from.
+    public List<BlueprintNoteDto> PlanNotes { get; set; } = [];
 }
 
 public class GeneratedBaselineDto
@@ -168,11 +192,37 @@ public class GeneratedBaselineDto
     public string? Reason           { get; set; }
 }
 
+// Where a generated row's finish came from: drawing | history | default |
+// chosen (picked by the user) — the weakest of the rooms it covers.
+public class BlueprintRowSourceDto
+{
+    public string  Kind    { get; set; } = "default";
+    public string? Surface { get; set; }
+    public string? Reason  { get; set; }
+    public List<BlueprintNoteDto> Notes { get; set; } = [];
+    public int?    Projects { get; set; }
+    public int?    Of       { get; set; }
+    public List<BlueprintRoomSourceDto> Rooms { get; set; } = [];
+    // The finish template the row belongs to — what "Change finish" starts from.
+    public string? Template { get; set; }
+    public string? MaterialReason { get; set; }
+}
+
+public class BlueprintRoomSourceDto
+{
+    public string  Room     { get; set; } = string.Empty;
+    public string  Kind     { get; set; } = "default";
+    public string? Reason   { get; set; }
+    public string? Template { get; set; }
+}
+
 public class GeneratedBoqRowDto
 {
     public int?    MaterialId     { get; set; }
     public string? MaterialName   { get; set; }
     public string  Specification  { get; set; } = string.Empty;
+    // Specification is the drawing's own note ("600x600mm Floor Tiles …").
+    public bool    SpecificationFromDrawing { get; set; }
     public string  BoqUnit        { get; set; } = string.Empty;
     public double  BoqQuantity    { get; set; }
     public string  PrimarySection { get; set; } = string.Empty;
@@ -182,6 +232,7 @@ public class GeneratedBoqRowDto
     public string  TemplateKey    { get; set; } = string.Empty;
     public List<string> Rooms     { get; set; } = [];
     public GeneratedBaselineDto Baseline { get; set; } = new();
+    public BlueprintRowSourceDto Source { get; set; } = new();
 }
 
 public class GeneratedBoqDto
@@ -242,4 +293,37 @@ public class MergePreviewDto
 {
     public List<MergeResultRowDto> Rows { get; set; } = [];
     public List<string> ParseErrors { get; set; } = [];
+}
+
+// ── A blueprint read kept with the project ───────────────────────────────────
+// Saved when generated rows are added to the Material Plan, so each row can
+// later show its rooms and notes on the plan. Read: the floors read, their
+// pages and room outlines (PDF points) — JSON the frontend owns.
+
+public class BlueprintReadCreateDto
+{
+    [Required] public int ProjectId  { get; set; }
+    [Required] public int DocumentId { get; set; }
+    [Required, MaxLength(2_000_000)] public string Read { get; set; } = string.Empty;
+}
+
+public class BlueprintReadDto
+{
+    public int      Id         { get; set; }
+    public int      ProjectId  { get; set; }
+    public int      DocumentId { get; set; }
+    public string   FileName   { get; set; } = string.Empty;
+    public string   Read       { get; set; } = string.Empty;
+    public DateTime CreatedAt  { get; set; }
+}
+
+public class BlueprintPageSizeDto
+{
+    public double Width  { get; set; }
+    public double Height { get; set; }
+}
+
+public class BlueprintPagesDto
+{
+    public List<BlueprintPageSizeDto> Pages { get; set; } = [];
 }

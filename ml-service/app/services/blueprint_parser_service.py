@@ -591,25 +591,27 @@ def _openings(door_widths: list[float], window_count: int, window_widths: list[f
     return out
 
 
-def _rooms_json(result: RoomResult | None, to_px=None, ceilings: dict[int, dict] | None = None) -> list[dict]:
-    """to_px: metres → preview-image pixels, for each room's outline.
-    ceilings: room index → what the ceiling plan says about it."""
+def _rooms_json(result: RoomResult | None, to_px=None, ceilings: dict[int, dict] | None = None, to_pt=None) -> list[dict]:
+    """to_px: metres → preview-image pixels, for each room's outline; to_pt:
+    metres → PDF points on its page (where the Material Plan's plan viewer
+    draws it). ceilings: room index → what the ceiling plan says about it."""
     ceilings = ceilings or {}
     if not result:
         return []
     def bbox(r):
         x0, y0, x1, y1 = r.polygon.bounds
         return round(max(x1 - x0, y1 - y0), 2), round(min(x1 - x0, y1 - y0), 2)
-    def outline(r):
-        if to_px is None:
+    def outline(r, f=to_px):
+        if f is None:
             return []
-        return [[round(v, 1) for v in to_px(x, y)] for x, y in r.polygon.simplify(0.02).exterior.coords]
+        return [[round(v, 1) for v in f(x, y)] for x, y in r.polygon.simplify(0.02).exterior.coords]
     # length_m/width_m: the room's bounding box — what a measurement row's
     # L × W holds; floor_area_sqm is the real (possibly non-rectangular) area.
     return [{"name": r.name, "floor_area_sqm": round(r.area_sqm, 2), "perimeter_m": round(r.perimeter_m, 2),
              "length_m": bbox(r)[0], "width_m": bbox(r)[1],
-             "confidence": r.confidence, "labels": r.labels, "outline": outline(r),
-             "ceiling_notes": ceilings.get(i, {}).get("notes", []), "ceiling_height_m": ceilings.get(i, {}).get("height_m")}
+             "confidence": r.confidence, "labels": r.labels, "outline": outline(r), "outline_pt": outline(r, to_pt),
+             "ceiling_notes": ceilings.get(i, {}).get("notes", []), "ceiling_height_m": ceilings.get(i, {}).get("height_m"),
+             "ceiling_note_details": ceilings.get(i, {}).get("details", [])}
             for i, r in enumerate(result.rooms)]
 
 
@@ -635,6 +637,29 @@ def _pdf_preview(region, width_pt: float, height_pt: float) -> tuple[dict | None
         logger.exception("Blueprint preview render failed")
         return None, dpi / 72
     return {"image": _png_data_url(image), "width": image.width, "height": image.height}, image.width / width_pt
+
+
+VIEWER_MAX_PX = 5000
+
+
+def page_sizes(path: str) -> list[dict]:
+    """Every page's size in PDF points (what outlines and note boxes are in)."""
+    import pdfplumber
+    with pdfplumber.open(path) as pdf:
+        return [{"width": round(float(p.width), 1), "height": round(float(p.height), 1)} for p in pdf.pages[:MAX_PAGES]]
+
+
+def render_page(path: str, page: int, width: int) -> bytes:
+    """Page `page` (1-based) as a greyscale PNG `width` pixels wide."""
+    import pdfplumber
+    with pdfplumber.open(path) as pdf:
+        if not 1 <= page <= min(len(pdf.pages), MAX_PAGES):
+            raise IndexError(page)
+        p = pdf.pages[page - 1]
+        dpi = max(20.0, min(VIEWER_MAX_PX, width) * 72 / float(p.width))
+        buf = io.BytesIO()
+        page_image(p, dpi).convert("L").save(buf, "PNG", optimize=True)
+        return buf.getvalue()
 
 
 def _segments_preview(segments: list[tuple], rooms: list) -> tuple[dict | None, Any]:
@@ -928,9 +953,9 @@ def _extents(wall_sets: list[list[tuple]]) -> list[tuple[float, float, float, fl
     return out
 
 
-def _note_blocks(lines: list[TextLine]) -> list[TextLine]:
-    """A drawing's notes, stacked lines joined ("600mmx600mm ACOUSTIC" over
-    "CEILING PANEL IN WHITE"), keeping the ceiling finishes and heights."""
+def _text_blocks(lines: list[TextLine]) -> list[TextLine]:
+    """Notes as written: stacked lines of one size joined ("600mmx600mm
+    ACOUSTIC" over "CEILING PANEL IN WHITE")."""
     blocks: list[TextLine] = []
     for l in sorted(lines, key=lambda l: (l.top, l.x0)):
         prev = next((b for b in reversed(blocks)
@@ -940,7 +965,35 @@ def _note_blocks(lines: list[TextLine]) -> list[TextLine]:
             prev.x0, prev.x1 = min(prev.x0, l.x0), max(prev.x1, l.x1)
         else:
             blocks.append(TextLine(l.text, l.x0, l.top, l.x1, l.bottom, l.size, l.ocr))
-    return [b for b in blocks if _CEILING_NOTE.search(b.text) and not _NOT_CEILING_NOTE.search(b.text)]
+    return blocks
+
+
+def _note_blocks(lines: list[TextLine]) -> list[TextLine]:
+    """A drawing's ceiling finishes and heights, stacked lines joined."""
+    return [b for b in _text_blocks(lines) if _CEILING_NOTE.search(b.text) and not _NOT_CEILING_NOTE.search(b.text)]
+
+
+def _box(l: TextLine) -> list[float]:
+    return [round(l.x0, 1), round(l.top, 1), round(l.x1, 1), round(l.bottom, 1)]
+
+
+PLAN_NOTES_MAX = 150
+
+
+def _plan_notes(sheets: list[Sheet], first: Sheet | None) -> list[dict]:
+    """Every finish note on the architectural sheets — floor plan, finishing
+    plans, ceiling plan, elevations — with its page and place on the page, the
+    floor plan's own sheet first. What finish a room gets is decided from
+    these (boq_generator_service), and each row shows the note it came from."""
+    out, seen = [], set()
+    for s in sorted(sheets, key=lambda s: s is not first):
+        for b in _text_blocks(s.lines):
+            text = " ".join(b.text.split())
+            key = (text.upper(), s.page_index)
+            if 4 <= len(text) <= 140 and _FINISH.search(text) and key not in seen:
+                seen.add(key)
+                out.append({"text": text, "page": s.page_index + 1, "sheet": s.id, "box": _box(b)})
+    return out[:PLAN_NOTES_MAX]
 
 
 def _leader_target(block: TextLine, objs: list[dict], leaders: list[tuple[int, tuple, tuple]]) -> tuple | None:
@@ -1031,13 +1084,16 @@ def _ceilings_from_plan(pages, sheets: list[Sheet], floor: Drawing, floor_walls:
         return near if near is not None and result.rooms[near].polygon.distance(p) <= ROOM_NOTE_REACH_M else None
 
     found: dict[int, list[str]] = defaultdict(list)
+    details: dict[int, list[dict]] = defaultdict(list)
+    page = next(s.page_index for s in sheets if rcp in s.drawings) + 1
     for block in _note_blocks(lines):
         i = room_at((block.cx, block.cy))
         if i is None and (tip := _leader_target(block, objs, leaders)):
             i = room_at(tip)
         if i is not None and block.text not in found[i]:
             found[i].append(block.text)
-    ceilings = {i: {"notes": notes, "height_m": _room_height(notes)} for i, notes in found.items()}
+            details[i].append({"text": block.text, "page": page, "box": _box(block)})
+    ceilings = {i: {"notes": notes, "height_m": _room_height(notes), "details": details[i]} for i, notes in found.items()}
     return rcp.id, ceilings, None
 
 
@@ -1083,9 +1139,11 @@ def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_ov
             "skipped_plans": skipped_plans,
             "ceiling_heights_m": _heights(all_text),
             "finish_notes": _finish_notes([l.text for l in sheet.lines]),
+            "plan_notes": _plan_notes(plan_sheets, sheet),
             "warnings": warnings,
             "errors": [],
             "rooms": [], "openings": [], "schedule_check": None, "preview": None, "scale_used": None, "ceiling_plan": None,
+            "page": sheet.page_index + 1, "ceiling_plan_page": None,
         }
 
         page = pages[sheet.page_index]
@@ -1131,13 +1189,15 @@ def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_ov
             # The floor's reflected ceiling plan: each room's finish and height.
             plan, ceilings, note = _ceilings_from_plan(pages, plan_sheets, drawing, walls, m_per_pt, result)
             response["ceiling_plan"] = plan
+            response["ceiling_plan_page"] = next((s.page_index + 1 for s in plan_sheets for d in s.drawings if d.id == plan), None)
             if note:
                 warnings.append(note)
 
         windows = sum(1 for l in region_lines if _WINDOW_TAG.search(l.text.strip()))
         to_px = lambda x, y: ((x / m_per_pt - ox) * px_per_pt, (y / m_per_pt - oy) * px_per_pt)
         response.update({
-            "rooms": _rooms_json(result, to_px if response["preview"] else None, ceilings),
+            "rooms": _rooms_json(result, to_px if response["preview"] else None, ceilings,
+                                 lambda x, y: (x / m_per_pt, y / m_per_pt)),
             "openings": _openings(_doors_from_arcs(region.curves, m_per_pt), windows),
             "schedule_check": _schedule_check(plan_total, result),
         })
@@ -1278,6 +1338,9 @@ def _parse_dxf(path: str) -> dict:
         "openings": _openings(door_widths, 0, window_widths),
         "ceiling_heights_m": _heights(all_text),
         "finish_notes": _finish_notes(all_text),
+        # A DXF has no pages: notes carry no place to show them.
+        "plan_notes": [{"text": t, "page": None, "sheet": None, "box": None} for t in _finish_notes(all_text)],
+        "page": None, "ceiling_plan_page": None,
         "schedule_check": _schedule_check(plan_total, result),
         "warnings": warnings,
         "errors": errors,
@@ -1293,7 +1356,8 @@ def parse_blueprint(path: str, filename: str, sheet: str | None = None, drawing_
     ext = Path(filename or path).suffix.lower()
     empty = {"sheets": [], "selected_drawing": None, "floor_plans": [], "skipped_plans": [], "preview": None,
              "scale_used": None, "rooms": [], "openings": [], "ceiling_heights_m": [],
-             "finish_notes": [], "schedule_check": None, "warnings": [], "errors": []}
+             "finish_notes": [], "plan_notes": [], "page": None, "ceiling_plan_page": None,
+             "schedule_check": None, "warnings": [], "errors": []}
     try:
         if ext == ".dxf":
             return _parse_dxf(path)

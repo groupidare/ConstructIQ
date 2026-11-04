@@ -83,6 +83,13 @@ public class BOQItem
 
     public string? Notes { get; set; }
 
+    // A row generated from a blueprint: where its finish came from (the
+    // drawing's note and page, past projects, or a default) and the
+    // BlueprintRead it belongs to — JSON the frontend owns, shown when
+    // hovering the row's specification and in its plan viewer. Null for
+    // every other row.
+    public string? BlueprintSource { get; set; }
+
     public int CreatedByUserId { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
