@@ -201,18 +201,38 @@ public class QuotationPriceTests(DatabaseFixture fixture)
     }
 
     [Fact]
-    public async Task RowsWithNoForecast_AreCountedSeparately_AndNotSent()
+    public async Task RowWithNoForecast_IsSentPerItsCatalogUnit_AndThePriceShowsButStaysOutOfTheTotal()
     {
         await using var db = fixture.CreateContext();
-        var (admin, project, material) = await SeedAsync(db, "pcs");
-        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, admin.Id, 1, estimatedPurchaseQuantity: null, estimatedPurchaseUnit: null);
+        var (admin, project, material) = await SeedAsync(db, "bag");
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, admin.Id, 120, estimatedPurchaseQuantity: null, estimatedPurchaseUnit: null);
 
-        var cost = await new MaterialCostService(db).GetEstimatedMaterialCostAsync(project.Id);
+        var before = await new MaterialCostService(db).GetEstimatedMaterialCostAsync(project.Id);
+        Assert.Equal(1, before!.NoForecastItems);
+        Assert.Equal(1, before.UnpricedItems);
+        var line = Assert.Single(before.Lines);
+        Assert.True(line.NoForecast);
+        Assert.True(line.NeedsPrice);
+        Assert.Equal("bag", line.Unit);
+
         var result = Assert.IsType<PriceInquiryResultDto>(Assert.IsType<OkObjectResult>(await RequestAs(db, admin, project.Id, new RecordingNotifications())).Value);
+        Assert.Equal(1, result.Requested);
+        var inquiry = await db.MaterialRequests.SingleAsync(r => r.ProjectId == project.Id);
+        Assert.Equal("bag", inquiry.Unit);
+        Assert.Equal(1m, inquiry.Quantity);
+        Assert.NotNull(inquiry.Remarks);
 
-        Assert.Equal(1, cost!.NoForecastItems);
-        Assert.Equal(0, cost.UnpricedItems);
-        Assert.Equal(0, result.Requested);
+        await ControllerAs(db, admin, new RecordingNotifications())
+            .SaveQuotes(project.Id, Save(inquiry.Id, new MaterialRequestQuoteDto { Slot = 1, SupplierName = "Laguna", UnitPrice = 300 }));
+
+        await using var verify = fixture.CreateContext();
+        var after = await new MaterialCostService(verify).GetEstimatedMaterialCostAsync(project.Id);
+        var priced = Assert.Single(after!.Lines);
+        Assert.Equal(300m, priced.UnitPrice);
+        Assert.False(priced.NeedsPrice);
+        Assert.Equal(0m, after.TotalEstimatedCost);
+        Assert.Equal(0, after.UnpricedItems);
+        Assert.Equal(1, after.NoForecastItems);
     }
 
     [Fact]

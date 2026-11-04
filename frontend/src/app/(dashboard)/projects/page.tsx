@@ -824,6 +824,8 @@ function EditProjectModal({ project, onClose, onSaved }: {
 interface MaterialCostLine {
   boqItemId: number | null;
   materialId: number | null;
+  // No forecasted purchase qty yet — priced per the catalog unit, kept out of the total.
+  noForecast: boolean;
   materialName: string;
   specification: string | null;
   section: string | null;
@@ -865,7 +867,7 @@ const qty = (n: number) => n.toLocaleString("en-PH", { maximumFractionDigits: 2 
 function EstimatedMaterialCostCard({ cost, projectName, onRefresh }: { cost: EstimatedMaterialCost; projectName: string; onRefresh: () => void }) {
   const [showBreakdown, setShowBreakdown] = useState(false);
   const box: React.CSSProperties = { background:"#fff7ed", border:"1px solid #fed7aa", borderRadius:8, padding:"0.5rem 0.75rem", marginBottom:"0.75rem" };
-  const total = cost.pricedItems + cost.unpricedItems + cost.noForecastItems;
+  const total = cost.lines.length;
   // Reloads on open so prices Procurement saved since the page loaded show up.
   const breakdownButton = total > 0 && (
     <button type="button" onClick={() => { onRefresh(); setShowBreakdown(true); }}
@@ -939,7 +941,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
     }
   }
 
-  const lines = needsPriceOnly ? cost.lines.filter(l => l.needsPrice || l.note === "No forecasted purchase quantity yet") : cost.lines;
+  const lines = needsPriceOnly ? cost.lines.filter(l => l.needsPrice || l.noForecast) : cost.lines;
   const th: React.CSSProperties = { padding:"8px 10px", fontSize:"0.65rem", fontWeight:700, color:"#6b7280", textAlign:"left", whiteSpace:"nowrap", borderBottom:"1px solid #e5e7eb", background:"#f9fafb", position:"sticky", top:0 };
   const td: React.CSSProperties = { padding:"8px 10px", fontSize:"0.75rem", color:"#111827", borderBottom:"1px solid #f3f4f6", verticalAlign:"top" };
   const num: React.CSSProperties = { ...td, textAlign:"right", whiteSpace:"nowrap" };
@@ -966,7 +968,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
             { label:"Ordered (committed)", value:peso(cost.committedCost), color:"#111827" },
             { label:"Still to order (estimate)", value:peso(cost.remainingCost), color:"#111827" },
             { label:"Projected total", value:peso(cost.totalEstimatedCost), color:"#c2410c" },
-            { label:"Need a price", value:`${cost.unpricedItems} of ${cost.pricedItems + cost.unpricedItems + cost.noForecastItems}`, color: cost.unpricedItems > 0 ? "#b45309" : "#15803d" },
+            { label:"Need a price", value:`${cost.unpricedItems} of ${cost.lines.length}`, color: cost.unpricedItems > 0 ? "#b45309" : "#15803d" },
           ].map(c => (
             <div key={c.label} style={{ border:"1px solid #f3f4f6", borderRadius:10, padding:"0.6rem 0.8rem", background:"#fafafa" }}>
               <p style={{ fontSize:"0.65rem", color:"#6b7280" }}>{c.label}</p>
@@ -986,7 +988,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
                 {[
                   requestable.length > 0 && `${requestable.length} not yet sent for a quotation`,
                   waiting > 0 && `${waiting} waiting for Procurement`,
-                  cost.noForecastItems > 0 && `${cost.noForecastItems} with no forecast qty yet — forecast them in the Material Plan first`,
+                  cost.noForecastItems > 0 && `${cost.noForecastItems} with no forecast qty yet — priced per unit, added to the total once forecast in the Material Plan`,
                 ].filter(Boolean).join(" · ")}
               </p>
             </div>
@@ -1022,7 +1024,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
                 <tr><td colSpan={9} style={{ ...td, textAlign:"center", color:"#9ca3af", padding:"1.5rem" }}>Nothing to show.</td></tr>
               )}
               {lines.map((l, i) => {
-                const flagged = l.needsPrice || l.note === "No forecasted purchase quantity yet";
+                const flagged = l.needsPrice || l.noForecast;
                 return (
                   <tr key={`${l.boqItemId ?? "x"}-${i}`} style={{ background: flagged ? "#fffbeb" : undefined }}>
                     <td style={{ ...td, minWidth:220 }}>

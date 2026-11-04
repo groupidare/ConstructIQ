@@ -14,11 +14,11 @@ public class EstimatedMaterialCostDto
     public decimal   RemainingCost      { get; set; }
     public string    Currency           { get; set; } = "PHP";
     public int       PricedItems        { get; set; }
-    // Lines missing a price somewhere — their unpriced part is left out of
-    // the totals, never guessed.
+    // Lines missing a price somewhere (no-forecast rows included) — their
+    // unpriced part is left out of the totals, never guessed.
     public int       UnpricedItems      { get; set; }
-    // Material Plan rows with no forecasted purchase quantity/unit yet — they
-    // need a forecast before they can be priced at all.
+    // Material Plan rows with no forecasted purchase quantity yet. Out of the
+    // totals even when priced: there's no quantity to multiply by.
     public int       NoForecastItems    { get; set; }
     // Range of the dated prices actually used (catalog prices carry no date).
     public DateTime? OldestPriceDate    { get; set; }
@@ -31,6 +31,9 @@ public class MaterialCostLineDto
     // Null for an ordered line that isn't in the Material Plan.
     public int?      BOQItemId         { get; set; }
     public int?      MaterialId        { get; set; }
+    // No forecasted purchase quantity yet. Unit is then the catalog's buying
+    // unit, so a price can still be quoted and shown for it.
+    public bool      NoForecast        { get; set; }
     public string    MaterialName      { get; set; } = string.Empty;
     public string?   Specification     { get; set; }
     public string?   Section           { get; set; }

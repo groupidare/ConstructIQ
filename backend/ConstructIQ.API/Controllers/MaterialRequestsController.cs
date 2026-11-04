@@ -202,8 +202,9 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         var cost = await materialCost.GetEstimatedMaterialCostAsync(projectId);
         if (cost is null) return NotFound(new { message = "Project not found." });
 
-        // Every material still missing a price — rows still to be ordered and
-        // ordered lines bought without one alike — so newly added materials
+        // Every material still missing a price — rows still to be ordered,
+        // ordered lines bought without one, and rows with no forecast yet
+        // (asked per their catalog buying unit) — so newly added materials
         // can be sent any time. A price is per unit, so a line needs one.
         var needed = cost.Lines
             .Where(l => l.NeedsPrice && l.MaterialId.HasValue && !string.IsNullOrWhiteSpace(l.Unit))
@@ -220,12 +221,15 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
                 already++;
                 continue;
             }
+            // A no-forecast row has no quantity to buy yet — 1 unit, marked price only.
+            var quantity = group.Sum(l => l.RemainingQuantity > 0 ? l.RemainingQuantity : l.OrderedQuantity);
             db.MaterialRequests.Add(new MaterialRequest
             {
                 ProjectId = projectId,
                 MaterialId = group.Key.MaterialId,
-                Quantity = group.Sum(l => l.RemainingQuantity > 0 ? l.RemainingQuantity : l.OrderedQuantity),
+                Quantity = quantity > 0 ? quantity : 1,
                 Unit = group.First().Unit,
+                Remarks = group.All(l => l.NoForecast) ? "Price only — no forecasted quantity yet" : null,
                 RequestedByUserId = CurrentUserId,
                 IsPriceInquiry = true,
             });
