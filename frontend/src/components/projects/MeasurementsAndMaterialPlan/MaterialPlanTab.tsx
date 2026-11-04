@@ -15,6 +15,7 @@ import type { BOQItem, BOQItemRow } from '@/types/boq';
 import { PRIMARY_SECTIONS, PURCHASE_UNITS } from '@/types/boq';
 import type { PurchaseOrder, PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import { inp, sel, lbl } from './styles';
+import ImportPurchaseOrders from '@/components/projects/ImportPurchaseOrders';
 
 interface Props {
   project: Project;
@@ -52,6 +53,8 @@ interface Props {
   onParsePO: (documentId: number) => Promise<void>;
   onSavePO: () => void;
   onLinkPoMaterial: (materialId: number, boqItemId: number | null) => void;
+  // After POs made outside ConstructIQ are imported — refreshes the PO list.
+  onPurchaseOrdersImported: () => void;
   poDraftRows: PurchaseOrderMaterial[];
   onPoDraftRowsChange: (rows: PurchaseOrderMaterial[]) => void;
   poSupplierName: string;
@@ -66,12 +69,13 @@ export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
   rows, boqItems, onRowsChange, onSave, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
-  purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial,
+  purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial, onPurchaseOrdersImported,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const poFileInputRef = useRef<HTMLInputElement>(null);
+  const [showImport, setShowImport] = useState(false);
   // PO prices are entered and seen only by the roles that manage POs (the
   // backend also nulls them out for everyone else).
   const role = useAuthStore(s => s.user?.role);
@@ -944,9 +948,28 @@ export default function MaterialPlanTab({
             <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: 2 }}>What was actually ordered — trains the forecasting model once delivered.</p>
           </div>
           {editable && (
-            <button onClick={() => poFileInputRef.current?.click()} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-              <Upload style={{ width: 12, height: 12 }} /> {uploadingPo ? 'Uploading…' : 'Upload PO'}
-            </button>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button onClick={() => setShowImport(true)} title="POs made before this project was added to ConstructIQ"
+                style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: '1px solid #fed7aa', background: '#fff7ed', color: '#c2410c', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                <FileText style={{ width: 12, height: 12 }} /> Import existing POs
+              </button>
+              <button onClick={() => poFileInputRef.current?.click()} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                <Upload style={{ width: 12, height: 12 }} /> {uploadingPo ? 'Uploading…' : 'Upload PO'}
+              </button>
+            </div>
+          )}
+          {showImport && (
+            <div onClick={() => setShowImport(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: '1rem' }}>
+              <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, width: 1100, maxWidth: '95vw', maxHeight: '90vh', overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                  <p style={{ fontWeight: 700, fontSize: '1rem', color: '#111827' }}>Import existing purchase orders — {project.name}</p>
+                  <button onClick={() => setShowImport(false)} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}>
+                    <X style={{ width: 18, height: 18 }} />
+                  </button>
+                </div>
+                <ImportPurchaseOrders projectId={project.id} onImported={onPurchaseOrdersImported} />
+              </div>
+            </div>
           )}
           <input ref={poFileInputRef} type="file" multiple accept=".pdf,.xlsx,.xls,.csv" onChange={handlePoFilePicked} style={{ display: 'none' }} />
         </div>

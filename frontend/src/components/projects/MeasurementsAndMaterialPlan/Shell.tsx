@@ -536,6 +536,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
     handleSaveBoq, handleRunForecast, handleNotify,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
+    handlePurchaseOrdersImported: () => { fetchPurchaseOrders(); fetchDocuments(); },
     poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
     poOrderDate, setPoOrderDate, poExpectedDate, setPoExpectedDate,
   };
@@ -632,6 +633,7 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onParsePO={state.handleParsePO}
       onSavePO={state.handleSavePO}
       onLinkPoMaterial={state.handleLinkPoMaterial}
+      onPurchaseOrdersImported={state.handlePurchaseOrdersImported}
       poDraftRows={state.poDraftRows}
       onPoDraftRowsChange={state.setPoDraftRows}
       poSupplierName={state.poSupplierName}

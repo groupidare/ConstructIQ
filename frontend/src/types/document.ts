@@ -52,6 +52,9 @@ export interface ParsedPoRow {
   phaseHint?: string;
   matchedMaterialId?: number;
   matchedSupplierId?: number;
+  // Read from the PO when it has a price column / a printed PO number.
+  unitPrice?: number | null;
+  poNumber?: string | null;
 }
 
 export interface PoParseResult {

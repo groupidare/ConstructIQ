@@ -17,7 +17,7 @@ namespace ConstructIQ.API.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.22")
+                .HasAnnotation("ProductVersion", "9.0.20")
                 .HasAnnotation("Relational:MaxIdentifierLength", 64);
 
             MySqlModelBuilderExtensions.AutoIncrementColumns(modelBuilder);
@@ -1256,6 +1256,9 @@ namespace ConstructIQ.API.Migrations
                     b.Property<DateTime>("ExpectedDate")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<bool>("IsImported")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<string>("Number")
                         .IsRequired()
                         .HasMaxLength(30)
@@ -1263,6 +1266,10 @@ namespace ConstructIQ.API.Migrations
 
                     b.Property<DateTime>("OrderDate")
                         .HasColumnType("datetime(6)");
+
+                    b.Property<string>("OriginalPoNumber")
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
 
                     b.Property<string>("PoFileUrl")
                         .HasMaxLength(255)

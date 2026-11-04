@@ -72,6 +72,20 @@ interface PO {
   // The master PO document — uploaded once with the first delivery batch,
   // reused by every later one. Null until the first batch is saved.
   poFileUrl: string | null;
+  // Made before the project was in ConstructIQ (numbered IMP-001…), with
+  // the paper PO's own number.
+  isImported: boolean;
+  originalPoNumber: string | null;
+}
+
+// "Imported · PO 2024-118" under an imported PO's number.
+function ImportedTag({ po }: { po: PO }) {
+  if (!po.isImported) return null;
+  return (
+    <span style={{ display: "block", fontSize: "0.65rem", color: "#6b7280", fontWeight: 500, marginTop: 2 }}>
+      Imported{po.originalPoNumber ? ` · original PO ${po.originalPoNumber}` : ""}
+    </span>
+  );
 }
 
 // DELAYED is never manually selectable — it's derived from the expected date
@@ -227,6 +241,8 @@ interface ApiPO {
   deliveryBatches: ApiDeliveryBatch[];
   hasEvaluation: boolean;
   poFileUrl: string | null;
+  isImported?: boolean;
+  originalPoNumber?: string | null;
 }
 interface ApiEvaluation {
   priceRating: number; deliveryRating: number; qualityRating: number;
@@ -264,6 +280,8 @@ function mapPO(a: ApiPO): PO {
     })),
     hasEvaluation: a.hasEvaluation,
     poFileUrl: a.poFileUrl,
+    isImported: !!a.isImported,
+    originalPoNumber: a.originalPoNumber ?? null,
   };
 }
 
@@ -845,6 +863,7 @@ function ViewPOModal({ po, onClose }: { po: PO; onClose: () => void }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>
           <div>
             <p style={{ fontWeight: 800, fontSize: "1.05rem", color: "#f97316" }}>{po.number}</p>
+            <ImportedTag po={po} />
             <p style={{ fontSize: "0.82rem", color: "#111827", fontWeight: 600, marginTop: 2 }}>{po.projectName}</p>
             <p style={{ fontSize: "0.75rem", color: "#9ca3af", marginTop: 2 }}>{po.supplier} · {po.expectedDate}</p>
           </div>
@@ -2117,6 +2136,7 @@ export default function ProcurementPage() {
                     <tr key={po.id} style={{ borderBottom: i < sortedOrders.length - 1 ? "1px solid #f9fafb" : "none" }}>
                       <td style={{ padding: "14px 12px" }}>
                         <span style={{ fontWeight: 700, fontSize: "0.8rem", color: "#f97316" }}>{po.number}</span>
+                        <ImportedTag po={po} />
                       </td>
                       <td style={{ padding: "14px 12px" }}>
                         <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#111827" }}>{po.projectName}</span>

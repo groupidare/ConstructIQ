@@ -13,6 +13,7 @@ import { useAuthStore } from '@/store/authStore';
 import { useProjects } from '@/hooks/useProjects';
 import { useSiteEngineers } from '@/hooks/useSiteEngineers';
 import MeasurementsAndMaterialPlanInline from '@/components/projects/MeasurementsAndMaterialPlan/Inline';
+import ImportPurchaseOrders from '@/components/projects/ImportPurchaseOrders';
 import type { Tab } from '@/components/projects/MeasurementsAndMaterialPlan/Shell';
 import type { Project } from '@/types/project';
 import { PROJECT_TYPES } from '@/types/project';
@@ -36,7 +37,7 @@ interface Props {
   onFinish: (project: Project) => void;
   // Lets a modal host size itself around the current step/tab, matching the
   // standalone Material Plan modal's own dynamic-width behavior.
-  onStepChange?: (step: 1 | 2) => void;
+  onStepChange?: (step: 1 | 2 | 3) => void;
   onMaterialPlanTabChange?: (tab: Tab) => void;
   onMaterialPlanEditableChange?: (editable: boolean) => void;
 }
@@ -46,8 +47,12 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepCha
   const { siteEngineers } = useSiteEngineers();
   const { user } = useAuthStore();
   const isSiteEngineer = user?.role === 'SiteEngineer';
-  const [step, setStep] = useState<1 | 2>(1);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [project, setProject] = useState<Project | null>(null);
+  // Already under way when it's entered: starts Active, and gets a third
+  // step for the POs made before it was in ConstructIQ.
+  const [ongoing, setOngoing] = useState(false);
+  const totalSteps = ongoing ? 3 : 2;
 
   useEffect(() => { onStepChange?.(step); }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -78,6 +83,7 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepCha
         siteEngineerId: data.siteEngineerId != null && !Number.isNaN(data.siteEngineerId) ? data.siteEngineerId : undefined,
         budget: 0,
         phases: [],
+        status: ongoing ? 'Active' : undefined,
       });
       toast.success('Project created — now add measurements & material plan.');
       setProject(created);
@@ -87,12 +93,30 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepCha
     }
   }
 
+  if (step === 3 && project) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">{project.name}</h1>
+          <p className="text-sm text-gray-500">Step 3 of 3 — Existing purchase orders</p>
+        </div>
+        <ImportPurchaseOrders projectId={project.id} />
+        <div className="flex justify-end gap-3 sticky bottom-0 bg-white pt-3 pb-1">
+          <Button variant="secondary" onClick={() => setStep(2)}>Back to Material Plan</Button>
+          <Button onClick={() => onFinish(project)}>
+            <Check size={16} /> Finish
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   if (step === 2 && project) {
     return (
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{project.name}</h1>
-          <p className="text-sm text-gray-500">Step 2 of 2 — Material Plan</p>
+          <p className="text-sm text-gray-500">Step 2 of {totalSteps} — Material Plan</p>
         </div>
         <MeasurementsAndMaterialPlanInline project={project} onProjectSaved={setProject} bare onTabChange={onMaterialPlanTabChange} onEditableChange={onMaterialPlanEditableChange} />
         {/* Sticky, not part of normal scroll flow — the Material Plan tab's
@@ -100,9 +124,13 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepCha
             these buttons need to stay reachable without scrolling past it. */}
         <div className="flex justify-end gap-3 sticky bottom-0 bg-white pt-3 pb-1">
           <Button variant="secondary" onClick={() => onSkip(project)}>Skip for now</Button>
-          <Button onClick={() => onFinish(project)}>
-            <Check size={16} /> Finish
-          </Button>
+          {ongoing ? (
+            <Button onClick={() => setStep(3)}>Next: Existing POs</Button>
+          ) : (
+            <Button onClick={() => onFinish(project)}>
+              <Check size={16} /> Finish
+            </Button>
+          )}
         </div>
       </div>
     );
@@ -112,7 +140,7 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepCha
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Create New Project</h1>
-        <p className="text-sm text-gray-500">Step 1 of 2 — Project details</p>
+        <p className="text-sm text-gray-500">Step 1 of {totalSteps} — Project details</p>
       </div>
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
         <Card>
@@ -149,6 +177,24 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepCha
                   <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>
                 ))}
               </select>
+            </div>
+            <div className="md:col-span-2">
+              <label className="label">Project stage *</label>
+              <div className="flex flex-col sm:flex-row gap-2">
+                {[
+                  { value: false, title: 'New — not started yet', hint: 'Starts in Planning.' },
+                  { value: true, title: 'Ongoing — already started', hint: 'Starts Active. You can add the POs already made outside ConstructIQ.' },
+                ].map(o => (
+                  <label key={String(o.value)}
+                    className={`flex-1 flex gap-2 items-start rounded-lg border p-3 cursor-pointer ${ongoing === o.value ? 'border-orange-400 bg-orange-50' : 'border-gray-200'}`}>
+                    <input type="radio" name="projectStage" checked={ongoing === o.value} onChange={() => setOngoing(o.value)} className="mt-1" />
+                    <span>
+                      <span className="block text-sm font-semibold text-gray-900">{o.title}</span>
+                      <span className="block text-xs text-gray-500">{o.hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
             </div>
             <div className="md:col-span-2">
               <label className="label">Description</label>
