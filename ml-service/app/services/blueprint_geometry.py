@@ -23,6 +23,11 @@ SPLIT_GAPS_M = (0.8, 1.0)    # wider bridges tried on a room holding several lab
 # Growing a hole back with sharp mitres turns every acute corner of a text
 # stroke or fixture into a long spike; 2 keeps right-angle corners exact.
 MITRE_LIMIT = 2.0
+# A pocket at a room's edge narrower than this — a built-in desk, a column
+# recess, a corner behind a gondola — is floor the room's finish still
+# covers, so it is filled back in (a closing of the room's outline).
+POCKET_FILL_M = 0.9
+ISLAND_KEEP_SQM = 1.5  # an island inside a room this big or more may be a room itself
 
 
 @dataclass
@@ -161,6 +166,11 @@ def rooms_from_walls(segments: list[tuple[float, float, float, float]], labels: 
     for poly in getattr(closed, "geoms", [closed]):
         for ring in poly.interiors:
             hole = Polygon(ring).buffer(half, join_style="mitre", mitre_limit=MITRE_LIMIT)
+            filled = hole.buffer(POCKET_FILL_M / 2, join_style="mitre").buffer(-POCKET_FILL_M / 2, join_style="mitre")
+            if filled.geom_type == "Polygon" and filled.is_valid:
+                # Islands inside the room — a counter, a column — are covered
+                # too; a large one may hold a room of its own and stays out.
+                hole = Polygon(filled.exterior, [r for r in filled.interiors if Polygon(r).area >= ISLAND_KEEP_SQM])
             if hole.area >= MIN_ROOM_SQM:
                 holes.append(hole)
 

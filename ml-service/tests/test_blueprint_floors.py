@@ -54,6 +54,13 @@ class MergedRoomsAreSplit(unittest.TestCase):
         result = best_rooms([walls_with_gaps()], self.labels, None)
         self.assertAlmostEqual(sum(r.area_sqm for r in result.rooms), 40.0, delta=0.8)
 
+    def test_small_pocket_at_a_rooms_edge_is_floor_of_the_room(self):
+        # 4 m × 3 m room with a 0.6 m × 0.4 m built-in desk against one wall
+        walls = [(0, 0, 4, 0), (4, 0, 4, 3), (4, 3, 0, 3), (0, 3, 0, 0),
+                 (1, 3, 1, 2.6), (1, 2.6, 1.6, 2.6), (1.6, 2.6, 1.6, 3)]
+        room = best_rooms([walls], [Label("STORAGE", 2, 1)], None).rooms[0]
+        self.assertAlmostEqual(room.area_sqm, 12.0, delta=0.3)
+
     def test_minor_label_names_a_room_of_its_own(self):
         walls = [(0, 0, 4, 0), (4, 0, 4, 3), (4, 3, 0, 3), (0, 3, 0, 0), (2.5, 0, 2.5, 3)]
         result = best_rooms([walls], [Label("BEDROOM", 1, 1.5), Label("TOILET", 3.2, 1.5, minor=True)], None)
@@ -97,6 +104,55 @@ class StackedLetters(unittest.TestCase):
                  bp.TextLine("TOILET", 300, 100, 320, 104, 6.0), bp.TextLine("FLOOR DRAIN", 400, 100, 430, 104, 6.0)]
         labels = {l.text: minor for l, minor in bp._labels_from(lines, [])}
         self.assertEqual(labels, {"BEDROOM": False, "GUESTROOM": False, "TOILET": True})
+
+
+class WallObjects(unittest.TestCase):
+    def test_callout_box_around_its_text_is_not_a_wall_and_a_room_outline_is(self):
+        m_per_pt = bp.PT_TO_M * 50
+        text = bp.TextLine("CURTAIN COVE", 100, 100, 130, 104, 4.0)
+        rect = lambda x0, top, x1, bottom: {"object_type": "rect", "x0": x0, "top": top, "x1": x1, "bottom": bottom}
+        callout = rect(98, 98, 132, 106)             # tight around the text
+        room = rect(60, 60, 170, 140)                # 2 m × 1.4 m, the text inside it
+        kept = bp._wall_objects([callout, room], [text], m_per_pt)
+        self.assertEqual(kept, [room])
+
+    def test_leader_ending_in_an_arrowhead_is_not_a_wall_and_an_extension_line_is_kept(self):
+        m_per_pt = bp.PT_TO_M * 50
+        line = lambda x0, y0, x1, y1: {"object_type": "line", "x0": min(x0, x1), "x1": max(x0, x1), "top": min(y0, y1),
+                                       "bottom": max(y0, y1), "pts": [(x0, y0), (x1, y1)]}
+        head = lambda x0, top, x1, bottom: {"object_type": "curve", "fill": True, "x0": x0, "x1": x1, "top": top, "bottom": bottom}
+        # Decathlon's "SHELVES – WORKTOP" leader: down into the storage room, the arrow running on below its end
+        # (its arrowhead is drawn as two filled halves, as in the PDF)
+        leader, halves = line(313.4, 167.3, 313.4, 207.3), [head(310.1, 207.5, 313.4, 211.1), head(313.4, 207.5, 316.6, 211.1)]
+        # an extension line meeting a horizontal dimension's arrowhead side-on
+        extension, dimension_head = line(100, 150, 100, 200), head(100.2, 148.5, 103.8, 151.5)
+        kept = bp._wall_objects([leader, *halves, extension, dimension_head], [], m_per_pt)
+        self.assertIn(extension, kept)
+        self.assertNotIn(leader, kept)
+
+
+class CeilingPlanNotes(unittest.TestCase):
+    # The Decathlon reflected ceiling plan's notes, as read off the sheet
+    def test_finish_notes_and_heights_are_kept_and_fixtures_are_not(self):
+        t = lambda text, x0, top: bp.TextLine(text, x0, top, x0 + 100, top + 8, 7.1)
+        blocks = bp._note_blocks([t("600mmx600mm ACOUSTIC", 221, 166), t("CEILING PANEL IN WHITE", 221, 175),
+                                  t("LED FLAT PANEL LIGHT", 233, 138), t("CH=2600mm", 459, 241),
+                                  t("OPEN-UTILITIES CEILING PAINTED IN BLACK", 624, 449), t("BEAMSOFFIT:H=4190mm", 838, 548)])
+        self.assertEqual([b.text for b in blocks],
+                         ["600mmx600mm ACOUSTIC CEILING PANEL IN WHITE", "CH=2600mm", "OPEN-UTILITIES CEILING PAINTED IN BLACK"])
+
+    def test_room_height_from_ch_or_slab_soffit(self):
+        self.assertEqual(bp._room_height(["CH=2600mm"]), 2.6)
+        self.assertEqual(bp._room_height(["SLAB SOFFIT:H=4745mm OPEN-UTILITIES CEILING PAINTED IN BLACK"]), 4.745)
+        self.assertIsNone(bp._room_height(["600mmx600mm ACOUSTIC CEILING PANEL"]))
+
+    def test_bent_leader_drawn_as_one_polyline_is_followed_to_its_arrow(self):
+        # From the acoustic-panel note across and down into the storage room
+        leader = {"object_type": "curve", "path": [("m",), ("l",), ("l",)], "pts": [(317.7, 169.5), (434.9, 169.5), (460.4, 270.2)],
+                  "x0": 317.7, "x1": 460.4, "top": 169.5, "bottom": 270.2}
+        head = {"object_type": "curve", "fill": True, "x0": 459.0, "x1": 462.5, "top": 270.0, "bottom": 274.0}
+        _, lines = bp._leader_lines([leader, head], bp.PT_TO_M * 50)
+        self.assertEqual([(tip, tail) for _, tip, tail in lines], [((460.4, 270.2), (317.7, 169.5))])
 
 
 def sheet(sid, *drawings):

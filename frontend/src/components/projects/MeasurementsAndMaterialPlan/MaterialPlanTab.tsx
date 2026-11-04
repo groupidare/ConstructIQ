@@ -559,7 +559,7 @@ export default function MaterialPlanTab({
             ? isHistorical
               ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'TOTAL AREA', 'MATERIAL QUANTITY', 'ACTUAL QUANTITY']
               : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'MATERIAL QUANTITY', 'ESTIMATED QUANTITY', 'ACTUAL QUANTITY']
-            : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'UNIT', 'TOTAL AREA/QTY', 'UNIT', 'EST. QTY', 'ALERTS']
+            : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'AREA UNIT', 'TOTAL AREA', 'MATERIAL UNIT', 'MATERIAL QUANTITY', 'ALERTS']
           ).map((h, idx) => (
             <span key={`${h}-${idx}`} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
           ))}

@@ -38,6 +38,9 @@ public class BlueprintRoomDto
     public List<string> Labels  { get; set; } = [];
     // The traced outline in the preview image's pixels, as [x, y] points.
     public List<List<double>> Outline { get; set; } = [];
+    // What the floor's reflected ceiling plan says about this room.
+    public List<string> CeilingNotes { get; set; } = [];
+    public double? CeilingHeightM { get; set; }
 }
 
 // One floor of the plan set and the drawing it is read from. Confirm: a
@@ -84,6 +87,7 @@ public class BlueprintResultDto
     public List<string>              SkippedPlans    { get; set; } = [];
     public BlueprintPreviewDto?      Preview         { get; set; }
     public string?                   ScaleUsed       { get; set; }
+    public string?                   CeilingPlan     { get; set; } // drawing id of the reflected ceiling plan read
     public List<BlueprintRoomDto>    Rooms           { get; set; } = [];
     public List<BlueprintOpeningDto> Openings        { get; set; } = [];
     public List<double>              CeilingHeightsM { get; set; } = [];

@@ -591,8 +591,10 @@ def _openings(door_widths: list[float], window_count: int, window_widths: list[f
     return out
 
 
-def _rooms_json(result: RoomResult | None, to_px=None) -> list[dict]:
-    """to_px: metres → preview-image pixels, for each room's outline."""
+def _rooms_json(result: RoomResult | None, to_px=None, ceilings: dict[int, dict] | None = None) -> list[dict]:
+    """to_px: metres → preview-image pixels, for each room's outline.
+    ceilings: room index → what the ceiling plan says about it."""
+    ceilings = ceilings or {}
     if not result:
         return []
     def bbox(r):
@@ -606,7 +608,9 @@ def _rooms_json(result: RoomResult | None, to_px=None) -> list[dict]:
     # L × W holds; floor_area_sqm is the real (possibly non-rectangular) area.
     return [{"name": r.name, "floor_area_sqm": round(r.area_sqm, 2), "perimeter_m": round(r.perimeter_m, 2),
              "length_m": bbox(r)[0], "width_m": bbox(r)[1],
-             "confidence": r.confidence, "labels": r.labels, "outline": outline(r)} for r in result.rooms]
+             "confidence": r.confidence, "labels": r.labels, "outline": outline(r),
+             "ceiling_notes": ceilings.get(i, {}).get("notes", []), "ceiling_height_m": ceilings.get(i, {}).get("height_m")}
+            for i, r in enumerate(result.rooms)]
 
 
 # ── preview ───────────────────────────────────────────────────────────────────
@@ -662,6 +666,11 @@ def _segments_preview(segments: list[tuple], rooms: list) -> tuple[dict | None, 
 # ── walls ─────────────────────────────────────────────────────────────────────
 
 SMALL_CURVE_M = 1.5  # arcs smaller than this are fixtures and door swings, never walls
+CALLOUT_MAX_M = 1.5        # a box around text bigger than this may be a small room with its name
+CALLOUT_AREA_RATIO = 6.0   # a callout box is at most this many times the area of its text
+ARROWHEAD_MAX_PT = 6.0     # a leader's filled arrowhead: about 1–2 mm on paper…
+ARROWHEAD_MAX_M = 0.3      # …and small at the drawing's scale (a filled column is bigger)
+ARROWHEAD_REACH_PT = 1.5   # a leader stops this close to its arrowhead
 
 
 def _wall_objects(objs: list[dict], region_lines: list[TextLine], m_per_pt: float) -> list[dict]:
@@ -684,13 +693,84 @@ def _wall_objects(objs: list[dict], region_lines: list[TextLine], m_per_pt: floa
     def is_text(o: dict) -> bool:
         return any(o["x0"] >= b[0] and o["x1"] <= b[2] and o["top"] >= b[1] and o["bottom"] <= b[3] for b in boxes)
 
+    # Callout boxes drawn tight around their text ("CURTAIN COVE J-04",
+    # "C&C KIOSK") — walling them would cut a hole in the room's floor.
+    texts = [l for l in region_lines if l.text.strip()]
+
+    def is_callout(o: dict) -> bool:
+        w, h = o["x1"] - o["x0"], o["bottom"] - o["top"]
+        if o["object_type"] not in ("rect", "curve") or max(w, h) * m_per_pt > CALLOUT_MAX_M:
+            return False
+        inside = [l for l in texts if o["x0"] <= l.x0 and l.x1 <= o["x1"] and o["top"] <= l.top and l.bottom <= o["bottom"]]
+        return bool(inside) and w * h <= CALLOUT_AREA_RATIO * sum((l.x1 - l.x0) * (l.bottom - l.top) for l in inside)
+
     def is_swing(o: dict) -> bool:
         # pdfplumber calls every multi-segment path a curve — walls drawn as
         # polylines included; only one with real arcs ("c") is curved.
         return (o["object_type"] == "curve" and any(step[0] == "c" for step in o.get("path") or [])
                 and max(o["x1"] - o["x0"], o["bottom"] - o["top"]) * m_per_pt < SMALL_CURVE_M)
 
-    return [o for o in objs if not is_text(o) and not is_swing(o)]
+    leaders = _leaders(objs, m_per_pt)
+    return [o for i, o in enumerate(objs)
+            if i not in leaders and not is_text(o) and not is_swing(o) and not is_callout(o)]
+
+
+def _leaders(objs: list[dict], m_per_pt: float) -> set[int]:
+    heads, lines = _leader_lines(objs, m_per_pt)
+    return heads | {i for i, _, _ in lines}
+
+
+def _leader_lines(objs: list[dict], m_per_pt: float) -> tuple[set[int], list[tuple[int, tuple, tuple]]]:
+    """The arrowheads, and each leader as (index, tip, tail) — tip at the
+    arrowhead.
+
+    Callout leaders and dimension lines: a straight line whose end runs
+    on into a small filled arrowhead pointing the same way. Drawn with the
+    wall pen, a leader crossing a room ("SHELVES – WORKTOP", an elevation
+    marker's line) fences part of its floor off. Walls never end in an
+    arrowhead. An extension line also stops at a dimension's arrowhead, but
+    one lying across it — and it often runs over a wall's end, so it stays."""
+    from shapely import STRtree, Point, box
+
+    def size(o):
+        return max(o["x1"] - o["x0"], o["bottom"] - o["top"])
+
+    heads = [i for i, o in enumerate(objs)
+             if o.get("fill") and o["object_type"] in ("curve", "rect")
+             and size(o) <= ARROWHEAD_MAX_PT and size(o) * m_per_pt <= ARROWHEAD_MAX_M]
+    if not heads:
+        return set(), []
+    boxes = [box(objs[i]["x0"], objs[i]["top"], objs[i]["x1"], objs[i]["bottom"]) for i in heads]
+    tree = STRtree([b.buffer(ARROWHEAD_REACH_PT) for b in boxes])
+
+    def points_on(end, other) -> bool:
+        near = tree.query(Point(end), predicate="intersects")
+        if len(near) == 0:
+            return False
+        # One arrowhead is often several filled pieces: take them together.
+        bounds = [boxes[k].bounds for k in near]
+        x0, y0 = min(b[0] for b in bounds), min(b[1] for b in bounds)
+        x1, y1 = max(b[2] for b in bounds), max(b[3] for b in bounds)
+        length = math.dist(end, other)
+        if length == 0:
+            return False
+        dx, dy = (end[0] - other[0]) / length, (end[1] - other[1]) / length
+        vx, vy = (x0 + x1) / 2 - end[0], (y0 + y1) / 2 - end[1]
+        head = max(x1 - x0, y1 - y0)
+        return vx * dx + vy * dy > 0.2 * head and abs(vx * dy - vy * dx) < 0.35 * head
+
+    head_set, lines = set(heads), []
+    for i, o in enumerate(objs):
+        pts = [tuple(p) for p in o.get("pts") or []]
+        # A straight line, or a leader bent once or twice drawn as one polyline.
+        bent = o["object_type"] == "curve" and not any(step[0] == "c" for step in o.get("path") or [])
+        if len(pts) < 2 or (len(pts) > 2 and not bent) or len(pts) > 4 or i in head_set or size(o) * m_per_pt < ARROWHEAD_MAX_M:
+            continue
+        if points_on(pts[-1], pts[-2]):
+            lines.append((i, pts[-1], pts[0]))
+        elif points_on(pts[0], pts[1]):
+            lines.append((i, pts[0], pts[-1]))
+    return head_set, lines
 
 
 def _schedule_check(plan_total: float | None, result: RoomResult | None) -> dict | None:
@@ -799,6 +879,168 @@ def _scan_sheets(pdf, pages) -> _SheetScan:
     return _SheetScan(sheets, all_text, warnings)
 
 
+def _drawing_area(page, sheet: Sheet, drawing: Drawing):
+    """A drawing's part of its sheet: the cropped page, its line work, its
+    text, and the crop (x, y, width, height) in PDF points."""
+    x0, top, x1, bottom = drawing.region
+    ox, oy = max(0, x0), max(0, top)
+    w, h = min(page.width, x1) - ox, min(page.height, bottom) - oy
+    region = page.within_bbox((ox, oy, ox + w, oy + h))
+    objs = [dict(o, object_type="line") for o in region.lines] + [dict(o, object_type="curve") for o in region.curves] \
+        + [dict(o, object_type="rect") for o in region.rects]
+    lines = [l for l in sheet.lines if x0 <= l.cx <= x1 and top <= l.cy <= bottom]
+    return region, objs, lines, (ox, oy, w, h)
+
+
+def _drawing_scale(drawing: Drawing, lines: list[TextLine], objs: list[dict]) -> float | None:
+    """The scale a drawing is really at: the measured one where it disagrees with the title."""
+    measured = _scale_from_dimensions(lines, objs)
+    if drawing.scale and measured and abs(drawing.scale - measured) / measured > SCALE_TOLERANCE:
+        return measured
+    return drawing.scale or measured
+
+
+# ── ceiling plan ──────────────────────────────────────────────────────────────
+
+_CEILING_TITLE = re.compile(r"CEILING|CELING|\bRCP\b", re.I)
+# Ceiling finishes and heights — not fixtures that merely say "ceiling".
+_CEILING_NOTE = re.compile(r"ACOUSTIC|GYPSUM|FIB(ER|RE)\s*CEMENT|EXPOSED|OPEN[-\s]?UTILIT|SOFFIT|PLYWOOD|PVC|"
+                           r"METAL\s+(DECK|PANEL)|CEILING\s+(BOARD|PANEL|FINISH)|\bC\.?\s?H\.?\s*[=:]", re.I)
+_NOT_CEILING_NOTE = re.compile(r"LIGHT|LAMP|DIFFUSER|GRILLE|SPEAKER|DETECTOR|SPRINKLER|CAMERA|\bBEAM", re.I)
+_ROOM_CEILING_HEIGHT = [
+    re.compile(r"\bC\.?\s?H\.?\s*[=:]\s*(\d{3,4})\s*MM", re.I),
+    re.compile(r"SOFFIT\s*:?\s*H\s*[=:]\s*(\d{3,4})\s*MM", re.I),
+]
+EXTENT_TOLERANCE = 0.04     # floor plan and ceiling plan outlines this close in size are the same floor
+NOTE_LEADER_REACH_PT = 8.0  # a leader starts this close to its callout text
+ROOM_NOTE_REACH_M = 0.3     # a note this close to a room's edge belongs to it
+
+
+def _extents(wall_sets: list[list[tuple]]) -> list[tuple[float, float, float, float]]:
+    """The outline extents (metres) of each candidate wall set — what lines a
+    floor plan up with its ceiling plan (same walls, elsewhere on the sheet)."""
+    out = []
+    for segs in wall_sets:
+        xs = [v for s in segs for v in (s[0], s[2])]
+        ys = [v for s in segs for v in (s[1], s[3])]
+        if xs:
+            out.append((min(xs), min(ys), max(xs), max(ys)))
+    return out
+
+
+def _note_blocks(lines: list[TextLine]) -> list[TextLine]:
+    """A drawing's notes, stacked lines joined ("600mmx600mm ACOUSTIC" over
+    "CEILING PANEL IN WHITE"), keeping the ceiling finishes and heights."""
+    blocks: list[TextLine] = []
+    for l in sorted(lines, key=lambda l: (l.top, l.x0)):
+        prev = next((b for b in reversed(blocks)
+                     if 0 <= l.top - b.bottom < 0.9 * l.size and l.x0 < b.x1 and b.x0 < l.x1 and abs(b.size - l.size) < 0.3 * l.size), None)
+        if prev:
+            prev.text, prev.bottom = f"{prev.text} {l.text}", l.bottom
+            prev.x0, prev.x1 = min(prev.x0, l.x0), max(prev.x1, l.x1)
+        else:
+            blocks.append(TextLine(l.text, l.x0, l.top, l.x1, l.bottom, l.size, l.ocr))
+    return [b for b in blocks if _CEILING_NOTE.search(b.text) and not _NOT_CEILING_NOTE.search(b.text)]
+
+
+def _leader_target(block: TextLine, objs: list[dict], leaders: list[tuple[int, tuple, tuple]]) -> tuple | None:
+    """Where a callout points: follow the leader that starts at the note, piece
+    by piece if it bends, to its arrowhead."""
+    ends: dict[tuple, list[tuple]] = defaultdict(list)
+    for o in objs:
+        pts = o.get("pts") or []
+        if len(pts) == 2:
+            a, b = tuple(pts[0]), tuple(pts[1])
+            ends[(round(a[0]), round(a[1]))].append(b)
+            ends[(round(b[0]), round(b[1]))].append(a)
+
+    def near_block(p) -> bool:
+        return (block.x0 - NOTE_LEADER_REACH_PT <= p[0] <= block.x1 + NOTE_LEADER_REACH_PT
+                and block.top - NOTE_LEADER_REACH_PT <= p[1] <= block.bottom + NOTE_LEADER_REACH_PT)
+
+    for _, tip, tail in leaders:
+        point, seen = tail, {tip}
+        for _ in range(6):
+            if near_block(point):
+                return tip
+            seen.add(point)
+            onward = [q for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                      for q in ends.get((round(point[0]) + dx, round(point[1]) + dy), []) if q not in seen and math.dist(q, point) > 0.5]
+            if not onward:
+                break
+            point = onward[0]
+    return None
+
+
+def _room_height(notes: list[str]) -> float | None:
+    for pattern in _ROOM_CEILING_HEIGHT:
+        for n in notes:
+            m = pattern.search(n)
+            if m and 1800 <= int(m.group(1)) <= 8000:
+                return int(m.group(1)) / 1000
+    return None
+
+
+def _ceilings_from_plan(pages, sheets: list[Sheet], floor: Drawing, floor_walls: list[dict], m_per_pt: float,
+                        result: RoomResult) -> tuple[str | None, dict[int, dict], str | None]:
+    """The floor's reflected ceiling plan, read room by room: its finish notes
+    ("ACOUSTIC CEILING PANEL", "OPEN-UTILITIES CEILING PAINTED IN BLACK") and
+    heights ("CH=2600mm", "SLAB SOFFIT: H=4745mm") placed in the floor plan's
+    rooms. The ceiling plan is the same walls drawn elsewhere on a sheet, so
+    the two are lined up by their wall outlines; a note outside every room is
+    followed along its leader to the room it points at. Returns the plan's
+    drawing id, room index → {notes, height_m}, and a note for the user."""
+    level = _level(floor.title.text)
+    candidates = [(d, s) for s in sheets for d in s.drawings
+                  if d is not floor and _CEILING_TITLE.search(d.title.text) and not _NOT_A_PLAN_VIEW.search(d.title.text)
+                  and (_level(d.title.text) in (None, level))]
+    if not candidates:
+        return None, {}, None
+    floor_extents = _extents(_wall_candidates(floor_walls, m_per_pt))
+
+    best = None
+    for d, s in candidates:
+        page = pages[s.page_index]
+        _, objs, lines, _ = _drawing_area(page, s, d)
+        scale = _drawing_scale(d, lines, objs)
+        if not scale:
+            continue
+        rcp_m = PT_TO_M * scale
+        rcp_extents = _extents(_wall_candidates(_wall_objects(objs, lines, rcp_m), rcp_m))
+        for fe in floor_extents:
+            for re_ in rcp_extents:
+                fw, fh, rw, rh = fe[2] - fe[0], fe[3] - fe[1], re_[2] - re_[0], re_[3] - re_[1]
+                if min(fw, fh, rw, rh) <= 0:
+                    continue
+                off = max(abs(fw - rw) / fw, abs(fh - rh) / fh)
+                if off <= EXTENT_TOLERANCE and (best is None or off < best[0]):
+                    best = (off, d, objs, lines, rcp_m, (fe[0] - re_[0] + fe[2] - re_[2]) / 2, (fe[1] - re_[1] + fe[3] - re_[3]) / 2)
+    if best is None:
+        return None, {}, ("Found a reflected ceiling plan but couldn't line it up with this floor plan — "
+                          "ceiling finishes use the floor plan's notes.")
+    _, rcp, objs, lines, rcp_m, dx, dy = best
+    from shapely import Point
+    _, leaders = _leader_lines(objs, rcp_m)
+
+    def room_at(pt) -> int | None:
+        p = Point(pt[0] * rcp_m + dx, pt[1] * rcp_m + dy)
+        inside = [i for i, r in enumerate(result.rooms) if r.polygon.contains(p)]
+        if inside:
+            return inside[0]
+        near = min(range(len(result.rooms)), key=lambda i: result.rooms[i].polygon.distance(p), default=None)
+        return near if near is not None and result.rooms[near].polygon.distance(p) <= ROOM_NOTE_REACH_M else None
+
+    found: dict[int, list[str]] = defaultdict(list)
+    for block in _note_blocks(lines):
+        i = room_at((block.cx, block.cy))
+        if i is None and (tip := _leader_target(block, objs, leaders)):
+            i = room_at(tip)
+        if i is not None and block.text not in found[i]:
+            found[i].append(block.text)
+    ceilings = {i: {"notes": notes, "height_m": _room_height(notes)} for i, notes in found.items()}
+    return rcp.id, ceilings, None
+
+
 def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_override: Any) -> dict:
     import pdfplumber
 
@@ -843,17 +1085,12 @@ def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_ov
             "finish_notes": _finish_notes([l.text for l in sheet.lines]),
             "warnings": warnings,
             "errors": [],
-            "rooms": [], "openings": [], "schedule_check": None, "preview": None, "scale_used": None,
+            "rooms": [], "openings": [], "schedule_check": None, "preview": None, "scale_used": None, "ceiling_plan": None,
         }
 
         page = pages[sheet.page_index]
-        x0, top, x1, bottom = drawing.region
-        ox, oy = max(0, x0), max(0, top)
-        region = page.within_bbox((ox, oy, min(page.width, x1), min(page.height, bottom)))
-        objs = [dict(o, object_type="line") for o in region.lines] + [dict(o, object_type="curve") for o in region.curves] \
-            + [dict(o, object_type="rect") for o in region.rects]
-        region_lines = [l for l in sheet.lines if x0 <= l.cx <= x1 and top <= l.cy <= bottom]
-        response["preview"], px_per_pt = _pdf_preview(region, min(page.width, x1) - ox, min(page.height, bottom) - oy)
+        region, objs, region_lines, (ox, oy, ow, oh) = _drawing_area(page, sheet, drawing)
+        response["preview"], px_per_pt = _pdf_preview(region, ow, oh)
 
         entered = _scale_denominator(scale_override)
         measured = _scale_from_dimensions(region_lines, objs)
@@ -889,10 +1126,18 @@ def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_ov
         elif result.unplaced_labels:
             warnings.append("Room label(s) not inside a traced room: " + ", ".join(result.unplaced_labels[:8]) + ".")
 
+        ceilings: dict[int, dict] = {}
+        if result:
+            # The floor's reflected ceiling plan: each room's finish and height.
+            plan, ceilings, note = _ceilings_from_plan(pages, plan_sheets, drawing, walls, m_per_pt, result)
+            response["ceiling_plan"] = plan
+            if note:
+                warnings.append(note)
+
         windows = sum(1 for l in region_lines if _WINDOW_TAG.search(l.text.strip()))
         to_px = lambda x, y: ((x / m_per_pt - ox) * px_per_pt, (y / m_per_pt - oy) * px_per_pt)
         response.update({
-            "rooms": _rooms_json(result, to_px if response["preview"] else None),
+            "rooms": _rooms_json(result, to_px if response["preview"] else None, ceilings),
             "openings": _openings(_doors_from_arcs(region.curves, m_per_pt), windows),
             "schedule_check": _schedule_check(plan_total, result),
         })
