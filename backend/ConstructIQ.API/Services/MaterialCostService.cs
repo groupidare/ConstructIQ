@@ -172,6 +172,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
         foreach (var line in lines.Concat(extras.Values))
         {
             var dto = line.Dto;
+            dto.MaterialId = line.MaterialId;
             if (line.MaterialId is int materialId && priceOf(materialId, dto.Unit) is DatedPrice latest)
             {
                 dto.UnitPrice = latest.Price;
@@ -204,7 +205,8 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             result.CommittedCost += dto.CommittedCost;
             result.RemainingCost += dto.RemainingCost;
 
-            if (dto.NeedsPrice || noForecast) result.UnpricedItems++;
+            if (noForecast) result.NoForecastItems++;
+            else if (dto.NeedsPrice) result.UnpricedItems++;
             else result.PricedItems++;
             result.Lines.Add(dto);
         }

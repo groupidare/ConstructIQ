@@ -184,16 +184,18 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         var cost = await materialCost.GetEstimatedMaterialCostAsync(projectId);
         if (cost is null) return NotFound(new { message = "Project not found." });
 
-        var needed = cost.Lines.Where(l => l.NeedsPrice && l.BOQItemId.HasValue && l.RemainingQuantity > 0).ToList();
+        // Every material still missing a price — rows still to be ordered and
+        // ordered lines bought without one alike — so newly added materials
+        // can be sent any time. A price is per unit, so a line needs one.
+        var needed = cost.Lines
+            .Where(l => l.NeedsPrice && l.MaterialId.HasValue && !string.IsNullOrWhiteSpace(l.Unit))
+            .ToList();
         if (needed.Count == 0)
             return Ok(new PriceInquiryResultDto());
 
-        var boqIds = needed.Select(l => l.BOQItemId!.Value).ToList();
-        var materialOf = await db.BOQItems.Where(b => boqIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.MaterialId);
-
         var created = 0;
         var already = 0;
-        foreach (var group in needed.GroupBy(l => (MaterialId: materialOf[l.BOQItemId!.Value], Unit: CompletedProjectDemandRules.NormalizeUnit(l.Unit))))
+        foreach (var group in needed.GroupBy(l => (MaterialId: l.MaterialId!.Value, Unit: CompletedProjectDemandRules.NormalizeUnit(l.Unit))))
         {
             if (group.Any(l => l.QuotationRequested))
             {
@@ -204,7 +206,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             {
                 ProjectId = projectId,
                 MaterialId = group.Key.MaterialId,
-                Quantity = group.Sum(l => l.RemainingQuantity),
+                Quantity = group.Sum(l => l.RemainingQuantity > 0 ? l.RemainingQuantity : l.OrderedQuantity),
                 Unit = group.First().Unit,
                 RequestedByUserId = CurrentUserId,
                 IsPriceInquiry = true,

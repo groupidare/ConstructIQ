@@ -162,6 +162,60 @@ public class QuotationPriceTests(DatabaseFixture fixture)
     }
 
     [Fact]
+    public async Task RequestQuotations_MaterialsAddedLater_CanBeSentToo()
+    {
+        await using var db = fixture.CreateContext();
+        var (admin, project, first) = await SeedAsync(db, "gal");
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, first.Id, admin.Id, 1, estimatedPurchaseQuantity: 10, estimatedPurchaseUnit: "gal");
+        await RequestAs(db, admin, project.Id, new RecordingNotifications());
+        var inquiry = await db.MaterialRequests.SingleAsync(r => r.ProjectId == project.Id);
+        await ControllerAs(db, admin, new RecordingNotifications())
+            .SaveQuotes(project.Id, Save(inquiry.Id, new MaterialRequestQuoteDto { Slot = 1, SupplierName = "Laguna", UnitPrice = 480 }));
+
+        var added = await TestDataBuilder.CreateMaterialAsync(db, unit: "bag");
+        added.UnitCost = 0;
+        await db.SaveChangesAsync();
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, added.Id, admin.Id, 1, estimatedPurchaseQuantity: 4, estimatedPurchaseUnit: "bag");
+
+        var again = Assert.IsType<PriceInquiryResultDto>(Assert.IsType<OkObjectResult>(await RequestAs(db, admin, project.Id, new RecordingNotifications())).Value);
+
+        Assert.Equal(1, again.Requested);
+        Assert.Equal(0, again.AlreadyRequested);
+        Assert.True(await db.MaterialRequests.AnyAsync(r => r.ProjectId == project.Id && r.MaterialId == added.Id && r.IsPriceInquiry));
+    }
+
+    [Fact]
+    public async Task RequestQuotations_IncludesOrderedLinesWithNoPrice()
+    {
+        await using var db = fixture.CreateContext();
+        var (admin, project, material) = await SeedAsync(db, "pcs");
+        // Bought without a price, and not in the Material Plan.
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, project.Id, admin.Id, material.Id, 8, unit: "pcs");
+
+        var result = Assert.IsType<PriceInquiryResultDto>(Assert.IsType<OkObjectResult>(await RequestAs(db, admin, project.Id, new RecordingNotifications())).Value);
+
+        Assert.Equal(1, result.Requested);
+        var inquiry = await db.MaterialRequests.SingleAsync(r => r.ProjectId == project.Id);
+        Assert.Equal(material.Id, inquiry.MaterialId);
+        Assert.Equal(8m, inquiry.Quantity);
+    }
+
+    [Fact]
+    public async Task RowsWithNoForecast_AreCountedSeparately_AndNotSent()
+    {
+        await using var db = fixture.CreateContext();
+        var (admin, project, material) = await SeedAsync(db, "pcs");
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, admin.Id, 1, estimatedPurchaseQuantity: null, estimatedPurchaseUnit: null);
+
+        var cost = await new MaterialCostService(db).GetEstimatedMaterialCostAsync(project.Id);
+        var result = Assert.IsType<PriceInquiryResultDto>(Assert.IsType<OkObjectResult>(await RequestAs(db, admin, project.Id, new RecordingNotifications())).Value);
+
+        Assert.Equal(1, cost!.NoForecastItems);
+        Assert.Equal(0, cost.UnpricedItems);
+        Assert.Equal(0, result.Requested);
+    }
+
+    [Fact]
     public async Task RequestQuotations_ProjectManagerOnlyForTheirOwnProject()
     {
         await using var db = fixture.CreateContext();
