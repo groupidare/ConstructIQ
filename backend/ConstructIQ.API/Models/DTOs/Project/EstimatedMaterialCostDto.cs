@@ -40,13 +40,16 @@ public class MaterialCostLineDto
     public decimal   RemainingQuantity { get; set; }
     // Latest recorded price for this material in Unit — what Remaining is priced at.
     public decimal?  UnitPrice         { get; set; }
-    // "Purchase order", "Past project" or "Material catalog".
+    // "Purchase order", "Supplier quotation", "Past project" or "Material catalog".
     public string?   PriceSource       { get; set; }
     // e.g. "PO-014 · JS Builders" or the past project's name.
     public string?   PriceReference    { get; set; }
     public DateTime? PriceDate         { get; set; }
     public decimal   RemainingCost     { get; set; }
     public bool      NeedsPrice        { get; set; }
+    // A price check for this material and unit is waiting in Procurement's
+    // Requests tab (see MaterialRequest.IsPriceInquiry).
+    public bool      QuotationRequested { get; set; }
     // Why the line is partly or wholly left out, or where it came from.
     public string?   Note              { get; set; }
 }

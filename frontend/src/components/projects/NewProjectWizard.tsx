@@ -52,6 +52,7 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepCha
   // Already under way when it's entered: starts Active, and gets a third
   // step for the POs made before it was in ConstructIQ.
   const [ongoing, setOngoing] = useState(false);
+  const [startingProgress, setStartingProgress] = useState('');
   const totalSteps = ongoing ? 3 : 2;
 
   useEffect(() => { onStepChange?.(step); }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -76,6 +77,11 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepCha
   }, [isSiteEngineer, user, siteEngineers, setValue]);
 
   async function onSubmit(data: FormData) {
+    const progress = startingProgress.trim() === '' ? 0 : Number(startingProgress);
+    if (ongoing && (!Number.isInteger(progress) || progress < 0 || progress > 99)) {
+      toast.error('Current progress must be a whole number from 0 to 99.');
+      return;
+    }
     try {
       const created = await createProject({
         ...data,
@@ -84,6 +90,7 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepCha
         budget: 0,
         phases: [],
         status: ongoing ? 'Active' : undefined,
+        startingProgress: ongoing && progress > 0 ? progress : undefined,
       });
       toast.success('Project created — now add measurements & material plan.');
       setProject(created);
@@ -196,6 +203,14 @@ export default function NewProjectWizard({ onCancel, onSkip, onFinish, onStepCha
                 ))}
               </div>
             </div>
+            {ongoing && (
+              <div>
+                <label className="label">Current progress (%)</label>
+                <input className="input" type="number" min={0} max={99} step={1} inputMode="numeric" placeholder="e.g. 35"
+                  value={startingProgress} onChange={e => setStartingProgress(e.target.value)} />
+                <p className="text-xs text-gray-500 mt-1">How far along the work is today. Saved as the project&apos;s first progress update.</p>
+              </div>
+            )}
             <div className="md:col-span-2">
               <label className="label">Description</label>
               <textarea className="input min-h-20" {...register('description')} />

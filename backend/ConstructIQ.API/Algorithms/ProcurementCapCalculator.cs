@@ -38,7 +38,7 @@ public static class ProcurementCapCalculator
     // turned into a Purchase Order yet.
     private static async Task<decimal> GetProcurementRequestedQuantityAsync(AppDbContext db, int projectId, int materialId) =>
         await db.MaterialRequests
-            .Where(m => m.ProjectId == projectId && m.MaterialId == materialId)
+            .Where(m => m.ProjectId == projectId && m.MaterialId == materialId && !m.IsPriceInquiry)
             .SumAsync(m => (decimal?)m.Quantity) ?? 0;
 
     // Remaining requestable quantity, aggregated across every BOQ row for
@@ -83,7 +83,7 @@ public static class ProcurementCapCalculator
             .ToDictionary(g => g.Key, g => g.Sum(w => w.ApprovedQuantity ?? w.RequestedQuantity));
 
         var procurementByMaterial = (await db.MaterialRequests
-                .Where(m => m.ProjectId == projectId && materialIds.Contains(m.MaterialId))
+                .Where(m => m.ProjectId == projectId && materialIds.Contains(m.MaterialId) && !m.IsPriceInquiry)
                 .ToListAsync())
             .GroupBy(m => m.MaterialId)
             .ToDictionary(g => g.Key, g => g.Sum(m => m.Quantity));

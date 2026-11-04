@@ -19,8 +19,11 @@ namespace ConstructIQ.API.Services;
 // the same (normalized) unit — never converted, averaged or guessed.
 // Latest-price sources, first match wins:
 //   1. latest PurchaseOrderMaterial.UnitPrice (any project, by PO OrderDate)
-//   2. latest HistoricalMaterialSupply.UnitCost (by the historical project's TargetEndDate)
-//   3. Material.UnitCost from the catalog, if > 0
+//   2. latest supplier quotation typed on the Material Request Form (the
+//      most recently updated request's chosen quote, else its lowest; a
+//      price auto-filled from a past PO isn't a quotation and is skipped)
+//   3. latest HistoricalMaterialSupply.UnitCost (by the historical project's TargetEndDate)
+//   4. Material.UnitCost from the catalog, if > 0
 // Whatever can't be priced (or has no forecast quantity) is flagged on its
 // line and left out of the totals. The BOQ area quantity (sq.m) is never priced.
 //
@@ -31,6 +34,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
     private record DatedPrice(decimal Price, DateTime? Date, string Source = "", string? Reference = null);
 
     private const string SourcePo = "Purchase order";
+    private const string SourceQuotation = "Supplier quotation";
     private const string SourceHistorical = "Past project";
     private const string SourceCatalog = "Material catalog";
 
@@ -155,6 +159,15 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             usedDates.Add(o.Date);
         }
 
+        // Price checks still waiting in Procurement's Requests tab.
+        var openInquiries = (await db.MaterialRequests
+                .Where(r => r.ProjectId == projectId && r.IsPriceInquiry && r.FulfilledByPurchaseOrderId == null
+                            && !r.Quotes.Any(q => q.UnitPrice != null))
+                .Select(r => new { r.MaterialId, r.Unit })
+                .ToListAsync())
+            .Select(r => (r.MaterialId, CompletedProjectDemandRules.NormalizeUnit(r.Unit)))
+            .ToHashSet();
+
         var result = new EstimatedMaterialCostDto { ProjectId = projectId };
         foreach (var line in lines.Concat(extras.Values))
         {
@@ -178,6 +191,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
                 else dto.NeedsPrice = true;
             }
             if (!line.CommittedFullyPriced) dto.NeedsPrice = true;
+            dto.QuotationRequested = dto.NeedsPrice && line.MaterialId is int mat && openInquiries.Contains((mat, line.UnitKey));
 
             var noForecast = dto.BOQItemId.HasValue && dto.ForecastQuantity is null && dto.OrderedQuantity == 0;
             if (noForecast)
@@ -369,7 +383,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
     private static decimal Round(decimal x) => Math.Round(x, 2, MidpointRounding.AwayFromZero);
 
     // Latest price for each (material, unit) among the given materials, from
-    // the three sources in order — PO, then historical supply, then catalog.
+    // the four sources in order — PO, quotation, historical supply, catalog.
     // The returned lookup normalizes the unit itself.
     private async Task<Func<int, string?, DatedPrice?>> LoadPricesAsync(List<int> materialIds)
     {
@@ -378,6 +392,24 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Date = m.PurchaseOrder.OrderDate, m.Id, m.PurchaseOrder.Number, Supplier = m.PurchaseOrder.Supplier.Name })
             .ToListAsync())
             .Select(m => (m.MaterialId, m.Unit, m.Price, m.Date, m.Id, $"{m.Number} · {m.Supplier}")), SourcePo);
+
+        // Per (material, unit): the most recently updated request's quotes,
+        // its chosen one if any, else its lowest price.
+        var quotePrices = (await db.MaterialRequestQuotes
+                .Where(q => q.UnitPrice != null && !q.PriceFromHistory && materialIds.Contains(q.MaterialRequest.MaterialId))
+                .Select(q => new { q.MaterialRequest.MaterialId, q.MaterialRequest.Unit, q.MaterialRequestId, Price = q.UnitPrice!.Value, q.IsSelected, q.SupplierName, q.UpdatedAt })
+                .ToListAsync())
+            .GroupBy(q => (q.MaterialId, CompletedProjectDemandRules.NormalizeUnit(q.Unit)))
+            .ToDictionary(
+                g => g.Key,
+                g =>
+                {
+                    var latestRequest = g.GroupBy(q => q.MaterialRequestId)
+                        .OrderByDescending(r => r.Max(q => q.UpdatedAt)).ThenByDescending(r => r.Key)
+                        .First();
+                    var pick = latestRequest.FirstOrDefault(q => q.IsSelected) ?? latestRequest.OrderBy(q => q.Price).First();
+                    return new DatedPrice(pick.Price, latestRequest.Max(q => q.UpdatedAt), SourceQuotation, pick.SupplierName);
+                });
 
         var historicalPrices = LatestByKey((await db.HistoricalMaterialSupplies
             .Where(h => h.UnitCost != null && materialIds.Contains(h.BOQItem.MaterialId))
@@ -395,6 +427,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
         {
             var key = (materialId, CompletedProjectDemandRules.NormalizeUnit(unit));
             return poPrices.GetValueOrDefault(key)
+                ?? quotePrices.GetValueOrDefault(key)
                 ?? historicalPrices.GetValueOrDefault(key)
                 ?? catalogPrices.GetValueOrDefault(key);
         };

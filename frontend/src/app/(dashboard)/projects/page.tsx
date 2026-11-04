@@ -837,6 +837,8 @@ interface MaterialCostLine {
   priceDate: string | null;
   remainingCost: number;
   needsPrice: boolean;
+  // A price check for it is already waiting in Procurement's Requests tab.
+  quotationRequested: boolean;
   note: string | null;
 }
 
@@ -904,6 +906,30 @@ function EstimatedMaterialCostCard({ cost, projectName }: { cost: EstimatedMater
 
 function MaterialCostBreakdownModal({ cost, projectName, onClose }: { cost: EstimatedMaterialCost; projectName: string; onClose: () => void }) {
   const [needsPriceOnly, setNeedsPriceOnly] = useState(false);
+  const [requesting, setRequesting] = useState(false);
+  // Lines sent for a quotation from this modal, on top of those already waiting.
+  const [requestedNow, setRequestedNow] = useState<Set<number>>(new Set());
+  const isRequested = (l: MaterialCostLine) => l.quotationRequested || (l.boqItemId != null && requestedNow.has(l.boqItemId));
+  // What "Request quotation" sends: Material Plan materials still to be
+  // ordered that have no recorded price.
+  const requestable = cost.lines.filter(l => l.needsPrice && l.boqItemId != null && l.remainingQuantity > 0 && !isRequested(l));
+
+  async function handleRequestQuotation() {
+    setRequesting(true);
+    try {
+      const { data } = await api.post<{ requested: number; alreadyRequested: number }>(`/material-requests/price-inquiries/${cost.projectId}`);
+      setRequestedNow(new Set(requestable.map(l => l.boqItemId!)));
+      toast.success(data.requested > 0
+        ? `Sent ${data.requested} material${data.requested === 1 ? "" : "s"} to Procurement for a quotation.`
+        : "These materials are already waiting for a quotation.");
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to request quotations.");
+    } finally {
+      setRequesting(false);
+    }
+  }
+
   const lines = needsPriceOnly ? cost.lines.filter(l => l.needsPrice || l.note === "No forecasted purchase quantity yet") : cost.lines;
   const th: React.CSSProperties = { padding:"8px 10px", fontSize:"0.65rem", fontWeight:700, color:"#6b7280", textAlign:"left", whiteSpace:"nowrap", borderBottom:"1px solid #e5e7eb", background:"#f9fafb", position:"sticky", top:0 };
   const td: React.CSSProperties = { padding:"8px 10px", fontSize:"0.75rem", color:"#111827", borderBottom:"1px solid #f3f4f6", verticalAlign:"top" };
@@ -941,10 +967,19 @@ function MaterialCostBreakdownModal({ cost, projectName, onClose }: { cost: Esti
         </div>
 
         {cost.unpricedItems > 0 && (
-          <label style={{ display:"flex", alignItems:"center", gap:6, padding:"0 1.5rem 0.5rem", fontSize:"0.72rem", color:"#374151", cursor:"pointer", width:"fit-content" }}>
-            <input type="checkbox" checked={needsPriceOnly} onChange={e => setNeedsPriceOnly(e.target.checked)} />
-            Show only materials that need a price
-          </label>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, flexWrap:"wrap", padding:"0 1.5rem 0.5rem" }}>
+            <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:"0.72rem", color:"#374151", cursor:"pointer" }}>
+              <input type="checkbox" checked={needsPriceOnly} onChange={e => setNeedsPriceOnly(e.target.checked)} />
+              Show only materials that need a price
+            </label>
+            {requestable.length > 0 && (
+              <button type="button" onClick={handleRequestQuotation} disabled={requesting}
+                title="Sends these materials to Procurement's Requests tab to get supplier prices — no PO is made"
+                style={{ padding:"7px 14px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.75rem", fontWeight:700, cursor:"pointer", opacity: requesting ? 0.7 : 1 }}>
+                {requesting ? "Sending…" : `Request quotation (${requestable.length})`}
+              </button>
+            )}
+          </div>
         )}
 
         <div style={{ overflow:"auto", padding:"0 1.5rem", flex:1 }}>
@@ -974,6 +1009,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onClose }: { cost: Esti
                       <p style={{ fontWeight:600 }}>{l.materialName}</p>
                       {l.specification && <p style={{ fontSize:"0.65rem", color:"#6b7280" }}>{l.specification}</p>}
                       {l.note && <p style={{ fontSize:"0.65rem", color: flagged ? "#b45309" : "#6b7280", fontWeight: flagged ? 600 : 400 }}>{l.note}</p>}
+                      {isRequested(l) && <p style={{ fontSize:"0.65rem", color:"#2563eb", fontWeight:600 }}>Quotation requested — waiting for Procurement</p>}
                     </td>
                     <td style={{ ...td, whiteSpace:"nowrap" }}>{l.unit || dash}</td>
                     <td style={num}>{l.forecastQuantity != null ? qty(l.forecastQuantity) : dash}</td>

@@ -751,6 +751,9 @@ namespace ConstructIQ.API.Migrations
                     b.Property<int?>("FulfilledByPurchaseOrderId")
                         .HasColumnType("int");
 
+                    b.Property<bool>("IsPriceInquiry")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<int>("MaterialId")
                         .HasColumnType("int");
 
