@@ -8,58 +8,194 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-// Estimated Material Cost = Σ (forecasted purchase quantity × latest recorded
-// unit price) over a project's BOQ items. A price only counts when it's for
-// the same material in the same (normalized) purchase unit — never converted,
-// averaged or guessed. Sources, first match wins:
+// Estimated Material Cost of a project = Committed + Remaining, per BOQ line:
+//   Committed = what's already on this project's POs (historical purchases
+//               for a completed project added as history), each line at its
+//               own price, else the latest recorded one.
+//   Remaining = (forecasted purchase qty − ordered qty, never below zero)
+//               × the latest recorded unit price.
+// A new project has nothing ordered, so it's all Remaining; a finished one
+// is all Committed. A price only counts when it's for the same material in
+// the same (normalized) unit — never converted, averaged or guessed.
+// Latest-price sources, first match wins:
 //   1. latest PurchaseOrderMaterial.UnitPrice (any project, by PO OrderDate)
 //   2. latest HistoricalMaterialSupply.UnitCost (by the historical project's TargetEndDate)
 //   3. Material.UnitCost from the catalog, if > 0
-// Rows with no quantity, no unit or no matching price are counted as unpriced
-// and left out of the total. The BOQ area quantity (sq.m) is never priced.
+// Whatever can't be priced (or has no forecast quantity) is flagged on its
+// line and left out of the totals. The BOQ area quantity (sq.m) is never priced.
 //
 // Excess cost impact values excess/waste records with the same prices and
 // the same rules (see GetExcessCostImpactAsync).
 public class MaterialCostService(AppDbContext db) : IMaterialCostService
 {
-    private record DatedPrice(decimal Price, DateTime? Date);
+    private record DatedPrice(decimal Price, DateTime? Date, string Source = "", string? Reference = null);
+
+    private const string SourcePo = "Purchase order";
+    private const string SourceHistorical = "Past project";
+    private const string SourceCatalog = "Material catalog";
+
+    // One already-ordered line of this project, in its own unit.
+    private record OrderedLine(int? BOQItemId, int? MaterialId, string Name, string Unit, decimal Quantity,
+        decimal? OwnPrice, DateTime Date);
+
+    private sealed class Line
+    {
+        public required MaterialCostLineDto Dto { get; init; }
+        public int? MaterialId { get; init; }
+        public string UnitKey { get; init; } = string.Empty;
+        public bool CommittedFullyPriced { get; set; } = true;
+    }
 
     public async Task<EstimatedMaterialCostDto?> GetEstimatedMaterialCostAsync(int projectId)
     {
-        if (!await db.Projects.AnyAsync(p => p.Id == projectId))
+        var project = await db.Projects
+            .Where(p => p.Id == projectId)
+            .Select(p => new { p.Id, p.TargetEndDate })
+            .FirstOrDefaultAsync();
+        if (project is null)
             return null;
 
         var rows = await db.BOQItems
             .Where(b => b.ProjectId == projectId)
-            .Select(b => new { b.MaterialId, b.EstimatedPurchaseQuantity, b.EstimatedPurchaseUnit })
+            .OrderBy(b => b.Id)
+            .Select(b => new
+            {
+                b.Id, b.MaterialId, MaterialName = b.Material.Name, b.Specification, b.PrimarySection,
+                b.EstimatedPurchaseQuantity, b.EstimatedPurchaseUnit,
+            })
             .ToListAsync();
 
-        var priceOf = await LoadPricesAsync(rows.Select(r => r.MaterialId).Distinct().ToList());
+        var ordered = (await db.PurchaseOrderMaterials
+                .Where(m => m.PurchaseOrder.ProjectId == projectId)
+                .Select(m => new OrderedLine(m.BOQItemId, m.MaterialId, m.Name, m.Unit, m.Quantity, m.UnitPrice, m.PurchaseOrder.OrderDate))
+                .ToListAsync())
+            .Concat(await db.HistoricalMaterialSupplies
+                .Where(h => h.BOQItem.ProjectId == projectId)
+                .Select(h => new OrderedLine(h.BOQItemId, h.BOQItem.MaterialId, h.MaterialName, h.Unit, h.Quantity, h.UnitCost, project.TargetEndDate))
+                .ToListAsync())
+            .ToList();
 
-        var result = new EstimatedMaterialCostDto { ProjectId = projectId };
+        var priceOf = await LoadPricesAsync(rows.Select(r => r.MaterialId)
+            .Concat(ordered.Where(o => o.MaterialId.HasValue).Select(o => o.MaterialId!.Value))
+            .Distinct().ToList());
+
+        var lines = rows.Select(r => new Line
+        {
+            MaterialId = r.MaterialId,
+            UnitKey = CompletedProjectDemandRules.NormalizeUnit(r.EstimatedPurchaseUnit),
+            Dto = new MaterialCostLineDto
+            {
+                BOQItemId = r.Id,
+                MaterialName = r.MaterialName,
+                Specification = r.Specification,
+                Section = r.PrimarySection,
+                Unit = r.EstimatedPurchaseUnit ?? string.Empty,
+                ForecastQuantity = r.EstimatedPurchaseQuantity is > 0 && !string.IsNullOrWhiteSpace(r.EstimatedPurchaseUnit)
+                    ? r.EstimatedPurchaseQuantity : null,
+            },
+        }).ToList();
+        var byBoqId = lines.ToDictionary(l => l.Dto.BOQItemId!.Value);
         var usedDates = new List<DateTime>();
 
-        foreach (var row in rows)
+        // Ordered lines attach to the Material Plan row they belong to, in
+        // that row's unit: an explicit BOQ link first, else the same material
+        // and unit (PO lines made from Material Requests carry no BOQ link),
+        // filling the first row that still has quantity left. Anything else
+        // gets a line of its own so its cost is still counted.
+        Line? Attach(OrderedLine o)
         {
-            if (row.EstimatedPurchaseQuantity is not > 0 || string.IsNullOrWhiteSpace(row.EstimatedPurchaseUnit))
-            {
-                result.UnpricedItems++;
-                continue;
-            }
-
-            var price = priceOf(row.MaterialId, row.EstimatedPurchaseUnit);
-            if (price is null)
-            {
-                result.UnpricedItems++;
-                continue;
-            }
-
-            result.PricedItems++;
-            result.TotalEstimatedCost += row.EstimatedPurchaseQuantity.Value * price.Price;
-            if (price.Date is DateTime date) usedDates.Add(date);
+            var key = CompletedProjectDemandRules.NormalizeUnit(o.Unit);
+            if (o.BOQItemId is int boqId && byBoqId.TryGetValue(boqId, out var linked))
+                return linked.Dto.ForecastQuantity.HasValue && linked.UnitKey == key ? linked : null;
+            if (o.MaterialId is null) return null;
+            var candidates = lines
+                .Where(l => l.Dto.BOQItemId.HasValue && l.Dto.ForecastQuantity.HasValue && l.MaterialId == o.MaterialId && l.UnitKey == key)
+                .ToList();
+            return candidates.FirstOrDefault(l => l.Dto.OrderedQuantity < l.Dto.ForecastQuantity) ?? candidates.FirstOrDefault();
         }
 
-        result.TotalEstimatedCost = Math.Round(result.TotalEstimatedCost, 2, MidpointRounding.AwayFromZero);
+        var extras = new Dictionary<(string, string), Line>();
+        foreach (var o in ordered.OrderBy(o => o.BOQItemId.HasValue ? 0 : 1).ThenBy(o => o.Date))
+        {
+            var line = Attach(o);
+            if (line is null)
+            {
+                var key = CompletedProjectDemandRules.NormalizeUnit(o.Unit);
+                var name = o.MaterialId?.ToString() ?? o.Name.Trim().ToLowerInvariant();
+                if (!extras.TryGetValue((name, key), out line))
+                {
+                    var planRow = o.BOQItemId is int id && byBoqId.TryGetValue(id, out var r) ? r : null;
+                    line = new Line
+                    {
+                        MaterialId = o.MaterialId,
+                        UnitKey = key,
+                        Dto = new MaterialCostLineDto
+                        {
+                            MaterialName = planRow?.Dto.MaterialName ?? o.Name,
+                            Specification = planRow?.Dto.Specification,
+                            Section = planRow?.Dto.Section,
+                            Unit = o.Unit,
+                            Note = planRow is null ? "Ordered, not in the Material Plan"
+                                : planRow.Dto.ForecastQuantity is null ? "Ordered; its Material Plan row has no forecast yet"
+                                : "Ordered in a different unit than the Material Plan",
+                        },
+                    };
+                    extras[(name, key)] = line;
+                }
+            }
+
+            line.Dto.OrderedQuantity += o.Quantity;
+            var price = o.OwnPrice ?? (o.MaterialId is int mid ? priceOf(mid, o.Unit)?.Price : null);
+            if (price is null)
+            {
+                line.CommittedFullyPriced = false;
+                continue;
+            }
+            line.Dto.CommittedCost += o.Quantity * price.Value;
+            usedDates.Add(o.Date);
+        }
+
+        var result = new EstimatedMaterialCostDto { ProjectId = projectId };
+        foreach (var line in lines.Concat(extras.Values))
+        {
+            var dto = line.Dto;
+            if (line.MaterialId is int materialId && priceOf(materialId, dto.Unit) is DatedPrice latest)
+            {
+                dto.UnitPrice = latest.Price;
+                dto.PriceSource = latest.Source;
+                dto.PriceReference = latest.Reference;
+                dto.PriceDate = latest.Date;
+            }
+
+            dto.RemainingQuantity = dto.ForecastQuantity is decimal forecast ? Math.Max(0, forecast - dto.OrderedQuantity) : 0;
+            if (dto.RemainingQuantity > 0)
+            {
+                if (dto.UnitPrice is decimal unitPrice)
+                {
+                    dto.RemainingCost = dto.RemainingQuantity * unitPrice;
+                    if (dto.PriceDate is DateTime date) usedDates.Add(date);
+                }
+                else dto.NeedsPrice = true;
+            }
+            if (!line.CommittedFullyPriced) dto.NeedsPrice = true;
+
+            var noForecast = dto.BOQItemId.HasValue && dto.ForecastQuantity is null && dto.OrderedQuantity == 0;
+            if (noForecast)
+                dto.Note = "No forecasted purchase quantity yet";
+            else if (dto.NeedsPrice && dto.Note is null)
+                dto.Note = "No recorded price in this unit";
+
+            dto.CommittedCost = Round(dto.CommittedCost);
+            dto.RemainingCost = Round(dto.RemainingCost);
+            result.CommittedCost += dto.CommittedCost;
+            result.RemainingCost += dto.RemainingCost;
+
+            if (dto.NeedsPrice || noForecast) result.UnpricedItems++;
+            else result.PricedItems++;
+            result.Lines.Add(dto);
+        }
+
+        result.TotalEstimatedCost = result.CommittedCost + result.RemainingCost;
         if (usedDates.Count > 0)
         {
             result.OldestPriceDate = usedDates.Min();
@@ -239,21 +375,21 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
     {
         var poPrices = LatestByKey((await db.PurchaseOrderMaterials
             .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value))
-            .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Date = m.PurchaseOrder.OrderDate, m.Id })
+            .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Date = m.PurchaseOrder.OrderDate, m.Id, m.PurchaseOrder.Number, Supplier = m.PurchaseOrder.Supplier.Name })
             .ToListAsync())
-            .Select(m => (m.MaterialId, m.Unit, m.Price, m.Date, m.Id)));
+            .Select(m => (m.MaterialId, m.Unit, m.Price, m.Date, m.Id, $"{m.Number} · {m.Supplier}")), SourcePo);
 
         var historicalPrices = LatestByKey((await db.HistoricalMaterialSupplies
             .Where(h => h.UnitCost != null && materialIds.Contains(h.BOQItem.MaterialId))
-            .Select(h => new { h.BOQItem.MaterialId, h.Unit, Price = h.UnitCost!.Value, Date = h.BOQItem.Project.TargetEndDate, h.Id })
+            .Select(h => new { h.BOQItem.MaterialId, h.Unit, Price = h.UnitCost!.Value, Date = h.BOQItem.Project.TargetEndDate, h.Id, Project = h.BOQItem.Project.Name })
             .ToListAsync())
-            .Select(h => (h.MaterialId, h.Unit, h.Price, h.Date, h.Id)));
+            .Select(h => (h.MaterialId, h.Unit, h.Price, h.Date, h.Id, h.Project)), SourceHistorical);
 
         var catalogPrices = (await db.Materials
             .Where(m => materialIds.Contains(m.Id) && m.UnitCost > 0)
             .Select(m => new { m.Id, m.Unit, m.UnitCost })
             .ToListAsync())
-            .ToDictionary(m => (m.Id, CompletedProjectDemandRules.NormalizeUnit(m.Unit)), m => new DatedPrice(m.UnitCost, null));
+            .ToDictionary(m => (m.Id, CompletedProjectDemandRules.NormalizeUnit(m.Unit)), m => new DatedPrice(m.UnitCost, null, SourceCatalog));
 
         return (materialId, unit) =>
         {
@@ -267,7 +403,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
     // Latest price per (material, normalized unit). Id breaks date ties so the
     // most recently entered record wins.
     private static Dictionary<(int, string), DatedPrice> LatestByKey(
-        IEnumerable<(int MaterialId, string Unit, decimal Price, DateTime Date, int Id)> prices) =>
+        IEnumerable<(int MaterialId, string Unit, decimal Price, DateTime Date, int Id, string Reference)> prices, string source) =>
         prices
             .GroupBy(p => (p.MaterialId, CompletedProjectDemandRules.NormalizeUnit(p.Unit)))
             .ToDictionary(
@@ -275,6 +411,6 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
                 g =>
                 {
                     var latest = g.OrderByDescending(p => p.Date).ThenByDescending(p => p.Id).First();
-                    return new DatedPrice(latest.Price, latest.Date);
+                    return new DatedPrice(latest.Price, latest.Date, source, latest.Reference);
                 });
 }

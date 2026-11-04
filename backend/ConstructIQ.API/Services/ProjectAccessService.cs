@@ -18,6 +18,19 @@ public class ProjectAccessService(AppDbContext db) : IProjectAccessService
         return siteEngineerId == userId;
     }
 
+    public async Task<bool> CanViewProjectCostAsync(int projectId, int userId, string role)
+    {
+        if (role == "Admin") return true;
+        if (role is not ("ProjectManager" or "SiteEngineer")) return false;
+
+        var owners = await db.Projects
+            .Where(p => p.Id == projectId)
+            .Select(p => new { p.ProjectManagerId, p.SiteEngineerId })
+            .FirstOrDefaultAsync();
+        if (owners is null) return false;
+        return role == "ProjectManager" ? owners.ProjectManagerId == userId : owners.SiteEngineerId == userId;
+    }
+
     public async Task<bool> CanEditBoqItemAsync(int boqItemId, int userId, string role)
     {
         var projectId = await db.BOQItems
