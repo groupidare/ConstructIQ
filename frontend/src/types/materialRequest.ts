@@ -28,6 +28,7 @@ export interface CreateMaterialRequestPayload {
   materialId: number;
   quantity: number;
   unit?: string;
+  boqItemId?: number;
 }
 
 export interface GeneratePOAssignment {

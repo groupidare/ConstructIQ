@@ -16,8 +16,9 @@ const SECTION_KEYWORDS: [RegExp, string][] = [
   [/fabrication/i, 'Special Fabrication Works'],
 ];
 
-// A scanned section heading ("III. ELECTRICAL WORKS") as the plan's section name.
-export function knownSection(section?: string): string | undefined {
+// Which of the plan's sections a scanned heading ("III. ELECTRICAL WORKS") means.
+// For comparing only: scanned rows keep and display the BOQ's own label.
+function knownSection(section?: string): string | undefined {
   return SECTION_KEYWORDS.find(([re]) => re.test(section ?? ''))?.[1];
 }
 

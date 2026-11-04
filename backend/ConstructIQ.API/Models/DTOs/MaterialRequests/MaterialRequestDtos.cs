@@ -8,10 +8,12 @@ public record CreateMaterialRequestDto
     public int MaterialId { get; init; }
     public decimal Quantity { get; init; }
     public string? Unit { get; init; }
+    public int? BOQItemId { get; init; }
 }
 
 public record MaterialRequestDto
 {
+    public bool IsAdditional { get; init; }
     public int Id { get; init; }
     public int MaterialId { get; init; }
     public string MaterialName { get; init; } = "";

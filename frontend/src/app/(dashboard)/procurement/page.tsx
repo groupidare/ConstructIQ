@@ -327,6 +327,7 @@ interface RequestRow {
   createdAt: string;
   lastUnitPrice: number | null;
   lastUnitPriceSupplier: string | null;
+  isAdditional: boolean;
   remarks: string;
   quotes: QuoteDraft[];
   // Slot index chosen for the PO, or null to use the lowest-priced quote.
@@ -350,7 +351,7 @@ interface ApiMaterialRequest {
   id: number; materialId: number; materialName: string; specification?: string;
   quantity: number; unit: string; requestedByName: string; createdAt: string;
   lastUnitPrice?: number | null; lastUnitPriceSupplier?: string | null;
-  remarks?: string | null; quotes?: ApiQuote[];
+  remarks?: string | null; quotes?: ApiQuote[]; isAdditional?: boolean;
 }
 interface ApiSuggestedSupplier {
   id: number; name: string; rating: number; onTimePct: number; deliveries: number; hasHistoryWithMaterial: boolean;
@@ -376,7 +377,7 @@ function mapRequestRow(a: ApiMaterialRequest): RequestRow {
     id: a.id, materialId: a.materialId, materialName: a.materialName, specification: a.specification ?? "",
     quantity: a.quantity, qty: String(a.quantity), unit: a.unit, requestedByName: a.requestedByName, createdAt: a.createdAt,
     lastUnitPrice: a.lastUnitPrice ?? null, lastUnitPriceSupplier: a.lastUnitPriceSupplier ?? null,
-    remarks: a.remarks ?? "", quotes, chosen,
+    isAdditional: a.isAdditional ?? false, remarks: a.remarks ?? "", quotes, chosen,
   };
 }
 
@@ -680,6 +681,9 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
                         <td style={{ ...td, color: "#9ca3af" }}>{idx + 1}</td>
                         <td style={{ ...td, fontWeight: 600, color: "#111827", minWidth: 150 }}>
                           {r.materialName}
+                          {r.isAdditional && (
+                            <span title="Beyond what this BOQ row still needed when it was requested" style={{ marginLeft: 6, fontSize: "0.62rem", fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "#fef3c7", color: "#92400e", whiteSpace: "nowrap" }}>Additional</span>
+                          )}
                           {r.lastUnitPrice != null && (
                             <p style={{ fontSize: "0.65rem", fontWeight: 400, color: "#9ca3af", margin: "3px 0 0" }}>
                               Last paid {formatCurrency(r.lastUnitPrice)}/{r.unit}{r.lastUnitPriceSupplier ? ` · ${r.lastUnitPriceSupplier}` : ""}

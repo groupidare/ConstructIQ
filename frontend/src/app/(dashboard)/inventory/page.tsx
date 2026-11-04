@@ -329,7 +329,18 @@ function InventoryPageInner() {
                                     const style = REQUEST_STATUS_STYLE[r.status] ?? { bg: "#f3f4f6", color: "#6b7280" };
                                     return (
                                       <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
-                                        <td style={{ padding: "10px", fontSize: "0.8rem", fontWeight: 600, color: "#111827" }}>{r.materialName}</td>
+                                        <td style={{ padding: "10px", fontSize: "0.8rem", fontWeight: 600, color: "#111827" }}>
+                                          {r.materialName}
+                                          {r.isAdditional && (
+                                            <span title="Beyond what this BOQ row still needed when it was requested" style={{ marginLeft: 6, fontSize: "0.62rem", fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "#fef3c7", color: "#92400e", whiteSpace: "nowrap" }}>Additional</span>
+                                          )}
+                                          {r.linkedStockName && (
+                                            <div style={{ fontSize: "0.68rem", fontWeight: 400, color: "#6b7280", marginTop: 2 }}>
+                                              Linked to inventory: {r.linkedStockName}
+                                              {r.linkedStockBalance != null && ` (${r.linkedStockBalance.toLocaleString()} ${r.linkedStockUnit ?? ""})`}
+                                            </div>
+                                          )}
+                                        </td>
                                         <td style={{ padding: "10px", fontSize: "0.8rem", color: "#374151" }}>
                                           {canApprove && r.status === "Pending" ? (
                                             <input

@@ -1,3 +1,5 @@
+import re
+
 import pandas as pd
 import numpy as np
 from typing import Any
@@ -11,6 +13,26 @@ PRIMARY_SECTIONS = [
     "Mechanical Works", "Fire Protection Works", "Special Fabrication Works", "Others",
 ]
 _PRIMARY_SECTION_INDEX = {name: i + 1 for i, name in enumerate(PRIMARY_SECTIONS)}  # 0 = unset/unrecognized
+
+# Scanned BOQ rows keep the BOQ's own label ("1. ARCHITECTURAL WORKS"), so the
+# label is matched by keyword — same rules as frontend lib/boqSections.ts.
+_SECTION_KEYWORDS = [
+    (re.compile(r"architect", re.I), "Architectural Works"),
+    (re.compile(r"fire\s*detection|fdas|alarm", re.I), "Fire Detection & Alarm System Works"),
+    (re.compile(r"fire\s*protection|sprinkler|fire\s*suppression", re.I), "Fire Protection Works"),
+    (re.compile(r"electrical", re.I), "Electrical Works"),
+    (re.compile(r"mechanical|hvac|air[\s-]?con", re.I), "Mechanical Works"),
+    (re.compile(r"fabrication", re.I), "Special Fabrication Works"),
+]
+
+
+def _encode_primary_section(section: str | None) -> int:
+    section = section or ""
+    for pattern, name in _SECTION_KEYWORDS:
+        if pattern.search(section):
+            return _PRIMARY_SECTION_INDEX[name]
+    return _PRIMARY_SECTION_INDEX.get(section.strip(), 0)
+
 
 # Single canonical feature-column list — both random_forest.py and xgboost_model.py
 # import this instead of keeping their own copy, so the two models and
@@ -56,7 +78,7 @@ def build_feature_vector(record: dict[str, Any]) -> dict[str, float]:
         material_ratio (set by material_ratios.attach / attach_out_of_project;
         1.0 if absent)
     """
-    primary_section_encoded = _PRIMARY_SECTION_INDEX.get(record.get("primary_section", ""), 0)
+    primary_section_encoded = _encode_primary_section(record.get("primary_section"))
     days_into_phase = float(record.get("days_into_phase", 0))
     boq_quantity = float(record.get("boq_quantity", 0))
     material_ratio = float(record.get("material_ratio", 1.0))

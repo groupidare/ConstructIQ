@@ -5,19 +5,192 @@ using Microsoft.EntityFrameworkCore;
 namespace ConstructIQ.API.Algorithms;
 
 /// <summary>
-/// Shared quantity math for Notify Procurement/Warehouse: how much of a
-/// material is still needed against its BOQ estimate, minus whatever's
-/// already covered — redistributed in, released from the warehouse, or
-/// already asked of Procurement. Notify Warehouse treats this as a hard cap;
-/// Notify Procurement only uses it to suggest a quantity and to flag a
-/// request beyond it as an additional order. Each source is tracked from
-/// its own real table (not the generic BOQItem.RequestedQuantity
-/// ask-counter), because "asked" and "actually covered" can differ — e.g.
-/// a warehouse request for 12 approved
-/// for only 3 (that's all that was on hand) only reduces the gap by 3, not 12.
+/// Shared quantity math for Notify Procurement/Warehouse: how much a BOQ row
+/// still needs, minus whatever's already covered — redistributed in, released
+/// from the warehouse, or already asked of Procurement. Both only use it to
+/// suggest a quantity and to flag a request beyond it as an additional order.
+/// Each source is tracked from its own real table (not the generic
+/// BOQItem.RequestedQuantity ask-counter), because "asked" and "actually
+/// covered" can differ — e.g. a warehouse request for 12 approved for only 3
+/// (that's all that was on hand) only reduces the gap by 3, not 12.
+///
+/// Per row, not per material: saving can merge different rows into one catalog
+/// Material (THHN wire in rolls and PVC conduit in pieces), so a material-wide
+/// total would add unlike units and let one row's request complete another.
+/// A request knows its row. What doesn't — a redistribution transfer, or a
+/// request or PO line made before rows were tracked — only counts when the
+/// material has a single row, the usual case. With several it can't say which
+/// it was for, and guessing would mark a row covered that nobody asked for
+/// (12 l.m of transferred wire completing a 3-roll row). So it counts for none:
+/// a row showing a need it may not have is visible; one hiding a need isn't.
 /// </summary>
 public static class ProcurementCapCalculator
 {
+    // NetLeftToOrder only counts a source once it's actually been approved: an
+    // approved transfer, a warehouse request approved for what was really
+    // released, or a purchase order past Pending. RemainingRequestable also
+    // counts every Procurement ask, so a second request can't double the ask
+    // before the first has become a PO. WarehouseApproved: the warehouse has
+    // approved a check for this row at all — what unlocks Procurement when the
+    // warehouse has stock.
+    public sealed record RowStatus(decimal NetLeftToOrder, decimal RemainingRequestable, bool WarehouseApproved);
+
+    public sealed record RowNeed(int RowId, int MaterialId, decimal Estimate);
+
+    // Pure so which coverage reaches which row can be tested.
+    public static Dictionary<int, decimal> LeftPerRow(
+        IReadOnlyCollection<RowNeed> rows, IReadOnlyDictionary<int, decimal> coveredByRow, IReadOnlyDictionary<int, decimal> coveredByMaterial)
+    {
+        var rowsPerMaterial = rows.GroupBy(r => r.MaterialId).ToDictionary(g => g.Key, g => g.Count());
+        return rows.ToDictionary(row => row.RowId, row =>
+        {
+            var covered = coveredByRow.GetValueOrDefault(row.RowId);
+            if (rowsPerMaterial[row.MaterialId] == 1) covered += coveredByMaterial.GetValueOrDefault(row.MaterialId);
+            return Math.Max(0, row.Estimate - covered);
+        });
+    }
+
+    private static void Add(Dictionary<int, decimal> totals, int key, decimal quantity) =>
+        totals[key] = totals.GetValueOrDefault(key) + quantity;
+
+    public static async Task<Dictionary<int, RowStatus>> GetRowStatusesAsync(AppDbContext db, int projectId)
+    {
+        var rows = await db.BOQItems
+            .Where(b => b.ProjectId == projectId)
+            .OrderBy(b => b.Id)
+            .Select(b => new RowNeed(b.Id, b.MaterialId, b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity))
+            .ToListAsync();
+        if (rows.Count == 0) return [];
+
+        var rowIds = rows.Select(r => r.RowId).ToHashSet();
+
+        // Transfers name a material, never a row.
+        var redistributed = await db.RedistributionRequests
+            .Where(r => r.TargetProjectId == projectId && r.Status == RedistributionStatus.Approved)
+            .Select(r => new { r.MaterialId, r.Quantity })
+            .ToListAsync();
+
+        var warehouse = await db.WarehouseRequests
+            .Where(w => w.ProjectId == projectId && w.Status == WarehouseRequestStatus.Approved)
+            .Select(w => new { w.BOQItemId, w.MaterialId, Quantity = w.ApprovedQuantity ?? w.RequestedQuantity })
+            .ToListAsync();
+
+        var requests = await db.MaterialRequests
+            .Where(m => m.ProjectId == projectId)
+            .OrderBy(m => m.Id)
+            .Select(m => new { m.BOQItemId, m.MaterialId, m.Quantity, m.FulfilledByPurchaseOrderId })
+            .ToListAsync();
+
+        var poLines = await db.PurchaseOrderMaterials
+            .Where(m => m.MaterialId != null && m.PurchaseOrder.ProjectId == projectId && m.PurchaseOrder.Status != PurchaseOrderStatus.Pending)
+            .OrderBy(m => m.Id)
+            .Select(m => new { m.PurchaseOrderId, MaterialId = m.MaterialId!.Value, m.BOQItemId, m.Quantity })
+            .ToListAsync();
+
+        var approvedByRow = new Dictionary<int, decimal>();
+        var approvedByMaterial = new Dictionary<int, decimal>();
+        var askedByRow = new Dictionary<int, decimal>();
+        var askedByMaterial = new Dictionary<int, decimal>();
+
+        void AddSource(Dictionary<int, decimal> byRow, Dictionary<int, decimal> byMaterial, int? rowId, int materialId, decimal quantity)
+        {
+            if (rowId is { } id && rowIds.Contains(id)) Add(byRow, id, quantity);
+            else Add(byMaterial, materialId, quantity);
+        }
+
+        foreach (var t in redistributed)
+        {
+            Add(approvedByMaterial, t.MaterialId, t.Quantity);
+            Add(askedByMaterial, t.MaterialId, t.Quantity);
+        }
+        foreach (var w in warehouse)
+        {
+            AddSource(approvedByRow, approvedByMaterial, w.BOQItemId, w.MaterialId, w.Quantity);
+            AddSource(askedByRow, askedByMaterial, w.BOQItemId, w.MaterialId, w.Quantity);
+        }
+        foreach (var m in requests)
+            AddSource(askedByRow, askedByMaterial, m.BOQItemId, m.MaterialId, m.Quantity);
+
+        // A generated PO line isn't linked to a BOQ row — that link is left for
+        // a person to make, since it feeds the forecasting model. The request it
+        // fulfils still says which row it was for.
+        var uncounted = requests
+            .Where(m => m.BOQItemId != null && m.FulfilledByPurchaseOrderId != null)
+            .Select(m => new FulfilledRequest(m.FulfilledByPurchaseOrderId!.Value, m.MaterialId, m.BOQItemId!.Value, m.Quantity))
+            .ToList();
+        foreach (var line in poLines)
+        {
+            if (line.BOQItemId is not null)
+            {
+                AddSource(approvedByRow, approvedByMaterial, line.BOQItemId, line.MaterialId, line.Quantity);
+                continue;
+            }
+            var quantity = line.Quantity;
+            for (var i = 0; i < uncounted.Count && quantity > 0; i++)
+            {
+                var request = uncounted[i];
+                if (request.PurchaseOrderId != line.PurchaseOrderId || request.MaterialId != line.MaterialId || request.Quantity <= 0) continue;
+                var taken = Math.Min(quantity, request.Quantity);
+                AddSource(approvedByRow, approvedByMaterial, request.RowId, line.MaterialId, taken);
+                uncounted[i] = request with { Quantity = request.Quantity - taken };
+                quantity -= taken;
+            }
+            if (quantity > 0) Add(approvedByMaterial, line.MaterialId, quantity);
+        }
+
+        var netLeft = LeftPerRow(rows, approvedByRow, approvedByMaterial);
+        var remaining = LeftPerRow(rows, askedByRow, askedByMaterial);
+
+        var approvedRows = warehouse.Where(w => w.BOQItemId != null).Select(w => w.BOQItemId!.Value).ToHashSet();
+        // A check with no row can only unlock a material's one row, same as above.
+        var singleRowMaterials = rows.GroupBy(r => r.MaterialId).Where(g => g.Count() == 1).Select(g => g.Key).ToHashSet();
+        var approvedMaterials = warehouse
+            .Where(w => (w.BOQItemId == null || !rowIds.Contains(w.BOQItemId.Value)) && singleRowMaterials.Contains(w.MaterialId))
+            .Select(w => w.MaterialId)
+            .ToHashSet();
+
+        return rows.ToDictionary(r => r.RowId, r => new RowStatus(
+            netLeft[r.RowId], remaining[r.RowId],
+            approvedRows.Contains(r.RowId) || approvedMaterials.Contains(r.MaterialId)));
+    }
+
+    private sealed record FulfilledRequest(int PurchaseOrderId, int MaterialId, int RowId, decimal Quantity);
+
+    // The row a new request is for must really be this project's row of this
+    // material; no row means the material as a whole.
+    public static async Task<BOQItem?> FindRequestRowAsync(AppDbContext db, int? boqItemId, int projectId, int materialId)
+    {
+        if (boqItemId is null) return null;
+        return await db.BOQItems.FirstOrDefaultAsync(b => b.Id == boqItemId && b.ProjectId == projectId && b.MaterialId == materialId)
+            ?? throw new InvalidOperationException("That Bill of Quantities row doesn't belong to this project and material. Reopen the Material Plan and try again.");
+    }
+
+    // How much more a new request can ask for before it's an additional one.
+    public static async Task<decimal> GetRemainingRequestableAsync(AppDbContext db, int projectId, int materialId, int? boqItemId = null)
+    {
+        var statuses = await GetRowStatusesAsync(db, projectId);
+        if (boqItemId is { } id && statuses.TryGetValue(id, out var row)) return row.RemainingRequestable;
+
+        var materialRows = await db.BOQItems
+            .Where(b => b.ProjectId == projectId && b.MaterialId == materialId)
+            .Select(b => b.Id)
+            .ToListAsync();
+        return materialRows.Sum(r => statuses.GetValueOrDefault(r)?.RemainingRequestable ?? 0);
+    }
+
+    // Per material, for callers that don't deal in rows.
+    public static async Task<Dictionary<int, decimal>> GetRemainingRequestableForProjectAsync(AppDbContext db, int projectId)
+    {
+        var statuses = await GetRowStatusesAsync(db, projectId);
+        var rows = await db.BOQItems
+            .Where(b => b.ProjectId == projectId)
+            .Select(b => new { b.Id, b.MaterialId })
+            .ToListAsync();
+        return rows
+            .GroupBy(r => r.MaterialId)
+            .ToDictionary(g => g.Key, g => g.Sum(r => statuses.GetValueOrDefault(r.Id)?.RemainingRequestable ?? 0));
+    }
+
     // Approved is the terminal state for a redistribution transfer (no
     // InTransit/Completed step in this app) — see RedistributionStatuses.
     public static async Task<decimal> GetRedistributedQuantityAsync(AppDbContext db, int projectId, int materialId) =>
@@ -26,76 +199,11 @@ public static class ProcurementCapCalculator
             .SumAsync(r => (decimal?)r.Quantity) ?? 0;
 
     // Nothing is actually released from the warehouse until a request is
-    // Approved — a Pending ask doesn't count here (it can't be re-requested
-    // anyway; WarehouseRequestService.CreateAsync blocks a second Pending
-    // request for the same material while one is still outstanding).
+    // Approved — a Pending ask doesn't count here.
     private static async Task<decimal> GetWarehouseAccountedQuantityAsync(AppDbContext db, int projectId, int materialId) =>
         await db.WarehouseRequests
             .Where(w => w.ProjectId == projectId && w.MaterialId == materialId && w.Status == WarehouseRequestStatus.Approved)
             .SumAsync(w => (decimal?)(w.ApprovedQuantity ?? w.RequestedQuantity)) ?? 0;
-
-    // Every Procurement ask counts as spoken-for, whether or not it's been
-    // turned into a Purchase Order yet.
-    private static async Task<decimal> GetProcurementRequestedQuantityAsync(AppDbContext db, int projectId, int materialId) =>
-        await db.MaterialRequests
-            .Where(m => m.ProjectId == projectId && m.MaterialId == materialId)
-            .SumAsync(m => (decimal?)m.Quantity) ?? 0;
-
-    // Remaining requestable quantity, aggregated across every BOQ row for
-    // this (project, material) pair — a material can appear on more than
-    // one BOQ row.
-    public static async Task<decimal> GetRemainingRequestableAsync(AppDbContext db, int projectId, int materialId)
-    {
-        var estimatedTotal = await db.BOQItems
-            .Where(b => b.ProjectId == projectId && b.MaterialId == materialId)
-            .SumAsync(b => (decimal?)(b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity)) ?? 0;
-
-        var redistributed = await GetRedistributedQuantityAsync(db, projectId, materialId);
-        var warehouse      = await GetWarehouseAccountedQuantityAsync(db, projectId, materialId);
-        var procurement    = await GetProcurementRequestedQuantityAsync(db, projectId, materialId);
-
-        return Math.Max(0, estimatedTotal - redistributed - warehouse - procurement);
-    }
-
-    // Same calculation as above, batched across every material in a
-    // project's BOQ in one pass — used to give the Material Plan tab a live,
-    // authoritative "remaining" figure per row without an N+1 round trip.
-    public static async Task<Dictionary<int, decimal>> GetRemainingRequestableForProjectAsync(AppDbContext db, int projectId)
-    {
-        var boqRows = await db.BOQItems.Where(b => b.ProjectId == projectId).ToListAsync();
-        var materialIds = boqRows.Select(b => b.MaterialId).Distinct().ToList();
-        if (materialIds.Count == 0) return [];
-
-        var estimatedByMaterial = boqRows
-            .GroupBy(b => b.MaterialId)
-            .ToDictionary(g => g.Key, g => g.Sum(b => b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity));
-
-        var redistributedByMaterial = (await db.RedistributionRequests
-                .Where(r => r.TargetProjectId == projectId && materialIds.Contains(r.MaterialId) && r.Status == RedistributionStatus.Approved)
-                .ToListAsync())
-            .GroupBy(r => r.MaterialId)
-            .ToDictionary(g => g.Key, g => g.Sum(r => r.Quantity));
-
-        var warehouseByMaterial = (await db.WarehouseRequests
-                .Where(w => w.ProjectId == projectId && materialIds.Contains(w.MaterialId) && w.Status == WarehouseRequestStatus.Approved)
-                .ToListAsync())
-            .GroupBy(w => w.MaterialId)
-            .ToDictionary(g => g.Key, g => g.Sum(w => w.ApprovedQuantity ?? w.RequestedQuantity));
-
-        var procurementByMaterial = (await db.MaterialRequests
-                .Where(m => m.ProjectId == projectId && materialIds.Contains(m.MaterialId))
-                .ToListAsync())
-            .GroupBy(m => m.MaterialId)
-            .ToDictionary(g => g.Key, g => g.Sum(m => m.Quantity));
-
-        return materialIds.ToDictionary(
-            id => id,
-            id => Math.Max(0,
-                estimatedByMaterial.GetValueOrDefault(id)
-                - redistributedByMaterial.GetValueOrDefault(id)
-                - warehouseByMaterial.GetValueOrDefault(id)
-                - procurementByMaterial.GetValueOrDefault(id)));
-    }
 
     // Only Approved/DeliveryInProgress/Delivered purchase orders represent
     // material that's actually been committed to arriving — a Pending PO is
@@ -107,10 +215,9 @@ public static class ProcurementCapCalculator
                 && m.PurchaseOrder.Status != PurchaseOrderStatus.Pending)
             .SumAsync(m => (decimal?)m.Quantity) ?? 0;
 
-    // Single-(project, material) version of GetNetLeftToOrderForProjectAsync
-    // below — used where only one material's figure is needed (e.g. ranking
-    // redistribution target-project suggestions by real outstanding need)
-    // and batching the whole project's BOQ would be wasted work.
+    // One material across its rows — used where a whole-material figure is what's
+    // wanted (e.g. ranking redistribution target-project suggestions by real
+    // outstanding need).
     public static async Task<decimal> GetNetLeftToOrderAsync(AppDbContext db, int projectId, int materialId)
     {
         var estimatedTotal = await db.BOQItems
@@ -122,62 +229,5 @@ public static class ProcurementCapCalculator
         var purchaseOrders = await GetApprovedPurchaseOrderQuantityAsync(db, projectId, materialId);
 
         return Math.Max(0, estimatedTotal - redistributed - warehouse - purchaseOrders);
-    }
-
-    // The Material Plan tab's "Net Left to Order" subtext + the Procurement-
-    // request unlock condition, batched per project in one pass (same
-    // batching rationale as GetRemainingRequestableForProjectAsync — avoids
-    // an N+1 round trip across every BOQ row). Unlike that method, which also
-    // treats a still-Pending MaterialRequest as spoken-for so a second
-    // request can't double the ask, this only ever counts a source once it's
-    // been actually approved — a submission still awaiting approval must
-    // never move this number: an approved redistribution transfer, a
-    // warehouse request approved for whatever quantity was actually
-    // released, or a purchase order that's past Pending. WarehouseApproved
-    // additionally reports whether ANY warehouse request for that material
-    // has been approved at all (regardless of amount released) — Procurement
-    // can't be requested for a row until that's happened once.
-    public static async Task<Dictionary<int, (decimal NetLeftToOrder, bool WarehouseApproved)>> GetNetLeftToOrderForProjectAsync(AppDbContext db, int projectId)
-    {
-        var boqRows = await db.BOQItems.Where(b => b.ProjectId == projectId).ToListAsync();
-        var materialIds = boqRows.Select(b => b.MaterialId).Distinct().ToList();
-        if (materialIds.Count == 0) return [];
-
-        var estimatedByMaterial = boqRows
-            .GroupBy(b => b.MaterialId)
-            .ToDictionary(g => g.Key, g => g.Sum(b => b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity));
-
-        var redistributedByMaterial = (await db.RedistributionRequests
-                .Where(r => r.TargetProjectId == projectId && materialIds.Contains(r.MaterialId) && r.Status == RedistributionStatus.Approved)
-                .ToListAsync())
-            .GroupBy(r => r.MaterialId)
-            .ToDictionary(g => g.Key, g => g.Sum(r => r.Quantity));
-
-        var approvedWarehouseRequests = await db.WarehouseRequests
-            .Where(w => w.ProjectId == projectId && materialIds.Contains(w.MaterialId) && w.Status == WarehouseRequestStatus.Approved)
-            .ToListAsync();
-        var warehouseByMaterial = approvedWarehouseRequests
-            .GroupBy(w => w.MaterialId)
-            .ToDictionary(g => g.Key, g => g.Sum(w => w.ApprovedQuantity ?? w.RequestedQuantity));
-        var warehouseApprovedMaterials = approvedWarehouseRequests.Select(w => w.MaterialId).ToHashSet();
-
-        var poByMaterial = (await db.PurchaseOrderMaterials
-                .Include(m => m.PurchaseOrder)
-                .Where(m => m.MaterialId != null && materialIds.Contains(m.MaterialId!.Value)
-                    && m.PurchaseOrder.ProjectId == projectId && m.PurchaseOrder.Status != PurchaseOrderStatus.Pending)
-                .ToListAsync())
-            .GroupBy(m => m.MaterialId!.Value)
-            .ToDictionary(g => g.Key, g => g.Sum(m => m.Quantity));
-
-        return materialIds.ToDictionary(
-            id => id,
-            id => (
-                Math.Max(0,
-                    estimatedByMaterial.GetValueOrDefault(id)
-                    - redistributedByMaterial.GetValueOrDefault(id)
-                    - warehouseByMaterial.GetValueOrDefault(id)
-                    - poByMaterial.GetValueOrDefault(id)),
-                warehouseApprovedMaterials.Contains(id)
-            ));
     }
 }

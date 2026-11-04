@@ -22,7 +22,8 @@ import MeasurementsTab from './MeasurementsTab';
 import MaterialPlanTab from './MaterialPlanTab';
 import BlueprintWizard from './BlueprintWizard';
 import ScanCoveredDialog from './ScanCoveredDialog';
-import { knownSection, splitScannedRows } from '@/lib/boqSections';
+import { splitScannedRows } from '@/lib/boqSections';
+import { useWarehouseStock } from '@/hooks/useWarehouseStock';
 
 function apiErrorMessage(error: unknown, fallback: string): string {
   const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -73,6 +74,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const { documents, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument } = useDocuments(project.id);
   const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems, getHistoricalEstimate } = useBOQ(project.id);
   const { inventory, fetchInventory } = useInventory(project.id);
+  const { items: warehouseStock, links: warehouseStockLinks, fetchCurrent: fetchWarehouseStock, fetchLinks: fetchWarehouseStockLinks, saveLink: saveWarehouseStockLink, removeLink: removeWarehouseStockLink } = useWarehouseStock();
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
   const { sendNotification } = useNotifications();
   const { createRequest: createMaterialRequest } = useMaterialRequests();
@@ -114,6 +116,10 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     fetchInventory(true);
     fetchForecasts();
     fetchPurchaseOrders();
+    if (project.status !== 'Completed') { // nothing left to order otherwise
+      fetchWarehouseStock();
+      fetchWarehouseStockLinks();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
 
@@ -173,8 +179,9 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
           phaseId: item.phaseHint
             ? project.phases.find(p => p.name.toLowerCase() === item.phaseHint!.toLowerCase())?.id
             : undefined,
-          // "III. ELECTRICAL WORKS" → "Electrical Works", the plan's own section name.
-          primarySection: knownSection(item.primarySection) ?? (item.primarySection || 'Others'),
+          // Exactly as the BOQ labels it ("1. ARCHITECTURAL WORKS"); whatever
+          // compares sections matches on the words, not this spelling.
+          primarySection: item.primarySection || 'Others',
           subCategory: item.subCategory,
           // The parser can only split spec text into its own column when the
           // source sheet has one distinct from the material/description
@@ -474,11 +481,32 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     }
   }
 
+  // Returns whether it saved; a failure has already been shown to the user.
+  async function handleSaveStockLink(boqName: string, warehouseMaterialName: string | null): Promise<boolean> {
+    try {
+      await saveWarehouseStockLink(project.id, boqName, warehouseMaterialName);
+      return true;
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to save the inventory link.'));
+      return false;
+    }
+  }
+
+  async function handleRemoveStockLink(boqName: string): Promise<boolean> {
+    try {
+      await removeWarehouseStockLink(project.id, boqName);
+      return true;
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to remove the inventory link.'));
+      return false;
+    }
+  }
+
   // Returns whether the request actually went through — MaterialPlanTab's
   // partial-quantity dialog needs this to know whether it's safe to shrink
   // the row to what was requested and spin the leftover into a new row, vs.
   // leaving the row untouched on failure/validation.
-  async function handleNotify(kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string): Promise<boolean> {
+  async function handleNotify(kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string, boqItemId: number | undefined): Promise<boolean> {
     const isProcurement = kind === 'ProcurementOrder';
 
     // Both flows raise a real, trackable request now — that needs a resolved
@@ -502,7 +530,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
 
     try {
       if (isProcurement) {
-        await createMaterialRequest({ projectId: project.id, materialId, quantity, unit });
+        await createMaterialRequest({ projectId: project.id, materialId, quantity, unit, boqItemId });
         await sendNotification({
           projectId: project.id, materialId,
           recipientRole: 'ProcurementOfficer',
@@ -511,7 +539,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
         addAlert({ kind: 'delay', title: 'Procurement Alert', body: message });
         toast.success('Procurement notified — request added to their queue.');
       } else {
-        await createWarehouseRequest({ projectId: project.id, materialId, requestedQuantity: quantity });
+        await createWarehouseRequest({ projectId: project.id, materialId, requestedQuantity: quantity, unit, boqItemId });
         addAlert({ kind: 'overstock', title: 'Warehouse Alert', body: message });
         toast.success(`Material request sent for ${materialName}.`);
         // Deliberately no longer navigates away to /inventory — a partial
@@ -530,7 +558,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     projectType, otherTypeSpecify,
     onProjectTypeChange: handleProjectTypeChange, onOtherTypeSpecifyBlur: handleOtherTypeSpecifyBlur, savingProjectType,
     boqRows, setBoqRows, boqItems,
-    blueprints, boqDocs, poDocs, inventory, forecastedMaterials,
+    blueprints, boqDocs, poDocs, inventory, warehouseStock, warehouseStockLinks, handleSaveStockLink, handleRemoveStockLink, forecastedMaterials,
     savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
     blueprintDoc, setBlueprintDoc, handleBlueprintRows, coveredRows, setCoveredRows,
     handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
@@ -610,6 +638,10 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       projectType={state.projectType}
       otherTypeSpecify={state.otherTypeSpecify}
       inventory={state.inventory}
+      warehouseStock={state.warehouseStock}
+      warehouseStockLinks={state.warehouseStockLinks}
+      onSaveStockLink={state.handleSaveStockLink}
+      onRemoveStockLink={state.handleRemoveStockLink}
       forecastedMaterials={state.forecastedMaterials}
       boqDocs={state.boqDocs}
       uploading={state.uploadingBoq}

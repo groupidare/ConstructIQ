@@ -745,11 +745,17 @@ namespace ConstructIQ.API.Migrations
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<int?>("BOQItemId")
+                        .HasColumnType("int");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)");
 
                     b.Property<int?>("FulfilledByPurchaseOrderId")
                         .HasColumnType("int");
+
+                    b.Property<bool>("IsAdditional")
+                        .HasColumnType("tinyint(1)");
 
                     b.Property<int>("MaterialId")
                         .HasColumnType("int");
@@ -773,6 +779,8 @@ namespace ConstructIQ.API.Migrations
                         .HasColumnType("varchar(20)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("BOQItemId");
 
                     b.HasIndex("FulfilledByPurchaseOrderId");
 
@@ -1710,6 +1718,12 @@ namespace ConstructIQ.API.Migrations
                     b.Property<decimal?>("ApprovedQuantity")
                         .HasColumnType("decimal(18,4)");
 
+                    b.Property<int?>("BOQItemId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsAdditional")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<int>("MaterialId")
                         .HasColumnType("int");
 
@@ -1728,9 +1742,16 @@ namespace ConstructIQ.API.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("int");
 
+                    b.Property<string>("Unit")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ApprovedByUserId");
+
+                    b.HasIndex("BOQItemId");
 
                     b.HasIndex("MaterialId");
 
@@ -1768,6 +1789,39 @@ namespace ConstructIQ.API.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("WarehouseStockItems");
+                });
+
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.WarehouseStockLink", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("BoqName")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<string>("BoqNameKey")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("WarehouseMaterialName")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BoqNameKey")
+                        .IsUnique();
+
+                    b.ToTable("WarehouseStockLinks");
                 });
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.ActivityLog", b =>
@@ -2022,6 +2076,11 @@ namespace ConstructIQ.API.Migrations
 
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.MaterialRequest", b =>
                 {
+                    b.HasOne("ConstructIQ.API.Models.Entities.BOQItem", "BOQItem")
+                        .WithMany()
+                        .HasForeignKey("BOQItemId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("ConstructIQ.API.Models.Entities.PurchaseOrder", "FulfilledByPurchaseOrder")
                         .WithMany()
                         .HasForeignKey("FulfilledByPurchaseOrderId")
@@ -2044,6 +2103,8 @@ namespace ConstructIQ.API.Migrations
                         .HasForeignKey("RequestedByUserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.Navigation("BOQItem");
 
                     b.Navigation("FulfilledByPurchaseOrder");
 
@@ -2396,6 +2457,11 @@ namespace ConstructIQ.API.Migrations
                         .HasForeignKey("ApprovedByUserId")
                         .OnDelete(DeleteBehavior.SetNull);
 
+                    b.HasOne("ConstructIQ.API.Models.Entities.BOQItem", "BOQItem")
+                        .WithMany()
+                        .HasForeignKey("BOQItemId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("ConstructIQ.API.Models.Entities.Material", "Material")
                         .WithMany()
                         .HasForeignKey("MaterialId")
@@ -2415,6 +2481,8 @@ namespace ConstructIQ.API.Migrations
                         .IsRequired();
 
                     b.Navigation("ApprovedBy");
+
+                    b.Navigation("BOQItem");
 
                     b.Navigation("Material");
 

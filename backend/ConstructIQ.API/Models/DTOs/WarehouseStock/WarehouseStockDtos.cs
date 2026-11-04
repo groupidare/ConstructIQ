@@ -1,4 +1,21 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace ConstructIQ.API.Models.DTOs.WarehouseStock;
+
+public class WarehouseStockLinkDto
+{
+    public string  BoqName               { get; set; } = string.Empty;
+    public string? WarehouseMaterialName { get; set; }
+}
+
+public class WarehouseStockLinkSaveDto
+{
+    // Linking applies everywhere, but needs the right to edit one Material Plan.
+    [Required] public int ProjectId { get; set; }
+    [Required, MaxLength(500)] public string BoqName { get; set; } = string.Empty;
+    // Null: the warehouse doesn't carry this.
+    public string? WarehouseMaterialName { get; set; }
+}
 
 public class WarehouseStockItemDto
 {

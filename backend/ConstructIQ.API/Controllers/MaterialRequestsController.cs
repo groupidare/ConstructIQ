@@ -38,13 +38,29 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         var material = await db.Materials.FindAsync(dto.MaterialId);
         if (material is null) return BadRequest(new { message = "Material not found." });
 
+        BOQItem? row;
+        try
+        {
+            row = await ProcurementCapCalculator.FindRequestRowAsync(db, dto.BOQItemId, dto.ProjectId, dto.MaterialId);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+
         // No upper cap — a site can deliberately order beyond the BOQ
         // estimate (breakage, a design change, a buffer). Anything past the
         // remaining requestable balance is accepted as an intentional
         // additional order, and flagged as such to Procurement rather than
-        // rejected. Notify Warehouse keeps its own cap (WarehouseRequestService).
-        var remaining = await ProcurementCapCalculator.GetRemainingRequestableAsync(db, dto.ProjectId, dto.MaterialId);
-        var isAdditional = dto.Quantity > remaining;
+        // rejected. Notify Warehouse works the same way (WarehouseRequestService).
+        var remaining = await ProcurementCapCalculator.GetRemainingRequestableAsync(db, dto.ProjectId, dto.MaterialId, row?.Id);
+        // A row with no purchase estimate yet (no stock, so it skipped the
+        // warehouse) has only its BOQ measure to compare with — 500 pc against
+        // 169 sq.m says nothing about being beyond the estimate.
+        var hasPurchaseEstimate = row is not null
+            ? row.EstimatedPurchaseQuantity != null
+            : await db.BOQItems.AnyAsync(b => b.ProjectId == dto.ProjectId && b.MaterialId == dto.MaterialId && b.EstimatedPurchaseQuantity != null);
+        var isAdditional = hasPurchaseEstimate && dto.Quantity > remaining;
 
         var request = new MaterialRequest
         {
@@ -52,6 +68,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             MaterialId = dto.MaterialId,
             Quantity = dto.Quantity,
             Unit = string.IsNullOrWhiteSpace(dto.Unit) ? material.Unit : dto.Unit.Trim(),
+            BOQItemId = row?.Id,
+            IsAdditional = isAdditional,
             RequestedByUserId = CurrentUserId,
         };
 
@@ -426,6 +444,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         RequestedByName = $"{r.RequestedBy.FirstName} {r.RequestedBy.LastName}",
         CreatedAt = r.CreatedAt,
         Remarks = r.Remarks,
+        IsAdditional = r.IsAdditional,
         Quotes = r.Quotes.OrderBy(q => q.Slot).Select(q => new MaterialRequestQuoteDto
         {
             Slot = q.Slot, SupplierName = q.SupplierName, UnitPrice = q.UnitPrice,
