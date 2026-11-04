@@ -52,6 +52,14 @@ public class BOQItem
     // treating both as equally real ground truth.
     public bool IsUsageConfirmed { get; set; } = false;
 
+    // Set when someone marks this line "None" in Record Material Excess: no
+    // (more) excess or waste, so it's done and drops out of later entries.
+    // Stored on the line rather than as a zero-quantity ExcessWasteRecord,
+    // which would clutter every excess log, chart and report; it confirms
+    // actual usage the same way a record does.
+    public DateTime? NoExcessWasteConfirmedAt { get; set; }
+    public int? NoExcessWasteConfirmedByUserId { get; set; }
+
     // Predicted procurement quantity for new (non-historical) projects — in a
     // real purchasable container unit (pc/bag/sheet/...), distinct from
     // EstimatedQuantity/Unit above which are often an area/length measure

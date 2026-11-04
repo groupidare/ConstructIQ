@@ -49,6 +49,11 @@ builder.Services.AddScoped<IProjectAccessService, ProjectAccessService>();
 builder.Services.AddScoped<IMaterialCostService, MaterialCostService>();
 builder.Services.AddScoped<IInventoryService, InventoryService>();
 builder.Services.AddScoped<IExcessWasteService, ExcessWasteService>();
+// Writes logged Excess into the warehouse Google Sheet's STOCK IN columns —
+// one singleton, both as the hosted worker and the trigger ExcessWasteService calls.
+builder.Services.AddSingleton<ExcessSheetSyncService>();
+builder.Services.AddSingleton<IExcessSheetSync>(sp => sp.GetRequiredService<ExcessSheetSyncService>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ExcessSheetSyncService>());
 builder.Services.AddScoped<IForecastService, ForecastService>();
 builder.Services.AddScoped<IProcurementService, ProcurementService>();
 builder.Services.AddScoped<IRedistributionService, RedistributionService>();

@@ -197,9 +197,17 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
         };
       });
 
+      // Historical projects: one row per purchased material, mirroring the
+      // Purchased Order (PO) table — a BOQ line bought as tile (sq.m) +
+      // adhesive (bag) + grout (pack) becomes three rows, each with its own
+      // single-unit Material Quantity and Actual Qty. Each keeps the BOQ
+      // line's section and Total Area (the measure the model learns from).
+      // Lines of the same material + unit (several deliveries) stay together.
+      const rowsToAdd = project.isHistorical ? scanned.flatMap(splitByPurchasedMaterial) : scanned;
+
       // Sections the blueprint filled keep the blueprint's rows; rows already
       // in the plan (the same BOQ scanned again) are skipped.
-      const { add, covered, duplicates } = splitScannedRows(scanned, boqRows);
+      const { add, covered, duplicates } = splitScannedRows(rowsToAdd, boqRows);
       if (add.length) setBoqRows(prev => [...prev, ...add]);
       if (covered.length) setCoveredRows(covered);
       const notes = [
@@ -212,6 +220,25 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     } catch (error) {
       toast.error(apiErrorMessage(error, 'Failed to scan document.'));
     }
+  }
+
+  function splitByPurchasedMaterial(row: BOQItemRow): BOQItemRow[] {
+    const lines = row.historicalSupply ?? [];
+    if (lines.length === 0) return [row];
+    const groups = new Map<string, NonNullable<BOQItemRow['historicalSupply']>>();
+    lines.forEach(line => {
+      const key = `${line.materialName.trim().toLowerCase()}|${line.unit.trim().toLowerCase()}`;
+      groups.set(key, [...(groups.get(key) ?? []), line]);
+    });
+    return [...groups.values()].map(group => ({
+      ...row,
+      // The BOQ match was for the BOQ description, not this purchased
+      // material — the backend resolves this name to a catalog material on save.
+      materialId: undefined,
+      specification: group[0].materialName,
+      newMaterialName: group[0].materialName,
+      historicalSupply: group,
+    }));
   }
 
   // Rows generated from a blueprint join the Material Plan as unsaved rows,

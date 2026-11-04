@@ -11,7 +11,9 @@ export interface ExcessWasteRecord {
   materialName: string;
   unit: string;
   excessType: ExcessType;
+  // Still available to redistribute; loggedQuantity is what was recorded.
   quantity: number;
+  loggedQuantity: number;
   unitCost: number;
   totalCost: number;
   excessPercent: number;
@@ -45,6 +47,13 @@ export interface PendingBOQItem {
   materialName: string;
   unit: string;
   estimatedQuantity: number;
+  // Delivered (or estimated, until a delivery is recorded) and the excess +
+  // waste already logged against the line — Actual Usage = delivered − logged.
+  deliveredQuantity?: number;
+  alreadyLogged?: number;
+  excessLogged?: number;
+  wasteLogged?: number;
+  redistributionPending?: boolean;
 }
 
 export interface ExcessAnalyticsSummary {

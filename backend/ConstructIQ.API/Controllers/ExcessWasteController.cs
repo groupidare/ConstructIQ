@@ -35,13 +35,32 @@ public class ExcessWasteController(IExcessWasteService excessWasteService, IMate
     public async Task<IActionResult> GetSummary(int projectId) =>
         Ok(await excessWasteService.GetSummaryAsync(projectId));
 
-    [HttpGet("pending-boq-items/{projectId:int}")]
-    public async Task<IActionResult> GetPendingBOQItems(int projectId, [FromQuery] bool isReusable = true) =>
-        Ok(await excessWasteService.GetPendingBOQItemsAsync(projectId, isReusable));
+    [HttpGet("boq-items/{projectId:int}")]
+    public async Task<IActionResult> GetLoggableBOQItems(int projectId) =>
+        Ok(await excessWasteService.GetLoggableBOQItemsAsync(projectId));
 
-    [HttpGet("projects-with-pending-items")]
-    public async Task<IActionResult> GetProjectIdsWithPendingItems() =>
-        Ok(await excessWasteService.GetProjectIdsWithPendingItemsAsync());
+    [HttpGet("projects-with-boq-items")]
+    public async Task<IActionResult> GetProjectIdsWithBOQItems() =>
+        Ok(await excessWasteService.GetProjectIdsWithBOQItemsAsync());
+
+    // "None" — these BOQ lines have no excess or waste left. Same roles as
+    // logging an entry.
+    [HttpPost("confirm-none")]
+    [Authorize(Roles = "Admin,WarehousePersonnel")]
+    public async Task<IActionResult> ConfirmNone([FromBody] ConfirmNoExcessWasteDto dto)
+    {
+        if (dto.BOQItemIds.Count == 0)
+            return BadRequest(new { message = "Select at least one material." });
+        try
+        {
+            await excessWasteService.ConfirmNoExcessWasteAsync(dto.ProjectId, dto.BOQItemIds, CurrentUserId);
+            return NoContent();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
 
     // SiteEngineer's Excess Analytics access is view-only — only
     // Warehouse (and Admin) actually log/edit entries.

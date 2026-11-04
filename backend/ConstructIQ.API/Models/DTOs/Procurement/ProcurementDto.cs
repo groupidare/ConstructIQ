@@ -109,4 +109,5 @@ public class RedistributionRecommendationDto
     public bool     IsAiRecommended     { get; set; }
     public string?  Notes               { get; set; }
     public DateTime GeneratedAt         { get; set; }
+    public DateTime? ApprovedAt         { get; set; }
 }

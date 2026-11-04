@@ -2,22 +2,43 @@
 
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
-import { X, AlertTriangle, Plus, Trash2 } from "lucide-react";
+import { X, AlertTriangle, Search } from "lucide-react";
 import api from "@/lib/api";
 import type { Project } from "@/types/project";
 import type { PendingBOQItem } from "@/types/excess";
 
+// What the user marked a material as. "None" = nothing left over: no excess
+// and no waste — saved through /excess-waste/confirm-none, not as a record.
+type Kind = "Excess" | "Waste" | "None";
+const KINDS: Kind[] = ["Excess", "Waste", "None"];
+
+const KIND_STYLE: Record<Kind, { color: string; bg: string; hint: string }> = {
+  Excess: { color: "#15803d", bg: "#dcfce7", hint: "Left over and still usable — can be redistributed to other projects" },
+  Waste:  { color: "#b91c1c", bg: "#fee2e2", hint: "Damaged, expired or otherwise unusable" },
+  None:   { color: "#1d4ed8", bg: "#dbeafe", hint: "No excess or waste — everything delivered was used. It won't be listed in later entries." },
+};
+
+// One BOQ line of the project. Lines marked None in an earlier entry are done
+// and not listed; the rest stay listed every entry — excess and waste are
+// logged weekly, so a line can take more of either later.
 interface MaterialRow {
-  boqItemId: number | null;
-  materialId: number | null;
-  description: string;
+  boqItemId: number;
+  materialId: number;
+  name: string;
   unit: string;
   estQty: number;
+  // Actual Usage is computed from these, the same way the save does:
+  // delivered − already logged − this entry.
+  delivered: number;
+  alreadyLogged: number;
+  excessLogged: number;
+  wasteLogged: number;
+  // An undecided redistribution request out of this project for the
+  // material — no new excess/waste until it's settled.
+  redistributionPending: boolean;
+  kind: Kind | null;
   qty: string;
-  kind: "Waste" | "Excess";
 }
-
-const EMPTY_ROW: MaterialRow = { boqItemId: null, materialId: null, description: "", unit: "", estQty: 0, qty: "", kind: "Excess" };
 
 const inputStyle: React.CSSProperties = {
   width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8,
@@ -25,6 +46,10 @@ const inputStyle: React.CSSProperties = {
 };
 const labelStyle: React.CSSProperties = {
   display: "block", fontSize: "0.65rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.04em", marginBottom: 5,
+};
+const headStyle: React.CSSProperties = {
+  padding: "8px 10px", textAlign: "left", fontSize: "0.62rem", fontWeight: 700, color: "#9ca3af",
+  letterSpacing: "0.04em", whiteSpace: "nowrap", background: "#f9fafb", position: "sticky", top: 0, zIndex: 1,
 };
 
 interface RecordExcessModalProps {
@@ -35,22 +60,17 @@ interface RecordExcessModalProps {
 
 export default function RecordExcessModal({ projects, onClose, onSuccess }: RecordExcessModalProps) {
   const [projectId, setProjectId] = useState(0);
-  const [rows, setRows]           = useState<MaterialRow[]>([{ ...EMPTY_ROW }]);
+  const [rows, setRows]           = useState<MaterialRow[]>([]);
+  const [search, setSearch]       = useState("");
   const [submitting, setSubmitting] = useState(false);
-  // Fetched separately per kind — a BOQ line already logged as Excess can
-  // still be logged as Waste (and vice versa), so "pending" isn't one shared
-  // list; each kind has its own independent remaining-materials list.
-  const [pendingByKind, setPendingByKind] = useState<Record<"Excess" | "Waste", PendingBOQItem[]>>({ Excess: [], Waste: [] });
   const [loadingPending, setLoadingPending] = useState(false);
-  // Projects with at least one BOQ line still missing an Excess or Waste
-  // record — a fully-logged project is always a dead end here (immediately
-  // shows "No materials left to log"), so it's kept out of the picker
-  // entirely rather than offered and then rejected.
+  // Projects with at least one BOQ line not yet marked None — any other is
+  // a dead end here, so it's kept out of the picker entirely.
   const [pendingProjectIds, setPendingProjectIds] = useState<Set<number> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    api.get<number[]>("/excess-waste/projects-with-pending-items")
+    api.get<number[]>("/excess-waste/projects-with-boq-items")
       .then(({ data }) => { if (!cancelled) setPendingProjectIds(new Set(data)); })
       .catch(() => { if (!cancelled) setPendingProjectIds(new Set(projects.map(p => p.id))); }); // fail open
     return () => { cancelled = true; };
@@ -63,78 +83,73 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
 
   const selectedProject = useMemo(() => selectableProjects.find(p => p.id === projectId) ?? null, [selectableProjects, projectId]);
 
-  // Every BOQ line for this project that hasn't had a record of THAT kind
-  // logged against it yet.
+  // The project's BOQ lines not yet marked None, with what's been logged so far.
   useEffect(() => {
-    if (!projectId) { setPendingByKind({ Excess: [], Waste: [] }); return; }
+    setRows([]);
+    setSearch("");
+    if (!projectId) return;
     let cancelled = false;
     setLoadingPending(true);
-    Promise.all([
-      api.get<PendingBOQItem[]>(`/excess-waste/pending-boq-items/${projectId}`, { params: { isReusable: true } }),
-      api.get<PendingBOQItem[]>(`/excess-waste/pending-boq-items/${projectId}`, { params: { isReusable: false } }),
-    ])
-      .then(([excess, waste]) => { if (!cancelled) setPendingByKind({ Excess: excess.data, Waste: waste.data }); })
-      .catch(() => { if (!cancelled) setPendingByKind({ Excess: [], Waste: [] }); })
+    api.get<PendingBOQItem[]>(`/excess-waste/boq-items/${projectId}`)
+      .then(({ data }) => {
+        if (cancelled) return;
+        setRows(data.map(item => ({
+          boqItemId: item.boqItemId, materialId: item.materialId, name: item.materialName,
+          unit: item.unit, estQty: item.estimatedQuantity,
+          delivered: item.deliveredQuantity ?? item.estimatedQuantity,
+          alreadyLogged: item.alreadyLogged ?? 0,
+          excessLogged: item.excessLogged ?? 0,
+          wasteLogged: item.wasteLogged ?? 0,
+          redistributionPending: item.redistributionPending ?? false,
+          kind: null, qty: "",
+        })));
+      })
+      .catch(() => { if (!cancelled) toast.error("Failed to load this project's materials."); })
       .finally(() => { if (!cancelled) setLoadingPending(false); });
-    setRows([{ ...EMPTY_ROW }]);
     return () => { cancelled = true; };
   }, [projectId]);
 
-  function updateRow(idx: number, patch: Partial<MaterialRow>) {
-    setRows(prev => prev.map((r, i) => i === idx ? { ...r, ...patch } : r));
+  function updateRow(boqItemId: number, patch: Partial<MaterialRow>) {
+    setRows(prev => prev.map(r => r.boqItemId === boqItemId ? { ...r, ...patch } : r));
   }
 
-  function pickBoqItem(idx: number, boqItemId: number) {
-    const item = pendingByKind[rows[idx].kind].find(p => p.boqItemId === boqItemId);
-    if (!item) return;
-    updateRow(idx, {
-      boqItemId: item.boqItemId,
-      materialId: item.materialId,
-      description: item.materialName,
-      unit: item.unit,
-      estQty: item.estimatedQuantity,
-    });
+  // Clicking the selected kind again clears it — a row left unmarked is
+  // simply not saved this time.
+  function setKind(row: MaterialRow, kind: Kind) {
+    updateRow(row.boqItemId, row.kind === kind ? { kind: null, qty: "" } : { kind, qty: kind === "None" ? "" : row.qty });
   }
 
-  // Switching a row's kind can invalidate its current pick (e.g. this
-  // material may already be logged as Waste, so it won't appear once the
-  // row is switched to Waste) — clear it rather than leave a stale,
-  // no-longer-valid selection in place.
-  function setRowKind(idx: number, kind: "Waste" | "Excess") {
-    updateRow(idx, { kind, boqItemId: null, materialId: null, description: "", unit: "", estQty: 0 });
+  function markRestAsNone() {
+    setRows(prev => prev.map(r => r.kind ? r : { ...r, kind: "None", qty: "" }));
   }
 
-  function addRow() {
-    setRows(prev => [...prev, { ...EMPTY_ROW }]);
-  }
+  // What's still unaccounted for on a line: delivered minus everything
+  // logged as excess/waste so far — the most a new entry can log.
+  const remainingOf = (r: MaterialRow) => Math.max(0, r.delivered - r.alreadyLogged);
 
-  function removeRow(idx: number) {
-    setRows(prev => prev.length === 1 ? prev : prev.filter((_, i) => i !== idx));
-  }
+  const visibleRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? rows.filter(r => r.name.toLowerCase().includes(q)) : rows;
+  }, [rows, search]);
 
-  // Options for one row's picker: every pending item of THIS row's kind,
-  // minus whichever ones another row of the SAME kind in this form has
-  // already claimed — a material can legitimately be picked once for Excess
-  // and once for Waste across two different rows in the same session.
-  function optionsFor(idx: number): PendingBOQItem[] {
-    const kind = rows[idx].kind;
-    const claimedElsewhere = new Set(
-      rows.filter((r, i) => i !== idx && r.kind === kind).map(r => r.boqItemId).filter((id): id is number => id !== null)
-    );
-    return pendingByKind[kind].filter(p => !claimedElsewhere.has(p.boqItemId));
-  }
+  const marked = rows.filter(r => r.kind);
+  const counts = { Excess: 0, Waste: 0, None: 0 } as Record<Kind, number>;
+  marked.forEach(r => { counts[r.kind!]++; });
 
   function validate(): string | null {
     if (!projectId) return "Select a project.";
-    for (const r of rows) {
-      if (!r.boqItemId) return "Select a material from the Bill of Quantities for every row.";
-      if (!r.qty || Number(r.qty) <= 0) return "Every material needs a quantity greater than 0.";
-    }
+    if (marked.length === 0) return "Mark at least one material as Excess, Waste or None.";
+    const missingQty = marked.find(r => r.kind !== "None" && !(Number(r.qty) > 0));
+    if (missingQty) return `Enter a quantity greater than 0 for ${missingQty.name}.`;
+    const tooMuch = marked.find(r => r.kind !== "None" && Number(r.qty) > remainingOf(r));
+    if (tooMuch) return `${tooMuch.name}: only ${remainingOf(tooMuch).toLocaleString()} ${tooMuch.unit} is left to log after what's already been recorded.`;
     return null;
   }
 
   async function submitRows() {
-    await Promise.all(rows.map(r => api.post("/excess-waste", {
+    const logged = marked.filter(r => r.kind === "Excess" || r.kind === "Waste");
+    const none = marked.filter(r => r.kind === "None");
+    await Promise.all(logged.map(r => api.post("/excess-waste", {
       projectId,
       boqItemId: r.boqItemId,
       materialId: r.materialId,
@@ -144,6 +159,9 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
       quantity: Number(r.qty),
       unitCost: 0,
     })));
+    if (none.length) {
+      await api.post("/excess-waste/confirm-none", { projectId, boqItemIds: none.map(r => r.boqItemId) });
+    }
   }
 
   async function handleSaveEntry() {
@@ -152,7 +170,7 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
     setSubmitting(true);
     try {
       await submitRows();
-      toast.success("Entry saved.");
+      toast.success(`Saved ${marked.length} material${marked.length === 1 ? "" : "s"}.`);
       onSuccess?.();
       onClose();
     } catch (err) {
@@ -163,12 +181,11 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
     }
   }
 
-  const totalPendingCount = pendingByKind.Excess.length + pendingByKind.Waste.length;
-  const noMaterialsLeft = projectId > 0 && !loadingPending && totalPendingCount === 0;
+  const noMaterialsLeft = projectId > 0 && !loadingPending && rows.length === 0;
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 720, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 900, maxWidth: "100%", maxHeight: "90vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
 
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.1rem" }}>
@@ -208,8 +225,28 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
             </div>
           </div>
         </div>
+
         {/* Material Details */}
-        <p style={{ fontSize: "0.65rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", marginBottom: 8 }}>MATERIAL DETAILS</p>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+          <p style={{ fontSize: "0.65rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", margin: 0 }}>MATERIAL DETAILS</p>
+          {rows.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {rows.length > 6 && (
+                <div style={{ position: "relative" }}>
+                  <Search style={{ width: 12, height: 12, color: "#9ca3af", position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)" }} />
+                  <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search material"
+                    style={{ ...inputStyle, width: 180, padding: "5px 8px 5px 25px", fontSize: "0.75rem" }} />
+                </div>
+              )}
+              <button type="button" onClick={markRestAsNone} disabled={marked.length === rows.length}
+                title="Mark every material you haven't marked yet as None (no excess or waste)"
+                style={{ background: "none", border: "none", padding: 0, fontSize: "0.72rem", fontWeight: 600, whiteSpace: "nowrap",
+                  color: marked.length === rows.length ? "#d1d5db" : "#1d4ed8", cursor: marked.length === rows.length ? "default" : "pointer" }}>
+                Mark unmarked as None
+              </button>
+            </div>
+          )}
+        </div>
 
         {!projectId ? (
           <p style={{ fontSize: "0.8rem", color: "#9ca3af", padding: "0.75rem 0" }}>Select a project to see its Bill of Quantities materials.</p>
@@ -217,83 +254,96 @@ export default function RecordExcessModal({ projects, onClose, onSuccess }: Reco
           <p style={{ fontSize: "0.8rem", color: "#9ca3af", padding: "0.75rem 0" }}>Loading materials…</p>
         ) : noMaterialsLeft ? (
           <p style={{ fontSize: "0.8rem", color: "#9ca3af", padding: "0.75rem 0" }}>
-            No materials left to log — every Bill of Quantities line for this project already has excess/waste recorded.
+            No materials left to log — this project&apos;s Bill of Quantities materials are all marked None.
           </p>
         ) : (
           <>
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginBottom: "0.5rem" }}>
-              {rows.map((r, idx) => {
-                const qtyNum = Number(r.qty) || 0;
-                const actualUsage = r.boqItemId ? Math.max(0, r.estQty - qtyNum) : null;
-                return (
-                  <div key={idx} style={{ border: "1px solid #f3f4f6", borderRadius: 10, padding: "0.75rem" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "2fr 0.9fr 0.8fr 1.3fr auto", gap: 8, alignItems: "end" }}>
-                      <div>
-                        <label style={labelStyle}>MATERIAL (FROM BOQ)</label>
-                        <select
-                          value={r.boqItemId ?? 0}
-                          onChange={e => pickBoqItem(idx, +e.target.value)}
-                          style={inputStyle}
-                        >
-                          <option value={0} disabled>Select material…</option>
-                          {optionsFor(idx).map(p => (
-                            <option key={p.boqItemId} value={p.boqItemId}>
-                              {p.materialName}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label style={labelStyle}>UNIT</label>
-                        <div style={{ ...inputStyle, background: "#f3f4f6", color: r.unit ? "#111827" : "#9ca3af" }}>{r.unit || "—"}</div>
-                      </div>
-                      <div>
-                        <label style={labelStyle}>QTY</label>
-                        <input type="number" value={r.qty} onChange={e => updateRow(idx, { qty: e.target.value })}
-                          placeholder="8" style={inputStyle} disabled={!r.boqItemId} />
-                      </div>
-                      <div>
-                        <label style={labelStyle}>WASTE / EXCESS</label>
-                        <div style={{ display: "flex", gap:4, background: "#e5e7eb", borderRadius: 8, padding: 3 }}>
-                          {(["Waste", "Excess"] as const).map(k => (
-                            <button key={k} type="button" onClick={() => setRowKind(idx, k)}
-                              style={{
-                                flex: 1, padding: "6px 0", borderRadius: 6, border: "none", cursor: "pointer",
-                                fontSize: "0.72rem", fontWeight: 600,
-                                background: r.kind === k ? "#fff" : "transparent",
-                                color: r.kind === k ? "#111827" : "#6b7280",
-                                boxShadow: r.kind === k ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
-                              }}>{k}</button>
-                          ))}
-                        </div>
-                      </div>
-                      <button type="button" onClick={() => removeRow(idx)} disabled={rows.length === 1}
-                        style={{ background: "none", border: "none", cursor: rows.length === 1 ? "default" : "pointer", color: rows.length === 1 ? "#e5e7eb" : "#dc2626", padding: 8 }}>
-                        <Trash2 style={{ width: 15, height: 15 }} />
-                      </button>
-                    </div>
-                    {r.boqItemId != null && (
-                      <p style={{ fontSize: "0.7rem", color: "#6b7280", margin: "8px 2px 0" }}>
-                        Est. Qty <strong>{r.estQty.toLocaleString()} {r.unit}</strong>
-                        {" — "}
-                        Actual Usage once saved: <strong style={{ color: "#15803d" }}>{actualUsage?.toLocaleString()} {r.unit}</strong>
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
+            <div style={{ border: "1px solid #f3f4f6", borderRadius: 10, overflow: "auto", flex: 1, minHeight: 0, maxHeight: 380 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    {["MATERIAL (FROM BOQ)", "UNIT", "DELIVERED / EST.", "EXCESS / WASTE / NONE", "QTY", "ACTUAL USAGE"].map(h => (
+                      <th key={h} style={headStyle}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleRows.length === 0 ? (
+                    <tr><td colSpan={6} style={{ padding: "1rem", fontSize: "0.78rem", color: "#9ca3af" }}>No materials match “{search}”.</td></tr>
+                  ) : visibleRows.map(r => {
+                    const qtyNum = Number(r.qty) || 0;
+                    const remaining = remainingOf(r);
+                    const actualUsage = r.kind === "None" ? remaining : r.kind ? Math.max(0, remaining - qtyNum) : null;
+                    const needsQty = r.kind === "Excess" || r.kind === "Waste";
+                    return (
+                      <tr key={r.boqItemId} style={{ borderTop: "1px solid #f3f4f6", background: r.kind ? "#fff" : "#fcfcfd" }}>
+                        <td style={{ padding: "8px 10px", fontSize: "0.8rem", fontWeight: 600, color: "#111827", minWidth: 200 }}>{r.name}</td>
+                        <td style={{ padding: "8px 10px", fontSize: "0.78rem", color: "#6b7280", whiteSpace: "nowrap" }}>{r.unit || "—"}</td>
+                        <td style={{ padding: "8px 10px", fontSize: "0.78rem", color: "#6b7280", whiteSpace: "nowrap" }}>
+                          {r.delivered.toLocaleString()}
+                          {r.alreadyLogged > 0 && (
+                            <span title={`Logged in earlier entries: ${r.excessLogged.toLocaleString()} excess + ${r.wasteLogged.toLocaleString()} waste — Actual Usage starts from ${remaining.toLocaleString()} ${r.unit}`}
+                              style={{ display: "block", fontSize: "0.65rem", color: "#b45309", marginTop: 2 }}>
+                              −{r.alreadyLogged.toLocaleString()} logged
+                            </span>
+                          )}
+                        </td>
+                        <td style={{ padding: "8px 10px" }}>
+                          <div role="radiogroup" aria-label={`Excess, waste or none for ${r.name}`}
+                            style={{ display: "flex", gap: 3, background: "#f3f4f6", borderRadius: 8, padding: 3, minWidth: 200 }}>
+                            {KINDS.map(k => {
+                              const allowed = k === "None" || (remaining > 0 && !r.redistributionPending);
+                              const active = r.kind === k;
+                              return (
+                                <button key={k} type="button" role="radio" aria-checked={active} disabled={!allowed}
+                                  onClick={() => setKind(r, k)}
+                                  title={allowed ? KIND_STYLE[k].hint
+                                    : r.redistributionPending ? "A redistribution request for this material is still waiting for a decision"
+                                    : "Everything delivered is already logged as excess or waste"}
+                                  style={{
+                                    flex: 1, padding: "5px 0", borderRadius: 6, border: "none",
+                                    cursor: allowed ? "pointer" : "not-allowed", fontSize: "0.7rem", fontWeight: 600,
+                                    background: active ? KIND_STYLE[k].bg : "transparent",
+                                    color: !allowed ? "#d1d5db" : active ? KIND_STYLE[k].color : "#6b7280",
+                                    boxShadow: active ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+                                  }}>{k}</button>
+                              );
+                            })}
+                          </div>
+                        </td>
+                        <td style={{ padding: "8px 10px", width: 100 }}>
+                          <input type="number" min="0" value={needsQty ? r.qty : ""}
+                            onChange={e => updateRow(r.boqItemId, { qty: e.target.value })}
+                            placeholder={needsQty ? "0" : "—"} disabled={!needsQty}
+                            aria-label={`Quantity for ${r.name}`}
+                            style={{ ...inputStyle, padding: "6px 8px", background: needsQty ? "#fff" : "#f3f4f6" }} />
+                        </td>
+                        <td style={{ padding: "8px 10px", fontSize: "0.78rem", whiteSpace: "nowrap", color: actualUsage == null ? "#d1d5db" : "#15803d", fontWeight: 600 }}>
+                          {actualUsage == null ? "—" : `${actualUsage.toLocaleString()} ${r.unit}`}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-            {rows.length < totalPendingCount && (
-              <button type="button" onClick={addRow}
-                style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", cursor: "pointer", color: "#16a34a", fontSize: "0.8rem", fontWeight: 600, padding: "6px 0", marginBottom: "1.25rem" }}>
-                <Plus style={{ width: 14, height: 14 }} /> Add material
-              </button>
-            )}
+            <p style={{ fontSize: "0.7rem", color: "#9ca3af", margin: "8px 2px 1.1rem", lineHeight: 1.5 }}>
+              <strong style={{ color: KIND_STYLE.Excess.color }}>Excess</strong> — usable leftover ·{" "}
+              <strong style={{ color: KIND_STYLE.Waste.color }}>Waste</strong> — unusable ·{" "}
+              <strong style={{ color: KIND_STYLE.None.color }}>None</strong> — no excess or waste, everything was used; it won&apos;t be listed again.
+              {" "}Unmarked materials and those with excess/waste stay listed for your next entry.
+            </p>
           </>
         )}
 
         {/* Footer */}
-        <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end", borderTop: "1px solid #f3f4f6", paddingTop: "1.1rem" }}>
+        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", justifyContent: "flex-end", borderTop: "1px solid #f3f4f6", paddingTop: "1.1rem" }}>
+          {rows.length > 0 && (
+            <span style={{ fontSize: "0.72rem", color: "#6b7280", marginRight: "auto" }}>
+              {marked.length} of {rows.length} marked
+              {marked.length > 0 && ` · ${counts.Excess} excess · ${counts.Waste} waste · ${counts.None} none`}
+            </span>
+          )}
           <button onClick={onClose} disabled={submitting}
             style={{ padding: "10px 18px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 600, fontSize: "0.85rem", cursor: "pointer" }}>
             Cancel

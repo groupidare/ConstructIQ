@@ -17,7 +17,7 @@ namespace ConstructIQ.API.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.20")
+                .HasAnnotation("ProductVersion", "9.0.22")
                 .HasAnnotation("Relational:MaxIdentifierLength", 64);
 
             MySqlModelBuilderExtensions.AutoIncrementColumns(modelBuilder);
@@ -99,6 +99,12 @@ namespace ConstructIQ.API.Migrations
                         .HasColumnType("tinyint(1)");
 
                     b.Property<int>("MaterialId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("NoExcessWasteConfirmedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("NoExcessWasteConfirmedByUserId")
                         .HasColumnType("int");
 
                     b.Property<string>("Notes")
@@ -374,6 +380,19 @@ namespace ConstructIQ.API.Migrations
 
                     b.Property<int>("RecordedByUserId")
                         .HasColumnType("int");
+
+                    b.Property<decimal>("RedistributedQuantity")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<string>("SheetSyncError")
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<bool>("SheetSyncPending")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime?>("SheetSyncedAt")
+                        .HasColumnType("datetime(6)");
 
                     b.Property<decimal>("TotalCost")
                         .HasColumnType("decimal(18,2)");
@@ -1400,6 +1419,16 @@ namespace ConstructIQ.API.Migrations
 
                     b.Property<int?>("RequestedByUserId")
                         .HasColumnType("int");
+
+                    b.Property<string>("SheetSyncError")
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<bool>("SheetSyncPending")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime?>("SheetSyncedAt")
+                        .HasColumnType("datetime(6)");
 
                     b.Property<int?>("SourceExcessWasteRecordId")
                         .HasColumnType("int");

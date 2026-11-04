@@ -97,7 +97,7 @@ export default function ExcessAnalyticsProjectPage() {
                 <Tr key={r.id}>
                   <Td className="font-medium">{r.materialName}</Td>
                   <Td><Badge variant={r.excessType === 'Damaged' ? 'danger' : 'warning'}>{r.excessType}</Badge></Td>
-                  <Td>{r.quantity.toLocaleString()} {r.unit}</Td>
+                  <Td>{r.loggedQuantity.toLocaleString()} {r.unit}</Td>
                   <Td>{r.excessPercent.toFixed(1)}%</Td>
                   <Td><Badge variant={r.isReusable ? 'success' : 'default'}>{r.isReusable ? 'Yes' : 'No'}</Badge></Td>
                   <Td>{r.phaseName || '—'}</Td>

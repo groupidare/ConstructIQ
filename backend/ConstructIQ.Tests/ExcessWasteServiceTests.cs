@@ -2,6 +2,7 @@ using ConstructIQ.API.Models.DTOs.BOQ;
 using ConstructIQ.API.Models.DTOs.ExcessWaste;
 using ConstructIQ.API.Models.Entities;
 using ConstructIQ.API.Services;
+using Microsoft.EntityFrameworkCore;
 using Xunit;
 
 namespace ConstructIQ.Tests;
@@ -15,6 +16,45 @@ public class ExcessWasteServiceTests(DatabaseFixture fixture)
         ExcessType = isReusable ? "Overordered" : "Damaged",
         Quantity = quantity, UnitCost = 5, IsReusable = isReusable,
     };
+
+    [Fact] // Redistributing excess must not make it look like it was never logged.
+    public async Task RedistributedExcess_StillCountsAsLogged()
+    {
+        await using var db = fixture.CreateContext();
+        var user = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, user.Id);
+        var target = await TestDataBuilder.CreateProjectAsync(db, user.Id);
+        var material = await TestDataBuilder.CreateMaterialAsync(db);
+        var boq = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 100);
+
+        var service = new ExcessWasteService(db);
+        var logged = await service.CreateAsync(Dto(project.Id, material.Id, boq.Id, 40, isReusable: true), user.Id);
+
+        var request = new RedistributionRequest
+        {
+            MaterialId = material.Id, SourceProjectId = project.Id, TargetProjectId = target.Id,
+            SourceExcessWasteRecordId = logged.Id, Quantity = 30, Status = RedistributionStatus.PendingApproval,
+        };
+        db.RedistributionRequests.Add(request);
+        await db.SaveChangesAsync();
+        await new RedistributionService(db, new NotificationService(db)).ApproveTransferAsync(request.Id, user.Id);
+
+        var record = (await service.GetByProjectAsync(project.Id)).Single();
+        Assert.Equal(10, record.Quantity);        // left to redistribute
+        Assert.Equal(40, record.LoggedQuantity);  // what the log shows
+
+        var line = (await service.GetLoggableBOQItemsAsync(project.Id)).Single();
+        Assert.Equal(40, line.AlreadyLogged);
+        Assert.Equal(40, line.ExcessLogged);
+
+        // Only 60 of the 100 is still unaccounted for — not 90.
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.CreateAsync(Dto(project.Id, material.Id, boq.Id, 61, isReusable: true), user.Id));
+
+        await service.CreateAsync(Dto(project.Id, material.Id, boq.Id, 10, isReusable: false), user.Id);
+        var saved = await db.BOQItems.AsNoTracking().FirstAsync(b => b.Id == boq.Id);
+        Assert.Equal(50, saved.ActualQuantity);
+    }
 
     [Fact] // Case 2: excess-only deduction in an otherwise-reconciled item.
     public async Task ExcessOnly_ProducesCorrectActualUsage()
@@ -139,7 +179,7 @@ public class ExcessWasteServiceTests(DatabaseFixture fixture)
         Assert.Equal(30, summary[0].ExcessTotal);
     }
 
-    [Fact] // Case 9: recording Excess must not block also recording Waste for the same BOQ item.
+    [Fact] // Case 9: recording Excess must not block recording Waste (or more Excess) for the same BOQ item.
     public async Task BothExcessAndWaste_CanBeRecordedForSameItem()
     {
         await using var db = fixture.CreateContext();
@@ -151,12 +191,12 @@ public class ExcessWasteServiceTests(DatabaseFixture fixture)
 
         await service.CreateAsync(Dto(project.Id, material.Id, boq.Id, 10, isReusable: true), user.Id);
 
-        // The pending-items picker must still offer this item for Waste...
-        var pendingForWaste = (await service.GetPendingBOQItemsAsync(project.Id, isReusable: false)).ToList();
-        Assert.Contains(pendingForWaste, p => p.BOQItemId == boq.Id);
-        // ...but no longer for Excess (already logged as Excess).
-        var pendingForExcess = (await service.GetPendingBOQItemsAsync(project.Id, isReusable: true)).ToList();
-        Assert.DoesNotContain(pendingForExcess, p => p.BOQItemId == boq.Id);
+        // The Record Material Excess table still lists the item, with what's
+        // been logged so far — so its Actual Usage preview starts from 90.
+        var listed = (await service.GetLoggableBOQItemsAsync(project.Id)).Single(p => p.BOQItemId == boq.Id);
+        Assert.Equal(10, listed.ExcessLogged);
+        Assert.Equal(0, listed.WasteLogged);
+        Assert.Equal(100, listed.DeliveredQuantity);
 
         // And the second (Waste) entry actually succeeds.
         await service.CreateAsync(Dto(project.Id, material.Id, boq.Id, 5, isReusable: false), user.Id);

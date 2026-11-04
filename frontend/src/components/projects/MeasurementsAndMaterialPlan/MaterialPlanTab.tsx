@@ -315,6 +315,30 @@ export default function MaterialPlanTab({
     return quantity > 0 ? { quantity, unit: lines[0].unit.trim() } : null;
   }
 
+  // Display-only fallback for a row whose PO lines are in mixed units (e.g.
+  // tile in sq.m + adhesive in bags + grout in packs): the row's own material
+  // — the PO line whose name shares the most words with the row's
+  // specification (first line on a tie) — so "Homogeneous Tile (600mm x
+  // 600mm…)" shows the tile's 68 sq.m, matching its PO line. Repeat
+  // deliveries of that same material + unit are summed. Never stored;
+  // historicalPurchase stays the single-unit rule the backend saves.
+  function primaryPurchase(r: BOQItemRow): { quantity: number; unit: string } | null {
+    const lines = (r.historicalSupply ?? []).filter(l => l.unit?.trim() && l.quantity > 0);
+    if (lines.length === 0) return null;
+    // Material words only — sizes and measure words ("20", "mm", "dia",
+    // "thick") are shared by unrelated lines and would decide the match.
+    const ignored = new Set(['dia', 'thick', 'and', 'with', 'per', 'pcs']);
+    const words = (s?: string) => new Set(((s ?? '').toLowerCase().match(/[a-z]{3,}/g) ?? []).filter(w => !ignored.has(w)));
+    const spec = words(r.specification || r.newMaterialName);
+    const score = (name: string) => [...words(name)].filter(w => spec.has(w)).length;
+    const primary = lines.reduce((best, l) => (score(l.materialName) > score(best.materialName) ? l : best));
+    const same = (l: typeof primary) =>
+      l.materialName.trim().toLowerCase() === primary.materialName.trim().toLowerCase()
+      && l.unit.trim().toLowerCase() === primary.unit.trim().toLowerCase();
+    const quantity = lines.filter(same).reduce((sum, l) => sum + Math.round(l.quantity), 0);
+    return { quantity, unit: primary.unit.trim() };
+  }
+
   // A newly-scanned material has no InventoryRecord yet (that only exists
   // once stock is actually recorded), so inventory alone can't name it —
   // boqItems already carries the real Material.Name resolved server-side.
@@ -675,14 +699,20 @@ export default function MaterialPlanTab({
                   )}
                   {isCompleted && isHistorical && (() => {
                     const purchase = historicalPurchase(r);
+                    const primary = purchase ? null : primaryPurchase(r);
+                    const shown = purchase ?? primary;
                     return (
                       <input
                         type="text"
                         readOnly
                         tabIndex={-1}
-                        title={purchase ? 'Total of this row\'s purchase order lines' : 'No purchase order lines in a single unit for this row'}
-                        value={purchase ? `${purchase.quantity.toLocaleString()} ${purchase.unit}` : '—'}
-                        style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', background: '#f9fafb', color: purchase ? '#111827' : '#9ca3af', cursor: 'default' }}
+                        title={purchase
+                          ? 'Total of this row\'s purchase order lines'
+                          : primary
+                            ? 'This row\'s own material from its purchase order lines (other lines are in different units)'
+                            : 'No purchase order lines for this row'}
+                        value={shown ? `${shown.quantity.toLocaleString()} ${shown.unit}` : '—'}
+                        style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', background: '#f9fafb', color: shown ? '#111827' : '#9ca3af', cursor: 'default' }}
                       />
                     );
                   })()}
@@ -721,7 +751,7 @@ export default function MaterialPlanTab({
                       type="number"
                       value={r.actualQuantity || ''}
                       onChange={e => updateRow(i, { actualQuantity: parseFloat(e.target.value) || 0 })}
-                      placeholder={`Actual used (${historicalPurchase(r)?.unit ?? r.unit ?? 'qty'})`}
+                      placeholder={`Actual used (${(historicalPurchase(r) ?? primaryPurchase(r))?.unit ?? r.unit ?? 'qty'})`}
                       style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', background: '#fff7ed', borderColor: '#fed7aa' }}
                     />
                   )}

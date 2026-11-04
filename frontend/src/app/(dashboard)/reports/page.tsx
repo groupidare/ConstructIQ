@@ -41,7 +41,7 @@ const REPORTS: Report[] = [
   { id: "inventory",   title: "Inventory",         desc: "Warehouse stock balance, zero-stock items, pending requests", icon: Package,         category: "Operations" },
   { id: "forecasting", title: "Forecasting",       desc: "Demand forecasts and model accuracy",                         icon: TrendingUp,      category: "Analytics"  },
   { id: "excess",      title: "Excess",            desc: "Waste rate, excess rate, reusable materials",                 icon: Trash2,          category: "Analytics"  },
-  { id: "redistribution", title: "Redistribution", desc: "Dead-stock opportunities, approvals, and priority",           icon: Network,         category: "Operations" },
+  { id: "redistribution", title: "Redistribution", desc: "Surplus material opportunities, approvals, and priority",          icon: Network,         category: "Operations" },
   { id: "procurement", title: "Procurement",       desc: "Purchase order status, supplier performance and ratings",     icon: ShoppingCart,    category: "Operations" },
   { id: "system",      title: "System Overview",   desc: "Cross-system snapshot — projects, stock, orders, weather",    icon: LayoutDashboard, category: "Overview"   },
 ];
@@ -282,7 +282,7 @@ function buildExcessData(records: ExcessWasteRecord[], costImpact: ExcessCostImp
     rows: [...records]
       .sort((a, b) => Number(b.isReusable) - Number(a.isReusable) || b.excessPercent - a.excessPercent)
       .map(r => [
-        r.projectName, r.materialName, r.excessType, num(r.quantity), r.unit,
+        r.projectName, r.materialName, r.excessType, num(r.loggedQuantity), r.unit,
         `${num(r.excessPercent)}%`,
         r.isReusable ? "Yes" : "No", r.redistributionStatus ?? "—",
         r.recordedBy, formatDate(r.recordedAt),
@@ -369,7 +369,7 @@ function buildRedistributionData(items: RedistributionRecommendation[]): ReportV
   // Completed and Rejected, which the live Redistribution page never shows.
   const active = items.filter(r => REDISTRIBUTION_ACTIVE.includes(r.status));
   const approvable = items.filter(r => REDISTRIBUTION_APPROVABLE.includes(r.status));
-  const deadStockCount = new Set(items.map(r => `${r.sourceProjectId}-${r.sourceMaterialId}`)).size;
+  const surplusMaterialCount = new Set(items.map(r => `${r.sourceProjectId}-${r.sourceMaterialId}`)).size;
 
   const byStatus = new Map<string, number>();
   for (const r of items) byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
@@ -386,11 +386,11 @@ function buildRedistributionData(items: RedistributionRecommendation[]): ReportV
   };
 
   return {
-    subtitle: `${items.length} recommendation(s) · ${deadStockCount} dead-stock item(s)`,
+    subtitle: `${items.length} recommendation(s) · ${surplusMaterialCount} surplus material(s)`,
     stats: [
       { label: "ACTIVE OPPORTUNITIES", value: String(active.length),      sub: "AI-suggested through in-transit" },
       { label: "PENDING APPROVAL",     value: String(approvable.length), sub: "Awaiting review" },
-      { label: "DEAD STOCK ITEMS",     value: String(deadStockCount),    sub: "Distinct source materials" },
+      { label: "SURPLUS MATERIALS",    value: String(surplusMaterialCount),    sub: "Distinct source materials" },
     ],
     chartTitle: "Recommendations by Status",
     chartData: Array.from(byStatus.entries()).map(([name, value]) => ({ name, value })),
@@ -400,7 +400,7 @@ function buildRedistributionData(items: RedistributionRecommendation[]): ReportV
     })),
     aiInsight: items.length === 0
       ? "No redistribution opportunities detected yet."
-      : `${approvable.length} recommendation(s) are awaiting approval across ${deadStockCount} dead-stock item(s).`,
+      : `${approvable.length} recommendation(s) are awaiting approval across ${surplusMaterialCount} surplus material(s).`,
     detailTables: [{ title: "Redistribution Log — All Statuses", table: redisTable }],
   };
 }

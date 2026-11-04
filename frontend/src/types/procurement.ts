@@ -97,4 +97,5 @@ export interface RedistributionRecommendation {
   isAiRecommended: boolean;
   notes?: string;
   generatedAt: string;
+  approvedAt?: string | null;
 }
