@@ -136,6 +136,13 @@ public class CompletedProjectDemandRulesTests
     [InlineData("Pieces", "pc")]
     [InlineData("Bag", "bag")]
     [InlineData(null, "")]
+    [InlineData("Bags", "bag")]
+    [InlineData("boxes", "box")]
+    [InlineData("gals", "gal")]
+    [InlineData("cases", "case")]
+    [InlineData("tubes", "tube")]
+    [InlineData("sq.m", "sq.m")]
+    [InlineData("nos", "nos")]
     public void NormalizeUnit_FoldsCaseWhitespaceAndPieceVariants(string? raw, string expected)
     {
         Assert.Equal(expected, CompletedProjectDemandRules.NormalizeUnit(raw));

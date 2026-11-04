@@ -28,12 +28,23 @@ FILE_NAME = "material_ratios.json"
 _NO_DATA_RATIO = 1.0
 
 
+_NOT_PLURAL = {"nos", "gas"}
+
+
 def normalize_unit(unit: Any) -> str:
     """Same label folding as the backend's CompletedProjectDemandRules.
-    NormalizeUnit — trim + case, plus the pc/pcs/piece/pieces variants.
-    Never a physical unit conversion."""
+    NormalizeUnit — trim + case, the pc/pcs/piece/pieces variants, and simple
+    plurals ("bags" -> "bag", "boxes" -> "box"). Never a physical unit
+    conversion."""
     lower = str(unit or "").strip().lower()
-    return "pc" if lower in ("pcs", "piece", "pieces") else lower
+    if lower in ("pcs", "piece", "pieces"):
+        return "pc"
+    if len(lower) < 3 or not lower.endswith("s") or lower.endswith("ss") or lower in _NOT_PLURAL or not lower.isalpha():
+        return lower
+    stem = lower[:-1]
+    if stem.endswith(("xe", "she", "che")):
+        return stem[:-1]
+    return stem
 
 
 def _key(material_id: Any, unit: str) -> str:
