@@ -86,12 +86,11 @@ public class BOQService(AppDbContext db) : IBOQService
             .Where(b => b.ProjectId == projectId)
             .ToListAsync();
 
-        var fulfillment = await ProcurementCapCalculator.GetNetLeftToOrderForProjectAsync(db, projectId);
-        var remainingRequestable = await ProcurementCapCalculator.GetRemainingRequestableForProjectAsync(db, projectId);
+        var rowStatuses = await ProcurementCapCalculator.GetRowStatusesAsync(db, projectId);
         var deliveredBaselines = project.Status == ProjectStatus.Completed && !project.IsHistorical
             ? await GetDeliveredBaselinesAsync(rows)
             : [];
-        return rows.Select(b => ToDto(b, fulfillment, remainingRequestable, project, deliveredBaselines));
+        return rows.Select(b => ToDto(b, rowStatuses, project, deliveredBaselines));
     }
 
     public async Task<IEnumerable<BOQItemResponseDto>> BulkSaveAsync(int projectId, List<BOQItemUpsertDto> items, int userId)
@@ -297,12 +296,11 @@ public class BOQService(AppDbContext db) : IBOQService
             .Where(b => ids.Contains(b.Id))
             .ToListAsync();
 
-        var fulfillment = await ProcurementCapCalculator.GetNetLeftToOrderForProjectAsync(db, projectId);
-        var remainingRequestable = await ProcurementCapCalculator.GetRemainingRequestableForProjectAsync(db, projectId);
+        var rowStatuses = await ProcurementCapCalculator.GetRowStatusesAsync(db, projectId);
         var deliveredBaselines = project.Status == ProjectStatus.Completed && !project.IsHistorical
             ? await GetDeliveredBaselinesAsync(reloaded)
             : [];
-        return reloaded.Select(b => ToDto(b, fulfillment, remainingRequestable, project, deliveredBaselines));
+        return reloaded.Select(b => ToDto(b, rowStatuses, project, deliveredBaselines));
     }
 
     public async Task<bool> DeleteAsync(int id)
@@ -391,19 +389,15 @@ public class BOQService(AppDbContext db) : IBOQService
         return supplier.Id;
     }
 
-    private static BOQItemResponseDto ToDto(BOQItem b, Dictionary<int, (decimal NetLeftToOrder, bool WarehouseApproved)> fulfillment, Dictionary<int, decimal> remainingRequestable, Project project, Dictionary<int, decimal> deliveredBaselines)
+    private static BOQItemResponseDto ToDto(BOQItem b, Dictionary<int, ProcurementCapCalculator.RowStatus> rowStatuses, Project project, Dictionary<int, decimal> deliveredBaselines)
     {
         var materialQuantity = project.IsHistorical
             ? b.EstimatedQuantity
             : project.Status == ProjectStatus.Completed
                 ? deliveredBaselines.GetValueOrDefault(b.Id, b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity)
                 : (decimal?)null;
-        var f = fulfillment.TryGetValue(b.MaterialId, out var found)
-            ? found
-            : (NetLeftToOrder: b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity, WarehouseApproved: false);
-        var remaining = remainingRequestable.TryGetValue(b.MaterialId, out var r)
-            ? r
-            : b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity;
+        var f = rowStatuses.GetValueOrDefault(b.Id)
+            ?? new ProcurementCapCalculator.RowStatus(b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity, b.EstimatedPurchaseQuantity ?? b.EstimatedQuantity, false);
         var rowUnit = !string.IsNullOrWhiteSpace(b.Unit) ? b.Unit : b.Material.Unit;
         var baseline = BaselineCalculator.Compute(BaselineMaterial.From(b.Material), rowUnit, b.EstimatedQuantity);
         return new()
@@ -449,7 +443,7 @@ public class BOQService(AppDbContext db) : IBOQService
         RequestedQuantity         = b.RequestedQuantity,
         NetLeftToOrder            = f.NetLeftToOrder,
         WarehouseApproved         = f.WarehouseApproved,
-        RemainingRequestable      = remaining,
+        RemainingRequestable      = f.RemainingRequestable,
         MaterialQuantity          = materialQuantity,
     };
     }

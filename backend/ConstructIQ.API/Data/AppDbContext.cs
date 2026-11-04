@@ -60,6 +60,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ProjectProgressPhoto>     ProjectProgressPhotos     => Set<ProjectProgressPhoto>();
     public DbSet<TrustedDevice>            TrustedDevices            => Set<TrustedDevice>();
     public DbSet<WarehouseStockItem>       WarehouseStockItems       => Set<WarehouseStockItem>();
+    public DbSet<WarehouseStockLink>       WarehouseStockLinks       => Set<WarehouseStockLink>();
     public DbSet<MaterialRequest>          MaterialRequests          => Set<MaterialRequest>();
     public DbSet<MaterialRequestQuote>     MaterialRequestQuotes     => Set<MaterialRequestQuote>();
     public DbSet<BackupJobRun>             BackupJobRuns             => Set<BackupJobRun>();
@@ -68,6 +69,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     protected override void OnModelCreating(ModelBuilder mb)
     {
         base.OnModelCreating(mb);
+
+        mb.Entity<WarehouseStockLink>().HasIndex(l => l.BoqNameKey).IsUnique();
 
         mb.Entity<User>().HasIndex(u => u.Username).IsUnique();
         mb.Entity<User>().HasIndex(u => u.Email).IsUnique();
@@ -106,6 +109,18 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .WithMany()
             .HasForeignKey(e => e.RecordedByUserId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        mb.Entity<WarehouseRequest>()
+            .HasOne(w => w.BOQItem)
+            .WithMany()
+            .HasForeignKey(w => w.BOQItemId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<MaterialRequest>()
+            .HasOne(m => m.BOQItem)
+            .WithMany()
+            .HasForeignKey(m => m.BOQItemId)
+            .OnDelete(DeleteBehavior.SetNull);
 
         mb.Entity<ExcessWasteRecord>()
             .HasOne(e => e.BOQItem)

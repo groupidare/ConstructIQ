@@ -19,32 +19,40 @@ public class WarehouseRequestService(AppDbContext db, INotificationService notif
             .OrderByDescending(m => m.RequestedAt)
             .ToListAsync();
 
-        return rows.Select(ToDto);
+        return await ToDtosWithLinksAsync(rows);
     }
 
     public async Task<WarehouseRequestResponseDto> CreateAsync(WarehouseRequestCreateDto dto, int userId)
     {
+        var row = await ProcurementCapCalculator.FindRequestRowAsync(db, dto.BOQItemId, dto.ProjectId, dto.MaterialId);
+
         // Nothing counts as released until a request is actually Approved (see
-        // ProcurementCapCalculator), so the cap alone can't stop the same
-        // material being asked for twice while one check is still outstanding
-        // — block that directly instead.
+        // ProcurementCapCalculator), so nothing else stops the same row being
+        // asked for twice while one check is still outstanding — block that
+        // directly instead. A request with no row could be for any of them.
         var hasPending = await db.WarehouseRequests.AnyAsync(w =>
-            w.ProjectId == dto.ProjectId && w.MaterialId == dto.MaterialId && w.Status == WarehouseRequestStatus.Pending);
+            w.ProjectId == dto.ProjectId && w.MaterialId == dto.MaterialId && w.Status == WarehouseRequestStatus.Pending
+            && (dto.BOQItemId == null || w.BOQItemId == null || w.BOQItemId == dto.BOQItemId));
         if (hasPending)
             throw new InvalidOperationException("A warehouse check for this material is already pending — wait for it to be approved or rejected before sending another.");
 
-        var remaining = await ProcurementCapCalculator.GetRemainingRequestableAsync(db, dto.ProjectId, dto.MaterialId);
-        if (dto.RequestedQuantity > remaining)
-        {
-            var material = await db.Materials.FindAsync(dto.MaterialId);
-            throw new InvalidOperationException($"Cannot request more than {remaining} {material?.Unit} — that exceeds the estimated need minus what's already been redistributed in and requested.");
-        }
+        // No upper cap: materials can run short before a project ends, and the
+        // warehouse should get the chance before anything is bought. Anything
+        // past what the row still needs is flagged, and the warehouse decides.
+        var remaining = await ProcurementCapCalculator.GetRemainingRequestableAsync(db, dto.ProjectId, dto.MaterialId, row?.Id);
+        var hasPurchaseEstimate = row is not null
+            ? row.EstimatedPurchaseQuantity != null
+            : await db.BOQItems.AnyAsync(b => b.ProjectId == dto.ProjectId && b.MaterialId == dto.MaterialId && b.EstimatedPurchaseQuantity != null);
+        var isAdditional = hasPurchaseEstimate && dto.RequestedQuantity > remaining;
 
         var request = new WarehouseRequest
         {
             ProjectId         = dto.ProjectId,
             MaterialId        = dto.MaterialId,
+            BOQItemId         = row?.Id,
             RequestedQuantity = dto.RequestedQuantity,
+            Unit              = dto.Unit?.Trim() ?? string.Empty,
+            IsAdditional      = isAdditional,
             RequestedByUserId = userId,
         };
 
@@ -59,7 +67,9 @@ public class WarehouseRequestService(AppDbContext db, INotificationService notif
             .FirstAsync(m => m.Id == request.Id);
 
         await notifications.CreateForRoleAsync(UserRole.WarehousePersonnel, NotificationKind.WarehouseCheck,
-            $"{saved.Project.Name} requested {dto.RequestedQuantity} {saved.Material.Unit} of {saved.Material.Name}.",
+            isAdditional
+                ? $"{saved.Project.Name} requested {dto.RequestedQuantity} {UnitOf(saved)} of {saved.Material.Name} — an additional request beyond the estimate."
+                : $"{saved.Project.Name} requested {dto.RequestedQuantity} {UnitOf(saved)} of {saved.Material.Name}.",
             userId, actionLink: "/inventory");
 
         return ToDto(saved);
@@ -110,8 +120,60 @@ public class WarehouseRequestService(AppDbContext db, INotificationService notif
             .OrderByDescending(m => m.RequestedAt)
             .ToListAsync();
 
-        return rows.Select(ToDto);
+        return await ToDtosWithLinksAsync(rows);
     }
+
+    // Links belong to a row's BOQ wording, and saving can merge a row into a
+    // differently-named catalog Material. So this goes back through the request's
+    // own BOQ row — or, for an older request with none, the project's rows for
+    // that Material. Those can link to different items, which can't say which one
+    // the request meant: none is shown.
+    private async Task<List<WarehouseRequestResponseDto>> ToDtosWithLinksAsync(List<WarehouseRequest> rows)
+    {
+        var dtos = rows.Select(ToDto).ToList();
+        var links = await db.WarehouseStockLinks
+            .Where(l => l.WarehouseMaterialName != null)
+            .ToDictionaryAsync(l => l.BoqNameKey, l => l.WarehouseMaterialName!);
+        if (links.Count == 0) return dtos;
+
+        var projectIds = rows.Select(r => r.ProjectId).Distinct().ToList();
+        var boqRows = await db.BOQItems
+            .Where(b => projectIds.Contains(b.ProjectId))
+            .Select(b => new { b.Id, b.ProjectId, b.MaterialId, b.Specification })
+            .ToListAsync();
+        var stock = (await db.WarehouseStockItems.ToListAsync())
+            .GroupBy(i => StockInSheetRows.NameKey(i.MaterialName))
+            .ToDictionary(g => g.Key, g => g.First());
+
+        foreach (var dto in dtos)
+        {
+            // A request that knows its row asks about that row alone.
+            var rowNames = boqRows.Where(b => b.Id == dto.BOQItemId).Select(b => b.Specification ?? string.Empty).ToList();
+            var names = rowNames.Count > 0
+                ? rowNames
+                : boqRows.Where(b => b.ProjectId == dto.ProjectId && b.MaterialId == dto.MaterialId)
+                    .Select(b => b.Specification ?? string.Empty)
+                    .Append(dto.MaterialName)
+                    .ToList();
+            var linked = names
+                .Select(name => links.GetValueOrDefault(StockInSheetRows.NameKey(name)))
+                .Where(name => name is not null)
+                .Distinct()
+                .ToList();
+            if (linked.Count != 1) continue;
+
+            dto.LinkedStockName = linked[0];
+            if (stock.TryGetValue(StockInSheetRows.NameKey(linked[0]!), out var item))
+            {
+                dto.LinkedStockUnit    = item.Unit;
+                dto.LinkedStockBalance = item.Balance;
+            }
+        }
+        return dtos;
+    }
+
+    private static string UnitOf(WarehouseRequest m) =>
+        string.IsNullOrWhiteSpace(m.Unit) ? m.Material.Unit : m.Unit;
 
     private static WarehouseRequestResponseDto ToDto(WarehouseRequest m) => new()
     {
@@ -120,7 +182,9 @@ public class WarehouseRequestService(AppDbContext db, INotificationService notif
         ProjectName       = m.Project.Name,
         MaterialId        = m.MaterialId,
         MaterialName      = m.Material.Name,
-        Unit              = m.Material.Unit,
+        Unit              = UnitOf(m),
+        BOQItemId         = m.BOQItemId,
+        IsAdditional      = m.IsAdditional,
         RequestedQuantity = m.RequestedQuantity,
         ApprovedQuantity  = m.ApprovedQuantity,
         Status            = m.Status.ToString(),

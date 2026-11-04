@@ -44,13 +44,29 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         var material = await db.Materials.FindAsync(dto.MaterialId);
         if (material is null) return BadRequest(new { message = "Material not found." });
 
+        BOQItem? row;
+        try
+        {
+            row = await ProcurementCapCalculator.FindRequestRowAsync(db, dto.BOQItemId, dto.ProjectId, dto.MaterialId);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+
         // No upper cap — a site can deliberately order beyond the BOQ
         // estimate (breakage, a design change, a buffer). Anything past the
         // remaining requestable balance is accepted as an intentional
         // additional order, and flagged as such to Procurement rather than
-        // rejected. Notify Warehouse keeps its own cap (WarehouseRequestService).
-        var remaining = await ProcurementCapCalculator.GetRemainingRequestableAsync(db, dto.ProjectId, dto.MaterialId);
-        var isAdditional = dto.Quantity > remaining;
+        // rejected. Notify Warehouse works the same way (WarehouseRequestService).
+        var remaining = await ProcurementCapCalculator.GetRemainingRequestableAsync(db, dto.ProjectId, dto.MaterialId, row?.Id);
+        // A row with no purchase estimate yet (no stock, so it skipped the
+        // warehouse) has only its BOQ measure to compare with — 500 pc against
+        // 169 sq.m says nothing about being beyond the estimate.
+        var hasPurchaseEstimate = row is not null
+            ? row.EstimatedPurchaseQuantity != null
+            : await db.BOQItems.AnyAsync(b => b.ProjectId == dto.ProjectId && b.MaterialId == dto.MaterialId && b.EstimatedPurchaseQuantity != null);
+        var isAdditional = hasPurchaseEstimate && dto.Quantity > remaining;
 
         var request = new MaterialRequest
         {
@@ -58,6 +74,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             MaterialId = dto.MaterialId,
             Quantity = dto.Quantity,
             Unit = string.IsNullOrWhiteSpace(dto.Unit) ? material.Unit : dto.Unit.Trim(),
+            BOQItemId = row?.Id,
+            IsAdditional = isAdditional,
             RequestedByUserId = CurrentUserId,
         };
 
@@ -184,28 +202,34 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         var cost = await materialCost.GetEstimatedMaterialCostAsync(projectId);
         if (cost is null) return NotFound(new { message = "Project not found." });
 
-        var needed = cost.Lines.Where(l => l.NeedsPrice && l.BOQItemId.HasValue && l.RemainingQuantity > 0).ToList();
+        // Every material still missing a price — rows still to be ordered,
+        // ordered lines bought without one, and rows with no forecast yet
+        // (asked per their catalog buying unit) — so newly added materials
+        // can be sent any time. A price is per unit, so a line needs one.
+        var needed = cost.Lines
+            .Where(l => l.NeedsPrice && l.MaterialId.HasValue && !string.IsNullOrWhiteSpace(l.Unit))
+            .ToList();
         if (needed.Count == 0)
             return Ok(new PriceInquiryResultDto());
 
-        var boqIds = needed.Select(l => l.BOQItemId!.Value).ToList();
-        var materialOf = await db.BOQItems.Where(b => boqIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.MaterialId);
-
         var created = 0;
         var already = 0;
-        foreach (var group in needed.GroupBy(l => (MaterialId: materialOf[l.BOQItemId!.Value], Unit: CompletedProjectDemandRules.NormalizeUnit(l.Unit))))
+        foreach (var group in needed.GroupBy(l => (MaterialId: l.MaterialId!.Value, Unit: CompletedProjectDemandRules.NormalizeUnit(l.Unit))))
         {
             if (group.Any(l => l.QuotationRequested))
             {
                 already++;
                 continue;
             }
+            // A no-forecast row has no quantity to buy yet — 1 unit, marked price only.
+            var quantity = group.Sum(l => l.RemainingQuantity > 0 ? l.RemainingQuantity : l.OrderedQuantity);
             db.MaterialRequests.Add(new MaterialRequest
             {
                 ProjectId = projectId,
                 MaterialId = group.Key.MaterialId,
-                Quantity = group.Sum(l => l.RemainingQuantity),
+                Quantity = quantity > 0 ? quantity : 1,
                 Unit = group.First().Unit,
+                Remarks = group.All(l => l.NoForecast) ? "Price only — no forecasted quantity yet" : null,
                 RequestedByUserId = CurrentUserId,
                 IsPriceInquiry = true,
             });
@@ -492,6 +516,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         RequestedByName = $"{r.RequestedBy.FirstName} {r.RequestedBy.LastName}",
         CreatedAt = r.CreatedAt,
         Remarks = r.Remarks,
+        IsAdditional = r.IsAdditional,
         IsPriceInquiry = r.IsPriceInquiry,
         Quotes = r.Quotes.OrderBy(q => q.Slot).Select(q => new MaterialRequestQuoteDto
         {

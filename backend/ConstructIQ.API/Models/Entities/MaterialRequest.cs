@@ -23,6 +23,14 @@ public class MaterialRequest
     [MaxLength(20)]
     public string Unit { get; set; } = string.Empty;
 
+    // The BOQ row this is for. Null for requests made before rows were tracked,
+    // or if the row has since been deleted — see ProcurementCapCalculator.
+    public int? BOQItemId { get; set; }
+    public BOQItem? BOQItem { get; set; }
+
+    // Beyond what the row still needed when asked (breakage, a design change).
+    public bool IsAdditional { get; set; }
+
     public int RequestedByUserId { get; set; }
     public User RequestedBy { get; set; } = null!;
 

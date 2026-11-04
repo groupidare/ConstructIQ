@@ -7,6 +7,8 @@ public class WarehouseRequestCreateDto
     [Required] public int ProjectId { get; set; }
     [Required] public int MaterialId { get; set; }
     [Range(0.0001, double.MaxValue)] public decimal RequestedQuantity { get; set; }
+    public int? BOQItemId { get; set; }
+    [MaxLength(20)] public string? Unit { get; set; }
 }
 
 public class WarehouseRequestApproveDto
@@ -31,4 +33,11 @@ public class WarehouseRequestResponseDto
     public DateTime RequestedAt       { get; set; }
     public string?  ApprovedBy        { get; set; }
     public DateTime? ApprovedAt       { get; set; }
+    public int?     BOQItemId         { get; set; }
+    public bool     IsAdditional      { get; set; }
+    // The warehouse item someone linked this material's BOQ wording to, so the
+    // warehouse can see what's really being asked for and catch a wrong link.
+    public string?  LinkedStockName    { get; set; }
+    public string?  LinkedStockUnit    { get; set; }
+    public decimal? LinkedStockBalance { get; set; }
 }

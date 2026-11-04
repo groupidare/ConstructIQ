@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace ConstructIQ.API.Models.Entities;
@@ -19,7 +20,19 @@ public class WarehouseRequest
     public int MaterialId { get; set; }
     public Material Material { get; set; } = null!;
 
+    // The BOQ row this is for. Null for requests made before rows were tracked,
+    // or if the row has since been deleted — see ProcurementCapCalculator.
+    public int? BOQItemId { get; set; }
+    public BOQItem? BOQItem { get; set; }
+
     [Column(TypeName = "decimal(18,4)")] public decimal RequestedQuantity { get; set; }
+
+    // The unit it was asked in. Material.Unit won't do: a catalog material's
+    // unit can be a BOQ measure (sq.m) when the request is for pieces.
+    [MaxLength(20)] public string Unit { get; set; } = string.Empty;
+
+    // Beyond what the row still needed when asked (breakage, a design change).
+    public bool IsAdditional { get; set; }
 
     public WarehouseRequestStatus Status { get; set; } = WarehouseRequestStatus.Pending;
 

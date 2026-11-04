@@ -823,6 +823,9 @@ function EditProjectModal({ project, onClose, onSaved }: {
 // latest recorded price). Only served for the viewer's own projects.
 interface MaterialCostLine {
   boqItemId: number | null;
+  materialId: number | null;
+  // No forecasted purchase qty yet — priced per the catalog unit, kept out of the total.
+  noForecast: boolean;
   materialName: string;
   specification: string | null;
   section: string | null;
@@ -850,6 +853,8 @@ interface EstimatedMaterialCost {
   currency: string;
   pricedItems: number;
   unpricedItems: number;
+  // Material Plan rows with no forecasted purchase qty yet — not priceable.
+  noForecastItems: number;
   oldestPriceDate: string | null;
   newestPriceDate: string | null;
   lines: MaterialCostLine[];
@@ -859,18 +864,19 @@ const peso = (n: number) => `₱${Math.round(n).toLocaleString("en-PH")}`;
 const pesoExact = (n: number) => `₱${n.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const qty = (n: number) => n.toLocaleString("en-PH", { maximumFractionDigits: 2 });
 
-function EstimatedMaterialCostCard({ cost, projectName }: { cost: EstimatedMaterialCost; projectName: string }) {
+function EstimatedMaterialCostCard({ cost, projectName, onRefresh }: { cost: EstimatedMaterialCost; projectName: string; onRefresh: () => void }) {
   const [showBreakdown, setShowBreakdown] = useState(false);
   const box: React.CSSProperties = { background:"#fff7ed", border:"1px solid #fed7aa", borderRadius:8, padding:"0.5rem 0.75rem", marginBottom:"0.75rem" };
-  const total = cost.pricedItems + cost.unpricedItems;
+  const total = cost.lines.length;
+  // Reloads on open so prices Procurement saved since the page loaded show up.
   const breakdownButton = total > 0 && (
-    <button type="button" onClick={() => setShowBreakdown(true)}
+    <button type="button" onClick={() => { onRefresh(); setShowBreakdown(true); }}
       style={{ background:"none", border:"none", padding:0, color:"#c2410c", fontSize:"0.65rem", fontWeight:700, cursor:"pointer", textDecoration:"underline" }}>
       View breakdown
     </button>
   );
   const modal = showBreakdown && (
-    <MaterialCostBreakdownModal cost={cost} projectName={projectName} onClose={() => setShowBreakdown(false)} />
+    <MaterialCostBreakdownModal cost={cost} projectName={projectName} onRequested={onRefresh} onClose={() => setShowBreakdown(false)} />
   );
 
   if (cost.pricedItems === 0 && cost.committedCost === 0) {
@@ -898,27 +904,32 @@ function EstimatedMaterialCostCard({ cost, projectName }: { cost: EstimatedMater
       <p style={{ fontSize:"0.6rem", color:"#9ca3af", marginTop:2 }}>
         Priced {cost.pricedItems} of {total} materials
         {cost.unpricedItems > 0 && <span style={{ color:"#b45309", fontWeight:600 }}> · {cost.unpricedItems} need a price (not included)</span>}
+        {cost.noForecastItems > 0 && <span style={{ color:"#b45309" }}> · {cost.noForecastItems} no forecast qty yet</span>}
       </p>
       {modal}
     </div>
   );
 }
 
-function MaterialCostBreakdownModal({ cost, projectName, onClose }: { cost: EstimatedMaterialCost; projectName: string; onClose: () => void }) {
+function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }: { cost: EstimatedMaterialCost; projectName: string; onRequested: () => void; onClose: () => void }) {
   const [needsPriceOnly, setNeedsPriceOnly] = useState(false);
   const [requesting, setRequesting] = useState(false);
-  // Lines sent for a quotation from this modal, on top of those already waiting.
-  const [requestedNow, setRequestedNow] = useState<Set<number>>(new Set());
-  const isRequested = (l: MaterialCostLine) => l.quotationRequested || (l.boqItemId != null && requestedNow.has(l.boqItemId));
-  // What "Request quotation" sends: Material Plan materials still to be
-  // ordered that have no recorded price.
-  const requestable = cost.lines.filter(l => l.needsPrice && l.boqItemId != null && l.remainingQuantity > 0 && !isRequested(l));
+  // Lines sent for a quotation from this modal, until the reload confirms them.
+  const [requestedNow, setRequestedNow] = useState<Set<string>>(new Set());
+  const keyOf = (l: MaterialCostLine) => `${l.materialId}|${l.unit.trim().toLowerCase()}`;
+  const isRequested = (l: MaterialCostLine) => l.quotationRequested || requestedNow.has(keyOf(l));
+  // What "Request quotation" sends: every material still missing a price
+  // that isn't already waiting — including ones added after an earlier request.
+  const missingPrice = cost.lines.filter(l => l.needsPrice);
+  const requestable = missingPrice.filter(l => l.materialId != null && l.unit.trim() !== "" && !isRequested(l));
+  const waiting = missingPrice.filter(isRequested).length;
 
   async function handleRequestQuotation() {
     setRequesting(true);
     try {
       const { data } = await api.post<{ requested: number; alreadyRequested: number }>(`/material-requests/price-inquiries/${cost.projectId}`);
-      setRequestedNow(new Set(requestable.map(l => l.boqItemId!)));
+      setRequestedNow(new Set(requestable.map(keyOf)));
+      onRequested();
       toast.success(data.requested > 0
         ? `Sent ${data.requested} material${data.requested === 1 ? "" : "s"} to Procurement for a quotation.`
         : "These materials are already waiting for a quotation.");
@@ -930,7 +941,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onClose }: { cost: Esti
     }
   }
 
-  const lines = needsPriceOnly ? cost.lines.filter(l => l.needsPrice || l.note === "No forecasted purchase quantity yet") : cost.lines;
+  const lines = needsPriceOnly ? cost.lines.filter(l => l.needsPrice || l.noForecast) : cost.lines;
   const th: React.CSSProperties = { padding:"8px 10px", fontSize:"0.65rem", fontWeight:700, color:"#6b7280", textAlign:"left", whiteSpace:"nowrap", borderBottom:"1px solid #e5e7eb", background:"#f9fafb", position:"sticky", top:0 };
   const td: React.CSSProperties = { padding:"8px 10px", fontSize:"0.75rem", color:"#111827", borderBottom:"1px solid #f3f4f6", verticalAlign:"top" };
   const num: React.CSSProperties = { ...td, textAlign:"right", whiteSpace:"nowrap" };
@@ -957,7 +968,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onClose }: { cost: Esti
             { label:"Ordered (committed)", value:peso(cost.committedCost), color:"#111827" },
             { label:"Still to order (estimate)", value:peso(cost.remainingCost), color:"#111827" },
             { label:"Projected total", value:peso(cost.totalEstimatedCost), color:"#c2410c" },
-            { label:"Need a price", value:`${cost.unpricedItems} of ${cost.pricedItems + cost.unpricedItems}`, color: cost.unpricedItems > 0 ? "#b45309" : "#15803d" },
+            { label:"Need a price", value:`${cost.unpricedItems} of ${cost.lines.length}`, color: cost.unpricedItems > 0 ? "#b45309" : "#15803d" },
           ].map(c => (
             <div key={c.label} style={{ border:"1px solid #f3f4f6", borderRadius:10, padding:"0.6rem 0.8rem", background:"#fafafa" }}>
               <p style={{ fontSize:"0.65rem", color:"#6b7280" }}>{c.label}</p>
@@ -966,17 +977,28 @@ function MaterialCostBreakdownModal({ cost, projectName, onClose }: { cost: Esti
           ))}
         </div>
 
-        {cost.unpricedItems > 0 && (
+        {(cost.unpricedItems > 0 || cost.noForecastItems > 0) && (
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, flexWrap:"wrap", padding:"0 1.5rem 0.5rem" }}>
-            <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:"0.72rem", color:"#374151", cursor:"pointer" }}>
-              <input type="checkbox" checked={needsPriceOnly} onChange={e => setNeedsPriceOnly(e.target.checked)} />
-              Show only materials that need a price
-            </label>
-            {requestable.length > 0 && (
-              <button type="button" onClick={handleRequestQuotation} disabled={requesting}
-                title="Sends these materials to Procurement's Requests tab to get supplier prices — no PO is made"
-                style={{ padding:"7px 14px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontSize:"0.75rem", fontWeight:700, cursor:"pointer", opacity: requesting ? 0.7 : 1 }}>
-                {requesting ? "Sending…" : `Request quotation (${requestable.length})`}
+            <div>
+              <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:"0.72rem", color:"#374151", cursor:"pointer" }}>
+                <input type="checkbox" checked={needsPriceOnly} onChange={e => setNeedsPriceOnly(e.target.checked)} />
+                Show only materials that need a price or forecast
+              </label>
+              <p style={{ fontSize:"0.65rem", color:"#6b7280", marginTop:2 }}>
+                {[
+                  requestable.length > 0 && `${requestable.length} not yet sent for a quotation`,
+                  waiting > 0 && `${waiting} waiting for Procurement`,
+                  cost.noForecastItems > 0 && `${cost.noForecastItems} with no forecast qty yet — priced per unit, added to the total once forecast in the Material Plan`,
+                ].filter(Boolean).join(" · ")}
+              </p>
+            </div>
+            {missingPrice.length > 0 && (
+              <button type="button" onClick={handleRequestQuotation} disabled={requesting || requestable.length === 0}
+                title={requestable.length > 0
+                  ? "Sends these materials to Procurement's Requests tab to get supplier prices — no PO is made"
+                  : "Every material missing a price is already waiting for a quotation"}
+                style={{ padding:"7px 14px", borderRadius:8, border:"none", background: requestable.length > 0 ? "#f97316" : "#e5e7eb", color: requestable.length > 0 ? "#fff" : "#6b7280", fontSize:"0.75rem", fontWeight:700, cursor: requestable.length > 0 ? "pointer" : "default", opacity: requesting ? 0.7 : 1 }}>
+                {requesting ? "Sending…" : requestable.length > 0 ? `Request quotation (${requestable.length})` : `All sent — waiting (${waiting})`}
               </button>
             )}
           </div>
@@ -1002,7 +1024,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onClose }: { cost: Esti
                 <tr><td colSpan={9} style={{ ...td, textAlign:"center", color:"#9ca3af", padding:"1.5rem" }}>Nothing to show.</td></tr>
               )}
               {lines.map((l, i) => {
-                const flagged = l.needsPrice || l.note === "No forecasted purchase quantity yet";
+                const flagged = l.needsPrice || l.noForecast;
                 return (
                   <tr key={`${l.boqItemId ?? "x"}-${i}`} style={{ background: flagged ? "#fffbeb" : undefined }}>
                     <td style={{ ...td, minWidth:220 }}>
@@ -1085,6 +1107,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
   const [redistributed, setRedistributed] = useState(0);
   const [materialsCount, setMaterialsCount] = useState(0);
   const [materialCost, setMaterialCost]     = useState<EstimatedMaterialCost | null>(null);
+  const [costReload, setCostReload]         = useState(0);
 
   // Any failure (including a 403 for an unassigned Site Engineer) just hides
   // the card rather than showing an error.
@@ -1095,7 +1118,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
       .then(({ data }) => { if (!cancelled) setMaterialCost(data); })
       .catch(() => { if (!cancelled) setMaterialCost(null); });
     return () => { cancelled = true; };
-  }, [project.id, showMaterialCost, refreshKey]);
+  }, [project.id, showMaterialCost, refreshKey, costReload]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1263,7 +1286,7 @@ function ProjectCard({ project, refreshKey, onView, onMaterialPlan, onReports, o
         ))}
       </div>
 
-      {materialCost && <EstimatedMaterialCostCard cost={materialCost} projectName={project.name} />}
+      {materialCost && <EstimatedMaterialCostCard cost={materialCost} projectName={project.name} onRefresh={() => setCostReload(k => k + 1)} />}
 
       {/* Team */}
       <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:"0.875rem" }}>

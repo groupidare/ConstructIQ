@@ -61,7 +61,9 @@ export default function Header({ title }: HeaderProps) {
       justifyContent: "space-between",
       gap: "1.25rem",
       flexShrink: 0,
-      position: "relative",
+      // Stays at the top of the page while it scrolls, like the sidebar.
+      position: "sticky",
+      top: 0,
       zIndex: 100,
     }}>
 

@@ -245,15 +245,16 @@ export default function Sidebar() {
           })}
         </nav>
 
-        {/* User info + logout — the sign-out button only appears expanded;
-            collapsed just shows the avatar, centered. */}
+        {/* User info + logout — expanded, sign-out sits right of the name;
+            collapsed, it stacks above the avatar (column-reverse). */}
         <div style={{
           padding: collapsed ? "0.875rem 0.5rem" : "0.875rem 1rem",
           borderTop:"1px solid rgba(255,255,255,0.07)",
           display:"flex",
+          flexDirection: collapsed ? "column-reverse" : "row",
           alignItems:"center",
           justifyContent: collapsed ? "center" : "flex-start",
-          gap: collapsed ? 0 : 10, flexShrink:0,
+          gap: collapsed ? 8 : 10, flexShrink:0,
           transition: "padding 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
         }}>
           <Avatar
@@ -273,18 +274,17 @@ export default function Sidebar() {
               {ROLE_LABELS[user?.role ?? ""] ?? ""}
             </p>
           </div>
-          {!collapsed && (
-            <button
-              suppressHydrationWarning
-              onClick={() => setShowConfirm(true)}
-              title="Sign out"
-              style={{ background:"none", border:"none", cursor:"pointer", color:"#6b7280", padding:4, flexShrink:0, display:"flex", alignItems:"center" }}
-              onMouseEnter={e => (e.currentTarget.style.color = "#f97316")}
-              onMouseLeave={e => (e.currentTarget.style.color = "#6b7280")}
-            >
-              <LogOut style={{ width:17, height:17 }} />
-            </button>
-          )}
+          <button
+            suppressHydrationWarning
+            onClick={() => setShowConfirm(true)}
+            title="Sign out"
+            aria-label="Sign out"
+            style={{ background:"none", border:"none", cursor:"pointer", color:"#6b7280", padding:4, flexShrink:0, display:"flex", alignItems:"center" }}
+            onMouseEnter={e => (e.currentTarget.style.color = "#f97316")}
+            onMouseLeave={e => (e.currentTarget.style.color = "#6b7280")}
+          >
+            <LogOut style={{ width:17, height:17 }} />
+          </button>
         </div>
       </aside>
     </>

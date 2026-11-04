@@ -60,6 +60,19 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+/* Every pop-up (a fixed, full-screen backdrop with the dialog inside): the
+   dialog never gets wider or taller than the screen, whatever fixed width it
+   was given — it scrolls inside instead. Inline padding/overflow still win. */
+[style*="position: fixed"][style*="inset: 0"] {
+  padding: 0.75rem;
+}
+
+[style*="position: fixed"][style*="inset: 0"] > * {
+  max-width: 100% !important;
+  max-height: calc(100dvh - 1.5rem);
+  overflow-y: auto;
+}
+
 @media (max-width: 1100px) {
   .header-weather {
     display: none !important;
@@ -151,13 +164,23 @@
     padding-inline: 0 !important;
   }
 
+  /* Closed rail: sign-out stacks above the avatar, as on the desktop rail. */
   #app-sidebar[data-mobile-open="false"] > div:last-child {
     justify-content: center !important;
     padding-inline: 0.5rem !important;
+    flex-direction: column-reverse !important;
+    gap: 8px !important;
   }
 
-  #app-sidebar[data-mobile-open="false"] > div:last-child > button {
-    display: none !important;
+  #app-sidebar[data-mobile-open="true"] > div:last-child {
+    flex-direction: row !important;
+    gap: 10px !important;
+  }
+
+  /* The closed rail sits under pop-ups (z-index 1000+) so they aren't cut
+     off on the left; opened, it goes back above its backdrop. */
+  #app-sidebar[data-mobile-open="false"] {
+    z-index: 900 !important;
   }
 
   .mobile-sidebar-close {
@@ -402,6 +425,12 @@
 
   #app-sidebar[data-collapsed="false"] {
     box-shadow: 12px 0 32px rgba(0, 0, 0, 0.22);
+  }
+
+  /* Collapsed rail sits under pop-ups (z-index 1000+) so they aren't cut
+     off on the left; expanded, it stays above its backdrop. */
+  #app-sidebar[data-collapsed="true"] {
+    z-index: 900 !important;
   }
 
   .tablet-sidebar-backdrop {

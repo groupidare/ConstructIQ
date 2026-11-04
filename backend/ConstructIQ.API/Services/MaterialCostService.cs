@@ -26,6 +26,8 @@ namespace ConstructIQ.API.Services;
 //   4. Material.UnitCost from the catalog, if > 0
 // Whatever can't be priced (or has no forecast quantity) is flagged on its
 // line and left out of the totals. The BOQ area quantity (sq.m) is never priced.
+// A row with no forecast is still priced per its catalog buying unit, so a
+// quotation can be asked for it — it joins the totals once forecast.
 //
 // Excess cost impact values excess/waste records with the same prices and
 // the same rules (see GetExcessCostImpactAsync).
@@ -65,7 +67,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             .Select(b => new
             {
                 b.Id, b.MaterialId, MaterialName = b.Material.Name, b.Specification, b.PrimarySection,
-                b.EstimatedPurchaseQuantity, b.EstimatedPurchaseUnit,
+                b.EstimatedPurchaseQuantity, b.EstimatedPurchaseUnit, CatalogUnit = b.Material.Unit,
             })
             .ToListAsync();
 
@@ -83,20 +85,24 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             .Concat(ordered.Where(o => o.MaterialId.HasValue).Select(o => o.MaterialId!.Value))
             .Distinct().ToList());
 
-        var lines = rows.Select(r => new Line
+        var lines = rows.Select(r =>
         {
-            MaterialId = r.MaterialId,
-            UnitKey = CompletedProjectDemandRules.NormalizeUnit(r.EstimatedPurchaseUnit),
-            Dto = new MaterialCostLineDto
+            var hasForecast = r.EstimatedPurchaseQuantity is > 0 && !string.IsNullOrWhiteSpace(r.EstimatedPurchaseUnit);
+            var unit = !string.IsNullOrWhiteSpace(r.EstimatedPurchaseUnit) ? r.EstimatedPurchaseUnit : r.CatalogUnit;
+            return new Line
             {
-                BOQItemId = r.Id,
-                MaterialName = r.MaterialName,
-                Specification = r.Specification,
-                Section = r.PrimarySection,
-                Unit = r.EstimatedPurchaseUnit ?? string.Empty,
-                ForecastQuantity = r.EstimatedPurchaseQuantity is > 0 && !string.IsNullOrWhiteSpace(r.EstimatedPurchaseUnit)
-                    ? r.EstimatedPurchaseQuantity : null,
-            },
+                MaterialId = r.MaterialId,
+                UnitKey = CompletedProjectDemandRules.NormalizeUnit(unit),
+                Dto = new MaterialCostLineDto
+                {
+                    BOQItemId = r.Id,
+                    MaterialName = r.MaterialName,
+                    Specification = r.Specification,
+                    Section = r.PrimarySection,
+                    Unit = unit ?? string.Empty,
+                    ForecastQuantity = hasForecast ? r.EstimatedPurchaseQuantity : null,
+                },
+            };
         }).ToList();
         var byBoqId = lines.ToDictionary(l => l.Dto.BOQItemId!.Value);
         var usedDates = new List<DateTime>();
@@ -172,6 +178,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
         foreach (var line in lines.Concat(extras.Values))
         {
             var dto = line.Dto;
+            dto.MaterialId = line.MaterialId;
             if (line.MaterialId is int materialId && priceOf(materialId, dto.Unit) is DatedPrice latest)
             {
                 dto.UnitPrice = latest.Price;
@@ -194,8 +201,16 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             dto.QuotationRequested = dto.NeedsPrice && line.MaterialId is int mat && openInquiries.Contains((mat, line.UnitKey));
 
             var noForecast = dto.BOQItemId.HasValue && dto.ForecastQuantity is null && dto.OrderedQuantity == 0;
+            dto.NoForecast = noForecast;
+            if (noForecast && dto.UnitPrice is null && !string.IsNullOrWhiteSpace(dto.Unit))
+            {
+                dto.NeedsPrice = true;
+                dto.QuotationRequested = line.MaterialId is int m && openInquiries.Contains((m, line.UnitKey));
+            }
             if (noForecast)
-                dto.Note = "No forecasted purchase quantity yet";
+                dto.Note = dto.UnitPrice is null
+                    ? "No forecasted purchase quantity yet"
+                    : "Price ready — not in the total until it has a forecasted purchase quantity";
             else if (dto.NeedsPrice && dto.Note is null)
                 dto.Note = "No recorded price in this unit";
 
@@ -204,8 +219,9 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             result.CommittedCost += dto.CommittedCost;
             result.RemainingCost += dto.RemainingCost;
 
-            if (dto.NeedsPrice || noForecast) result.UnpricedItems++;
-            else result.PricedItems++;
+            if (noForecast) result.NoForecastItems++;
+            if (dto.NeedsPrice) result.UnpricedItems++;
+            else if (!noForecast) result.PricedItems++;
             result.Lines.Add(dto);
         }
 

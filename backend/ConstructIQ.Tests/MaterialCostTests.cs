@@ -150,7 +150,8 @@ public class MaterialCostTests(DatabaseFixture fixture)
 
         Assert.Equal(40m, cost!.TotalEstimatedCost); // only the complete row, at catalog 10
         Assert.Equal(1, cost.PricedItems);
-        Assert.Equal(2, cost.UnpricedItems);
+        Assert.Equal(0, cost.UnpricedItems);
+        Assert.Equal(2, cost.NoForecastItems);
     }
 
     [Fact]
