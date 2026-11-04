@@ -507,15 +507,8 @@ public class ForecastService(AppDbContext db, IHttpClientFactory httpFactory, IL
     // see BOQService.PurchaseUnits / frontend PURCHASE_UNITS). Everything else
     // is folded only by trim+case, matching topMaterialDemand.ts's existing
     // normalize() convention - never a physical unit conversion.
-    private static string NormalizeUnitLabel(string? unit)
-    {
-        var lower = (unit ?? string.Empty).Trim().ToLowerInvariant();
-        return lower switch
-        {
-            "pcs" or "piece" or "pieces" => "pc",
-            _ => lower,
-        };
-    }
+    private static string NormalizeUnitLabel(string? unit) =>
+        Algorithms.CompletedProjectDemandRules.NormalizeUnit(unit);
 
     public async Task<ForecastAccuracyReportDto> GetAccuracyReportAsync(int projectId)
     {

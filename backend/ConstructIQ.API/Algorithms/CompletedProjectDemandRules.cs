@@ -104,17 +104,23 @@ public static class CompletedProjectDemandRules
         return (total, lines[0].Unit!.Trim());
     }
 
-    // Same label folding ForecastService.NormalizeUnitLabel uses — trim + case,
-    // plus the pc/pcs/piece/pieces variants — so a forecast row's unit joins
-    // the Actual Usage side's unit for the same material. Never a physical
-    // unit conversion.
+    // The one unit-label folding used everywhere (forecasts, actual usage,
+    // prices; ml-service material_ratios.normalize_unit mirrors it) — trim +
+    // case, the pc/pcs/piece/pieces variants, and simple plurals ("bags" →
+    // "bag", "boxes" → "box"), so a typed plural still matches its price.
+    // Never a physical unit conversion.
+    private static readonly HashSet<string> NotPlural = ["nos", "gas"];
+
     public static string NormalizeUnit(string? unit)
     {
         var lower = (unit ?? string.Empty).Trim().ToLowerInvariant();
-        return lower switch
-        {
-            "pcs" or "piece" or "pieces" => "pc",
-            _ => lower,
-        };
+        if (lower is "pcs" or "piece" or "pieces") return "pc";
+        if (lower.Length < 3 || !lower.EndsWith('s') || lower.EndsWith("ss") || NotPlural.Contains(lower)
+            || !lower.All(char.IsLetter))
+            return lower;
+        var stem = lower[..^1];
+        if (stem.EndsWith('e') && (stem.EndsWith("xe") || stem.EndsWith("she") || stem.EndsWith("che")))
+            return stem[..^1];
+        return stem;
     }
 }

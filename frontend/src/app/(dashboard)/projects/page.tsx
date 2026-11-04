@@ -942,7 +942,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
   }
 
   const lines = needsPriceOnly ? cost.lines.filter(l => l.needsPrice || l.noForecast) : cost.lines;
-  const th: React.CSSProperties = { padding:"8px 10px", fontSize:"0.65rem", fontWeight:700, color:"#6b7280", textAlign:"left", whiteSpace:"nowrap", borderBottom:"1px solid #e5e7eb", background:"#f9fafb", position:"sticky", top:0 };
+  const th: React.CSSProperties = { padding:"8px 10px", fontSize:"0.65rem", fontWeight:700, color:"#6b7280", textAlign:"left", whiteSpace:"nowrap", borderBottom:"1px solid #e5e7eb", background:"#f9fafb" };
   const td: React.CSSProperties = { padding:"8px 10px", fontSize:"0.75rem", color:"#111827", borderBottom:"1px solid #f3f4f6", verticalAlign:"top" };
   const num: React.CSSProperties = { ...td, textAlign:"right", whiteSpace:"nowrap" };
   const dash = <span style={{ color:"#d1d5db" }}>—</span>;
@@ -963,7 +963,10 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
           </button>
         </div>
 
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(170px, 1fr))", gap:"0.75rem", padding:"0 1.5rem 0.75rem" }}>
+        {/* Everything below the title scrolls as one, so the table never
+            gets squeezed into a strip on short or narrow screens. */}
+        <div style={{ flex:1, minHeight:0, overflowY:"auto" }}>
+        <div className="cost-tiles" style={{ display:"grid", gap:"0.75rem", padding:"0 1.5rem 0.75rem" }}>
           {[
             { label:"Ordered (committed)", value:peso(cost.committedCost), color:"#111827" },
             { label:"Still to order (estimate)", value:peso(cost.remainingCost), color:"#111827" },
@@ -1004,7 +1007,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
           </div>
         )}
 
-        <div style={{ overflow:"auto", padding:"0 1.5rem", flex:1 }}>
+        <div style={{ overflowX:"auto", padding:"0 1.5rem 1rem" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", minWidth:980 }}>
             <thead>
               <tr>
@@ -1057,6 +1060,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
               })}
             </tbody>
           </table>
+        </div>
         </div>
 
         <div style={{ padding:"0.75rem 1.5rem 1.25rem", borderTop:"1px solid #f3f4f6", display:"flex", justifyContent:"flex-end", gap:"1.5rem", flexWrap:"wrap", fontSize:"0.8rem" }}>

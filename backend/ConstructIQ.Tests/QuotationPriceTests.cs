@@ -236,6 +236,24 @@ public class QuotationPriceTests(DatabaseFixture fixture)
     }
 
     [Fact]
+    public async Task QuotePerBag_PricesAForecastTypedAsBags()
+    {
+        await using var db = fixture.CreateContext();
+        var (admin, project, material) = await SeedAsync(db, "bag");
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, admin.Id, 1, estimatedPurchaseQuantity: 20, estimatedPurchaseUnit: "Bags");
+        await RequestAs(db, admin, project.Id, new RecordingNotifications());
+        var inquiry = await db.MaterialRequests.SingleAsync(r => r.ProjectId == project.Id);
+        await ControllerAs(db, admin, new RecordingNotifications())
+            .SaveQuotes(project.Id, Save(inquiry.Id, new MaterialRequestQuoteDto { Slot = 1, SupplierName = "Laguna", UnitPrice = 300 }));
+
+        await using var verify = fixture.CreateContext();
+        var cost = await new MaterialCostService(verify).GetEstimatedMaterialCostAsync(project.Id);
+
+        Assert.Equal(6000m, cost!.TotalEstimatedCost);
+        Assert.Equal(0, cost.UnpricedItems);
+    }
+
+    [Fact]
     public async Task RequestQuotations_ProjectManagerOnlyForTheirOwnProject()
     {
         await using var db = fixture.CreateContext();
