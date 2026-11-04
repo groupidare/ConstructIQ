@@ -35,6 +35,8 @@ interface EditableRoom {
   include: boolean; name: string; floorAreaSqm: number; perimeterM: number;
   lengthM: number; widthM: number; heightM: number | null; confidence: number;
   traced: number | null;  // index of the traced room it came from (its outline); null for one added by hand
+  ceilingNotes: string[];        // what the ceiling plan says about the room
+  ceilingKey: string | null;     // a ceiling finish picked by hand; null = from the notes or the default
 }
 interface EditableOpening { type: string; count: number; widthM: number; heightM: number }
 
@@ -73,6 +75,10 @@ const link: React.CSSProperties = { background: 'none', border: 'none', padding:
 const th: React.CSSProperties = { textAlign: 'left', fontSize: '0.62rem', color: '#9ca3af', fontWeight: 700, padding: '6px 6px', whiteSpace: 'nowrap' };
 const td: React.CSSProperties = { padding: '4px 6px', fontSize: '0.76rem', color: '#374151', verticalAlign: 'middle' };
 const small = { ...inp, padding: '4px 6px', fontSize: '0.74rem' };
+// Floor, wall and ceiling rows use the clear area; a plan's area schedule
+// (and the footprint checked against it) also counts the floor under walls.
+const AREA_HINT = 'Clear: the floor inside the walls — what floor, ceiling and wall rows are measured from. '
+  + 'Footprint: the whole outline with walls and partitions, like the area schedule on the plan.';
 const fmt = (n: number | null | undefined, d = 2) => (n == null ? '—' : n.toLocaleString(undefined, { maximumFractionDigits: d }));
 const titleCase = (s: string) => s.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 
@@ -145,8 +151,11 @@ function editableRooms(data: BlueprintResult): EditableRoom[] {
       traced: i,
       include: r.labels.length > 0, name: seen[r.name] > 1 ? `${r.name} ${seen[r.name]}` : r.name,
       floorAreaSqm: r.floorAreaSqm, perimeterM: r.perimeterM, lengthM: r.lengthM, widthM: r.widthM, confidence: r.confidence,
-      // From the plan's "CH = …" notes: the taller height for the larger spaces.
-      heightM: heights.length === 0 ? null : heights.length === 1 ? heights[0] : r.floorAreaSqm >= 10 ? heights[heights.length - 1] : heights[0],
+      // The room's own height on the ceiling plan; else, from the plan's
+      // "CH = …" notes, the taller height for the larger spaces.
+      heightM: r.ceilingHeightM ?? (heights.length === 0 ? null : heights.length === 1 ? heights[0]
+        : r.floorAreaSqm >= 10 ? heights[heights.length - 1] : heights[0]),
+      ceilingNotes: r.ceilingNotes ?? [], ceilingKey: null,
     };
   });
 }
@@ -262,10 +271,17 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
     } catch { /* a pattern JS can't parse just isn't used */ }
   }
   const labelOf = (key: string) => templates.find(t => t.key === key)?.label ?? key;
-  const finishFor = (room: string) => ({
-    floor: WET_ROOM.test(room) ? DEFAULTS.wetFloor : (noted.floor ?? DEFAULTS.dryFloor),
+  const ceilingTemplates = templates.filter(t => t.surface === 'ceiling');
+  // A room's ceiling: picked by hand, else what the ceiling plan notes in it
+  // ("ACOUSTIC CEILING PANEL"), else the plan's general note or the default.
+  const ceilingFromNotes = (notes: string[]) => ceilingTemplates.find(t => {
+    try { return !!t.notePattern && notes.some(n => new RegExp(t.notePattern!, 'i').test(n)); } catch { return false; }
+  })?.key;
+  const ceilingFor = (room: EditableRoom) => room.ceilingKey ?? ceilingFromNotes(room.ceilingNotes) ?? noted.ceiling ?? DEFAULTS.ceiling;
+  const finishFor = (room: EditableRoom) => ({
+    floor: WET_ROOM.test(room.name) ? DEFAULTS.wetFloor : (noted.floor ?? DEFAULTS.dryFloor),
     wall: noted.wall ?? DEFAULTS.wall,
-    ceiling: noted.ceiling ?? DEFAULTS.ceiling,
+    ceiling: ceilingFor(room),
   });
 
   function toRooms() {
@@ -293,7 +309,7 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
         source: included.map(f => f.drawingId).join(', ').slice(0, 60),
         perRoomFloor: true,
         measurements: includedRooms.map(({ floor, room: r }) => ({ room: roomName(floor, r.name), floorAreaSqm: r.floorAreaSqm, perimeterM: r.perimeterM, heightM: r.heightM, openingsSqm: 0 })),
-        finishes: includedRooms.map(({ floor, room: r }) => ({ room: roomName(floor, r.name), ...finishFor(r.name) })),
+        finishes: includedRooms.map(({ floor, room: r }) => ({ room: roomName(floor, r.name), ...finishFor(r) })),
         openings: openings.filter(o => o.count > 0).map(o => ({ type: o.type, count: o.count, widthM: o.widthM, heightM: o.heightM })),
       });
       if (data.rows.length === 0) { toast.error('Nothing could be generated from these rooms.'); return; }
@@ -393,7 +409,10 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
         </p>
         <div style={{ margin: '4px 0 0 24px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           {f.loading ? <span style={{ fontSize: '0.72rem', color: '#9ca3af' }}>Reading…</span>
-            : r ? <span style={{ fontSize: '0.74rem', color: '#374151' }}><b>{r.rooms.length}</b> room(s) · {fmt(area)} m²</span>
+            : r ? <span style={{ fontSize: '0.74rem', color: '#374151' }} title={AREA_HINT}>
+                <b>{r.rooms.length}</b> room(s) · {fmt(area)} m² clear
+                {r.scheduleCheck?.extractedTotalSqm ? <span style={{ color: '#9ca3af' }}> · footprint {fmt(r.scheduleCheck.extractedTotalSqm)} m²</span> : null}
+              </span>
             : <span style={{ fontSize: '0.72rem', color: '#9ca3af' }}>Not read yet — tick it to read</span>}
           {r && <ScheduleBadge result={r} />}
           <button style={link} onClick={e => { e.stopPropagation(); setChanging(changing === f.key ? null : f.key); }}>
@@ -529,6 +548,10 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                     <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
                       <p style={{ fontWeight: 800, color: '#111827', fontSize: '0.85rem' }}>{f.name}</p>
                       <p style={{ fontSize: '0.7rem', color: '#9ca3af' }}>{drawings[f.drawingId]?.title}</p>
+                      <p style={{ fontSize: '0.7rem', color: '#6b7280', marginLeft: 'auto' }} title={AREA_HINT}>
+                        Ticked rooms: <b>{fmt(f.rooms.filter(r => r.include).reduce((s, r) => s + r.floorAreaSqm, 0))} m²</b> clear
+                        {f.result?.scheduleCheck?.extractedTotalSqm ? ` · footprint ${fmt(f.result.scheduleCheck.extractedTotalSqm)} m² (walls included)` : ''}
+                      </p>
                     </div>
                     {/* A floor plan has no heights; most rooms share one, read off the plan's sections. */}
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -543,7 +566,7 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                     </div>
                     <div style={{ overflowX: 'auto' }}>
                       <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
-                        <thead><tr>{['', 'Room', 'Floor area (m²)', 'Perimeter (m)', 'Ceiling height (m)', 'Floor finish'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+                        <thead><tr>{['', 'Room', 'Floor area (m²)', 'Perimeter (m)', 'Ceiling height (m)', 'Floor finish', 'Ceiling finish'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
                         <tbody>
                           {f.rooms.map((r, i) => (
                             <tr key={i} onMouseEnter={() => setHighlight(r.traced)} onMouseLeave={() => setHighlight(null)}
@@ -555,7 +578,16 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                               <td style={td}><input type="number" min="0" step="0.01" value={r.perimeterM} onChange={e => setRoom(i, { perimeterM: Number(e.target.value) || 0 })} style={small} aria-label="Perimeter" /></td>
                               <td style={td}><input type="number" min="0" step="0.01" value={r.heightM ?? ''} placeholder="enter for walls" onChange={e => setRoom(i, { heightM: e.target.value === '' ? null : Number(e.target.value) })}
                                 style={{ ...small, borderColor: r.heightM == null ? '#fbbf24' : '#e5e7eb' }} aria-label="Ceiling height" /></td>
-                              <td style={{ ...td, fontSize: '0.7rem', color: '#6b7280' }}>{labelOf(finishFor(r.name).floor)}</td>
+                              <td style={{ ...td, fontSize: '0.7rem', color: '#6b7280' }}>{labelOf(finishFor(r).floor)}</td>
+                              <td style={td} title={r.ceilingNotes.length ? `Ceiling plan: ${r.ceilingNotes.join(' · ')}` : undefined}>
+                                <select value={ceilingFor(r)} onChange={e => setRoom(i, { ceilingKey: e.target.value })} aria-label="Ceiling finish"
+                                  style={{ ...small, cursor: 'pointer', width: 'auto', maxWidth: 190 }}>
+                                  {(ceilingTemplates.length ? ceilingTemplates : [{ key: ceilingFor(r), label: labelOf(ceilingFor(r)) }]).map(t =>
+                                    <option key={t.key} value={t.key}>{t.label}</option>)}
+                                </select>
+                                {r.ceilingKey == null && ceilingFromNotes(r.ceilingNotes) &&
+                                  <span style={{ display: 'block', fontSize: '0.62rem', color: '#15803d', marginTop: 2 }}>from the ceiling plan</span>}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -563,7 +595,7 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                     </div>
                     <button style={{ ...link, display: 'inline-flex', alignItems: 'center', gap: 4, justifySelf: 'start' }}
                       onClick={() => patchFloor(f.key, { rooms: [...f.rooms, { include: true, name: '', floorAreaSqm: 0, perimeterM: 0, lengthM: 0, widthM: 0,
-                        heightM: Number(f.allHeight) > 0 ? Number(f.allHeight) : null, confidence: 1, traced: null }] })}>
+                        heightM: Number(f.allHeight) > 0 ? Number(f.allHeight) : null, confidence: 1, traced: null, ceilingNotes: [], ceilingKey: null }] })}>
                       <Plus style={{ width: 12, height: 12 }} /> Add a room that wasn&apos;t traced (e.g. a toilet)
                     </button>
                   </section>
@@ -584,7 +616,8 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
               </div>
               <p style={{ fontSize: '0.72rem', color: '#6b7280', lineHeight: 1.5 }}>
                 Rows will use: floors — {labelOf(noted.floor ?? DEFAULTS.dryFloor)} ({labelOf(DEFAULTS.wetFloor)} in CR/toilet/kitchen);
-                walls — {labelOf(noted.wall ?? DEFAULTS.wall)}; ceilings — {labelOf(noted.ceiling ?? DEFAULTS.ceiling)}.
+                walls — {labelOf(noted.wall ?? DEFAULTS.wall)}; ceilings — as chosen per room
+                {included.some(f => f.result?.ceilingPlan) ? ' (read from the reflected ceiling plan where it notes one)' : ''}, otherwise {labelOf(noted.ceiling ?? DEFAULTS.ceiling)}.
                 {multiFloor && ' Each room\'s row is named with its floor ("Ground Floor · Bedroom").'} You can change any specification in the Material Plan afterwards.
               </p>
               {includedRooms.some(({ room }) => room.heightM == null) && <p style={{ fontSize: '0.72rem', color: '#b45309' }}>Rooms without a ceiling height get no wall rows.</p>}

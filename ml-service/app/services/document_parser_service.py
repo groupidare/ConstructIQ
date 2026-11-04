@@ -18,6 +18,12 @@ _SUPPLIER_RE = re.compile(
 )
 _ORDER_DATE_RE = re.compile(r"(?:order\s*date|po\s*date|date\s*ordered)\s*[:\-]\s*([\w/,\- ]+)", re.IGNORECASE)
 _DELIVERY_DATE_RE = re.compile(r"(?:expected\s*date|delivery\s*date|promised\s*date|eta)\s*[:\-]\s*([\w/,\- ]+)", re.IGNORECASE)
+# "PO No.: 2024-118", "P.O. # 0045", "Purchase Order Number: JSB-77" — the
+# value must contain a digit, so a label followed by a word isn't taken.
+_PO_NUMBER_RE = re.compile(
+    r"\b(?:purchase\s*order|p\.?\s*o\.?)\s*(?:no\.?|number|#)\s*[:\-]?\s*([A-Za-z0-9][\w\-/]*\d[\w\-/]*)",
+    re.IGNORECASE,
+)
 
 
 def _is_unit(value: str | None) -> bool:
@@ -145,6 +151,20 @@ def _looks_like_real_name(desc: str) -> bool:
 def _is_section_heading(desc: str) -> bool:
     text = desc.strip()
     return bool(text) and len(text) > 2 and text.upper() == text and any(c.isalpha() for c in text)
+
+
+def _parse_price(cell) -> float | None:
+    """A unit price cell: "1,250.50", "₱ 480", "PHP 95.00". None when blank or not a number."""
+    if cell is None:
+        return None
+    text = re.sub(r"(?i)php|₱|\$", "", str(cell)).strip()
+    value = parse_quantity_from_cell(text)
+    return value if value is not None and value >= 0 else None
+
+
+def _extract_po_number(text: str) -> str | None:
+    match = _PO_NUMBER_RE.search(text)
+    return match.group(1).strip()[:50] if match else None
 
 
 def _extract_date(pattern: re.Pattern, text: str) -> str | None:
@@ -386,6 +406,7 @@ def parse_po_document(request: DocumentParseRequest) -> DocumentParsePOResponse:
             doc_supplier = supplier_match.group(1).strip().splitlines()[0][:200]
         doc_order_date    = _extract_date(_ORDER_DATE_RE, all_text)
         doc_delivery_date = _extract_date(_DELIVERY_DATE_RE, all_text)
+        doc_po_number     = _extract_po_number(all_text)
 
         for table in tables:
             if not table:
@@ -402,8 +423,15 @@ def parse_po_document(request: DocumentParseRequest) -> DocumentParsePOResponse:
 
             headers = [str(c or "").strip().lower() for c in table[header_row]]
 
-            unit_col     = next((i for i, h in enumerate(headers) if "unit" in h or h == "um" or "uom" in h), None)
-            qty_col      = next((i for i, h in enumerate(headers) if i != unit_col and ("qty" in h or "quantity" in h)), None)
+            # Unit price is found first so "UNIT PRICE"/"UNIT COST" is never
+            # taken as the unit column; line totals ("AMOUNT", "TOTAL") are
+            # derived and ignored.
+            price_col    = next((i for i, h in enumerate(headers)
+                                 if ("price" in h or "cost" in h or "rate" in h) and "total" not in h and "amount" not in h), None)
+            unit_col     = next((i for i, h in enumerate(headers)
+                                 if i != price_col and ("unit" in h or h == "um" or "uom" in h)
+                                 and not any(w in h for w in ("price", "cost", "rate", "amount", "total"))), None)
+            qty_col      = next((i for i, h in enumerate(headers) if i not in (unit_col, price_col) and ("qty" in h or "quantity" in h)), None)
             if qty_col is None:
                 qty_col = next((i for i, h in enumerate(headers) if i != unit_col and ("scope" in h or "area" in h)), None)
             desc_col     = _find_desc_column(headers, table, header_row, qty_col)
@@ -437,6 +465,8 @@ def parse_po_document(request: DocumentParseRequest) -> DocumentParsePOResponse:
                     order_date               = doc_order_date,
                     promised_delivery_date   = doc_delivery_date,
                     phase_hint               = current_phase,
+                    unit_price               = _parse_price(row[price_col]) if price_col is not None and price_col < len(row) else None,
+                    po_number                = doc_po_number,
                 ))
 
         if not items:
@@ -449,6 +479,7 @@ def parse_po_document(request: DocumentParseRequest) -> DocumentParsePOResponse:
                     order_date=doc_order_date,
                     promised_delivery_date=doc_delivery_date,
                     phase_hint=current_phase,
+                    po_number=doc_po_number,
                 )
                 for description, quantity, unit in _ocr_line_items(pages_text)
             )

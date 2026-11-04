@@ -30,6 +30,22 @@ export interface PurchaseOrder {
   orderDate: string;
   expectedDate: string;
   materials: PurchaseOrderMaterial[];
+  // A PO made before the project was entered in ConstructIQ — numbered
+  // IMP-001…, with the paper PO's own number kept here.
+  isImported?: boolean;
+  originalPoNumber?: string | null;
+}
+
+export interface ImportPurchaseOrderRequest {
+  projectId: number;
+  supplierName: string;
+  originalPoNumber?: string;
+  orderDate: string;
+  // Required unless delivered.
+  expectedDate?: string;
+  delivered: boolean;
+  documentId?: number;
+  materials: PurchaseOrderMaterial[];
 }
 
 export interface CreatePurchaseOrderRequest {

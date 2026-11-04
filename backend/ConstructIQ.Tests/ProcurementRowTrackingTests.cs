@@ -201,6 +201,24 @@ public class ProcurementRowTrackingTests(DatabaseFixture fixture)
         await service.CreateAsync(For(s.Wire14), s.User.Id);
     }
 
+    [Fact] // Sent from the cost estimate: only a price is wanted, no material.
+    public async Task PriceInquiry_DoesNotCountAsRequested()
+    {
+        await using var db = fixture.CreateContext();
+        var user = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, user.Id);
+        var material = await TestDataBuilder.CreateMaterialAsync(db);
+        var row = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, 100, "pc", 40, "pc");
+        db.MaterialRequests.Add(new MaterialRequest
+        {
+            ProjectId = project.Id, MaterialId = material.Id, BOQItemId = row.Id, Quantity = 40, Unit = "pc",
+            RequestedByUserId = user.Id, IsPriceInquiry = true,
+        });
+        await db.SaveChangesAsync();
+
+        Assert.Equal(40, (await ProcurementCapCalculator.GetRowStatusesAsync(db, project.Id))[row.Id].RemainingRequestable);
+    }
+
     [Fact]
     public async Task Request_ForAnotherProjectsRow_IsRefused()
     {

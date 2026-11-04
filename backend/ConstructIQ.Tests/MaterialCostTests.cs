@@ -84,9 +84,11 @@ public class MaterialCostTests(DatabaseFixture fixture)
         var admin = await TestDataBuilder.CreateUserAsync(db);
         var project = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
 
+        // Prices come from another project's POs — this project has ordered nothing.
+        var other = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
         var poMaterial = await TestDataBuilder.CreateMaterialAsync(db, unit: "pcs");
-        await TestDataBuilder.CreateDeliveredPoLineAsync(db, project.Id, admin.Id, poMaterial.Id, 1, unit: "pcs", unitPrice: 50, orderDate: new DateTime(2025, 1, 1));
-        await TestDataBuilder.CreateDeliveredPoLineAsync(db, project.Id, admin.Id, poMaterial.Id, 1, unit: "pcs", unitPrice: 20, orderDate: new DateTime(2022, 1, 1));
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, other.Id, admin.Id, poMaterial.Id, 1, unit: "pcs", unitPrice: 50, orderDate: new DateTime(2025, 1, 1));
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, other.Id, admin.Id, poMaterial.Id, 1, unit: "pcs", unitPrice: 20, orderDate: new DateTime(2022, 1, 1));
 
         var histMaterial = await TestDataBuilder.CreateMaterialAsync(db, unit: "pcs");
         var older = await TestDataBuilder.CreateProjectAsync(db, admin.Id, isHistorical: true, targetEndDate: new DateTime(2021, 1, 1));
@@ -112,14 +114,15 @@ public class MaterialCostTests(DatabaseFixture fixture)
         await using var db = fixture.CreateContext();
         var admin = await TestDataBuilder.CreateUserAsync(db);
         var project = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        var other = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
 
         // Priced only per box (PO) and per sq.m (catalog) — purchase unit is pcs.
         var mismatched = await TestDataBuilder.CreateMaterialAsync(db, unit: "sq.m");
-        await TestDataBuilder.CreateDeliveredPoLineAsync(db, project.Id, admin.Id, mismatched.Id, 1, unit: "box", unitPrice: 100);
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, other.Id, admin.Id, mismatched.Id, 1, unit: "box", unitPrice: 100);
 
         // "PCS " normalizes to the same unit as "pieces".
         var normalized = await TestDataBuilder.CreateMaterialAsync(db, unit: "sq.m");
-        await TestDataBuilder.CreateDeliveredPoLineAsync(db, project.Id, admin.Id, normalized.Id, 1, unit: "PCS ", unitPrice: 4);
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, other.Id, admin.Id, normalized.Id, 1, unit: "PCS ", unitPrice: 4);
 
         await TestDataBuilder.CreateBoqItemAsync(db, project.Id, mismatched.Id, admin.Id, 1, estimatedPurchaseQuantity: 3, estimatedPurchaseUnit: "pcs");
         await TestDataBuilder.CreateBoqItemAsync(db, project.Id, normalized.Id, admin.Id, 1, estimatedPurchaseQuantity: 3, estimatedPurchaseUnit: "pieces");
@@ -147,7 +150,8 @@ public class MaterialCostTests(DatabaseFixture fixture)
 
         Assert.Equal(40m, cost!.TotalEstimatedCost); // only the complete row, at catalog 10
         Assert.Equal(1, cost.PricedItems);
-        Assert.Equal(2, cost.UnpricedItems);
+        Assert.Equal(0, cost.UnpricedItems);
+        Assert.Equal(2, cost.NoForecastItems);
     }
 
     [Fact]
@@ -155,6 +159,122 @@ public class MaterialCostTests(DatabaseFixture fixture)
     {
         await using var db = fixture.CreateContext();
         Assert.Null(await new MaterialCostService(db).GetEstimatedMaterialCostAsync(int.MaxValue));
+    }
+
+    // ── Committed + Remaining ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task OngoingProject_SplitsCommittedAtPoPriceAndRemainingAtLatestPrice()
+    {
+        await using var db = fixture.CreateContext();
+        var admin = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        var other = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        var material = await TestDataBuilder.CreateMaterialAsync(db, unit: "bag");
+        var row = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, admin.Id, 100, estimatedPurchaseQuantity: 67, estimatedPurchaseUnit: "bag");
+
+        // 40 bags already ordered here at ₱450 (no BOQ link, like a PO from a
+        // Material Request); the newest price anywhere is ₱480.
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, project.Id, admin.Id, material.Id, 40, unit: "bag", unitPrice: 450, orderDate: new DateTime(2026, 1, 1));
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, other.Id, admin.Id, material.Id, 5, unit: "bag", unitPrice: 480, orderDate: new DateTime(2026, 6, 1));
+
+        var cost = await new MaterialCostService(db).GetEstimatedMaterialCostAsync(project.Id);
+
+        var line = Assert.Single(cost!.Lines);
+        Assert.Equal(row.Id, line.BOQItemId);
+        Assert.Equal(40m, line.OrderedQuantity);
+        Assert.Equal(40 * 450m, line.CommittedCost);
+        Assert.Equal(27m, line.RemainingQuantity);
+        Assert.Equal(480m, line.UnitPrice);
+        Assert.Equal("Purchase order", line.PriceSource);
+        Assert.Equal(27 * 480m, line.RemainingCost);
+        Assert.Equal(18000m, cost.CommittedCost);
+        Assert.Equal(12960m, cost.RemainingCost);
+        Assert.Equal(30960m, cost.TotalEstimatedCost);
+        Assert.False(line.NeedsPrice);
+    }
+
+    [Fact]
+    public async Task OrderedBeyondForecast_RemainingIsZero_AndFullOrderIsCommitted()
+    {
+        await using var db = fixture.CreateContext();
+        var admin = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        var material = await TestDataBuilder.CreateMaterialAsync(db, unit: "pcs");
+        var row = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, admin.Id, 1, estimatedPurchaseQuantity: 10, estimatedPurchaseUnit: "pcs");
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, project.Id, admin.Id, material.Id, 12, boqItemId: row.Id, unit: "pcs", unitPrice: 5);
+
+        var cost = await new MaterialCostService(db).GetEstimatedMaterialCostAsync(project.Id);
+
+        var line = Assert.Single(cost!.Lines);
+        Assert.Equal(0m, line.RemainingQuantity);
+        Assert.Equal(60m, cost.CommittedCost);
+        Assert.Equal(60m, cost.TotalEstimatedCost);
+    }
+
+    [Fact]
+    public async Task OrderNotInMaterialPlan_GetsItsOwnLine_AndIsCountedOnce()
+    {
+        await using var db = fixture.CreateContext();
+        var admin = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        var planned = await TestDataBuilder.CreateMaterialAsync(db, unit: "pcs");
+        var extra = await TestDataBuilder.CreateMaterialAsync(db, unit: "pcs");
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, planned.Id, admin.Id, 1, estimatedPurchaseQuantity: 4, estimatedPurchaseUnit: "pcs");
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, project.Id, admin.Id, extra.Id, 3, unit: "pcs", unitPrice: 7);
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, project.Id, admin.Id, extra.Id, 2, unit: "pcs", unitPrice: 7);
+
+        var cost = await new MaterialCostService(db).GetEstimatedMaterialCostAsync(project.Id);
+
+        Assert.Equal(2, cost!.Lines.Count);
+        var extraLine = Assert.Single(cost.Lines, l => l.BOQItemId is null);
+        Assert.Equal(5m, extraLine.OrderedQuantity);
+        Assert.Equal(35m, extraLine.CommittedCost);
+        Assert.Equal(0m, extraLine.RemainingQuantity);
+        Assert.Equal("Ordered, not in the Material Plan", extraLine.Note);
+        // 5×7 committed + 4×10 (catalog) remaining for the planned row.
+        Assert.Equal(75m, cost.TotalEstimatedCost);
+    }
+
+    [Fact]
+    public async Task UnpricedRemainder_IsFlaggedAndLeftOut_NeverGuessed()
+    {
+        await using var db = fixture.CreateContext();
+        var admin = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        var material = await TestDataBuilder.CreateMaterialAsync(db, unit: "gal");
+        material.UnitCost = 0;
+        await db.SaveChangesAsync();
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, admin.Id, 1, estimatedPurchaseQuantity: 67, estimatedPurchaseUnit: "gal");
+
+        var cost = await new MaterialCostService(db).GetEstimatedMaterialCostAsync(project.Id);
+
+        var line = Assert.Single(cost!.Lines);
+        Assert.True(line.NeedsPrice);
+        Assert.Null(line.UnitPrice);
+        Assert.Equal(67m, line.RemainingQuantity);
+        Assert.Equal(0m, line.RemainingCost);
+        Assert.Equal("No recorded price in this unit", line.Note);
+        Assert.Equal(1, cost.UnpricedItems);
+    }
+
+    [Fact]
+    public async Task CompletedHistoricalProject_IsAllCommitted()
+    {
+        await using var db = fixture.CreateContext();
+        var admin = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, admin.Id, isHistorical: true, targetEndDate: new DateTime(2024, 3, 1));
+        var material = await TestDataBuilder.CreateMaterialAsync(db, unit: "pcs");
+        var row = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, admin.Id, 1, estimatedPurchaseQuantity: 40, estimatedPurchaseUnit: "pcs");
+        await TestDataBuilder.CreateHistoricalSupplyAsync(db, row.Id, 40, "pcs", unitCost: 25);
+
+        var cost = await new MaterialCostService(db).GetEstimatedMaterialCostAsync(project.Id);
+
+        var line = Assert.Single(cost!.Lines);
+        Assert.Equal(40m, line.OrderedQuantity);
+        Assert.Equal(0m, line.RemainingQuantity);
+        Assert.Equal(1000m, cost.CommittedCost);
+        Assert.Equal(0m, cost.RemainingCost);
     }
 
     // ── PO price visibility ─────────────────────────────────────────────────
@@ -206,18 +326,28 @@ public class MaterialCostTests(DatabaseFixture fixture)
         Assert.IsType<ForbidResult>(await EndpointAs(db, otherEngineer, project.Id));
     }
 
-    [Theory]
-    [InlineData(UserRole.Admin)]
-    [InlineData(UserRole.ProjectManager)]
-    public async Task Endpoint_AdminAndProjectManagerSeeAnyProject(UserRole role)
+    [Fact]
+    public async Task Endpoint_AdminSeesAnyProject()
     {
         await using var db = fixture.CreateContext();
-        var admin = await TestDataBuilder.CreateUserAsync(db);
-        var viewer = await TestDataBuilder.CreateUserAsync(db, role);
-        var project = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        var manager = await TestDataBuilder.CreateUserAsync(db, UserRole.ProjectManager);
+        var admin = await TestDataBuilder.CreateUserAsync(db, UserRole.Admin);
+        var project = await TestDataBuilder.CreateProjectAsync(db, manager.Id);
 
-        var ok = Assert.IsType<OkObjectResult>(await EndpointAs(db, viewer, project.Id));
+        var ok = Assert.IsType<OkObjectResult>(await EndpointAs(db, admin, project.Id));
         Assert.Equal(project.Id, Assert.IsType<EstimatedMaterialCostDto>(ok.Value).ProjectId);
+    }
+
+    [Fact]
+    public async Task Endpoint_ProjectManagerSeesOnlyTheirOwnProjects()
+    {
+        await using var db = fixture.CreateContext();
+        var owner = await TestDataBuilder.CreateUserAsync(db, UserRole.ProjectManager);
+        var otherManager = await TestDataBuilder.CreateUserAsync(db, UserRole.ProjectManager);
+        var project = await TestDataBuilder.CreateProjectAsync(db, owner.Id);
+
+        Assert.IsType<OkObjectResult>(await EndpointAs(db, owner, project.Id));
+        Assert.IsType<ForbidResult>(await EndpointAs(db, otherManager, project.Id));
     }
 
     [Theory]

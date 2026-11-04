@@ -37,6 +37,9 @@ public record PurchaseOrderDto
     // The master PO document — uploaded once, with the first delivery batch,
     // and reused by every later one. See PurchaseOrder.PoFileUrl.
     public string? PoFileUrl { get; init; }
+    // See PurchaseOrder.IsImported / OriginalPoNumber.
+    public bool    IsImported       { get; init; }
+    public string? OriginalPoNumber { get; init; }
 }
 
 public record DeliveryBatchDto
@@ -59,6 +62,23 @@ public record CreatePurchaseOrderDto
     public string    SupplierName { get; init; } = "";
     public DateTime? OrderDate    { get; init; } // null = now (live order placed today)
     public DateTime  ExpectedDate { get; init; }
+    public List<PurchaseOrderMaterialDto> Materials { get; init; } = [];
+}
+
+// A PO made outside ConstructIQ, for a project that was already under way
+// when it was entered. Saved as Approved (still to be delivered — received
+// through the normal delivery flow) or Delivered.
+public record ImportPurchaseOrderDto
+{
+    public int       ProjectId        { get; init; }
+    public string    SupplierName     { get; init; } = "";
+    public string?   OriginalPoNumber { get; init; }
+    public DateTime  OrderDate        { get; init; }
+    // Required when not yet delivered; defaults to OrderDate otherwise.
+    public DateTime? ExpectedDate     { get; init; }
+    public bool      Delivered        { get; init; }
+    // The uploaded PurchaseOrder document this was scanned from, if any.
+    public int?      DocumentId       { get; init; }
     public List<PurchaseOrderMaterialDto> Materials { get; init; } = [];
 }
 

@@ -4,6 +4,7 @@ using ConstructIQ.API.Data;
 using ConstructIQ.API.Models.DTOs.MaterialRequests;
 using ConstructIQ.API.Models.DTOs.PurchaseOrders;
 using ConstructIQ.API.Models.Entities;
+using System.Linq.Expressions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -22,6 +23,11 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
     private int CurrentUserId =>
         int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? User.FindFirst("sub")?.Value ?? "0");
+
+    // What the Requests tab still has to act on: not yet on a PO, and — for a
+    // price check — no price saved yet.
+    private static readonly Expression<Func<MaterialRequest, bool>> IsPending = r =>
+        r.FulfilledByPurchaseOrderId == null && (!r.IsPriceInquiry || !r.Quotes.Any(q => q.UnitPrice != null));
 
     // No role restriction — mirrors the BOQ "Notify Procurement" button this
     // powers, which today has no restriction either. Anyone who can see a
@@ -104,7 +110,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
     public async Task<IActionResult> GetProjectsWithPending()
     {
         var groups = await db.MaterialRequests
-            .Where(r => r.FulfilledByPurchaseOrderId == null)
+            .Where(IsPending)
             .GroupBy(r => new { r.ProjectId, r.Project.Name })
             .Select(g => new ProjectWithRequestsDto
             {
@@ -126,7 +132,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             .Include(r => r.Material)
             .Include(r => r.RequestedBy)
             .Include(r => r.Quotes)
-            .Where(r => r.ProjectId == projectId && r.FulfilledByPurchaseOrderId == null)
+            .Where(r => r.ProjectId == projectId)
+            .Where(IsPending)
             .OrderBy(r => r.CreatedAt)
             .ToListAsync();
 
@@ -175,6 +182,65 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
 
         await db.SaveChangesAsync();
         return NoContent();
+    }
+
+    // "Request quotation" on the cost breakdown: every Material Plan material
+    // still to be ordered that has no recorded price becomes a price check in
+    // Procurement's Requests tab, for the quantity still to order. One that's
+    // already waiting for a quotation isn't sent twice. Open to whoever can
+    // see the project's cost.
+    [HttpPost("price-inquiries/{projectId:int}")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> RequestQuotations(int projectId,
+        [FromServices] Services.Interfaces.IMaterialCostService materialCost,
+        [FromServices] Services.Interfaces.IProjectAccessService projectAccess)
+    {
+        var role = User.FindFirst(ClaimTypes.Role)?.Value ?? string.Empty;
+        if (!await projectAccess.CanViewProjectCostAsync(projectId, CurrentUserId, role))
+            return Forbid();
+
+        var cost = await materialCost.GetEstimatedMaterialCostAsync(projectId);
+        if (cost is null) return NotFound(new { message = "Project not found." });
+
+        // Every material still missing a price — rows still to be ordered and
+        // ordered lines bought without one alike — so newly added materials
+        // can be sent any time. A price is per unit, so a line needs one.
+        var needed = cost.Lines
+            .Where(l => l.NeedsPrice && l.MaterialId.HasValue && !string.IsNullOrWhiteSpace(l.Unit))
+            .ToList();
+        if (needed.Count == 0)
+            return Ok(new PriceInquiryResultDto());
+
+        var created = 0;
+        var already = 0;
+        foreach (var group in needed.GroupBy(l => (MaterialId: l.MaterialId!.Value, Unit: CompletedProjectDemandRules.NormalizeUnit(l.Unit))))
+        {
+            if (group.Any(l => l.QuotationRequested))
+            {
+                already++;
+                continue;
+            }
+            db.MaterialRequests.Add(new MaterialRequest
+            {
+                ProjectId = projectId,
+                MaterialId = group.Key.MaterialId,
+                Quantity = group.Sum(l => l.RemainingQuantity > 0 ? l.RemainingQuantity : l.OrderedQuantity),
+                Unit = group.First().Unit,
+                RequestedByUserId = CurrentUserId,
+                IsPriceInquiry = true,
+            });
+            created++;
+        }
+
+        if (created > 0)
+        {
+            await db.SaveChangesAsync();
+            var projectName = await db.Projects.Where(p => p.Id == projectId).Select(p => p.Name).FirstAsync();
+            await notifications.CreateForRoleAsync(UserRole.ProcurementOfficer, NotificationKind.ProcurementRequestSubmitted,
+                $"{projectName}: {created} material{(created == 1 ? "" : "s")} need a price — add supplier quotations in the Requests tab.",
+                CurrentUserId, projectId: projectId, actionLink: "/procurement");
+        }
+        return Ok(new PriceInquiryResultDto { Requested = created, AlreadyRequested = already });
     }
 
     // Removes a request that's no longer needed. Only a pending one — once a
@@ -284,6 +350,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
 
         if (requests.Count != dto.Assignments.Count)
             return BadRequest(new { message = "One or more materials were already turned into a purchase order — refresh and try again." });
+        if (requests.FirstOrDefault(r => r.IsPriceInquiry) is { } priceCheck)
+            return BadRequest(new { message = $"{priceCheck.Material.Name} is a price check only — save its quotation instead of making a PO." });
 
         foreach (var a in dto.Assignments)
         {
@@ -445,6 +513,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         CreatedAt = r.CreatedAt,
         Remarks = r.Remarks,
         IsAdditional = r.IsAdditional,
+        IsPriceInquiry = r.IsPriceInquiry,
         Quotes = r.Quotes.OrderBy(q => q.Slot).Select(q => new MaterialRequestQuoteDto
         {
             Slot = q.Slot, SupplierName = q.SupplierName, UnitPrice = q.UnitPrice,

@@ -439,7 +439,7 @@
       "key": "exposed_painted",
       "surface": "ceiling",
       "label": "Exposed soffit, painted",
-      "note_pattern": "exposed",
+      "note_pattern": "exposed|open[-\\s]?utilit|slab\\s*soffit|soffit.*paint|paint.*soffit",
       "rows": [
         {
           "name": "Paint",

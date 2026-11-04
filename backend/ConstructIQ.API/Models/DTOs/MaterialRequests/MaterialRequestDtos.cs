@@ -29,6 +29,16 @@ public record MaterialRequestDto
     public string Specification { get; init; } = "";
     public string? Remarks { get; init; }
     public List<MaterialRequestQuoteDto> Quotes { get; init; } = [];
+    // See MaterialRequest.IsPriceInquiry.
+    public bool IsPriceInquiry { get; init; }
+}
+
+public record PriceInquiryResultDto
+{
+    // Materials sent to Procurement for a quotation.
+    public int Requested { get; init; }
+    // Already waiting for one — not sent twice.
+    public int AlreadyRequested { get; init; }
 }
 
 public record MaterialRequestQuoteDto

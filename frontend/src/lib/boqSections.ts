@@ -23,7 +23,7 @@ function knownSection(section?: string): string | undefined {
 }
 
 // For comparing sections: the known name, else the heading without numbering.
-function sectionKey(section?: string): string {
+export function sectionKey(section?: string): string {
   return knownSection(section) ?? (section ?? '').trim().replace(/^[ivxlc\d]+[.)]?\s+/i, '').toLowerCase();
 }
 

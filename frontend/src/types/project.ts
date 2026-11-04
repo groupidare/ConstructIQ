@@ -74,5 +74,7 @@ export interface ProjectCreateRequest {
   isHistorical?: boolean;
   assignedContractor?: string;
   siteEngineerId?: number;
+  // Create only: an ongoing project's progress when it's entered (0–99).
+  startingProgress?: number;
   phases: Omit<Phase, "id" | "projectId" | "status" | "progressPercent">[];
 }

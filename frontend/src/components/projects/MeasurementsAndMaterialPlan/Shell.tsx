@@ -21,8 +21,8 @@ import type { ProjectDocument } from '@/types/document';
 import MeasurementsTab from './MeasurementsTab';
 import MaterialPlanTab from './MaterialPlanTab';
 import BlueprintWizard from './BlueprintWizard';
-import ScanCoveredDialog from './ScanCoveredDialog';
-import { splitScannedRows } from '@/lib/boqSections';
+import BoqCompareDialog from './BoqCompareDialog';
+import { isBlueprintRow, splitScannedRows } from '@/lib/boqSections';
 import { useWarehouseStock } from '@/hooks/useWarehouseStock';
 
 function apiErrorMessage(error: unknown, fallback: string): string {
@@ -62,7 +62,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [uploadingBlueprint, setUploadingBlueprint] = useState(false);
   const [blueprintDoc, setBlueprintDoc] = useState<ProjectDocument | null>(null);
   // Scanned BOQ rows held back because the blueprint already filled their section.
-  const [coveredRows, setCoveredRows] = useState<BOQItemRow[] | null>(null);
+  const [compareRows, setCompareRows] = useState<BOQItemRow[] | null>(null);
   const [uploadingBoq, setUploadingBoq] = useState(false);
   const [uploadingPo, setUploadingPo] = useState(false);
   const [savingPo, setSavingPo] = useState(false);
@@ -212,17 +212,20 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       // Lines of the same material + unit (several deliveries) stay together.
       const rowsToAdd = project.isHistorical ? scanned.flatMap(splitByPurchasedMaterial) : scanned;
 
-      // Sections the blueprint filled keep the blueprint's rows; rows already
-      // in the plan (the same BOQ scanned again) are skipped.
+      // Rows already in the plan (the same BOQ scanned again) are skipped. When
+      // the blueprint filled a section, the whole BOQ is compared with it first
+      // and nothing is added until the user applies the comparison.
       const { add, covered, duplicates } = splitScannedRows(rowsToAdd, boqRows);
-      if (add.length) setBoqRows(prev => [...prev, ...add]);
-      if (covered.length) setCoveredRows(covered);
-      const notes = [
-        covered.length ? `${covered.length} held back (already covered by blueprint)` : '',
-        duplicates ? `${duplicates} already in the plan` : '',
-      ].filter(Boolean).join(', ');
-      if (add.length) toast.success(`${add.length} line item(s) added${notes ? ` — ${notes}` : ''}. Review them, then Save.`);
-      else if (!covered.length) toast(`Nothing new — all ${duplicates} line item(s) are already in the plan.`);
+      const skipped = duplicates ? ` ${duplicates} line item(s) already in the plan were skipped.` : '';
+      if (covered.length) {
+        setCompareRows([...covered, ...add]);
+        toast(`Compare the BOQ with the blueprint, then Apply.${skipped}`, { icon: '⚖️' });
+      } else if (add.length) {
+        setBoqRows(prev => [...prev, ...add]);
+        toast.success(`${add.length} line item(s) added.${skipped} Review them, then Save.`);
+      } else {
+        toast(`Nothing new — all ${duplicates} line item(s) are already in the plan.`);
+      }
       if (result.parseErrors.length > 0) toast.error(result.parseErrors[0]);
     } catch (error) {
       toast.error(apiErrorMessage(error, 'Failed to scan document.'));
@@ -560,10 +563,11 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     boqRows, setBoqRows, boqItems,
     blueprints, boqDocs, poDocs, inventory, warehouseStock, warehouseStockLinks, handleSaveStockLink, handleRemoveStockLink, forecastedMaterials,
     savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
-    blueprintDoc, setBlueprintDoc, handleBlueprintRows, coveredRows, setCoveredRows,
+    blueprintDoc, setBlueprintDoc, handleBlueprintRows, compareRows, setCompareRows,
     handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
     handleSaveBoq, handleRunForecast, handleNotify,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
+    handlePurchaseOrdersImported: () => { fetchPurchaseOrders(); fetchDocuments(); },
     poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
     poOrderDate, setPoOrderDate, poExpectedDate, setPoExpectedDate,
   };
@@ -664,6 +668,7 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onParsePO={state.handleParsePO}
       onSavePO={state.handleSavePO}
       onLinkPoMaterial={state.handleLinkPoMaterial}
+      onPurchaseOrdersImported={state.handlePurchaseOrdersImported}
       poDraftRows={state.poDraftRows}
       onPoDraftRowsChange={state.setPoDraftRows}
       poSupplierName={state.poSupplierName}
@@ -673,14 +678,17 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       poExpectedDate={state.poExpectedDate}
       onPoExpectedDateChange={state.setPoExpectedDate}
     />
-    {state.coveredRows && (
-      <ScanCoveredDialog
-        rows={state.coveredRows}
-        onClose={() => state.setCoveredRows(null)}
-        onAdd={rows => {
-          state.setBoqRows(prev => [...prev, ...rows]);
-          state.setCoveredRows(null);
-          toast.success(`${rows.length} more row(s) added — review them, then Save.`);
+    {state.compareRows && (
+      // The whole scanned BOQ beside every row the blueprint generated.
+      <BoqCompareDialog
+        blueprintRows={state.boqRows.filter(isBlueprintRow)}
+        uploadedRows={state.compareRows}
+        onClose={() => state.setCompareRows(null)}
+        onApply={(add, remove) => {
+          const gone = new Set(remove);
+          state.setBoqRows(prev => [...prev.filter(r => !gone.has(r)), ...add]);
+          state.setCompareRows(null);
+          toast.success(`${add.length} row(s) added${remove.length ? `, ${remove.length} blueprint row(s) replaced` : ''} — review them, then Save.`);
         }}
       />
     )}

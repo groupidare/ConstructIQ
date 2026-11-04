@@ -194,6 +194,8 @@ public class DocumentService(
                 OrderDate             = DateTime.TryParse(i.OrderDate, out var od) ? od : null,
                 PromisedDeliveryDate  = DateTime.TryParse(i.PromisedDeliveryDate, out var pd) ? pd : null,
                 PhaseHint             = i.PhaseHint,
+                UnitPrice             = i.UnitPrice is double price ? (decimal)price : null,
+                PoNumber              = i.PoNumber,
                 MatchedMaterialId     = materialMatches.TryGetValue(i.MaterialName.Trim().ToLower(), out var mid) ? mid : null,
                 MatchedSupplierId     = !string.IsNullOrWhiteSpace(i.SupplierName) && supplierMatches.TryGetValue(i.SupplierName.Trim().ToLower(), out var sid) ? sid : null,
             }).ToList(),

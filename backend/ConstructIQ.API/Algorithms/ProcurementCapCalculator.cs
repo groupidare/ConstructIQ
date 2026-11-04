@@ -76,7 +76,7 @@ public static class ProcurementCapCalculator
             .ToListAsync();
 
         var requests = await db.MaterialRequests
-            .Where(m => m.ProjectId == projectId)
+            .Where(m => m.ProjectId == projectId && !m.IsPriceInquiry) // a price check isn't asking for material
             .OrderBy(m => m.Id)
             .Select(m => new { m.BOQItemId, m.MaterialId, m.Quantity, m.FulfilledByPurchaseOrderId })
             .ToListAsync();

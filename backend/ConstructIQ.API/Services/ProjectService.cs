@@ -85,6 +85,23 @@ public class ProjectService(AppDbContext db, IFileStorageService storage, IWeath
             });
         }
 
+        // An ongoing project entered mid-way starts at its real progress, as
+        // its first Progress Tracker entry, under the same Planning → Active
+        // rule as a logged update.
+        if (!project.IsHistorical && project.Status != ProjectStatus.Completed && dto.StartingProgress is int starting and > 0)
+        {
+            project.Progress = starting;
+            if (project.Status == ProjectStatus.Planning && starting > ActiveThreshold)
+                project.Status = ProjectStatus.Active;
+            db.ProjectProgressUpdates.Add(new ProjectProgressUpdate
+            {
+                Project         = project,
+                Progress        = starting,
+                Notes           = "Progress when the project was added to ConstructIQ.",
+                UpdatedByUserId = createdByUserId,
+            });
+        }
+
         db.Projects.Add(project);
         await db.SaveChangesAsync();
 

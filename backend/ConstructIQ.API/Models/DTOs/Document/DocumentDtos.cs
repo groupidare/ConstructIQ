@@ -91,6 +91,8 @@ public class MlParsedPoItem
     [JsonPropertyName("order_date")]               public string? OrderDate             { get; set; }
     [JsonPropertyName("promised_delivery_date")]   public string? PromisedDeliveryDate  { get; set; }
     [JsonPropertyName("phase_hint")]                public string? PhaseHint             { get; set; }
+    [JsonPropertyName("unit_price")]                public double? UnitPrice             { get; set; }
+    [JsonPropertyName("po_number")]                 public string? PoNumber              { get; set; }
 }
 
 public class MlDocumentParsePoResponse
@@ -112,6 +114,9 @@ public class ParsedPoRowDto
     public string?  PhaseHint             { get; set; }
     public int?     MatchedMaterialId     { get; set; }
     public int?     MatchedSupplierId     { get; set; }
+    // Read from the PO when it has a price column / a printed PO number.
+    public decimal? UnitPrice             { get; set; }
+    public string?  PoNumber              { get; set; }
 }
 
 public class PoParseResultDto

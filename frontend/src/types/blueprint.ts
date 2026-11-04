@@ -13,6 +13,9 @@ export interface BlueprintRoom {
   labels: string[];
   /** Traced outline in the preview image's pixels. */
   outline: [number, number][];
+  /** What the floor's reflected ceiling plan says about this room. */
+  ceilingNotes: string[];
+  ceilingHeightM: number | null;
 }
 
 /** One floor of the plan set and the drawing it is read from. `confirm`: a
@@ -50,6 +53,8 @@ export interface BlueprintResult {
   skippedPlans: string[];
   preview: BlueprintPreview | null;
   scaleUsed: string | null;
+  /** Drawing id of the reflected ceiling plan read for this floor, if any. */
+  ceilingPlan: string | null;
   rooms: BlueprintRoom[];
   openings: BlueprintOpening[];
   ceilingHeightsM: number[];
