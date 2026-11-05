@@ -221,6 +221,23 @@ def _extract_po_number(text: str) -> str | None:
     return match.group(1).strip()[:50] if match else None
 
 
+def _cell_date(value) -> str | None:
+    """A PO DATE cell as an ISO date — an Excel date cell (datetime) or text
+    like "February 9, 2026" / "03/07/2025" (month first); None if it isn't one."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if hasattr(value, "date") and not isinstance(value, str):
+        try:
+            return value.date().isoformat()
+        except (TypeError, ValueError):
+            return None
+    text = str(value).strip()
+    if not text or not any(ch.isdigit() for ch in text):
+        return None
+    parsed = pd.to_datetime(text, errors="coerce")
+    return None if pd.isna(parsed) else parsed.date().isoformat()
+
+
 def _extract_date(pattern: re.Pattern, text: str) -> str | None:
     match = pattern.search(text)
     if not match:
@@ -305,10 +322,13 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
             # normal, non-historical case), none of this activates and parsing
             # behaves exactly as before.
             po_col = next((i for i, h in enumerate(headers) if "po number" in h or "po no" in h or "po#" in h.replace(" ", "")), None)
-            po_desc_col = po_unit_col = po_qty_col = supplier_col = po_cost_col = None
+            po_desc_col = po_unit_col = po_qty_col = supplier_col = po_cost_col = po_date_col = None
             if po_col is not None:
                 for i, h in enumerate(headers):
                     if i <= po_col:
+                        continue
+                    if po_date_col is None and "date" in h:
+                        po_date_col = i
                         continue
                     # Cost/price checked before the generic "unit" match, so
                     # "UNIT COST" can never be taken as the unit column.
@@ -332,6 +352,8 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
             current_primary_section = None
             current_sub_category = None
             current_po_number = None
+            current_po_date = None
+            po_dates: dict[str, str] = {}  # a PO has one date, even where its cell is merged/blank
             last_boq_item = None  # for combined-format PO-only continuation rows
             for row in table[header_row + 1:]:
                 if not row or all(c is None for c in row):
@@ -366,8 +388,15 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
                 if po_desc_col is not None:
                     if po_col is not None and po_col < len(row):
                         po_val = str(row[po_col] or "").strip()
-                        if po_val:
+                        if po_val and po_val != current_po_number:
                             current_po_number = po_val
+                            current_po_date = po_dates.get(po_val)
+                    if po_date_col is not None and po_date_col < len(row):
+                        cell_date = _cell_date(row[po_date_col])
+                        if cell_date:
+                            current_po_date = cell_date
+                            if current_po_number:
+                                po_dates.setdefault(current_po_number, cell_date)
                     supply_desc = _clean_description(str(row[po_desc_col] or "").strip()) if po_desc_col < len(row) else ""
                     supply_qty = parse_quantity_from_cell(row[po_qty_col]) if po_qty_col is not None and po_qty_col < len(row) else None
                     if supply_desc and supply_qty is not None and supply_qty > 0:
@@ -380,6 +409,7 @@ def parse_boq_document(request: DocumentParseRequest) -> DocumentParseResponse:
                             quantity      = supply_qty,
                             supplier_name = supply_supplier or None,
                             po_number     = current_po_number,
+                            po_date       = current_po_date,
                             unit_cost     = supply_cost if supply_cost is not None and supply_cost >= 0 else None,
                         )
 

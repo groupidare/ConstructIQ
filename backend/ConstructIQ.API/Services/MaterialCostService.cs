@@ -17,13 +17,16 @@ namespace ConstructIQ.API.Services;
 // A new project has nothing ordered, so it's all Remaining; a finished one
 // is all Committed. A price only counts when it's for the same material in
 // the same (normalized) unit — never converted, averaged or guessed.
-// Latest-price sources, first match wins:
-//   1. latest PurchaseOrderMaterial.UnitPrice (any project, by PO OrderDate)
+// Price sources, first match wins:
+//   1. purchase orders — this system's POs (PurchaseOrderMaterial, dated by
+//      OrderDate) and historical projects' POs (HistoricalMaterialSupply,
+//      dated by its PO DATE, else the project's TargetEndDate) as one pool: the latest date,
+//      and when several POs share that date (different suppliers), the
+//      lowest price
 //   2. latest supplier quotation typed on the Material Request Form (the
 //      most recently updated request's chosen quote, else its lowest; a
 //      price auto-filled from a past PO isn't a quotation and is skipped)
-//   3. latest HistoricalMaterialSupply.UnitCost (by the historical project's TargetEndDate)
-//   4. Material.UnitCost from the catalog, if > 0
+//   3. Material.UnitCost from the catalog, if > 0
 // Whatever can't be priced (or has no forecast quantity) is flagged on its
 // line and left out of the totals. The BOQ area quantity (sq.m) is never priced.
 // A row with no forecast is still priced per its catalog buying unit, so a
@@ -77,7 +80,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
                 .ToListAsync())
             .Concat(await db.HistoricalMaterialSupplies
                 .Where(h => h.BOQItem.ProjectId == projectId)
-                .Select(h => new OrderedLine(h.BOQItemId, h.BOQItem.MaterialId, h.MaterialName, h.Unit, h.Quantity, h.UnitCost, project.TargetEndDate))
+                .Select(h => new OrderedLine(h.BOQItemId, h.BOQItem.MaterialId, h.MaterialName, h.Unit, h.Quantity, h.UnitCost, h.PoDate ?? project.TargetEndDate))
                 .ToListAsync())
             .ToList();
 
@@ -398,16 +401,25 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
 
     private static decimal Round(decimal x) => Math.Round(x, 2, MidpointRounding.AwayFromZero);
 
-    // Latest price for each (material, unit) among the given materials, from
-    // the four sources in order — PO, quotation, historical supply, catalog.
-    // The returned lookup normalizes the unit itself.
+    // Price for each (material, unit) among the given materials, from the
+    // three sources in order — POs (this system's and historical projects'),
+    // quotation, catalog. The returned lookup normalizes the unit itself.
     private async Task<Func<int, string?, DatedPrice?>> LoadPricesAsync(List<int> materialIds)
     {
-        var poPrices = LatestByKey((await db.PurchaseOrderMaterials
+        var systemPoPrices = (await db.PurchaseOrderMaterials
             .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value))
             .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Date = m.PurchaseOrder.OrderDate, m.Id, m.PurchaseOrder.Number, Supplier = m.PurchaseOrder.Supplier.Name })
             .ToListAsync())
-            .Select(m => (m.MaterialId, m.Unit, m.Price, m.Date, m.Id, $"{m.Number} · {m.Supplier}")), SourcePo);
+            .Select(m => new PoPrice(m.MaterialId, m.Unit, m.Price, m.Date, m.Id, SourcePo, $"{m.Number} · {m.Supplier}"));
+
+        var historicalPoPrices = (await db.HistoricalMaterialSupplies
+            .Where(h => h.UnitCost != null && materialIds.Contains(h.BOQItem.MaterialId))
+            .Select(h => new { h.BOQItem.MaterialId, h.Unit, Price = h.UnitCost!.Value, Date = h.PoDate ?? h.BOQItem.Project.TargetEndDate, h.Id, Project = h.BOQItem.Project.Name, h.PoNumber })
+            .ToListAsync())
+            .Select(h => new PoPrice(h.MaterialId, h.Unit, h.Price, h.Date, h.Id, SourceHistorical,
+                string.IsNullOrWhiteSpace(h.PoNumber) ? h.Project : $"{h.PoNumber} · {h.Project}"));
+
+        var poPrices = LatestLowestByKey(systemPoPrices.Concat(historicalPoPrices));
 
         // Per (material, unit): the most recently updated request's quotes,
         // its chosen one if any, else its lowest price.
@@ -427,12 +439,6 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
                     return new DatedPrice(pick.Price, latestRequest.Max(q => q.UpdatedAt), SourceQuotation, pick.SupplierName);
                 });
 
-        var historicalPrices = LatestByKey((await db.HistoricalMaterialSupplies
-            .Where(h => h.UnitCost != null && materialIds.Contains(h.BOQItem.MaterialId))
-            .Select(h => new { h.BOQItem.MaterialId, h.Unit, Price = h.UnitCost!.Value, Date = h.BOQItem.Project.TargetEndDate, h.Id, Project = h.BOQItem.Project.Name })
-            .ToListAsync())
-            .Select(h => (h.MaterialId, h.Unit, h.Price, h.Date, h.Id, h.Project)), SourceHistorical);
-
         var catalogPrices = (await db.Materials
             .Where(m => materialIds.Contains(m.Id) && m.UnitCost > 0)
             .Select(m => new { m.Id, m.Unit, m.UnitCost })
@@ -444,22 +450,26 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             var key = (materialId, CompletedProjectDemandRules.NormalizeUnit(unit));
             return poPrices.GetValueOrDefault(key)
                 ?? quotePrices.GetValueOrDefault(key)
-                ?? historicalPrices.GetValueOrDefault(key)
                 ?? catalogPrices.GetValueOrDefault(key);
         };
     }
 
-    // Latest price per (material, normalized unit). Id breaks date ties so the
-    // most recently entered record wins.
-    private static Dictionary<(int, string), DatedPrice> LatestByKey(
-        IEnumerable<(int MaterialId, string Unit, decimal Price, DateTime Date, int Id, string Reference)> prices, string source) =>
+    private record PoPrice(int MaterialId, string Unit, decimal Price, DateTime Date, int Id, string Source, string Reference);
+
+    // Per (material, normalized unit): the PO price from the latest order
+    // date; several POs that day (different suppliers) → the lowest price.
+    // Id breaks a remaining tie so the most recently entered record wins.
+    private static Dictionary<(int, string), DatedPrice> LatestLowestByKey(IEnumerable<PoPrice> prices) =>
         prices
             .GroupBy(p => (p.MaterialId, CompletedProjectDemandRules.NormalizeUnit(p.Unit)))
             .ToDictionary(
                 g => g.Key,
                 g =>
                 {
-                    var latest = g.OrderByDescending(p => p.Date).ThenByDescending(p => p.Id).First();
-                    return new DatedPrice(latest.Price, latest.Date, source, latest.Reference);
+                    var latestDay = g.Max(p => p.Date.Date);
+                    var pick = g.Where(p => p.Date.Date == latestDay)
+                        .OrderBy(p => p.Price).ThenByDescending(p => p.Id)
+                        .First();
+                    return new DatedPrice(pick.Price, pick.Date, pick.Source, pick.Reference);
                 });
 }

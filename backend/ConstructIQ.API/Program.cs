@@ -224,6 +224,18 @@ if (args.Contains("--backfill-historical-purchase-units"))
     return;
 }
 
+// One-off: fills in the PO date of historical PO lines saved before it was
+// read (see DbInitializer.BackfillHistoricalPoDatesAsync). Needs the ML
+// service running. `dotnet run --backfill-historical-po-dates`.
+if (args.Contains("--backfill-historical-po-dates"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var documents = scope.ServiceProvider.GetRequiredService<ConstructIQ.API.Services.Interfaces.IDocumentService>();
+    await ConstructIQ.API.Data.DbInitializer.BackfillHistoricalPoDatesAsync(db, documents);
+    return;
+}
+
 // One-off: removes saved forecasts no trained model produced (see
 // DbInitializer.CleanupFallbackForecastsAsync). `dotnet run
 // --cleanup-fallback-forecasts` only lists them; add `--confirm` to delete.

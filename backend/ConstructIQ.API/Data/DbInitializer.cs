@@ -269,6 +269,65 @@ public static class DbInitializer
         Console.WriteLine($"[Backfill] Checked {rows.Count} historical BOQ row(s); updated {changed}.");
     }
 
+    // One-off: gives historical PO lines saved before the PO DATE column was
+    // read (HistoricalMaterialSupply.PoDate null) their date, by re-reading
+    // each historical project's BOQ files — a PO number has one date, so
+    // lines are matched by PO number within the project. Only fills blanks,
+    // never changes a stored date. Run via `dotnet run
+    // --backfill-historical-po-dates`; safe to re-run.
+    public static async Task BackfillHistoricalPoDatesAsync(AppDbContext context,
+        ConstructIQ.API.Services.Interfaces.IDocumentService documents)
+    {
+        var undated = await context.HistoricalMaterialSupplies
+            .Include(h => h.BOQItem).ThenInclude(b => b.Project)
+            .Where(h => h.PoDate == null && h.PoNumber != null && h.BOQItem.Project.IsHistorical)
+            .ToListAsync();
+        if (undated.Count == 0)
+        {
+            Console.WriteLine("[Backfill] Every historical PO line already has its PO date.");
+            return;
+        }
+
+        var filled = 0;
+        foreach (var project in undated.GroupBy(h => h.BOQItem.ProjectId))
+        {
+            var projectName = project.First().BOQItem.Project.Name;
+            var docIds = await context.ProjectDocuments
+                .Where(d => d.ProjectId == project.Key && d.Category == DocumentCategory.BOQ)
+                .Select(d => d.Id)
+                .ToListAsync();
+
+            var dates = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+            foreach (var docId in docIds)
+            {
+                try
+                {
+                    var parsed = await documents.ParseAsync(docId);
+                    foreach (var line in parsed.Items.SelectMany(i => i.HistoricalSupply))
+                        if (line.PoDate is { } date && !string.IsNullOrWhiteSpace(line.PoNumber))
+                            dates.TryAdd(line.PoNumber.Trim(), date);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Backfill] {projectName}: couldn't read document #{docId} — {ex.Message}");
+                }
+            }
+
+            var projectFilled = 0;
+            foreach (var line in project)
+                if (dates.TryGetValue(line.PoNumber!.Trim(), out var date))
+                {
+                    line.PoDate = date;
+                    projectFilled++;
+                }
+            filled += projectFilled;
+            Console.WriteLine($"[Backfill] {projectName}: dated {projectFilled} of {project.Count()} PO line(s) from {docIds.Count} BOQ file(s).");
+        }
+
+        await context.SaveChangesAsync();
+        Console.WriteLine($"[Backfill] Dated {filled} of {undated.Count} historical PO line(s).");
+    }
+
     // One-off: removes every saved forecast that a trained model didn't
     // produce — runs from before the trained-model workflow, made by the
     // untrained fallback (BOQ quantity × a default ratio) or a legacy model,

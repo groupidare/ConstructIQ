@@ -28,6 +28,8 @@ export interface ParsedBoqRow {
 
 export interface HistoricalSupplyLine {
   poNumber?: string;
+  // The report's PO DATE (ISO); missing for reports without one.
+  poDate?: string | null;
   materialName: string;
   unit: string;
   quantity: number;

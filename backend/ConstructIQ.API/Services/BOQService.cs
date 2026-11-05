@@ -297,6 +297,11 @@ public class BOQService(AppDbContext db) : IBOQService
                     .Where(h => h.UnitCost.HasValue)
                     .GroupBy(h => SupplyLineKey(h.PoNumber, h.MaterialName, h.Unit, h.Quantity))
                     .ToDictionary(g => g.Key, g => g.First().UnitCost);
+                // Same for the PO date — one date per PO number.
+                var storedDates = existingSupplies
+                    .Where(h => h.PoDate.HasValue && !string.IsNullOrWhiteSpace(h.PoNumber))
+                    .GroupBy(h => h.PoNumber!.Trim())
+                    .ToDictionary(g => g.Key, g => g.First().PoDate);
 
                 foreach (var line in item.HistoricalSupply)
                 {
@@ -310,6 +315,8 @@ public class BOQService(AppDbContext db) : IBOQService
                         BOQItemId    = entity.Id,
                         SupplierId   = supplierId,
                         PoNumber     = line.PoNumber,
+                        PoDate       = line.PoDate
+                            ?? (string.IsNullOrWhiteSpace(line.PoNumber) ? null : storedDates.GetValueOrDefault(line.PoNumber.Trim())),
                         MaterialName = line.MaterialName,
                         Unit         = line.Unit,
                         Quantity     = quantity,
@@ -461,6 +468,7 @@ public class BOQService(AppDbContext db) : IBOQService
             SupplierId   = h.SupplierId,
             SupplierName = h.Supplier?.Name,
             PoNumber     = h.PoNumber,
+            PoDate       = h.PoDate,
             MaterialName = h.MaterialName,
             Unit         = h.Unit,
             Quantity     = h.Quantity,

@@ -128,4 +128,20 @@ if ($ml)       { Wait-Up 'CIQ-ML'       'http://127.0.0.1:8000/health' }
 if ($backend)  { Wait-Up 'CIQ-Backend'  'http://127.0.0.1:5000/' }
 if ($frontend) { Wait-Up 'CIQ-Frontend' 'http://127.0.0.1:3000/' }
 
+# ── 4. One-off data backfills (run once, after the services are up) ──────────
+# Dates historical PO lines imported before the PO DATE column was read. Needs
+# the ML service up. A failure only warns - the deploy itself already succeeded;
+# the marker file is written only on success, so the next deploy retries.
+$poDatesDone = "$publish\backfill-historical-po-dates.done"
+if ($backend -and -not (Test-Path $poDatesDone)) {
+  Step 'Backfilling historical PO dates'
+  Push-Location "$publish\backend"
+  try {
+    & dotnet ConstructIQ.API.dll --backfill-historical-po-dates
+    if ($LASTEXITCODE -eq 0) { New-Item -ItemType File $poDatesDone -Force | Out-Null }
+    else { Write-Warning "PO date backfill failed (exit code $LASTEXITCODE) - will retry on the next deploy" }
+  } catch { Write-Warning "PO date backfill failed: $_ - will retry on the next deploy" }
+  finally { Pop-Location; $global:LASTEXITCODE = 0 }
+}
+
 Step "Deployed $($head.Substring(0,7))"

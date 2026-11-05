@@ -41,6 +41,7 @@ public class MlParsedBoqItem
 public class MlHistoricalSupplyLine
 {
     [JsonPropertyName("po_number")]     public string? PoNumber { get; set; }
+    [JsonPropertyName("po_date")]       public DateTime? PoDate { get; set; }
     [JsonPropertyName("material_name")] public string MaterialName { get; set; } = string.Empty;
     [JsonPropertyName("unit")]          public string Unit { get; set; } = string.Empty;
     [JsonPropertyName("quantity")]      public double Quantity { get; set; }
