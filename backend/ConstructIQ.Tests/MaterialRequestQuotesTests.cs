@@ -190,6 +190,36 @@ public class MaterialRequestQuotesTests(DatabaseFixture fixture)
         Assert.All(list.Where(s => s.Id != alpha.Id && s.Id != beta.Id && !s.HasHistoryWithMaterial), s => Assert.Null(s.LastUnitPrice));
     }
 
+    [Fact]
+    public async Task SuggestedSuppliers_IncludeHistoricalProjectPoLines_AtTheirLatestPoDate()
+    {
+        await using var db = fixture.CreateContext();
+        var (admin, project, material, _) = await SeedAsync(db);
+        var alpha = await AddPricedPoAsync(db, project.Id, admin.Id, material.Id, "Alpha " + Guid.NewGuid().ToString("N")[..6], "pcs", 18, new DateTime(2025, 1, 1));
+        var gamma = new Supplier { Name = "Gamma " + Guid.NewGuid().ToString("N")[..6] };
+        db.Suppliers.Add(gamma);
+        await db.SaveChangesAsync();
+        var historical = await TestDataBuilder.CreateProjectAsync(db, admin.Id, isHistorical: true, targetEndDate: new DateTime(2026, 9, 30));
+        var row = await TestDataBuilder.CreateBoqItemAsync(db, historical.Id, material.Id, admin.Id, 1);
+        // Alpha again on a historical project's newer PO, and Gamma only there.
+        foreach (var (supplier, cost, date) in new[] { (alpha.Id, 17m, new DateTime(2026, 2, 9)), (gamma.Id, 16m, new DateTime(2026, 2, 16)) })
+        {
+            var line = await TestDataBuilder.CreateHistoricalSupplyAsync(db, row.Id, 10, "pcs", unitCost: cost);
+            line.SupplierId = supplier;
+            line.PoDate = date;
+        }
+        await db.SaveChangesAsync();
+
+        var ok = Assert.IsType<OkObjectResult>(await ControllerAs(db, admin).GetSuggestedSuppliers(material.Id, "pcs"));
+        var list = Assert.IsAssignableFrom<IEnumerable<SuggestedSupplierDto>>(ok.Value).ToList();
+
+        Assert.Equal(17m, list.Single(s => s.Id == alpha.Id).LastUnitPrice);
+        var g = list.Single(s => s.Id == gamma.Id);
+        Assert.True(g.HasHistoryWithMaterial);
+        Assert.Equal(16m, g.LastUnitPrice);
+        Assert.Equal(new DateTime(2026, 2, 16), g.LastPriceDate);
+    }
+
     // ── Edit quantity / delete / default delivery date ──────────────────────
 
     [Fact]

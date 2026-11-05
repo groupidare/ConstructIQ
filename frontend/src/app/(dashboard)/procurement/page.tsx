@@ -415,6 +415,19 @@ function mapRequestRow(a: ApiMaterialRequest): RequestRow {
   };
 }
 
+function prefillSuppliers(row: RequestRow, suggested: SuggestedSupplier[]): RequestRow {
+  if (row.forApproval || row.quotes.some(q => q.supplierName.trim())) return row;
+  const latest = suggested
+    .filter(x => x.lastUnitPrice != null)
+    .sort((a, b) => (b.lastPriceDate ?? "").localeCompare(a.lastPriceDate ?? ""))
+    .slice(0, MAX_QUOTES);
+  if (latest.length === 0) return row;
+  const quotes = row.quotes.map((q, i) => latest[i]
+    ? { supplierName: latest[i].name, price: String(latest[i].lastUnitPrice), fromHistory: true }
+    : q);
+  return { ...row, quotes };
+}
+
 function quotePrice(q: QuoteDraft): number | null {
   const text = q.price.trim();
   if (!text) return null;
@@ -535,7 +548,12 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
           const res = await api.get<ApiSuggestedSupplier[]>(`/material-requests/suggested-suppliers/${r.materialId}`, { params: { unit: r.unit } });
           return [suggestionKey(r), res.data.map(s => ({ ...s, lastUnitPrice: s.lastUnitPrice ?? null, lastPriceDate: s.lastPriceDate ?? null }))] as const;
         }));
-        setSuggestions(Object.fromEntries(entries));
+        const byKey: Record<string, SuggestedSupplier[]> = Object.fromEntries(entries);
+        setSuggestions(byKey);
+        // Requests tab: a material not filled in yet starts with the (up to
+        // three) suppliers who sold it most recently in this unit, at their
+        // latest PO price — editable, and none of them chosen.
+        if (!priceOnly) setRows(mapped.map(r => prefillSuppliers(r, byKey[suggestionKey(r)] ?? [])));
       } catch {
         toast.error("Failed to load material requests.");
       } finally {
@@ -722,7 +740,7 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                   <>Price only — no PO is made. Enter up to three supplier quotations per material and save; a material with a priced quote
                     leaves this list and its price goes into the project&apos;s cost estimate. The lowest price is used unless you pick &quot;Use this price&quot; on another.</>
                 ) : (
-                  <>Enter up to three suppliers and their prices per material, then click <b>Save Request</b> — each material with a priced supplier goes <b>For Approval</b>.
+                  <>Each material starts with the suppliers who sold it most recently and their latest PO prices — edit, add or clear them (up to three), then click <b>Save Request</b>; each material with a priced supplier goes <b>For Approval</b>.
                     At the review, choose the one supplier to buy each material from; <b>Generate P.O. Number</b> then makes the purchase orders.</>
                 )}
               </p>
