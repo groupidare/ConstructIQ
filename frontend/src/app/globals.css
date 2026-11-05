@@ -78,8 +78,10 @@
   padding: 0.75rem;
 }
 
+/* Not !important: a pop-up's own max width (e.g. the 440px sign-out box)
+   must still win — this only caps one that sets none. */
 [style*="position: fixed"][style*="inset: 0"] > * {
-  max-width: 100% !important;
+  max-width: 100%;
   max-height: calc(100dvh - 1.5rem);
   overflow-y: auto;
 }
@@ -588,6 +590,12 @@ html[data-theme="dark"] #app-shell picture {
    flip it to light. Apply the same filter again to cancel it out. */
 html[data-theme="dark"] #app-shell #app-sidebar {
   filter: invert(1) hue-rotate(180deg);
+}
+/* …so pictures inside it are already back to normal — inverting them
+   again (the img rule above) would flip them. */
+html[data-theme="dark"] #app-shell #app-sidebar img,
+html[data-theme="dark"] #app-shell #app-sidebar video {
+  filter: none;
 }
 
 #dark-navy-tint {

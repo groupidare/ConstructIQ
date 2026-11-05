@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Avatar } from "@/components/ui/Avatar";
 import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
 import api from "@/lib/api";
@@ -23,6 +24,7 @@ interface UserRecord {
   createdAt: string;
   lastLogin?: string;
   projectCount: number;
+  avatarUrl?: string | null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -227,9 +229,7 @@ function ViewUserModal({ user, onClose }: { user: UserRecord; onClose: () => voi
           <button onClick={onClose} style={{ color:"#9ca3af", background:"none", border:"none", cursor:"pointer" }}><X style={{ width:18, height:18 }} /></button>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:"1.25rem" }}>
-          <div style={{ width:56, height:56, borderRadius:"50%", background:bg, display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:"1.2rem", flexShrink:0 }}>
-            {initials(user.firstName, user.lastName)}
-          </div>
+          <Avatar avatarUrl={user.avatarUrl} initials={initials(user.firstName, user.lastName)} size={56} color={bg} fontSize="1.2rem" />
           <div>
             <p style={{ fontWeight:700, fontSize:"1rem" }}>{user.firstName} {user.lastName}</p>
             <p style={{ fontSize:"0.8rem", color:"#9ca3af" }}>{ROLE_LABELS[user.role] ?? user.role}</p>
@@ -456,9 +456,7 @@ export default function UsersPage() {
                       {/* USER */}
                       <td style={{ padding:"14px 16px" }}>
                         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                          <div style={{ width:38, height:38, borderRadius:"50%", background:bg, display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:700, fontSize:"0.85rem", flexShrink:0 }}>
-                            {initials(u.firstName, u.lastName)}
-                          </div>
+                          <Avatar avatarUrl={u.avatarUrl} initials={initials(u.firstName, u.lastName)} size={38} color={bg} fontSize="0.85rem" />
                           <span style={{ fontWeight:600, fontSize:"0.875rem", color:"#111827" }}>{u.firstName} {u.lastName}</span>
                         </div>
                       </td>
