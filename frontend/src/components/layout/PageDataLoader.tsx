@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { getPendingGets, onPendingGetsChange } from "@/lib/api";
-import { PRELOADER_OVERLAY, PreloaderVideo } from "./Preloader";
+import { PRELOADER_OVERLAY, PreloaderLogo } from "./Preloader";
 
 // Opening a page — from the sidebar, a link or a reload — covers the screen
 // with the preloader until that page's data has arrived: every GET the
@@ -62,9 +62,9 @@ export default function PageDataLoader() {
         ...PRELOADER_OVERLAY, zIndex: 950,
         animation: "preloader-fade-in 0.25s ease 0.2s both",
       }}>
-      <PreloaderVideo width="min(560px, 100%)" />
+      <PreloaderLogo />
       {slow && (
-        <p style={{ marginTop: "-1.5rem", fontSize: "0.8rem", color: "#6b7280", textAlign: "center", padding: "0 1rem" }}>
+        <p style={{ marginTop: "1rem", fontSize: "0.8rem", color: "#6b7280", textAlign: "center", padding: "0 1rem" }}>
           Still loading — the connection seems slow.
         </p>
       )}

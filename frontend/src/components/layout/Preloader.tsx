@@ -1,21 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-// The branded loading animation (public/constructiq-preloader.mp4 — white
-// background, logo + "LOADING.." in the middle). The poster is its last
-// frame, shown instantly while the video itself downloads. Multiply blending
-// drops its white background, so only the logo shows over the blurred page.
-export function PreloaderVideo({ width }: { width: string }) {
+// The branded loading animation, made from public/constructiq-preloader.mp4
+// as a transparent animated WebP (logo + "LOADING.." only, no background),
+// so it sits cleanly on the blurred page. A small still of the full logo
+// shows instantly until the animation has downloaded.
+export function PreloaderLogo({ height = "min(220px, 40vh)" }: { height?: string }) {
+  const anim = useRef<HTMLImageElement>(null);
+  const [ready, setReady] = useState(false);
+  useEffect(() => { if (anim.current?.complete) setReady(true); }, []);
+  const layer: React.CSSProperties = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", transition: "opacity 0.2s" };
   return (
-    <video
-      src="/constructiq-preloader.mp4"
-      poster="/constructiq-preloader-poster.jpg"
-      autoPlay muted loop playsInline preload="auto"
-      aria-hidden="true"
-      className="preloader-video"
-      style={{ width, aspectRatio: "16 / 9", objectFit: "cover", display: "block", pointerEvents: "none", mixBlendMode: "multiply" }}
-    />
+    <div aria-hidden="true" style={{ position: "relative", height, aspectRatio: "218 / 280", pointerEvents: "none" }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/constructiq-preloader-still.png" alt="" className="preloader-logo" style={{ ...layer, opacity: ready ? 0 : 1 }} />
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img ref={anim} src="/constructiq-preloader.webp" alt="" className="preloader-logo" onLoad={() => setReady(true)}
+        style={{ ...layer, opacity: ready ? 1 : 0 }} />
+    </div>
   );
 }
 
@@ -50,9 +53,9 @@ export default function Preloader() {
         opacity: phase === "leaving" ? 0 : 1, transition: "opacity 0.35s ease",
         pointerEvents: phase === "leaving" ? "none" : "auto",
       }}>
-      <PreloaderVideo width="min(720px, 100vw)" />
+      <PreloaderLogo />
       <p id="app-preloader-slow" suppressHydrationWarning
-        style={{ minHeight: "1.5rem", marginTop: "-2rem", fontSize: "0.8rem", color: "#6b7280", textAlign: "center", padding: "0 1rem" }} />
+        style={{ minHeight: "1.5rem", marginTop: "1rem", fontSize: "0.8rem", color: "#6b7280", textAlign: "center", padding: "0 1rem" }} />
     </div>
   );
 }

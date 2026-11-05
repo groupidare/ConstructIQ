@@ -643,6 +643,6 @@ html[data-theme="dark"] #dark-navy-tint {
 
 /* Page-change preloader (app/(dashboard)/loading.tsx) — fades in after a delay. */
 @keyframes preloader-fade-in { from { opacity: 0; } to { opacity: 1; } }
-/* Dark mode inverts the app; the preloader video inverts with it (light
-   logo over the darkened, blurred page) instead of being flipped back. */
-html[data-theme="dark"] #app-shell video.preloader-video { filter: none; }
+/* Dark mode inverts the app; the preloader logo inverts with it (light logo
+   over the darkened, blurred page) instead of being flipped back. */
+html[data-theme="dark"] #app-shell img.preloader-logo { filter: none; }
