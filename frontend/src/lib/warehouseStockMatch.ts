@@ -72,7 +72,7 @@ export function rowStock(rowName: string, items: WarehouseStockItem[], links: Ma
   return { status: item.balance > 0 ? 'inStock' : 'noStock', item, linked: false };
 }
 
-const countUnit = (unit: string) => {
+export const countUnit = (unit: string) => {
   const lower = unit.trim().toLowerCase();
   return lower === 'pcs' || lower === 'piece' || lower === 'pieces' ? 'pc' : lower;
 };

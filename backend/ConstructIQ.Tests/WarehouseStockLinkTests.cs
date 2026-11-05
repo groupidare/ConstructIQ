@@ -76,7 +76,7 @@ public class WarehouseStockLinkTests(DatabaseFixture fixture)
         var user = await TestDataBuilder.CreateUserAsync(db);
         var project = await TestDataBuilder.CreateProjectAsync(db, user.Id);
         var material = await TestDataBuilder.CreateMaterialAsync(db);
-        var boq = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 100);
+        var boq = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, 100, "sq.m", 10, "pack");
         boq.Specification = "Tile Grout, cement-based";
         await db.SaveChangesAsync();
         await Service(db).SaveLinkAsync("Tile Grout, cement-based", "Cementitious Tile Grout, 5kg pack");
@@ -100,8 +100,8 @@ public class WarehouseStockLinkTests(DatabaseFixture fixture)
         var user = await TestDataBuilder.CreateUserAsync(db);
         var project = await TestDataBuilder.CreateProjectAsync(db, user.Id);
         var material = await TestDataBuilder.CreateMaterialAsync(db);
-        var first = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 100);
-        var second = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 100);
+        var first = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, 100, "sq.m", 10, "pack");
+        var second = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, 100, "sq.m", 10, "pack");
         first.Specification = "Grout A";
         second.Specification = "Grout B";
         await db.SaveChangesAsync();

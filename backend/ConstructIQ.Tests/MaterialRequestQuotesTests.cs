@@ -385,22 +385,21 @@ public class MaterialRequestQuotesTests(DatabaseFixture fixture)
         return (admin, project, material, request);
     }
 
-    [Theory] // With no purchase estimate there's nothing for a request to be beyond.
-    [InlineData(null, 500, false)]
+    [Theory]
     [InlineData(20, 500, true)]
     [InlineData(20, 10, false)]
-    public async Task Request_IsAdditional_OnlyPastAPurchaseEstimate(int? purchaseEstimate, int quantity, bool expected)
+    public async Task Request_IsAdditional_OnlyPastAPurchaseEstimate(int purchaseEstimate, int quantity, bool expected)
     {
         await using var db = fixture.CreateContext();
         var user = await TestDataBuilder.CreateUserAsync(db);
         var project = await TestDataBuilder.CreateProjectAsync(db, user.Id);
         var material = await TestDataBuilder.CreateMaterialAsync(db);
-        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 169,
-            estimatedPurchaseQuantity: purchaseEstimate, estimatedPurchaseUnit: purchaseEstimate is null ? null : "pc");
+        var row = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, estimatedQuantity: 169,
+            estimatedPurchaseQuantity: purchaseEstimate, estimatedPurchaseUnit: "pc");
 
         var result = Assert.IsType<OkObjectResult>(await ControllerAs(db, user, new ConstructIQ.API.Services.NotificationService(db)).Create(new CreateMaterialRequestDto
         {
-            ProjectId = project.Id, MaterialId = material.Id, Quantity = quantity, Unit = "pc",
+            ProjectId = project.Id, MaterialId = material.Id, Quantity = quantity, Unit = "pc", BOQItemId = row.Id,
         }));
 
         Assert.Equal(expected, result.Value!.GetType().GetProperty("isAdditional")!.GetValue(result.Value));

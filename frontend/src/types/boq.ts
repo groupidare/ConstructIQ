@@ -53,23 +53,23 @@ export interface BOQItemRow extends RowBaseline {
   // spins the leftover off into a new sibling row) — see BOQService.
   requestedQuantity?: number;
   // Server-computed, read-only — never sent to the backend on save (no
-  // matching field on BOQItemUpsertDto). "Net Left to Order": Est. Qty minus
-  // whatever's actually been APPROVED so far (redistribution transfer,
-  // warehouse release, or purchase order past Pending) — a still-Pending
-  // request never moves this. See ProcurementCapCalculator.
-  netLeftToOrder?: number;
+  // matching field on BOQItemUpsertDto). What's actually been APPROVED so far
+  // (redistribution transfer, warehouse release, or purchase order past
+  // Pending) — a still-Pending request never moves this. Est. Qty minus this
+  // is "Net Left to Order". See ProcurementCapCalculator.
+  approvedQuantity?: number;
   // Server-computed, read-only — true once at least one Warehouse Check for
   // this row's material has been approved by Warehouse personnel.
   // Procurement must not be requestable before this.
   warehouseApproved?: boolean;
-  // Server-computed, read-only — the real cap Notify Procurement/Warehouse
-  // will enforce: NetLeftToOrder further reduced by every MaterialRequest
-  // ever submitted for this material (not just approved sources). Can be
-  // LOWER than netLeftToOrder — e.g. a request for the full amount is
-  // already sent and awaiting a Purchase Order. Use this, not
-  // netLeftToOrder, as the request dialog's actual quantity cap, or the
-  // dialog can invite a quantity the backend will then reject.
-  remainingRequestable?: number;
+  // Server-computed, read-only — approvedQuantity plus every MaterialRequest
+  // ever submitted for this row (not just approved sources). Est. Qty minus
+  // this is what can still be requested, which can be LOWER than what's left
+  // to order — e.g. a request for the full amount is already sent and awaiting
+  // a Purchase Order.
+  askedQuantity?: number;
+  // Server-computed, read-only — asked of the warehouse, not yet answered.
+  warehousePendingQuantity?: number;
   // "Material Quantity" for a completed project — null until completion
   // (not finalized yet). See BOQItemResponseDto.MaterialQuantity.
   materialQuantity?: number;
@@ -110,9 +110,10 @@ export interface BOQItem {
   requestedQuantity?: number;
   // See BOQItemRow — same server-computed fields, carried through on the
   // plain response type too.
-  netLeftToOrder?: number;
+  approvedQuantity?: number;
   warehouseApproved?: boolean;
-  remainingRequestable?: number;
+  askedQuantity?: number;
+  warehousePendingQuantity?: number;
   materialQuantity?: number;
   createdAt: string;
   // Engineering baseline (server-computed, never stored or sent back on save).

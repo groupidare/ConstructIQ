@@ -24,7 +24,56 @@ public class WarehouseRequestService(AppDbContext db, INotificationService notif
 
     public async Task<WarehouseRequestResponseDto> CreateAsync(WarehouseRequestCreateDto dto, int userId)
     {
+        var saved = await AddRequestAsync(dto, userId);
+
+        await notifications.CreateForRoleAsync(UserRole.WarehousePersonnel, NotificationKind.WarehouseCheck,
+            saved.IsAdditional
+                ? $"{saved.Project.Name} requested {dto.RequestedQuantity} {UnitOf(saved)} of {saved.Material.Name} — an additional request beyond the estimate."
+                : $"{saved.Project.Name} requested {dto.RequestedQuantity} {UnitOf(saved)} of {saved.Material.Name}.",
+            userId, actionLink: "/inventory");
+
+        return ToDto(saved);
+    }
+
+    // One summary notification for the batch, not one per material.
+    public async Task<List<BulkRequestResultDto>> CreateBulkAsync(BulkRequestDto dto, int userId)
+    {
+        var problem = await ProcurementCapCalculator.GetBulkRequestProblemAsync(db, dto.ProjectId);
+        if (problem is not null)
+            return dto.Items.Select(item => new BulkRequestResultDto { BOQItemId = item.BOQItemId, Error = problem }).ToList();
+
+        var results = new List<BulkRequestResultDto>();
+        string? projectName = null;
+        foreach (var item in dto.Items)
+        {
+            try
+            {
+                var saved = await AddRequestAsync(new WarehouseRequestCreateDto
+                {
+                    ProjectId = dto.ProjectId, MaterialId = item.MaterialId, BOQItemId = item.BOQItemId,
+                    RequestedQuantity = item.Quantity, Unit = item.Unit,
+                }, userId);
+                projectName = saved.Project.Name;
+                results.Add(new BulkRequestResultDto { BOQItemId = item.BOQItemId, Success = true });
+            }
+            catch (InvalidOperationException ex)
+            {
+                results.Add(new BulkRequestResultDto { BOQItemId = item.BOQItemId, Error = ex.Message });
+            }
+        }
+
+        var sent = results.Count(r => r.Success);
+        if (sent > 0)
+            await notifications.CreateForRoleAsync(UserRole.WarehousePersonnel, NotificationKind.WarehouseCheck,
+                $"{projectName} requested {sent} material{(sent == 1 ? "" : "s")} from the warehouse.",
+                userId, actionLink: "/inventory");
+        return results;
+    }
+
+    private async Task<WarehouseRequest> AddRequestAsync(WarehouseRequestCreateDto dto, int userId)
+    {
         var row = await ProcurementCapCalculator.FindRequestRowAsync(db, dto.BOQItemId, dto.ProjectId, dto.MaterialId);
+        ProcurementCapCalculator.EnsureRowIsFilledIn(row);
 
         // Nothing counts as released until a request is actually Approved (see
         // ProcurementCapCalculator), so nothing else stops the same row being
@@ -41,8 +90,7 @@ public class WarehouseRequestService(AppDbContext db, INotificationService notif
         // past what the row still needs is flagged, and the warehouse decides.
         var remaining = await ProcurementCapCalculator.GetRemainingRequestableAsync(db, dto.ProjectId, dto.MaterialId, row?.Id);
         var hasPurchaseEstimate = row is not null
-            ? row.EstimatedPurchaseQuantity != null
-            : await db.BOQItems.AnyAsync(b => b.ProjectId == dto.ProjectId && b.MaterialId == dto.MaterialId && b.EstimatedPurchaseQuantity != null);
+            || await db.BOQItems.AnyAsync(b => b.ProjectId == dto.ProjectId && b.MaterialId == dto.MaterialId && b.EstimatedPurchaseQuantity != null);
         var isAdditional = hasPurchaseEstimate && dto.RequestedQuantity > remaining;
 
         var request = new WarehouseRequest
@@ -59,20 +107,12 @@ public class WarehouseRequestService(AppDbContext db, INotificationService notif
         db.WarehouseRequests.Add(request);
         await db.SaveChangesAsync();
 
-        var saved = await db.WarehouseRequests
+        return await db.WarehouseRequests
             .Include(m => m.Project)
             .Include(m => m.Material)
             .Include(m => m.RequestedBy)
             .Include(m => m.ApprovedBy)
             .FirstAsync(m => m.Id == request.Id);
-
-        await notifications.CreateForRoleAsync(UserRole.WarehousePersonnel, NotificationKind.WarehouseCheck,
-            isAdditional
-                ? $"{saved.Project.Name} requested {dto.RequestedQuantity} {UnitOf(saved)} of {saved.Material.Name} — an additional request beyond the estimate."
-                : $"{saved.Project.Name} requested {dto.RequestedQuantity} {UnitOf(saved)} of {saved.Material.Name}.",
-            userId, actionLink: "/inventory");
-
-        return ToDto(saved);
     }
 
     public async Task<bool> ApproveAsync(int id, decimal approvedQuantity, int userId)

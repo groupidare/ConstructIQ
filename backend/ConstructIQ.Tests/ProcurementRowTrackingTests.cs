@@ -49,10 +49,39 @@ public class ProcurementRowTrackingTests(DatabaseFixture fixture)
         await RequestAndApproveAsync(db, s, s.Wire35, 3, "roll");
 
         var statuses = await ProcurementCapCalculator.GetRowStatusesAsync(db, s.Project.Id);
-        Assert.Equal(new ProcurementCapCalculator.RowStatus(0, 0, true), statuses[s.Wire35.Id]);
+        Assert.Equal(new ProcurementCapCalculator.RowStatus(0, 0, true, 0, 3, 3), statuses[s.Wire35.Id]);
         // Neither left to order nor unlocked by the other row's approval.
         Assert.Equal(new ProcurementCapCalculator.RowStatus(3, 3, false), statuses[s.Wire14.Id]);
         Assert.Equal(new ProcurementCapCalculator.RowStatus(103, 103, false), statuses[s.Conduit.Id]);
+    }
+
+    [Fact] // What's covered can't depend on the BOQ measure standing in for an estimate.
+    public async Task RowWithNoEstimate_HasNothingCovered()
+    {
+        await using var db = fixture.CreateContext();
+        var user = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, user.Id);
+        var material = await TestDataBuilder.CreateMaterialAsync(db);
+        var row = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, user.Id, 169);
+
+        var status = (await ProcurementCapCalculator.GetRowStatusesAsync(db, project.Id))[row.Id];
+
+        Assert.Equal(0, status.ApprovedQuantity);
+        Assert.Equal(0, status.AskedQuantity);
+    }
+
+    [Fact] // A partial approval is what a raised estimate gets reduced by.
+    public async Task PartialApproval_ReportsWhatWasCovered()
+    {
+        await using var db = fixture.CreateContext();
+        var s = await SeedThreeRowsOfOneMaterialAsync(db);
+
+        await RequestAndApproveAsync(db, s, s.Conduit, 40, "pc");
+
+        var status = (await ProcurementCapCalculator.GetRowStatusesAsync(db, s.Project.Id))[s.Conduit.Id];
+        Assert.Equal(40, status.ApprovedQuantity);
+        Assert.Equal(40, status.AskedQuantity);
+        Assert.Equal(63, status.NetLeftToOrder);
     }
 
     [Fact] // 12 l.m of transferred wire must not read as a 3-roll row being done.

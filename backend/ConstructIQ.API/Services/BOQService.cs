@@ -93,6 +93,15 @@ public class BOQService(AppDbContext db) : IBOQService
         return rows.Select(b => ToDto(b, rowStatuses, project, deliveredBaselines));
     }
 
+    // What the Material Plan's Scan & Fill Rows puts on the rows it adds.
+    private const string ScannedRowNote = "Auto-scanned";
+
+    private static string ScannedRowKey(string section, string? subCategory, int materialId, string? unit, string? specification, decimal quantity) =>
+        string.Join('|',
+            new[] { section, subCategory, unit, specification }.Select(v => (v ?? "").Trim().ToLowerInvariant())
+                .Append(materialId.ToString())
+                .Append(Math.Round(quantity, 0, MidpointRounding.AwayFromZero).ToString(System.Globalization.CultureInfo.InvariantCulture)));
+
     public async Task<IEnumerable<BOQItemResponseDto>> BulkSaveAsync(int projectId, List<BOQItemUpsertDto> items, int userId)
     {
         var project = await db.Projects.FindAsync(projectId)
@@ -111,6 +120,12 @@ public class BOQService(AppDbContext db) : IBOQService
 
         var saved = new List<BOQItem>();
 
+        // Rows this save doesn't carry, for a repeated scan to find itself among.
+        var carriedIds = items.Where(i => i.Id.HasValue).Select(i => i.Id!.Value).ToList();
+        var notCarried = project.IsHistorical
+            ? []
+            : await db.BOQItems.Where(b => b.ProjectId == projectId && !carriedIds.Contains(b.Id)).ToListAsync();
+
         foreach (var item in items)
         {
             int materialId;
@@ -121,6 +136,30 @@ public class BOQService(AppDbContext db) : IBOQService
             else
                 throw new InvalidOperationException("Each BOQ row needs either an existing MaterialId or a NewMaterialName.");
 
+            // Prefer the incoming row's own Unit (correct for scanned/unmatched rows)
+            // over the catalog Material's Unit, which may differ or not yet be loaded.
+            var unitForRow = !string.IsNullOrWhiteSpace(item.Unit)
+                ? item.Unit
+                : await db.Materials.Where(m => m.Id == materialId).Select(m => m.Unit).FirstOrDefaultAsync();
+            var specForRow = !string.IsNullOrWhiteSpace(item.Specification) ? item.Specification : item.NewMaterialName;
+
+            // The screen skips lines already in the plan, but only knows the rows
+            // it has loaded. A line already on file stays as it is, keeping any
+            // quantity filled in since. Each can only be matched once, so a BOQ
+            // that really lists the same line twice keeps both.
+            if (!item.Id.HasValue && item.Notes == ScannedRowNote)
+            {
+                var key = ScannedRowKey(item.PrimarySection, item.SubCategory, materialId, unitForRow, specForRow, item.EstimatedQuantity);
+                var onFile = notCarried.FirstOrDefault(b =>
+                    ScannedRowKey(b.PrimarySection, b.SubCategory, b.MaterialId, b.Unit, b.Specification, b.EstimatedQuantity) == key);
+                if (onFile is not null)
+                {
+                    notCarried.Remove(onFile);
+                    saved.Add(onFile);
+                    continue;
+                }
+            }
+
             var entity = item.Id.HasValue
                 ? await db.BOQItems.FirstOrDefaultAsync(b => b.Id == item.Id && b.ProjectId == projectId)
                 : null;
@@ -130,12 +169,6 @@ public class BOQService(AppDbContext db) : IBOQService
                 entity = new BOQItem { ProjectId = projectId, CreatedByUserId = userId };
                 db.BOQItems.Add(entity);
             }
-
-            // Prefer the incoming row's own Unit (correct for scanned/unmatched rows)
-            // over the catalog Material's Unit, which may differ or not yet be loaded.
-            var unitForRow = !string.IsNullOrWhiteSpace(item.Unit)
-                ? item.Unit
-                : await db.Materials.Where(m => m.Id == materialId).Select(m => m.Unit).FirstOrDefaultAsync();
 
             entity.PhaseId           = item.PhaseId;
             entity.MaterialId        = materialId;
@@ -148,7 +181,7 @@ public class BOQService(AppDbContext db) : IBOQService
             // or a manually-typed name) — mirrors the frontend's own display
             // fallback (row.specification || row.newMaterialName) so what's
             // shown before saving matches what survives a reload.
-            entity.Specification     = !string.IsNullOrWhiteSpace(item.Specification) ? item.Specification : item.NewMaterialName;
+            entity.Specification     = specForRow;
             // Material quantities are always whole units in practice (you can't
             // order 0.7 of a bag of cement) — rounded here, at the single save
             // choke point every row passes through regardless of where it came
@@ -444,6 +477,9 @@ public class BOQService(AppDbContext db) : IBOQService
         NetLeftToOrder            = f.NetLeftToOrder,
         WarehouseApproved         = f.WarehouseApproved,
         RemainingRequestable      = f.RemainingRequestable,
+        WarehousePendingQuantity  = f.WarehousePendingQuantity,
+        ApprovedQuantity          = f.ApprovedQuantity,
+        AskedQuantity             = f.AskedQuantity,
         MaterialQuantity          = materialQuantity,
     };
     }

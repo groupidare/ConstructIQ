@@ -24,6 +24,7 @@ import BlueprintWizard from './BlueprintWizard';
 import BoqCompareDialog from './BoqCompareDialog';
 import { isBlueprintRow, splitScannedRows } from '@/lib/boqSections';
 import { useWarehouseStock } from '@/hooks/useWarehouseStock';
+import type { BulkRequestItem, BulkRequestResult } from '@/types/warehouseRequest';
 
 function apiErrorMessage(error: unknown, fallback: string): string {
   const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -75,13 +76,13 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [poExpectedDate, setPoExpectedDate] = useState('');
 
   const { documents, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument } = useDocuments(project.id);
-  const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems, getHistoricalEstimate } = useBOQ(project.id);
+  const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems, deleteItem: deleteBoqItem, getHistoricalEstimate } = useBOQ(project.id);
   const { inventory, fetchInventory } = useInventory(project.id);
   const { items: warehouseStock, links: warehouseStockLinks, fetchCurrent: fetchWarehouseStock, fetchLinks: fetchWarehouseStockLinks, saveLink: saveWarehouseStockLink, removeLink: removeWarehouseStockLink } = useWarehouseStock();
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
   const { sendNotification } = useNotifications();
-  const { createRequest: createMaterialRequest } = useMaterialRequests();
-  const { createRequest: createWarehouseRequest } = useWarehouseRequests();
+  const { createRequest: createMaterialRequest, createBulk: createBulkMaterialRequests } = useMaterialRequests();
+  const { createRequest: createWarehouseRequest, createBulk: createBulkWarehouseRequests } = useWarehouseRequests();
   const addAlert = useAlertStore(s => s.addAlert);
   const { editProject } = useProjects();
   const { items: purchaseOrders, fetchItems: fetchPurchaseOrders, createOrder, linkMaterial } = usePurchaseOrders(project.id);
@@ -107,9 +108,10 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       // user accepted or one they typed themselves — either way, don't let
       // the auto-suggest effect silently overwrite it on this fresh load.
       estimatePurchaseManuallySet: b.estimatedPurchaseQuantity != null,
-      netLeftToOrder: b.netLeftToOrder,
+      approvedQuantity: b.approvedQuantity,
       warehouseApproved: b.warehouseApproved,
-      remainingRequestable: b.remainingRequestable,
+      askedQuantity: b.askedQuantity,
+      warehousePendingQuantity: b.warehousePendingQuantity,
     };
   }
 
@@ -386,6 +388,17 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     }
   }
 
+  // Returns whether it was deleted; a failure has already been shown to the user.
+  async function handleDeleteBoqRow(id: number): Promise<boolean> {
+    try {
+      await deleteBoqItem(id);
+      return true;
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to delete the row.'));
+      return false;
+    }
+  }
+
   // The AI's unit comes from real PO data, so it can be any spelling of a
   // unit ("PCS", "pieces") — folded onto the Est. Qty unit dropdown's own
   // option (same pc/pcs/piece/pieces folding the backend uses) so the
@@ -508,6 +521,18 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     }
   }
 
+  // Null: the call itself failed (already shown), so nothing is known to have gone.
+  async function handleBulkRequest(kind: 'warehouse' | 'procurement', items: BulkRequestItem[]): Promise<BulkRequestResult[] | null> {
+    try {
+      return kind === 'warehouse'
+        ? await createBulkWarehouseRequests(project.id, items)
+        : await createBulkMaterialRequests(project.id, items);
+    } catch (error) {
+      toast.error(apiErrorMessage(error, kind === 'warehouse' ? 'Failed to send the warehouse requests.' : 'Failed to send the Procurement requests.'));
+      return null;
+    }
+  }
+
   // Returns whether the request actually went through — MaterialPlanTab's
   // partial-quantity dialog needs this to know whether it's safe to shrink
   // the row to what was requested and spin the leftover into a new row, vs.
@@ -566,10 +591,11 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     boqRows, setBoqRows, boqItems,
     planOpen, setPlanOpen, planFocus, setPlanFocus,
     blueprints, boqDocs, poDocs, inventory, warehouseStock, warehouseStockLinks, handleSaveStockLink, handleRemoveStockLink, forecastedMaterials,
+    handleBulkRequest, fetchWarehouseStock,
     savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
     blueprintDoc, setBlueprintDoc, handleBlueprintRows, compareRows, setCompareRows,
     handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
-    handleSaveBoq, handleRunForecast, handleNotify,
+    handleSaveBoq, handleDeleteBoqRow, handleRunForecast, handleNotify,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
     handlePurchaseOrdersImported: () => { fetchPurchaseOrders(); fetchDocuments(); },
     poDraftRows, setPoDraftRows, poSupplierName, setPoSupplierName,
@@ -648,6 +674,8 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       inventory={state.inventory}
       warehouseStock={state.warehouseStock}
       warehouseStockLinks={state.warehouseStockLinks}
+      onBulkRequest={state.handleBulkRequest}
+      onRefreshStock={state.fetchWarehouseStock}
       onSaveStockLink={state.handleSaveStockLink}
       onRemoveStockLink={state.handleRemoveStockLink}
       forecastedMaterials={state.forecastedMaterials}
@@ -664,6 +692,7 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onViewPlan={() => { state.setPlanFocus(null); state.setPlanOpen(true); }}
       onPlanFocus={state.setPlanFocus}
       onSave={state.handleSaveBoq}
+      onDeleteRow={state.handleDeleteBoqRow}
       saving={state.savingBoq}
       onNotify={state.handleNotify}
       onRunForecast={state.handleRunForecast}

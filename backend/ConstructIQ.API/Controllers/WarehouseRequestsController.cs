@@ -43,6 +43,15 @@ public class WarehouseRequestsController(IWarehouseRequestService warehouseReque
         }
     }
 
+    [HttpPost("bulk")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> CreateBulk([FromBody] BulkRequestDto dto)
+    {
+        if (!await projectAccess.CanEditProjectAsync(dto.ProjectId, CurrentUserId, CurrentRole))
+            return Forbid();
+        return Ok(await warehouseRequestService.CreateBulkAsync(dto, CurrentUserId));
+    }
+
     [HttpPost("{id:int}/approve")]
     [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> Approve(int id, [FromBody] WarehouseRequestApproveDto dto)

@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X, AlertTriangle, Link2, Map as MapIcon } from 'lucide-react';
+import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X, AlertTriangle, Link2, Send, Map as MapIcon } from 'lucide-react';
 import { baselineAlerts, expectedText } from '@/lib/baseline';
 import { resolveUploadUrl } from '@/lib/avatar';
 import { indexLinks, rowStock, similarInStock, warehouseRequestQuantity, type RowStock } from '@/lib/warehouseStockMatch';
@@ -16,6 +16,9 @@ import type { ForecastedMaterial } from '@/types/forecast';
 import type { BOQItem, BOQItemRow } from '@/types/boq';
 import { PRIMARY_SECTIONS, PURCHASE_UNITS } from '@/types/boq';
 import type { PurchaseOrder, PurchaseOrderMaterial } from '@/types/purchaseOrder';
+import { missingRequestFields, type BulkRowInput } from '@/lib/bulkRequestPlan';
+import type { BulkRequestItem, BulkRequestResult } from '@/types/warehouseRequest';
+import BulkRequestDialog, { type BulkSendItem } from './BulkRequestDialog';
 import StockLinkDialog from './StockLinkDialog';
 import { inp, sel, lbl } from './styles';
 import ImportPurchaseOrders from '@/components/projects/ImportPurchaseOrders';
@@ -30,6 +33,8 @@ interface Props {
   // The warehouse's balances — the Inventory page's list. Empty until loaded.
   warehouseStock: WarehouseStockItem[];
   warehouseStockLinks: WarehouseStockLink[];
+  onBulkRequest: (kind: 'warehouse' | 'procurement', items: BulkRequestItem[]) => Promise<BulkRequestResult[] | null>;
+  onRefreshStock: () => Promise<void>;
   onSaveStockLink: (boqName: string, warehouseMaterialName: string | null) => Promise<boolean>;
   onRemoveStockLink: (boqName: string) => Promise<boolean>;
   forecastedMaterials: ForecastedMaterial[];
@@ -54,6 +59,7 @@ interface Props {
   // a freshly-updated array in the same tick) can save it immediately without
   // depending on this row state having propagated up first.
   onSave: (overrideRows?: BOQItemRow[], opts?: { silent?: boolean }) => Promise<void>;
+  onDeleteRow: (id: number) => Promise<boolean>;
   saving: boolean;
   onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string, boqItemId: number | undefined) => Promise<boolean>;
   onRemoveDocument: (documentId: number) => void;
@@ -79,6 +85,8 @@ interface Props {
   poExpectedDate: string;
   onPoExpectedDateChange: (v: string) => void;
 }
+
+const leftAfter = (estimate: number, covered?: number) => Math.max(0, estimate - (covered ?? 0));
 
 function StockBadge({ stock, onClick }: { stock?: RowStock; onClick?: () => void }) {
   if (!stock) return <span style={{ fontSize: '0.72rem', color: '#d1d5db' }}>—</span>;
@@ -108,8 +116,8 @@ function StockBadge({ stock, onClick }: { stock?: RowStock; onClick?: () => void
 
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
-  inventory, warehouseStock, warehouseStockLinks, onSaveStockLink, onRemoveStockLink, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
-  rows, boqItems, onRowsChange, planOpen, planFocus, onViewPlan, onPlanFocus, onSave, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
+  inventory, warehouseStock, warehouseStockLinks, onBulkRequest, onRefreshStock, onSaveStockLink, onRemoveStockLink, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
+  rows, boqItems, onRowsChange, planOpen, planFocus, onViewPlan, onPlanFocus, onSave, onDeleteRow, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial, onPurchaseOrdersImported,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
@@ -137,9 +145,9 @@ export default function MaterialPlanTab({
   // actually in stock) and have the leftover spun off into its own row.
   const [requestPrompt, setRequestPrompt] = useState<{
     index: number; kind: 'ProcurementOrder' | 'WarehouseCheck'; max: number; unit: string; materialName: string; stockNote?: string;
-    // No Est. Qty yet, so the dialog asks for the unit too; nothing to suggest.
-    noEstimate?: boolean;
   } | null>(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [openingBulk, setOpeningBulk] = useState(false);
   const [requestPromptQty, setRequestPromptQty] = useState('');
   const [submittingRequest, setSubmittingRequest] = useState(false);
   // beforePurchase: opened by the cart button; onContinue carries on to its
@@ -183,34 +191,40 @@ export default function MaterialPlanTab({
     onRowsChange(rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
   }
 
-  // A live project's plan can't be saved with a blank Area Unit, Material
-  // Unit or Material Quantity (Est. Qty) — the cost estimate and quotations
-  // need all three. The blanks turn red once a save is refused, and each
-  // goes back to normal as soon as it's filled.
+  // A plan can be saved half-filled, but a row can't be requested with a blank
+  // Area Unit, Material Unit or Material Quantity, and Request Materials needs
+  // every row filled in. The blanks turn red once a request is refused, and
+  // each goes back to normal as soon as it's filled.
   const [showBlanks, setShowBlanks] = useState(false);
   const blankFields = (r: BOQItemRow) => ({
     unit: !r.unit?.trim(),
     purchaseUnit: !r.estimatedPurchaseUnit?.trim(),
-    purchaseQty: r.estimatedPurchaseQuantity == null,
+    purchaseQty: (r.estimatedPurchaseQuantity ?? 0) <= 0,
   });
   const hasBlank = (r: BOQItemRow) => Object.values(blankFields(r)).some(Boolean);
   const blankStyle = (blank: boolean): React.CSSProperties =>
-    showBlanks && blank ? { borderColor: '#ef4444', background: '#fef2f2' } : {};
+    showBlanks && blank ? { border: '1px solid #ef4444', background: '#fef2f2' } : {};
 
-  function handleSavePlan() {
-    const blankRows = isCompleted ? [] : rows.filter(hasBlank);
-    if (blankRows.length > 0) {
-      setShowBlanks(true);
-      toast.error(`${blankRows.length} material${blankRows.length === 1 ? ' is' : 's are'} missing a unit or Est. qty — fill in the fields marked red (Run Forecast can fill Est. qty).`);
-      document.querySelector('[data-blank-row="true"]')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  // A saved row is deleted right away, not on the next save: saving only ever
+  // adds and updates, so it would otherwise come back on reopening. Other rows'
+  // unsaved edits stay on screen. What a row's requests were for can't be undone
+  // by this, so those ask first; the requests themselves are kept.
+  const [deletingRowId, setDeletingRowId] = useState<number | null>(null);
+
+  async function removeRow(idx: number) {
+    const row = rows[idx];
+    if (row.id == null) {
+      onRowsChange(prev => prev.filter(r => r !== row));
       return;
     }
-    setShowBlanks(false);
-    void onSave();
-  }
+    const hasRequests = (row.askedQuantity ?? 0) > 0 || (row.approvedQuantity ?? 0) > 0
+      || (row.warehousePendingQuantity ?? 0) > 0 || (row.requestedQuantity ?? 0) > 0;
+    if (hasRequests && !window.confirm(`"${materialLabel(row)}" already has requests. Delete this row anyway? Its requests stay with the warehouse and Procurement, but will no longer be tied to a row in this plan.`)) return;
 
-  function removeRow(idx: number) {
-    onRowsChange(rows.filter((_, i) => i !== idx));
+    setDeletingRowId(row.id);
+    const deleted = await onDeleteRow(row.id);
+    setDeletingRowId(null);
+    if (deleted) onRowsChange(prev => prev.filter(r => r.id !== row.id));
   }
 
   // Confirms the partial-quantity dialog: sends the real request for exactly
@@ -225,10 +239,9 @@ export default function MaterialPlanTab({
   // manual Save.
   async function handleConfirmRequest() {
     if (!requestPrompt) return;
-    const { index, max, unit, noEstimate } = requestPrompt;
+    const { index, unit } = requestPrompt;
     const qty = parseFloat(requestPromptQty);
     if (!qty || qty <= 0) { toast.error('Enter a quantity greater than zero.'); return; }
-    if (!unit) { toast.error('Choose a unit.'); return; }
     // Any positive quantity goes through: anything past the remaining estimate
     // is an intentional additional request (breakage, design change, buffer)
     // that the backend flags as such rather than rejects.
@@ -239,7 +252,7 @@ export default function MaterialPlanTab({
       // The backend judges "additional" against the row's saved Est. Qty, so a
       // typed one has to reach it first.
       const saved = boqItems.find(b => b.id === row.id);
-      if (!noEstimate && (saved?.estimatedPurchaseQuantity !== row.estimatedPurchaseQuantity || saved?.estimatedPurchaseUnit !== row.estimatedPurchaseUnit)) {
+      if ((saved?.estimatedPurchaseQuantity !== row.estimatedPurchaseQuantity || saved?.estimatedPurchaseUnit !== row.estimatedPurchaseUnit)) {
         try {
           await onSave(rows, { silent: true });
         } catch {
@@ -252,11 +265,7 @@ export default function MaterialPlanTab({
 
       const totalRequested = (row.requestedQuantity ?? 0) + qty;
       const newRows = rows.slice();
-      // With no Est. Qty, what was just requested becomes it: otherwise nothing
-      // on the row would show the order, inviting a second one.
-      newRows[index] = noEstimate
-        ? { ...row, requestedQuantity: totalRequested, estimatedPurchaseQuantity: totalRequested, estimatedPurchaseUnit: unit, estimatePurchaseManuallySet: true }
-        : { ...row, requestedQuantity: totalRequested };
+      newRows[index] = { ...row, requestedQuantity: totalRequested };
 
       onRowsChange(newRows);
       try {
@@ -466,6 +475,114 @@ export default function MaterialPlanTab({
     return r.specification || r.newMaterialName || (r.materialId ? materialLabel(r) : '');
   }
 
+  // Requesting everything at once needs the whole plan to say how much of
+  // everything and in what.
+  const incompleteRows = rows.filter(r => missingRequestFields(r).length > 0).length;
+  const incompleteMessage = `${incompleteRows} material${incompleteRows === 1 ? ' is' : 's are'} missing a unit or quantity. Fill in all of them before requesting.`;
+
+  function warnIncompletePlan() {
+    setShowBlanks(true);
+    toast.error(incompleteMessage);
+    // After the render that marks them.
+    requestAnimationFrame(() => document.querySelector('[data-blank-row="true"]')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+  }
+
+  function warnMissingFields(missing: string[]) {
+    setShowBlanks(true);
+    toast.error(`Fill in the ${missing.join(', ')} on this row before requesting it.`);
+  }
+
+  // Saved first so every row has an id to be tracked by, and the server's
+  // figures are current (the warehouse may have just approved something).
+  async function handleOpenBulk() {
+    if (incompleteRows > 0) { warnIncompletePlan(); return; }
+    setOpeningBulk(true);
+    try {
+      await onSave(rows, { silent: true });
+      await onRefreshStock();
+      setBulkOpen(true);
+    } catch {
+      // already shown
+    } finally {
+      setOpeningBulk(false);
+    }
+  }
+
+  const bulkRows: BulkRowInput[] = !bulkOpen ? [] : rows.filter(r => r.id != null && r.materialId).map(r => ({
+    id: r.id!,
+    materialId: r.materialId!,
+    name: stockName(r) || materialLabel(r),
+    areaUnit: r.unit,
+    materialUnit: r.estimatedPurchaseUnit,
+    materialQuantity: r.estimatedPurchaseQuantity,
+    netLeftToOrder: r.estimatedPurchaseQuantity != null ? leftAfter(r.estimatedPurchaseQuantity, r.approvedQuantity) : undefined,
+    remainingRequestable: r.estimatedPurchaseQuantity != null ? leftAfter(r.estimatedPurchaseQuantity, r.askedQuantity) : undefined,
+    warehouseApproved: !!r.warehouseApproved,
+    warehousePendingQuantity: r.warehousePendingQuantity ?? 0,
+    onSiteStock: currentStock(r),
+    stock: stockOf(r),
+    hasSimilarInStock: similarInStock(stockName(r), warehouseStock).length > 0,
+  }));
+
+  // Returns the rows that didn't go, with why; the sent ones are added to their
+  // rows' running requested totals, the same as a single request.
+  async function handleSendBulk(items: BulkSendItem[]): Promise<Map<number, string> | null> {
+    const saved = (id: number) => boqItems.find(b => b.id === id);
+    const changed = rows.some(r => r.id != null && (
+      saved(r.id)?.estimatedPurchaseQuantity !== r.estimatedPurchaseQuantity
+      || saved(r.id)?.estimatedPurchaseUnit !== r.estimatedPurchaseUnit
+      || saved(r.id)?.unit !== r.unit));
+    if (changed) {
+      try {
+        await onSave(rows, { silent: true });
+      } catch {
+        return null; // already shown; nothing was sent
+      }
+    }
+
+    const toItems = (kind: BulkSendItem['kind']): BulkRequestItem[] => items
+      .filter(i => i.kind === kind)
+      .map(({ boqItemId, materialId, quantity, unit }) => ({ boqItemId, materialId, quantity, unit }));
+    const failures = new Map<number, string>();
+    const sent = new Map<number, number>();
+    const counts = { warehouse: 0, procurement: 0 };
+    for (const kind of ['warehouse', 'procurement'] as const) {
+      const batch = toItems(kind);
+      if (batch.length === 0) continue;
+      const results = await onBulkRequest(kind, batch);
+      if (results === null) {
+        batch.forEach(i => failures.set(i.boqItemId, 'Not sent. Try again.'));
+        continue;
+      }
+      for (const result of results) {
+        if (result.success) {
+          counts[kind]++;
+          sent.set(result.boqItemId, batch.find(i => i.boqItemId === result.boqItemId)?.quantity ?? 0);
+        } else {
+          failures.set(result.boqItemId, result.error ?? 'Not sent.');
+        }
+      }
+    }
+
+    if (sent.size > 0) {
+      const newRows = rows.map(r => (r.id != null && sent.has(r.id)
+        ? { ...r, requestedQuantity: (r.requestedQuantity ?? 0) + sent.get(r.id)! }
+        : r));
+      onRowsChange(newRows);
+      try {
+        await onSave(newRows, { silent: true });
+      } catch {
+        toast.error('Requests sent, but saving the updated Bill of Quantities failed — click Save Material Plan to retry.');
+      }
+      const parts = [
+        counts.warehouse ? `${counts.warehouse} to the warehouse` : '',
+        counts.procurement ? `${counts.procurement} to Procurement` : '',
+      ].filter(Boolean);
+      toast.success(`Sent ${parts.join(' and ')}.`);
+    }
+    return failures;
+  }
+
   async function handleLinkStock(item: WarehouseStockItem) {
     if (!linkPrompt) return;
     if (!await onSaveStockLink(linkPrompt.rowName, item.materialName)) return;
@@ -495,6 +612,17 @@ export default function MaterialPlanTab({
         {PRIMARY_SECTIONS.map(s => <option key={s} value={s} />)}
       </datalist>
 
+      {bulkOpen && (
+        <BulkRequestDialog
+          projectName={project.name}
+          rows={bulkRows}
+          stockLoaded={warehouseStock.length > 0}
+          onResolveSimilar={rowName => setLinkPrompt({ rowName, beforePurchase: true })}
+          onSend={handleSendBulk}
+          onClose={() => setBulkOpen(false)}
+        />
+      )}
+
       {linkPrompt && (
         <StockLinkDialog
           rowName={linkPrompt.rowName}
@@ -521,10 +649,8 @@ export default function MaterialPlanTab({
             {requestPrompt.kind === 'ProcurementOrder' ? (
               <>
                 <label style={{ ...lbl, fontSize: '0.68rem' }}>Quantity to request</label>
-                <p style={{ fontSize: '0.68rem', color: requestPrompt.max > 0 || requestPrompt.noEstimate ? '#6b7280' : '#b45309', marginTop: 2 }}>
-                  {requestPrompt.noEstimate
-                    ? 'No estimated quantity yet. Enter how much to purchase.'
-                    : requestPrompt.max > 0
+                <p style={{ fontSize: '0.68rem', color: requestPrompt.max > 0 ? '#6b7280' : '#b45309', marginTop: 2 }}>
+                  {requestPrompt.max > 0
                     ? `Suggested remaining: ${requestPrompt.max.toLocaleString()} ${requestPrompt.unit}`
                     : 'This row is fully requested. Entering a quantity sends an additional request.'}
                 </p>
@@ -547,30 +673,16 @@ export default function MaterialPlanTab({
                 onChange={e => setRequestPromptQty(e.target.value)}
                 style={{ ...inp, flex: 1 }}
               />
-              {requestPrompt.noEstimate ? (
-                <select
-                  title="Unit to purchase in"
-                  value={requestPrompt.unit}
-                  onChange={e => setRequestPrompt({ ...requestPrompt, unit: e.target.value })}
-                  style={{ ...sel, flex: '0 0 auto', width: 84 }}
-                >
-                  <option value="">Unit</option>
-                  {PURCHASE_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
-                </select>
-              ) : (
-                <span style={{ ...inp, flex: '0 0 auto', width: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9fafb', color: '#6b7280' }}>{requestPrompt.unit}</span>
-              )}
+              <span style={{ ...inp, flex: '0 0 auto', width: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9fafb', color: '#6b7280' }}>{requestPrompt.unit}</span>
             </div>
-            {!requestPrompt.noEstimate && requestPrompt.max > 0 && parseFloat(requestPromptQty) > requestPrompt.max && (
+            {requestPrompt.max > 0 && parseFloat(requestPromptQty) > requestPrompt.max && (
               <p style={{ fontSize: '0.68rem', fontWeight: 600, color: '#b45309', marginBottom: 6 }}>
                 More than this row still needs, so it will be marked as an additional request.
               </p>
             )}
-            {!requestPrompt.noEstimate && (
-              <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginBottom: '1rem' }}>
-                Requesting less than the full amount keeps the rest on this row, ready for its own request.
-              </p>
-            )}
+            <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginBottom: '1rem' }}>
+              Requesting less than the full amount keeps the rest on this row, ready for its own request.
+            </p>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <button onClick={() => setRequestPrompt(null)} disabled={submittingRequest} style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}>
                 Cancel
@@ -660,6 +772,11 @@ export default function MaterialPlanTab({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
           <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>{isHistorical ? 'Bill of Quantities and Purchased Orders Summary' : 'Bill of Quantities'}</p>
           <div style={{ display: 'flex', gap: 8 }}>
+            {editable && !isCompleted && !isHistorical && rows.length > 0 && (
+              <button onClick={handleOpenBulk} disabled={openingBulk} title="Review and send every material's request at once" style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: 'none', background: '#f97316', color: '#fff', fontSize: '0.72rem', fontWeight: 700, cursor: 'pointer', opacity: openingBulk ? 0.7 : 1 }}>
+                <Send style={{ width: 12, height: 12 }} /> {openingBulk ? 'Preparing…' : 'Request Materials'}
+              </button>
+            )}
             {/* The blueprint the generated rows came from, beside this table. */}
             {hasPlan && (
               <button onClick={onViewPlan} disabled={planOpen}
@@ -787,17 +904,12 @@ export default function MaterialPlanTab({
               const hasPurchaseEstimate = r.estimatedPurchaseQuantity != null;
               const purchaseQty = r.estimatedPurchaseQuantity ?? 0;
               const purchaseUnit = r.estimatedPurchaseUnit ?? r.unit ?? '';
-              // Net Left to Order — server-computed: Est. Qty minus whatever
-              // has actually been APPROVED so far (an approved redistribution
-              // transfer, an approved warehouse release, or a purchase order
-              // past Pending). A still-Pending request never moves this
-              // number — see ProcurementCapCalculator. Falls back to the full
-              // Est. Qty until the row has been saved at least once (nothing
-              // server-computed to read yet).
-              // Capped at this row's Est. Qty: the server's figure lags a typed,
-              // unsaved one, and with none saved it's the BOQ measure (199 sq.m),
-              // which isn't a quantity in the purchase unit.
-              const netLeftToOrder = hasPurchaseEstimate ? Math.min(r.netLeftToOrder ?? purchaseQty, purchaseQty) : 0;
+              // Net Left to Order — this row's Est. Qty, as it stands on screen,
+              // minus whatever has actually been APPROVED so far (an approved
+              // redistribution transfer, an approved warehouse release, or a
+              // purchase order past Pending). A still-Pending request never
+              // moves this number — see ProcurementCapCalculator.
+              const netLeftToOrder = hasPurchaseEstimate ? leftAfter(purchaseQty, r.approvedQuantity) : 0;
               const toOrder = hasPurchaseEstimate ? Math.max(0, netLeftToOrder - stock) : 0;
               // The real cap Notify Procurement/Warehouse will enforce
               // server-side — unlike netLeftToOrder above, this also
@@ -807,9 +919,10 @@ export default function MaterialPlanTab({
               // amount is already sent and awaiting a PO). Both dialogs below
               // must cap at this, or they invite a quantity the backend then
               // rejects. See ProcurementCapCalculator.GetRemainingRequestableAsync.
-              const remainingRequestable = hasPurchaseEstimate ? (r.remainingRequestable ?? netLeftToOrder) : 0;
+              const remainingRequestable = hasPurchaseEstimate ? leftAfter(purchaseQty, r.askedQuantity) : 0;
               // Saved rows only: a request is tracked against its row's id.
-              const canRequestBase = editable && !isCompleted && !!r.materialId && r.id != null;
+              const missingFields = missingRequestFields(r);
+              const canRequestBase = editable && !isCompleted && !!r.materialId && r.id != null && missingFields.length === 0;
               // Everything this row needs has been asked for. It stays open for
               // additional requests, but shouldn't read as still needing action.
               const fullyRequested = hasPurchaseEstimate && Math.min(netLeftToOrder, remainingRequestable) <= 0;
@@ -817,8 +930,8 @@ export default function MaterialPlanTab({
               // material: Procurement can't be requested until Warehouse has
               // actually APPROVED a check — merely submitting one isn't enough.
               // With nothing in the warehouse there's nothing to check, so it
-              // goes straight to Procurement — even before there's an Est. Qty,
-              // since the quantity is typed there. Warehouse stays available either
+              // goes straight to Procurement. Neither can go until the row says
+              // how much and in what. Warehouse stays available either
               // way (a material may be listed under a name that didn't match).
               // Neither button is ever disabled just because the estimate's
               // already fully covered — users can still request a buffer amount.
@@ -826,9 +939,11 @@ export default function MaterialPlanTab({
               const hasNoStock = stockStatus?.status === 'noStock' || stockStatus?.status === 'notListed';
               const stockNote = stockStatus && stockStatus.status !== 'notListed'
                 ? `In warehouse: ${stockStatus.item.balance.toLocaleString()} ${stockStatus.item.unit}` : undefined;
-              const canRequestWarehouse = canRequestBase && hasPurchaseEstimate;
-              const canRequestProcurement = canRequestBase && (hasNoStock || (hasPurchaseEstimate && !!r.warehouseApproved));
-              const needsAlert = hasPurchaseEstimate ? toOrder > 0 && !fullyRequested : hasNoStock;
+              const canRequestWarehouse = canRequestBase;
+              const canRequestProcurement = canRequestBase && (hasNoStock || !!r.warehouseApproved);
+              // Clickable with fields missing, so the click can say why it won't go.
+              const warnOnClick = editable && !isCompleted && missingFields.length > 0;
+              const needsAlert = toOrder > 0 && !fullyRequested;
               const suggestWarehouse = canRequestWarehouse && stockStatus?.status === 'inStock' && !r.warehouseApproved && !fullyRequested;
               // The subtext only appears once something's actually been
               // approved against this row (net < the full estimate) — never
@@ -845,7 +960,7 @@ export default function MaterialPlanTab({
                   // With the plan open, a blueprint row clicked is shown on it.
                   onClickCapture={() => { if (planOpen && sourceOf(r)?.readId != null) onPlanFocus(i); }}
                   style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40,
-                    background: planOpen && planFocus === i ? '#fff7ed' : undefined, cursor: planOpen && sourceOf(r)?.readId != null ? 'pointer' : undefined }}>
+                    background: showBlanks && !isCompleted && hasBlank(r) ? '#fef2f2' : planOpen && planFocus === i ? '#fff7ed' : undefined, cursor: planOpen && sourceOf(r)?.readId != null ? 'pointer' : undefined }}>
                   {editable ? (
                     <input
                       list="primary-section-options"
@@ -1014,7 +1129,10 @@ export default function MaterialPlanTab({
                       </p>
                     )}
                   </div>
-                  <StockBadge stock={stockStatus} onClick={editable ? () => setLinkPrompt({ rowName: stockName(r), beforePurchase: false }) : undefined} />
+                  {/* Stock only means something against a quantity, so a freshly
+                      scanned row shows nothing until Run Forecast (or the user)
+                      gives it an Est. Qty. */}
+                  <StockBadge stock={(r.estimatedPurchaseQuantity ?? 0) > 0 ? stockStatus : undefined} onClick={editable ? () => setLinkPrompt({ rowName: stockName(r), beforePurchase: false }) : undefined} />
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'flex-end', paddingRight: 2 }}>
                     {(() => {
                       // Only the AI-vs-engineering-baseline check is shown;
@@ -1037,13 +1155,12 @@ export default function MaterialPlanTab({
                         covered: Procurement can still take an additional
                         order past it (Warehouse's own cap still applies). */}
                     <button
-                      disabled={!canRequestProcurement}
+                      disabled={!canRequestProcurement && !warnOnClick}
                       onClick={() => {
+                        if (warnOnClick) { warnMissingFields(missingFields); return; }
                         const openRequest = () => {
                           const cap = Math.max(0, Math.min(toOrder, remainingRequestable));
-                          setRequestPrompt(hasPurchaseEstimate
-                            ? { index: i, kind: 'ProcurementOrder', max: cap, unit: purchaseUnit, materialName: materialLabel(r), stockNote }
-                            : { index: i, kind: 'ProcurementOrder', max: 0, unit: r.estimatedPurchaseUnit ?? '', materialName: materialLabel(r), stockNote, noEstimate: true });
+                          setRequestPrompt({ index: i, kind: 'ProcurementOrder', max: cap, unit: purchaseUnit, materialName: materialLabel(r), stockNote });
                           setRequestPromptQty(cap ? String(cap) : '');
                         };
                         // Buying what the warehouse already has under another
@@ -1058,17 +1175,15 @@ export default function MaterialPlanTab({
                       }}
                       title={
                         !editable || isCompleted ? undefined
+                          : missingFields.length > 0 ? `Fill in the ${missingFields.join(', ')} first`
                           : !r.materialId || r.id == null ? 'Save the Material Plan first'
-                          : !canRequestProcurement ? (hasPurchaseEstimate
-                            ? 'Notify the warehouse first — Procurement unlocks once Warehouse approves a check for this material'
-                            : 'Run Forecast first to set an estimated quantity')
-                          : !hasPurchaseEstimate ? 'Notify Procurement — enter how much to purchase'
+                          : !canRequestProcurement ? 'Notify the warehouse first — Procurement unlocks once Warehouse approves a check for this material'
                           : toOrder <= 0 || fullyRequested ? 'Fully requested. Click to send Procurement an additional request.'
                           : `Notify procurement — ${Math.min(toOrder, remainingRequestable)} ${purchaseUnit} suggested`
                       }
                       style={{
                         width: 24, height: 24, borderRadius: 6, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        cursor: canRequestProcurement ? 'pointer' : 'not-allowed',
+                        cursor: canRequestProcurement || warnOnClick ? 'pointer' : 'not-allowed',
                         opacity: canRequestProcurement ? 1 : 0.4,
                         background: needsAlert && canRequestProcurement ? '#fee2e2' : '#f3f4f6',
                       }}
@@ -1076,22 +1191,23 @@ export default function MaterialPlanTab({
                       <ShoppingCart style={{ width: 12, height: 12, color: needsAlert && canRequestProcurement ? '#ef4444' : '#9ca3af' }} />
                     </button>
                     <button
-                      disabled={!canRequestWarehouse}
+                      disabled={!canRequestWarehouse && !warnOnClick}
                       onClick={() => {
+                        if (warnOnClick) { warnMissingFields(missingFields); return; }
                         const cap = Math.max(0, Math.min(netLeftToOrder, remainingRequestable));
                         setRequestPrompt({ index: i, kind: 'WarehouseCheck', max: cap, unit: purchaseUnit, materialName: materialLabel(r), stockNote });
                         setRequestPromptQty(String(warehouseRequestQuantity(stockStatus, cap, purchaseUnit) || ''));
                       }}
                       title={
                         !editable || isCompleted ? undefined
+                          : missingFields.length > 0 ? `Fill in the ${missingFields.join(', ')} first`
                           : !r.materialId || r.id == null ? 'Save the Material Plan first'
-                          : !hasPurchaseEstimate ? 'Run Forecast first to set an estimated quantity'
                           : fullyRequested ? 'Fully requested. Click to send the warehouse an additional request.'
                           : `Notify warehouse to check material — up to ${Math.min(netLeftToOrder, remainingRequestable)} ${purchaseUnit}`
                       }
                       style={{
                         width: 24, height: 24, borderRadius: 6, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        cursor: canRequestWarehouse ? 'pointer' : 'not-allowed',
+                        cursor: canRequestWarehouse || warnOnClick ? 'pointer' : 'not-allowed',
                         opacity: canRequestWarehouse ? 1 : 0.4,
                         background: suggestWarehouse ? '#dbeafe' : '#f3f4f6',
                       }}
@@ -1099,7 +1215,7 @@ export default function MaterialPlanTab({
                       <Package style={{ width: 12, height: 12, color: suggestWarehouse ? '#2563eb' : '#9ca3af' }} />
                     </button>
                     {editable && (
-                      <button onClick={() => removeRow(i)} style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent' }}>
+                      <button onClick={() => removeRow(i)} disabled={r.id != null && deletingRowId === r.id} title="Delete this row" aria-label="Delete this row" style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent' }}>
                         <Trash2 style={{ width: 12, height: 12, color: '#d1d5db' }} />
                       </button>
                     )}
@@ -1139,7 +1255,7 @@ export default function MaterialPlanTab({
 
       {editable && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: '1rem' }}>
-          <button onClick={handleSavePlan} disabled={saving} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
+          <button onClick={() => void onSave()} disabled={saving} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
             {saving ? 'Saving…' : 'Save Material Plan'}
           </button>
           <button

@@ -11,6 +11,29 @@ public class WarehouseRequestCreateDto
     [MaxLength(20)] public string? Unit { get; set; }
 }
 
+// Several rows' requests sent at once, to the warehouse or to Procurement.
+public class BulkRequestDto
+{
+    [Required] public int ProjectId { get; set; }
+    [Required, MinLength(1)] public List<BulkRequestItemDto> Items { get; set; } = [];
+}
+
+public class BulkRequestItemDto
+{
+    [Required] public int BOQItemId { get; set; }
+    [Required] public int MaterialId { get; set; }
+    [Range(0.0001, double.MaxValue)] public decimal Quantity { get; set; }
+    [MaxLength(20)] public string? Unit { get; set; }
+}
+
+// One row's outcome: a row that can't go shouldn't hold the others back.
+public class BulkRequestResultDto
+{
+    public int     BOQItemId { get; set; }
+    public bool    Success   { get; set; }
+    public string? Error     { get; set; }
+}
+
 public class WarehouseRequestApproveDto
 {
     // Defaults to the full RequestedQuantity when omitted, but should be

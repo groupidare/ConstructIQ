@@ -33,7 +33,12 @@ public static class ProcurementCapCalculator
     // before the first has become a PO. WarehouseApproved: the warehouse has
     // approved a check for this row at all — what unlocks Procurement when the
     // warehouse has stock.
-    public sealed record RowStatus(decimal NetLeftToOrder, decimal RemainingRequestable, bool WarehouseApproved);
+    // WarehousePendingQuantity: asked of the warehouse, not yet answered.
+    // ApprovedQuantity/AskedQuantity: what the two figures above were reduced by.
+    // A row with no purchase estimate yet has only its BOQ measure to go on, so
+    // the Material Plan works out what's left from these and the quantity on
+    // screen, not from those figures.
+    public sealed record RowStatus(decimal NetLeftToOrder, decimal RemainingRequestable, bool WarehouseApproved, decimal WarehousePendingQuantity = 0, decimal ApprovedQuantity = 0, decimal AskedQuantity = 0);
 
     public sealed record RowNeed(int RowId, int MaterialId, decimal Estimate);
 
@@ -41,13 +46,17 @@ public static class ProcurementCapCalculator
     public static Dictionary<int, decimal> LeftPerRow(
         IReadOnlyCollection<RowNeed> rows, IReadOnlyDictionary<int, decimal> coveredByRow, IReadOnlyDictionary<int, decimal> coveredByMaterial)
     {
+        var covered = CoveredPerRow(rows, coveredByRow, coveredByMaterial);
+        return rows.ToDictionary(row => row.RowId, row => Math.Max(0, row.Estimate - covered[row.RowId]));
+    }
+
+    private static Dictionary<int, decimal> CoveredPerRow(
+        IReadOnlyCollection<RowNeed> rows, IReadOnlyDictionary<int, decimal> coveredByRow, IReadOnlyDictionary<int, decimal> coveredByMaterial)
+    {
         var rowsPerMaterial = rows.GroupBy(r => r.MaterialId).ToDictionary(g => g.Key, g => g.Count());
         return rows.ToDictionary(row => row.RowId, row =>
-        {
-            var covered = coveredByRow.GetValueOrDefault(row.RowId);
-            if (rowsPerMaterial[row.MaterialId] == 1) covered += coveredByMaterial.GetValueOrDefault(row.MaterialId);
-            return Math.Max(0, row.Estimate - covered);
-        });
+            coveredByRow.GetValueOrDefault(row.RowId)
+            + (rowsPerMaterial[row.MaterialId] == 1 ? coveredByMaterial.GetValueOrDefault(row.MaterialId) : 0));
     }
 
     private static void Add(Dictionary<int, decimal> totals, int key, decimal quantity) =>
@@ -74,6 +83,12 @@ public static class ProcurementCapCalculator
             .Where(w => w.ProjectId == projectId && w.Status == WarehouseRequestStatus.Approved)
             .Select(w => new { w.BOQItemId, w.MaterialId, Quantity = w.ApprovedQuantity ?? w.RequestedQuantity })
             .ToListAsync();
+
+        var pendingChecks = await db.WarehouseRequests
+            .Where(w => w.ProjectId == projectId && w.Status == WarehouseRequestStatus.Pending && w.BOQItemId != null)
+            .Select(w => new { BOQItemId = w.BOQItemId!.Value, w.RequestedQuantity })
+            .ToListAsync();
+        var pendingByRow = pendingChecks.GroupBy(w => w.BOQItemId).ToDictionary(g => g.Key, g => g.Sum(w => w.RequestedQuantity));
 
         var requests = await db.MaterialRequests
             .Where(m => m.ProjectId == projectId && !m.IsPriceInquiry) // a price check isn't asking for material
@@ -140,6 +155,8 @@ public static class ProcurementCapCalculator
 
         var netLeft = LeftPerRow(rows, approvedByRow, approvedByMaterial);
         var remaining = LeftPerRow(rows, askedByRow, askedByMaterial);
+        var approvedQuantities = CoveredPerRow(rows, approvedByRow, approvedByMaterial);
+        var askedQuantities = CoveredPerRow(rows, askedByRow, askedByMaterial);
 
         var approvedRows = warehouse.Where(w => w.BOQItemId != null).Select(w => w.BOQItemId!.Value).ToHashSet();
         // A check with no row can only unlock a material's one row, same as above.
@@ -151,7 +168,9 @@ public static class ProcurementCapCalculator
 
         return rows.ToDictionary(r => r.RowId, r => new RowStatus(
             netLeft[r.RowId], remaining[r.RowId],
-            approvedRows.Contains(r.RowId) || approvedMaterials.Contains(r.MaterialId)));
+            approvedRows.Contains(r.RowId) || approvedMaterials.Contains(r.MaterialId),
+            pendingByRow.GetValueOrDefault(r.RowId),
+            approvedQuantities[r.RowId], askedQuantities[r.RowId]));
     }
 
     private sealed record FulfilledRequest(int PurchaseOrderId, int MaterialId, int RowId, decimal Quantity);
@@ -163,6 +182,39 @@ public static class ProcurementCapCalculator
         if (boqItemId is null) return null;
         return await db.BOQItems.FirstOrDefaultAsync(b => b.Id == boqItemId && b.ProjectId == projectId && b.MaterialId == materialId)
             ?? throw new InvalidOperationException("That Bill of Quantities row doesn't belong to this project and material. Reopen the Material Plan and try again.");
+    }
+
+    // A row can't be requested until it says how much and in what. Price checks
+    // go through their own path and aren't held to this: they exist for
+    // materials still being priced.
+    public static void EnsureRowIsFilledIn(BOQItem? row)
+    {
+        if (row is null) return;
+        var missing = new List<string>();
+        if (string.IsNullOrWhiteSpace(row.Unit)) missing.Add("Area Unit");
+        if (string.IsNullOrWhiteSpace(row.EstimatedPurchaseUnit)) missing.Add("Material Unit");
+        if ((row.EstimatedPurchaseQuantity ?? 0) <= 0) missing.Add("Material Quantity");
+        if (missing.Count > 0)
+            throw new InvalidOperationException($"Fill in the {string.Join(", ", missing)} on this row before requesting it.");
+    }
+
+    // Requesting a whole plan at once needs all of it filled in. Why it can't go
+    // yet, or null if it can.
+    public static async Task<string?> GetBulkRequestProblemAsync(AppDbContext db, int projectId)
+    {
+        var rows = await db.BOQItems
+            .Where(b => b.ProjectId == projectId)
+            .Select(b => new { b.Unit, b.EstimatedPurchaseUnit, b.EstimatedPurchaseQuantity })
+            .ToListAsync();
+        var blankAreaUnit = rows.Any(r => string.IsNullOrWhiteSpace(r.Unit));
+        var blankMaterialUnit = rows.Any(r => string.IsNullOrWhiteSpace(r.EstimatedPurchaseUnit));
+        var blankQuantity = rows.Any(r => (r.EstimatedPurchaseQuantity ?? 0) <= 0);
+        var incomplete = rows.Count(r => string.IsNullOrWhiteSpace(r.Unit) || string.IsNullOrWhiteSpace(r.EstimatedPurchaseUnit) || (r.EstimatedPurchaseQuantity ?? 0) <= 0);
+        if (incomplete == 0) return null;
+
+        var fields = new[] { blankAreaUnit ? "Area Unit" : null, blankMaterialUnit ? "Material Unit" : null, blankQuantity ? "Material Quantity" : null }
+            .Where(f => f is not null);
+        return $"{incomplete} material{(incomplete == 1 ? " is" : "s are")} missing a {string.Join(", ", fields)} in this Material Plan. Fill in all of them before requesting.";
     }
 
     // How much more a new request can ask for before it's an additional one.

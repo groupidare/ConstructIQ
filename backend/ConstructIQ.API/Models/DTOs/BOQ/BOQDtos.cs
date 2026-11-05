@@ -114,6 +114,12 @@ public class BOQItemResponseDto
     // approved against it either. See
     // ProcurementCapCalculator.GetRemainingRequestableForProjectAsync.
     public decimal  RemainingRequestable { get; set; }
+    // Asked of the warehouse for this row and not yet answered.
+    public decimal  WarehousePendingQuantity { get; set; }
+    // What NetLeftToOrder and RemainingRequestable were reduced by, for working
+    // out what's left against a quantity that hasn't been saved yet.
+    public decimal  ApprovedQuantity { get; set; }
+    public decimal  AskedQuantity    { get; set; }
     // "Material Quantity" for the restructured Material Plan grid — null
     // for a project still in progress (not finalized yet). For a historical
     // backfill, equals EstimatedQuantity (the BOQ total — there's no live

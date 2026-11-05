@@ -22,6 +22,20 @@ export interface WarehouseRequest {
   linkedStockBalance?: number | null;
 }
 
+// Several rows' requests sent at once, to the warehouse or to Procurement.
+export interface BulkRequestItem {
+  boqItemId: number;
+  materialId: number;
+  quantity: number;
+  unit: string;
+}
+
+export interface BulkRequestResult {
+  boqItemId: number;
+  success: boolean;
+  error?: string | null;
+}
+
 export interface WarehouseRequestCreateRequest {
   projectId: number;
   materialId: number;

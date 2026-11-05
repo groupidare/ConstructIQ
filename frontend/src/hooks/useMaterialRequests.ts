@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import api from '@/lib/api';
+import type { BulkRequestItem, BulkRequestResult } from '@/types/warehouseRequest';
 import type {
   MaterialRequest, ProjectWithRequests, SuggestedSupplier,
   CreateMaterialRequestPayload, GeneratePOsFromRequestsPayload, GeneratedPOsResult,
@@ -12,6 +13,11 @@ export function useMaterialRequests() {
 
   async function createRequest(payload: CreateMaterialRequestPayload): Promise<void> {
     await api.post('/material-requests', payload);
+  }
+
+  async function createBulk(projectId: number, items: BulkRequestItem[]): Promise<BulkRequestResult[]> {
+    const { data } = await api.post<BulkRequestResult[]>('/material-requests/bulk', { projectId, items });
+    return data;
   }
 
   async function fetchProjectsWithPending() {
@@ -51,6 +57,6 @@ export function useMaterialRequests() {
 
   return {
     projectsWithPending, loading,
-    createRequest, fetchProjectsWithPending, fetchForProject, fetchSuggestedSuppliers, generatePOs, fetchRemaining,
+    createRequest, createBulk, fetchProjectsWithPending, fetchForProject, fetchSuggestedSuppliers, generatePOs, fetchRemaining,
   };
 }

@@ -47,13 +47,14 @@ type Tab = "stock" | "requests";
 function InventoryPageInner() {
   const searchParams = useSearchParams();
   const { items, loading, syncing, fetchItems, sync } = useWarehouseStock();
-  const { requests, loading: requestsLoading, fetchAll: fetchRequests, approveRequest, rejectRequest } = useWarehouseRequests();
+  const { requests, loading: requestsLoading, fetchAll: fetchRequests, approveRequest, approveMany, rejectRequest } = useWarehouseRequests();
 
   const [search, setSearch] = useState("");
   const [sortAZ, setSortAZ] = useState(false);
   const [tab, setTab] = useState<Tab>(searchParams.get("tab") === "requests" ? "requests" : "stock");
   const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
   const [approvingId, setApprovingId] = useState<number | null>(null);
+  const [approvingAll, setApprovingAll] = useState(false);
   // Editable per-row — the warehouse can approve LESS than was requested
   // (e.g. only 3 of 12, because that's all that's on hand). Keyed by request
   // id; falls back to the full requested quantity until the approver edits it.
@@ -123,6 +124,28 @@ function InventoryPageInner() {
       toast.error(message || "Failed to approve request.");
     } finally {
       setApprovingId(null);
+    }
+  }
+
+  // Uses the same per-row quantities as approving one at a time, so anything
+  // the warehouse has edited down is what gets approved.
+  async function handleApproveAll(pending: WarehouseRequest[]) {
+    const approvals = pending.map(r => ({ request: r, qty: Number(approveQty[r.id] ?? r.requestedQuantity) }));
+    const invalid = approvals.find(a => !a.qty || a.qty <= 0 || a.qty > a.request.requestedQuantity);
+    if (invalid) {
+      toast.error(`${invalid.request.materialName}: enter a quantity from 1 to ${invalid.request.requestedQuantity}.`);
+      return;
+    }
+    if (!window.confirm(`Approve ${approvals.length} request${approvals.length === 1 ? "" : "s"} at the quantities shown?`)) return;
+
+    setApprovingAll(true);
+    try {
+      const failed = await approveMany(approvals.map(a => ({ id: a.request.id, approvedQuantity: a.qty })));
+      const done = approvals.length - failed.length;
+      if (done > 0) toast.success(`Approved ${done} request${done === 1 ? "" : "s"}.`);
+      failed.forEach(f => toast.error(`${pending.find(r => r.id === f.id)?.materialName}: ${f.message}`));
+    } finally {
+      setApprovingAll(false);
     }
   }
 
@@ -316,6 +339,17 @@ function InventoryPageInner() {
                         {expanded && (
                           <tr style={{ borderBottom: gi < groupedRequestsByProject.length - 1 ? "1px solid #f3f4f6" : "none" }}>
                             <td colSpan={4} style={{ padding: "0 12px 16px 12px", background: "#f9fafb" }}>
+                              {canApprove && g.records.some(r => r.status === "Pending") && (
+                                <div style={{ display: "flex", justifyContent: "flex-end", padding: "8px 0 2px" }}>
+                                  <button
+                                    onClick={() => handleApproveAll(g.records.filter(r => r.status === "Pending"))}
+                                    disabled={approvingAll}
+                                    style={{ padding: "6px 14px", borderRadius: 8, border: "none", background: "#16a34a", color: "#fff", fontSize: "0.75rem", fontWeight: 700, cursor: approvingAll ? "not-allowed" : "pointer", opacity: approvingAll ? 0.7 : 1 }}
+                                  >
+                                    {approvingAll ? "Approving…" : `Approve all (${g.records.filter(r => r.status === "Pending").length})`}
+                                  </button>
+                                </div>
+                              )}
                               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                                 <thead>
                                   <tr>

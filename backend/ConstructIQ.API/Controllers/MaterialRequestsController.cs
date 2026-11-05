@@ -3,6 +3,7 @@ using ConstructIQ.API.Algorithms;
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Models.DTOs.MaterialRequests;
 using ConstructIQ.API.Models.DTOs.PurchaseOrders;
+using ConstructIQ.API.Models.DTOs.WarehouseRequests;
 using ConstructIQ.API.Models.Entities;
 using System.Linq.Expressions;
 using Microsoft.AspNetCore.Authorization;
@@ -35,24 +36,81 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateMaterialRequestDto dto)
     {
-        if (dto.Quantity <= 0)
-            return BadRequest(new { message = "Quantity must be greater than zero." });
-
-        var project = await db.Projects.FindAsync(dto.ProjectId);
-        if (project is null) return BadRequest(new { message = "Project not found." });
-
-        var material = await db.Materials.FindAsync(dto.MaterialId);
-        if (material is null) return BadRequest(new { message = "Material not found." });
-
-        BOQItem? row;
+        MaterialRequest request;
         try
         {
-            row = await ProcurementCapCalculator.FindRequestRowAsync(db, dto.BOQItemId, dto.ProjectId, dto.MaterialId);
+            request = await AddRequestAsync(dto);
         }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
         }
+
+        await notifications.CreateForRoleAsync(UserRole.ProcurementOfficer, NotificationKind.ProcurementRequestSubmitted,
+            request.IsAdditional
+                ? $"{request.Project.Name} requested {dto.Quantity} {request.Unit} of {request.Material.Name} — an additional order beyond the estimate."
+                : $"{request.Project.Name} requested {dto.Quantity} {request.Unit} of {request.Material.Name}.",
+            CurrentUserId, projectId: dto.ProjectId, materialId: dto.MaterialId, actionLink: "/procurement");
+
+        return Ok(new { id = request.Id, isAdditional = request.IsAdditional });
+    }
+
+    // Needs the whole plan filled in. From there each row stands alone, so one
+    // that can't go doesn't hold the others back, and Procurement gets one
+    // summary rather than a notification per material.
+    [HttpPost("bulk")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> CreateBulk([FromBody] BulkRequestDto dto, [FromServices] Services.Interfaces.IProjectAccessService projectAccess)
+    {
+        var role = User.FindFirst(ClaimTypes.Role)?.Value ?? string.Empty;
+        if (!await projectAccess.CanEditProjectAsync(dto.ProjectId, CurrentUserId, role))
+            return Forbid();
+
+        var problem = await ProcurementCapCalculator.GetBulkRequestProblemAsync(db, dto.ProjectId);
+        if (problem is not null)
+            return Ok(dto.Items.Select(item => new BulkRequestResultDto { BOQItemId = item.BOQItemId, Error = problem }).ToList());
+
+        var results = new List<BulkRequestResultDto>();
+        string? projectName = null;
+        foreach (var item in dto.Items)
+        {
+            try
+            {
+                var request = await AddRequestAsync(new CreateMaterialRequestDto
+                {
+                    ProjectId = dto.ProjectId, MaterialId = item.MaterialId, BOQItemId = item.BOQItemId,
+                    Quantity = item.Quantity, Unit = item.Unit,
+                });
+                projectName = request.Project.Name;
+                results.Add(new BulkRequestResultDto { BOQItemId = item.BOQItemId, Success = true });
+            }
+            catch (InvalidOperationException ex)
+            {
+                results.Add(new BulkRequestResultDto { BOQItemId = item.BOQItemId, Error = ex.Message });
+            }
+        }
+
+        var sent = results.Count(r => r.Success);
+        if (sent > 0)
+            await notifications.CreateForRoleAsync(UserRole.ProcurementOfficer, NotificationKind.ProcurementRequestSubmitted,
+                $"{projectName} requested {sent} material{(sent == 1 ? "" : "s")} from Procurement.",
+                CurrentUserId, projectId: dto.ProjectId, actionLink: "/procurement");
+        return Ok(results);
+    }
+
+    private async Task<MaterialRequest> AddRequestAsync(CreateMaterialRequestDto dto)
+    {
+        if (dto.Quantity <= 0)
+            throw new InvalidOperationException("Quantity must be greater than zero.");
+
+        var project = await db.Projects.FindAsync(dto.ProjectId)
+            ?? throw new InvalidOperationException("Project not found.");
+
+        var material = await db.Materials.FindAsync(dto.MaterialId)
+            ?? throw new InvalidOperationException("Material not found.");
+
+        var row = await ProcurementCapCalculator.FindRequestRowAsync(db, dto.BOQItemId, dto.ProjectId, dto.MaterialId);
+        ProcurementCapCalculator.EnsureRowIsFilledIn(row);
 
         // No upper cap — a site can deliberately order beyond the BOQ
         // estimate (breakage, a design change, a buffer). Anything past the
@@ -60,12 +118,11 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         // additional order, and flagged as such to Procurement rather than
         // rejected. Notify Warehouse works the same way (WarehouseRequestService).
         var remaining = await ProcurementCapCalculator.GetRemainingRequestableAsync(db, dto.ProjectId, dto.MaterialId, row?.Id);
-        // A row with no purchase estimate yet (no stock, so it skipped the
-        // warehouse) has only its BOQ measure to compare with — 500 pc against
-        // 169 sq.m says nothing about being beyond the estimate.
+        // With no row and no purchase estimate there's only a BOQ measure to
+        // compare with — 500 pc against 169 sq.m says nothing about being
+        // beyond the estimate.
         var hasPurchaseEstimate = row is not null
-            ? row.EstimatedPurchaseQuantity != null
-            : await db.BOQItems.AnyAsync(b => b.ProjectId == dto.ProjectId && b.MaterialId == dto.MaterialId && b.EstimatedPurchaseQuantity != null);
+            || await db.BOQItems.AnyAsync(b => b.ProjectId == dto.ProjectId && b.MaterialId == dto.MaterialId && b.EstimatedPurchaseQuantity != null);
         var isAdditional = hasPurchaseEstimate && dto.Quantity > remaining;
 
         var request = new MaterialRequest
@@ -82,13 +139,9 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         db.MaterialRequests.Add(request);
         await db.SaveChangesAsync();
 
-        await notifications.CreateForRoleAsync(UserRole.ProcurementOfficer, NotificationKind.ProcurementRequestSubmitted,
-            isAdditional
-                ? $"{project.Name} requested {dto.Quantity} {request.Unit} of {material.Name} — an additional order beyond the estimate."
-                : $"{project.Name} requested {dto.Quantity} {request.Unit} of {material.Name}.",
-            CurrentUserId, projectId: dto.ProjectId, materialId: dto.MaterialId, actionLink: "/procurement");
-
-        return Ok(new { id = request.Id, isAdditional });
+        request.Project = project;
+        request.Material = material;
+        return request;
     }
 
     // Authoritative "how much more can still be requested" per material in
