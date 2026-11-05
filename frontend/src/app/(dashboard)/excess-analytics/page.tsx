@@ -75,7 +75,7 @@ function CostImpactCard({ impact }: { impact: ExcessCostImpact }) {
         <span style={{ fontWeight:700, fontSize:"1rem" }}>Cost Impact</span>
       </div>
       <p style={{ color:"#9ca3af", fontSize:"0.72rem", marginBottom:"1.25rem" }}>
-        Material cost only, at the latest recorded price for each material (PO, then historical, then catalog).{priceRange}
+        Material cost only, at the latest recorded price for each material (latest PO — lowest if several suppliers that day — then quotation, then catalog).{priceRange}
         {unpricedNotes.length > 0 && ` Not included (no recorded price in their unit): ${unpricedNotes.join(", ")}.`}
       </p>
 
