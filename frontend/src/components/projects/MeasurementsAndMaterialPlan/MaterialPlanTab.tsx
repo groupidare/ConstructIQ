@@ -1,8 +1,8 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X, AlertTriangle, Link2, Send, Map as MapIcon } from 'lucide-react';
+import { Upload, FileText, Trash2, Plus, ChevronDown, ChevronRight, Search, ShoppingCart, Package, ExternalLink, X, AlertTriangle, Link2, Send, Map as MapIcon } from 'lucide-react';
 import { baselineAlerts, expectedText } from '@/lib/baseline';
 import { resolveUploadUrl } from '@/lib/avatar';
 import { indexLinks, rowStock, similarInStock, warehouseRequestQuantity, type RowStock } from '@/lib/warehouseStockMatch';
@@ -23,6 +23,7 @@ import StockLinkDialog from './StockLinkDialog';
 import { inp, sel, lbl } from './styles';
 import ImportPurchaseOrders from '@/components/projects/ImportPurchaseOrders';
 import { sourceOf, sourceTooltip } from '@/lib/blueprintSource';
+import { groupBySection } from '@/lib/boqSections';
 
 interface Props {
   project: Project;
@@ -114,6 +115,34 @@ function StockBadge({ stock, onClick }: { stock?: RowStock; onClick?: () => void
     : <span title={title} style={style}>{content}</span>;
 }
 
+// Total Area and Area Unit as one box, "178 sq.m", split into two only to edit them.
+function TotalAreaCell({ quantity, unit, editable, missingUnit, onChange }: {
+  quantity: number; unit?: string; editable: boolean; missingUnit: boolean;
+  onChange: (patch: Partial<BOQItemRow>) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const text = `${quantity ? quantity.toLocaleString() : '—'} ${unit ?? ''}`.trim();
+  // One box like the row's other fields, splitting in two once clicked or tabbed into.
+  if (!editable || !editing) {
+    return (
+      <input readOnly={editable} disabled={!editable} value={text} aria-label="Total area and unit"
+        title={editable ? 'Click to edit the total area and its unit' : undefined} onFocus={() => setEditing(true)}
+        style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', cursor: editable ? 'text' : undefined,
+          ...(missingUnit ? { border: '1px solid #ef4444', background: '#fef2f2' } : {}) }} />
+    );
+  }
+  return (
+    // Closes when focus leaves both boxes, not when it moves between them.
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.2fr) minmax(0,1fr)', gap: 2 }}
+      onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setEditing(false); }}>
+      <input autoFocus type="number" aria-label="Total area" value={quantity || ''}
+        onChange={e => onChange({ estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+      <input aria-label="Area unit" placeholder="unit" value={unit ?? ''}
+        onChange={e => onChange({ unit: e.target.value })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+    </div>
+  );
+}
+
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, warehouseStock, warehouseStockLinks, onBulkRequest, onRefreshStock, onSaveStockLink, onRemoveStockLink, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
@@ -180,8 +209,8 @@ export default function MaterialPlanTab({
   // Every quantity carries its unit, since a row's BOQ measure (sq.m) and
   // its purchase quantities (pcs) are in different units.
   const columnsTemplate = isCompleted
-    ? 'minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.7fr)'
-    : 'minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1.6fr) minmax(0,0.55fr) minmax(0,0.75fr) minmax(0,0.55fr) minmax(0,0.75fr) 112px 96px';
+    ? 'minmax(0,1fr) minmax(0,1.6fr) minmax(0,0.7fr) minmax(0,0.7fr) minmax(0,0.7fr)'
+    : 'minmax(0,1.1fr) minmax(0,2fr) minmax(0,0.9fr) minmax(0,0.75fr) minmax(0,0.6fr) 112px 96px';
   const [parsingId, setParsingId] = useState<number | null>(null);
 
   const timeRange = `${formatDate(project.startDate)} – ${formatDate(project.targetEndDate)}`;
@@ -286,11 +315,35 @@ export default function MaterialPlanTab({
     }
   }
 
-  function addBlankRow() {
-    // Leave primarySection blank rather than silently defaulting to the first
-    // option — the user picks it via the same datalist input every row already
-    // has, instead of it being pre-filled without any real choice being made.
-    onRowsChange([...rows, { primarySection: '', estimatedQuantity: 0 }]);
+  // One heading per section, however each BOQ wrote it. The rows keep their own
+  // Primary Section; this only changes how they're laid out.
+  const sections = useMemo(() => groupBySection(rows), [rows]);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [newSection, setNewSection] = useState<string | null>(null);
+
+  function toggleSection(key: string) {
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  // A new row joins its section at the bottom (groupBySection keeps plan order).
+  function addRowTo(primarySection: string) {
+    onRowsChange([...rows, { primarySection, estimatedQuantity: 0 }]);
+  }
+
+  function addSection() {
+    const name = newSection?.trim();
+    if (!name) return;
+    addRowTo(name);
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      next.delete(groupBySection([{ primarySection: name, estimatedQuantity: 0 }])[0].key);
+      return next;
+    });
+    setNewSection(null);
   }
 
   function handleFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
@@ -457,6 +510,33 @@ export default function MaterialPlanTab({
     return r.newMaterialName ?? '(unnamed)';
   }
 
+  // The search box: materials only, by what the row says and its catalog name.
+  // Only narrows what's shown — saving, forecasting and requesting use every row.
+  const [materialSearch, setMaterialSearch] = useState('');
+  const searchText = materialSearch.trim().toLowerCase();
+  const searching = searchText !== '';
+  const shownSections = sections.map(section => ({
+    ...section,
+    total: section.indexes.length,
+    indexes: searching
+      ? section.indexes.filter(i => [rows[i].specification, rows[i].newMaterialName, materialLabel(rows[i])].some(t => t?.toLowerCase().includes(searchText)))
+      : section.indexes,
+  })).filter(section => section.indexes.length > 0 || !searching);
+  const shownCount = shownSections.reduce((n, section) => n + section.indexes.length, 0);
+
+  // No room for the search box beside the title and buttons: it takes its own line.
+  const boqHeader = useRef<HTMLDivElement>(null);
+  const [searchOnOwnLine, setSearchOnOwnLine] = useState(false);
+  useEffect(() => {
+    const el = boqHeader.current;
+    if (!el) return;
+    // The width the title, the buttons shown and a usable search box need.
+    const needs = isHistorical ? 900 : hasPlan ? 800 : 680;
+    const observer = new ResizeObserver(() => setSearchOnOwnLine(el.clientWidth < needs));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isHistorical, hasPlan]);
+
   function currentStock(r: BOQItemRow): number {
     if (!r.materialId) return 0;
     return inventory.find(i => i.materialId === r.materialId)?.availableQuantity ?? 0;
@@ -482,6 +562,7 @@ export default function MaterialPlanTab({
 
   function warnIncompletePlan() {
     setShowBlanks(true);
+    setCollapsed(new Set()); // a collapsed section would hide the rows it's pointing at
     toast.error(incompleteMessage);
     // After the render that marks them.
     requestAnimationFrame(() => document.querySelector('[data-blank-row="true"]')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
@@ -489,6 +570,7 @@ export default function MaterialPlanTab({
 
   function warnMissingFields(missing: string[]) {
     setShowBlanks(true);
+    setCollapsed(new Set());
     toast.error(`Fill in the ${missing.join(', ')} on this row before requesting it.`);
   }
 
@@ -769,8 +851,24 @@ export default function MaterialPlanTab({
 
       {/* Bill of Quantities */}
       <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
+        <div ref={boqHeader} style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '0.875rem 1rem', borderBottom: '1px solid #e5e7eb' }}>
           <p style={{ fontWeight: 700, fontSize: '0.875rem' }}>{isHistorical ? 'Bill of Quantities and Purchased Orders Summary' : 'Bill of Quantities'}</p>
+          {rows.length > 0 && !(isHistorical && !editable) && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, order: searchOnOwnLine ? 1 : 0, flex: searchOnOwnLine ? '1 1 100%' : '1 1 140px', maxWidth: searchOnOwnLine ? undefined : 460, minWidth: 0 }}>
+              <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                <Search style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', width: 13, height: 13, color: '#9ca3af' }} />
+                <input value={materialSearch} onChange={e => setMaterialSearch(e.target.value)} placeholder="Search materials..." aria-label="Search materials"
+                  style={{ ...inp, padding: '5px 26px 5px 27px', fontSize: '0.76rem' }} />
+                {searching && (
+                  <button type="button" onClick={() => setMaterialSearch('')} aria-label="Clear search" title="Clear search"
+                    style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', display: 'flex', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: '#9ca3af' }}>
+                    <X style={{ width: 13, height: 13 }} />
+                  </button>
+                )}
+              </div>
+              {searching && <span style={{ fontSize: '0.7rem', color: '#6b7280', whiteSpace: 'nowrap' }}>{shownCount} of {rows.length} materials</span>}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8 }}>
             {editable && !isCompleted && !isHistorical && rows.length > 0 && (
               <button onClick={handleOpenBulk} disabled={openingBulk} title="Review and send every material's request at once" style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: 'none', background: '#f97316', color: '#fff', fontSize: '0.72rem', fontWeight: 700, cursor: 'pointer', opacity: openingBulk ? 0.7 : 1 }}>
@@ -877,9 +975,9 @@ export default function MaterialPlanTab({
         <div style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '0.5rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
           {(isCompleted
             ? isHistorical
-              ? ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'TOTAL AREA', 'MATERIAL QUANTITY', 'ACTUAL QUANTITY']
-              : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'MATERIAL QUANTITY', 'ESTIMATED QUANTITY', 'ACTUAL QUANTITY']
-            : ['PRIMARY SECTION', 'SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'AREA UNIT', 'TOTAL AREA', 'MATERIAL UNIT', 'MATERIAL QUANTITY', 'WAREHOUSE STOCK', 'ALERTS']
+              ? ['SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'TOTAL AREA', 'MATERIAL QUANTITY', 'ACTUAL QUANTITY']
+              : ['SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'MATERIAL QUANTITY', 'ESTIMATED QUANTITY', 'ACTUAL QUANTITY']
+            : ['SUB PRIMARY SECTION', 'MATERIAL SPECIFICATION', 'TOTAL AREA', 'MATERIAL QUANTITY', 'MATERIAL UNIT', 'WAREHOUSE STOCK', 'ALERTS']
           ).map((h, idx) => (
             <span key={`${h}-${idx}`} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
           ))}
@@ -892,7 +990,35 @@ export default function MaterialPlanTab({
           {rows.length === 0 ? (
             <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No materials added yet.</p>
           ) : (
-            rows.map((r, i) => {
+            <>
+            {searching && shownCount === 0 && (
+              <p style={{ fontSize: '0.78rem', color: '#9ca3af', padding: '1rem' }}>No materials match &ldquo;{materialSearch.trim()}&rdquo;.</p>
+            )}
+            {shownSections.map(section => {
+              // A search shows its matches even in a section left collapsed.
+              const isOpen = searching || !collapsed.has(section.key);
+              return (
+              <Fragment key={section.key || 'no-section'}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 1rem', background: '#f3f4f6', borderTop: '1px solid #e5e7eb', borderBottom: '1px solid #e5e7eb' }}>
+                <button type="button" onClick={() => toggleSection(section.key)} aria-expanded={isOpen}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' }}>
+                  {isOpen ? <ChevronDown style={{ width: 14, height: 14, color: '#6b7280' }} /> : <ChevronRight style={{ width: 14, height: 14, color: '#6b7280' }} />}
+                  <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#111827' }}>{section.label || 'No section yet'}</span>
+                  <span style={{ fontSize: '0.68rem', color: '#9ca3af', fontWeight: 500 }}>{searching ? `${section.indexes.length} of ${section.total} items` : `${section.total} item${section.total === 1 ? '' : 's'}`}</span>
+                </button>
+                {/* Headings aren't editable — except rows with no section at all, which need one to save. */}
+                {section.key === '' && editable && (
+                  <input list="primary-section-options" aria-label="Section for these rows" placeholder="Choose a section…"
+                    onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                    onBlur={e => {
+                      const name = e.target.value.trim();
+                      if (name) onRowsChange(rows.map(r => (r.primarySection?.trim() ? r : { ...r, primarySection: name })));
+                    }}
+                    style={{ ...inp, padding: '3px 6px', fontSize: '0.72rem', width: 220 }} />
+                )}
+              </div>
+              {isOpen && section.indexes.map(i => {
+              const r = rows[i];
               const stock = currentStock(r);
               // Alerts/requests operate on the purchase-container Est. Qty/Unit
               // (the columns actually meant for procurement/inventory action),
@@ -964,17 +1090,6 @@ export default function MaterialPlanTab({
                     background: showBlanks && !isCompleted && hasBlank(r) ? '#fef2f2' : planOpen && planFocus === i ? '#fff7ed' : undefined, cursor: planOpen && sourceOf(r)?.readId != null ? 'pointer' : undefined }}>
                   {editable ? (
                     <input
-                      list="primary-section-options"
-                      title="Primary section"
-                      value={r.primarySection}
-                      onChange={e => updateRow(i, { primarySection: e.target.value })}
-                      style={{ ...inp, padding: '4px 6px', fontSize: '0.72rem' }}
-                    />
-                  ) : (
-                    <span style={{ fontSize: '0.76rem', color: '#374151' }}>{r.primarySection || '—'}</span>
-                  )}
-                  {editable ? (
-                    <input
                       title="Sub primary section"
                       value={r.subCategory ?? ''}
                       onChange={e => updateRow(i, { subCategory: e.target.value })}
@@ -998,13 +1113,10 @@ export default function MaterialPlanTab({
                       onChange={e => updateRow(i, r.specification ? { specification: e.target.value } : { newMaterialName: e.target.value })}
                       placeholder="Material specification" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   )}
+                  {/* Live (not completed) project: Total Area with its unit, one cell. */}
                   {!isCompleted && (
-                    <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', ...blankStyle(blank.unit) }} />
-                  )}
-                  {/* Live (not completed) project: the editable Total Area/Qty
-                      input as always (its unit is the UNIT column before it). */}
-                  {!isCompleted && (
-                    <input disabled={!editable} type="number" value={r.estimatedQuantity || ''} onChange={e => updateRow(i, { estimatedQuantity: parseFloat(e.target.value) || 0 })} style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                    <TotalAreaCell quantity={r.estimatedQuantity} unit={r.unit} editable={editable}
+                      missingUnit={showBlanks && blank.unit} onChange={patch => updateRow(i, patch)} />
                   )}
                   {/* Historical row: "Total Area" is the BOQ measurement
                       (e.g. 130 sq.m of wall), still editable; "Material
@@ -1091,15 +1203,6 @@ export default function MaterialPlanTab({
                     </div>
                   )}
                   {!isCompleted && <>
-                  <select
-                    disabled={!editable}
-                    value={r.estimatedPurchaseUnit ?? ''}
-                    onChange={e => updateRow(i, { estimatedPurchaseUnit: e.target.value || undefined, estimatePurchaseManuallySet: true })}
-                    style={{ ...sel, padding: '4px 4px', fontSize: '0.7rem', ...blankStyle(blank.purchaseUnit) }}
-                  >
-                    <option value="">—</option>
-                    {PURCHASE_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
-                  </select>
                   {/* position:relative + the subtext positioned absolute
                       below it keeps this cell's own layout height identical
                       to every other column's — the subtext overlays the
@@ -1112,7 +1215,7 @@ export default function MaterialPlanTab({
                       type="number"
                       title={expectedText(r) ?? 'Estimated/predicted procurement quantity — auto-suggested from historical data, editable'}
                       value={r.estimatedPurchaseQuantity ?? ''}
-                      onChange={e => updateRow(i, { estimatedPurchaseQuantity: e.target.value === '' ? undefined : parseFloat(e.target.value) || 0, estimatePurchaseManuallySet: true })}
+                      onChange={e => updateRow(i, { estimatedPurchaseQuantity: e.target.value === '' ? undefined : parseFloat(e.target.value) || 0, estimatePurchaseManuallySet: true, purchaseTypedThisSession: true })}
                       placeholder="Est. qty"
                       style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', ...blankStyle(blank.purchaseQty) }}
                     />
@@ -1130,6 +1233,19 @@ export default function MaterialPlanTab({
                       </p>
                     )}
                   </div>
+                  <select
+                    disabled={!editable}
+                    value={r.estimatedPurchaseUnit ?? ''}
+                    onChange={e => updateRow(i, { estimatedPurchaseUnit: e.target.value || undefined, estimatePurchaseManuallySet: true, purchaseTypedThisSession: true })}
+                    style={{ ...sel, padding: '4px 4px', fontSize: '0.7rem', ...blankStyle(blank.purchaseUnit) }}
+                  >
+                    <option value="">—</option>
+                    {PURCHASE_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                    {/* A unit saved before it left the list stays visible until it's changed. */}
+                    {r.estimatedPurchaseUnit && !(PURCHASE_UNITS as readonly string[]).includes(r.estimatedPurchaseUnit) && (
+                      <option value={r.estimatedPurchaseUnit}>{r.estimatedPurchaseUnit}</option>
+                    )}
+                  </select>
                   {/* Stock only means something against a quantity, so a freshly
                       scanned row shows nothing until Run Forecast (or the user)
                       gives it an Est. Qty. */}
@@ -1224,16 +1340,37 @@ export default function MaterialPlanTab({
                   </>}
                 </div>
               );
-            })
+              })}
+              {isOpen && editable && !isHistorical && !searching && section.key !== '' && (
+                <button type="button" onClick={() => addRowTo(section.label)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 1rem', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.72rem', color: '#f97316', fontWeight: 600 }}>
+                  <Plus style={{ width: 12, height: 12 }} /> Add Row
+                </button>
+              )}
+              </Fragment>
+              );
+            })}
+            </>
           )}
         </div>
         </div>
         </div>
 
-        {editable && !isHistorical && (
-          <button onClick={addBlankRow} style={{ width: '100%', padding: '8px', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.78rem', color: '#f97316', fontWeight: 600, borderTop: '1px solid #f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-            <Plus style={{ width: 13, height: 13 }} /> Add Row
-          </button>
+        {editable && !isHistorical && !searching && (
+          newSection == null ? (
+            <button onClick={() => setNewSection('')} style={{ width: '100%', padding: '8px', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.78rem', color: '#f97316', fontWeight: 600, borderTop: '1px solid #f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+              <Plus style={{ width: 13, height: 13 }} /> Add Section
+            </button>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderTop: '1px solid #f3f4f6' }}>
+              <input autoFocus list="primary-section-options" aria-label="New section name" placeholder="Section name, e.g. Plumbing Works" value={newSection}
+                onChange={e => setNewSection(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') addSection(); if (e.key === 'Escape') setNewSection(null); }}
+                style={{ ...inp, padding: '4px 8px', fontSize: '0.76rem', width: 280 }} />
+              <button onClick={addSection} disabled={!newSection.trim()} style={{ padding: '5px 12px', borderRadius: 8, border: 'none', background: '#f97316', color: '#fff', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', opacity: newSection.trim() ? 1 : 0.5 }}>Add</button>
+              <button onClick={() => setNewSection(null)} style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+            </div>
+          )
         )}
 
         {rows.length > 0 && !isHistorical && (

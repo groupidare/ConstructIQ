@@ -13,8 +13,6 @@ export function sourceOf(row: Pick<BOQItemRow, 'blueprintSource'>): SavedBluepri
   try { return JSON.parse(row.blueprintSource) as SavedBlueprintSource; } catch { return null; }
 }
 
-/** Not backed by the drawing: past projects or a default stood in. */
-export const isGuess = (s: SavedBlueprintSource | null) => s?.kind === 'default' || s?.kind === 'history';
 
 const page = (p: number | null) => (p ? `page ${p}` : 'the drawing');
 

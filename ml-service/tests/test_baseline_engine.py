@@ -25,6 +25,10 @@ class SharedBaselineCases(unittest.TestCase):
 
 
 class CalculationTypeNames(unittest.TestCase):
+    def test_length_and_sack_are_buying_units(self):
+        self.assertEqual(baseline_engine.purchase_unit_key("Lengths"), "length")
+        self.assertEqual(baseline_engine.purchase_unit_key("sacks"), "sack")
+
     def test_accepts_stored_int_and_name(self):
         self.assertEqual(baseline_engine.calculation_type_name(4), "Length")
         self.assertEqual(baseline_engine.calculation_type_name("unitarea"), "UnitArea")

@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using ConstructIQ.API.Algorithms;
 using ConstructIQ.API.Data;
 using ConstructIQ.API.Models.DTOs.Document;
 using ConstructIQ.API.Models.DTOs.BOQ;
@@ -100,16 +101,7 @@ public class DocumentService(
         if (mlResponse is null)
             throw new InvalidOperationException("The parser returned an empty response.");
 
-        var materialNames = mlResponse.Items.Select(i => i.MaterialName.Trim().ToLower()).Distinct().ToList();
-        // GroupBy + First, not ToDictionaryAsync: the catalog can hold two rows whose
-        // names differ only by case/whitespace (e.g. two "PPR Water Pipe, 20mm dia. x
-        // 4m" entries) — ToDictionaryAsync throws ArgumentException on that duplicate
-        // key instead of just picking one, which took down this endpoint in production.
-        var matches = (await db.Materials
-            .Where(m => materialNames.Contains(m.Name.Trim().ToLower()))
-            .ToListAsync())
-            .GroupBy(m => m.Name.Trim().ToLower())
-            .ToDictionary(g => g.Key, g => g.First().Id);
+        var matches = await MaterialIdsByNameAsync();
 
         return new DocumentParseResultDto
         {
@@ -134,7 +126,7 @@ public class DocumentService(
                     SupplierName = s.SupplierName,
                     UnitCost     = s.UnitCost is double cost ? (decimal)cost : null,
                 }).ToList(),
-                MatchedMaterialId = matches.TryGetValue(i.MaterialName.Trim().ToLower(), out var id) ? id : null,
+                MatchedMaterialId = matches.TryGetValue(MaterialNames.Canonical(i.MaterialName), out var id) ? id : null,
             }).ToList(),
         };
     }
@@ -162,14 +154,7 @@ public class DocumentService(
         if (mlResponse is null)
             throw new InvalidOperationException("The parser returned an empty response.");
 
-        var materialNames = mlResponse.Items.Select(i => i.MaterialName.Trim().ToLower()).Distinct().ToList();
-        // GroupBy + First, not ToDictionaryAsync — see the identical comment in
-        // ParseAsync above; same collision risk applies to both lookups here.
-        var materialMatches = (await db.Materials
-            .Where(m => materialNames.Contains(m.Name.Trim().ToLower()))
-            .ToListAsync())
-            .GroupBy(m => m.Name.Trim().ToLower())
-            .ToDictionary(g => g.Key, g => g.First().Id);
+        var materialMatches = await MaterialIdsByNameAsync();
 
         var supplierNames = mlResponse.Items
             .Where(i => !string.IsNullOrWhiteSpace(i.SupplierName))
@@ -198,7 +183,7 @@ public class DocumentService(
                 UnitPrice             = i.UnitPrice is double price ? (decimal)price : null,
                 PoNumber              = i.PoNumber,
                 TotalMismatch         = i.TotalMismatch,
-                MatchedMaterialId     = materialMatches.TryGetValue(i.MaterialName.Trim().ToLower(), out var mid) ? mid : null,
+                MatchedMaterialId     = materialMatches.TryGetValue(MaterialNames.Canonical(i.MaterialName), out var mid) ? mid : null,
                 MatchedSupplierId     = !string.IsNullOrWhiteSpace(i.SupplierName) && supplierMatches.TryGetValue(i.SupplierName.Trim().ToLower(), out var sid) ? sid : null,
             }).ToList(),
         };
@@ -226,6 +211,16 @@ public class DocumentService(
             return await httpFactory.CreateClient().GetByteArrayAsync(storagePath);
         }
     }
+
+    // Catalog ids by name, however the name is written (see MaterialNames).
+    // GroupBy + First, not ToDictionary: the catalog can hold two rows whose
+    // names differ only by case/whitespace (e.g. two "PPR Water Pipe, 20mm dia. x
+    // 4m" entries) — ToDictionary throws ArgumentException on that duplicate key
+    // instead of just picking one, which took down this endpoint in production.
+    private async Task<Dictionary<string, int>> MaterialIdsByNameAsync() =>
+        (await db.Materials.OrderBy(m => m.Id).Select(m => new { m.Id, m.Name }).ToListAsync())
+            .GroupBy(m => MaterialNames.Canonical(m.Name))
+            .ToDictionary(g => g.Key, g => g.First().Id);
 
     private async Task<MultipartFormDataContent> BuildParseRequestContentAsync(ProjectDocument doc)
     {

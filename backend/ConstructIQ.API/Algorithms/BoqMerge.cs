@@ -23,7 +23,7 @@ public static class BoqMerge
     private static bool KnownUnit(string? unit) =>
         !string.IsNullOrWhiteSpace(unit)
         && (BaselineCalculator.WorkUnitKind(unit) is not null
-            || BaselineCalculator.PurchaseUnitKey(unit) is "pc" or "sheet" or "gal" or "bag" or "box" or "set" or "roll" or "pail" or "can"
+            || BaselineCalculator.PurchaseUnitKey(unit) is "pc" or "sheet" or "gal" or "bag" or "sack" or "length" or "box" or "set" or "roll" or "pail" or "can"
             || unit.Trim().ToLowerInvariant() is "lot" or "kg" or "pack");
 
     public static List<MergeResultRowDto> Preview(IReadOnlyList<MergeRowInputDto> generated, IEnumerable<MergeScannedRowDto> scanned)

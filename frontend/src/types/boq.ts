@@ -15,7 +15,9 @@ export type PrimarySection = (typeof PRIMARY_SECTIONS)[number];
 // container units, but real historical PO data legitimately orders some
 // materials (roofing sheets, gutters, pipe) by sq.m/l.m/cu.m too, so those
 // are included as well rather than silently blocking a real match.
-export const PURCHASE_UNITS = ['pc', 'bag', 'sheet', 'pail', 'gal', 'roll', 'set', 'box', 'sq.m', 'l.m', 'cu.m', 'lot', 'kg', 'pack'] as const;
+// How a material is bought. Measures of the work (sq.m, l.m, cu.m) are the
+// Area Unit's, never this list's: no price is ever per one of those.
+export const PURCHASE_UNITS = ['pc', 'bag', 'sack', 'sheet', 'length', 'pail', 'gal', 'roll', 'set', 'box', 'lot', 'kg', 'pack'] as const;
 
 export interface BOQItemRow extends RowBaseline {
   id?: number; // undefined = not yet saved
@@ -48,6 +50,10 @@ export interface BOQItemRow extends RowBaseline {
   // fields for this row, so Run Forecast's suggestion step never overwrites it.
   // Never sent to the backend (BOQItemUpsertDto has no matching field).
   estimatePurchaseManuallySet?: boolean;
+  // Client-only: typed into Material Unit/Quantity since this plan was opened.
+  // Unlike the flag above (also set on every row loaded with a quantity), this
+  // means a person just chose it, so Run Forecast's Area Unit rule keeps it.
+  purchaseTypedThisSession?: boolean;
   // How much of estimatedPurchaseQuantity has been requested so far (a
   // partial request shrinks this row to what was actually requested and
   // spins the leftover off into a new sibling row) — see BOQService.
