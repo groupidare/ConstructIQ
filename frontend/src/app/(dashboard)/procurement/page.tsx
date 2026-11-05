@@ -415,16 +415,22 @@ function mapRequestRow(a: ApiMaterialRequest): RequestRow {
   };
 }
 
+// Fills a material's empty supplier slots with the suppliers who sold it
+// most recently in its unit, at their latest PO price — skipping any already
+// listed. Slots already filled in are left as they are.
 function prefillSuppliers(row: RequestRow, suggested: SuggestedSupplier[]): RequestRow {
-  if (row.forApproval || row.quotes.some(q => q.supplierName.trim())) return row;
+  if (row.forApproval) return row;
+  const listed = new Set(row.quotes.map(q => q.supplierName.trim().toLowerCase()).filter(Boolean));
   const latest = suggested
-    .filter(x => x.lastUnitPrice != null)
-    .sort((a, b) => (b.lastPriceDate ?? "").localeCompare(a.lastPriceDate ?? ""))
-    .slice(0, MAX_QUOTES);
+    .filter(x => x.lastUnitPrice != null && !listed.has(x.name.trim().toLowerCase()))
+    .sort((a, b) => (b.lastPriceDate ?? "").localeCompare(a.lastPriceDate ?? ""));
   if (latest.length === 0) return row;
-  const quotes = row.quotes.map((q, i) => latest[i]
-    ? { supplierName: latest[i].name, price: String(latest[i].lastUnitPrice), fromHistory: true }
-    : q);
+  let next = 0;
+  const quotes = row.quotes.map(q => {
+    if (q.supplierName.trim() || next >= latest.length) return q;
+    const x = latest[next++];
+    return { supplierName: x.name, price: String(x.lastUnitPrice), fromHistory: true };
+  });
   return { ...row, quotes };
 }
 
@@ -787,7 +793,7 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                           )}
                           {r.lastUnitPrice != null && (
                             <p style={{ fontSize: "0.65rem", fontWeight: 400, color: "#9ca3af", margin: "3px 0 0" }}>
-                              Last paid {formatCurrency(r.lastUnitPrice)}/{r.unit}{r.lastUnitPriceSupplier ? ` · ${r.lastUnitPriceSupplier}` : ""}
+                              Last ordered {formatCurrency(r.lastUnitPrice)}/{r.unit}{r.lastUnitPriceSupplier ? ` · ${r.lastUnitPriceSupplier}` : ""}
                             </p>
                           )}
                           {review && (
