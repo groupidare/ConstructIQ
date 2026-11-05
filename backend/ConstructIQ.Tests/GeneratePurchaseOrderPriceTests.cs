@@ -51,6 +51,27 @@ public class GeneratePurchaseOrderPriceTests(DatabaseFixture fixture)
     }
 
     [Fact]
+    public async Task GeneratedPoLine_IsLinkedToTheRequestedMaterialPlanRow()
+    {
+        await using var db = fixture.CreateContext();
+        var (admin, project, material, request) = await SeedAsync(db);
+        var row = await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, admin.Id, 1, estimatedPurchaseQuantity: 40, estimatedPurchaseUnit: "pcs");
+        request.BOQItemId = row.Id;
+        await db.SaveChangesAsync();
+
+        Assert.IsType<OkObjectResult>(await ControllerAs(db, admin).GeneratePOs(new GeneratePOsFromRequestsDto
+        {
+            ProjectId = project.Id,
+            ExpectedDate = new DateTime(2026, 12, 1),
+            Assignments = [new GeneratePOAssignmentDto { RequestId = request.Id, SupplierName = "Link Test Supplier", UnitPrice = 20 }],
+        }));
+
+        var line = await db.PurchaseOrderMaterials.AsNoTracking()
+            .SingleAsync(m => m.PurchaseOrder.ProjectId == project.Id);
+        Assert.Equal(row.Id, line.BOQItemId);
+    }
+
+    [Fact]
     public async Task NegativeUnitPrice_IsRejected()
     {
         await using var db = fixture.CreateContext();

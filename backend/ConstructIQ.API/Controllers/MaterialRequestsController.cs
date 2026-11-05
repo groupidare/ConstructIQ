@@ -453,6 +453,9 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
                     Quantity = request.Quantity,
                     Unit = request.Unit,
                     MaterialId = request.MaterialId,
+                    // The Material Plan row it was requested for, so the PO line
+                    // counts toward that row without linking it by hand.
+                    BOQItemId = request.BOQItemId,
                     UnitPrice = assignment.UnitPrice,
                 });
                 request.FulfilledByPurchaseOrder = po;
