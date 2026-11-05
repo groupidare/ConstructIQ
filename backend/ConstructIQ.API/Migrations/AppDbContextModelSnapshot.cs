@@ -556,6 +556,9 @@ namespace ConstructIQ.API.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("varchar(200)");
 
+                    b.Property<DateTime?>("PoDate")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<string>("PoNumber")
                         .HasMaxLength(30)
                         .HasColumnType("varchar(30)");

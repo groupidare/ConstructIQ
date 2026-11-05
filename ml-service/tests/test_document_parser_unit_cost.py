@@ -67,6 +67,27 @@ class CombinedReportUnitCostTests(unittest.TestCase):
         self.assertEqual(line.unit, "pcs")
         self.assertEqual(line.quantity, 40)
 
+    def test_po_date_is_captured_and_carried_down_its_po(self):
+        from datetime import datetime
+        table = [
+            COMBINED_HEADER,
+            ["Structural", "Columns", "Deformed Bar 12mm", "sq.m", "120",
+             "PO-2026-1201", "February 9, 2026", "Deformed Bar 12mm x 6m", "pcs", "40", "Steel Co", "250", "10000"],
+            [None, None, None, None, None,
+             None, None, "Tie Wire #16", "roll", "1", "Steel Co", "95", "95"],
+            ["Masonry", "Walls", "CHB 100mm", "sq.m", "97",
+             "PO-2026-1203", datetime(2026, 2, 23), "CHB 100mm", "pcs", "1310", "Block Co", "12", "15720"],
+            ["Masonry", "Walls", "CHB 150mm", "sq.m", "50",
+             "PO-2026-1201", None, "CHB 150mm", "pcs", "500", "Steel Co", "16", "8000"],
+        ]
+
+        items = _parse(table).items
+
+        self.assertEqual([l.po_date for l in items[0].historical_supply], ["2026-02-09", "2026-02-09"])
+        self.assertEqual(items[1].historical_supply[0].po_date, "2026-02-23")
+        # PO-2026-1201 again with a blank date cell: its own date, not the last row's.
+        self.assertEqual(items[2].historical_supply[0].po_date, "2026-02-09")
+
     def test_plain_boq_is_unchanged(self):
         table = [
             ["Primary Section", "Material Specification", "Unit", "Quantity"],

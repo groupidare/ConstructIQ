@@ -40,6 +40,7 @@ public class BOQItemUpsertDto
 public class HistoricalSupplyLineDto
 {
     public string? PoNumber     { get; set; }
+    public DateTime? PoDate     { get; set; }
     public string  MaterialName { get; set; } = string.Empty;
     public string  Unit         { get; set; } = string.Empty;
     public decimal Quantity     { get; set; }
@@ -198,6 +199,7 @@ public class HistoricalSupplyResponseDto
     public int?     SupplierId   { get; set; }
     public string?  SupplierName { get; set; }
     public string?  PoNumber     { get; set; }
+    public DateTime? PoDate      { get; set; }
     public string   MaterialName { get; set; } = string.Empty;
     public string   Unit         { get; set; } = string.Empty;
     public decimal  Quantity     { get; set; }

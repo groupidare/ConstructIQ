@@ -24,6 +24,11 @@ public class HistoricalMaterialSupply
 
     [Column(TypeName = "decimal(18,4)")] public decimal Quantity { get; set; }
 
+    // The report's PO DATE — when this line was ordered. Null for reports
+    // without the column (or imported before it was read); the project's
+    // TargetEndDate then stands in where a date is needed.
+    public DateTime? PoDate { get; set; }
+
     // The report's UNIT COST column (price per Unit). Null when the report
     // had no cost column or the cell was blank.
     [Column(TypeName = "decimal(18,4)")] public decimal? UnitCost { get; set; }

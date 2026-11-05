@@ -20,7 +20,7 @@ namespace ConstructIQ.API.Services;
 // Price sources, first match wins:
 //   1. purchase orders — this system's POs (PurchaseOrderMaterial, dated by
 //      OrderDate) and historical projects' POs (HistoricalMaterialSupply,
-//      dated by the project's TargetEndDate) as one pool: the latest date,
+//      dated by its PO DATE, else the project's TargetEndDate) as one pool: the latest date,
 //      and when several POs share that date (different suppliers), the
 //      lowest price
 //   2. latest supplier quotation typed on the Material Request Form (the
@@ -80,7 +80,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
                 .ToListAsync())
             .Concat(await db.HistoricalMaterialSupplies
                 .Where(h => h.BOQItem.ProjectId == projectId)
-                .Select(h => new OrderedLine(h.BOQItemId, h.BOQItem.MaterialId, h.MaterialName, h.Unit, h.Quantity, h.UnitCost, project.TargetEndDate))
+                .Select(h => new OrderedLine(h.BOQItemId, h.BOQItem.MaterialId, h.MaterialName, h.Unit, h.Quantity, h.UnitCost, h.PoDate ?? project.TargetEndDate))
                 .ToListAsync())
             .ToList();
 
@@ -414,9 +414,10 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
 
         var historicalPoPrices = (await db.HistoricalMaterialSupplies
             .Where(h => h.UnitCost != null && materialIds.Contains(h.BOQItem.MaterialId))
-            .Select(h => new { h.BOQItem.MaterialId, h.Unit, Price = h.UnitCost!.Value, Date = h.BOQItem.Project.TargetEndDate, h.Id, Project = h.BOQItem.Project.Name })
+            .Select(h => new { h.BOQItem.MaterialId, h.Unit, Price = h.UnitCost!.Value, Date = h.PoDate ?? h.BOQItem.Project.TargetEndDate, h.Id, Project = h.BOQItem.Project.Name, h.PoNumber })
             .ToListAsync())
-            .Select(h => new PoPrice(h.MaterialId, h.Unit, h.Price, h.Date, h.Id, SourceHistorical, h.Project));
+            .Select(h => new PoPrice(h.MaterialId, h.Unit, h.Price, h.Date, h.Id, SourceHistorical,
+                string.IsNullOrWhiteSpace(h.PoNumber) ? h.Project : $"{h.PoNumber} · {h.Project}"));
 
         var poPrices = LatestLowestByKey(systemPoPrices.Concat(historicalPoPrices));
 

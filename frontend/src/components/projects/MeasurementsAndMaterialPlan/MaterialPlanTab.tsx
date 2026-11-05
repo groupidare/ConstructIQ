@@ -730,12 +730,13 @@ export default function MaterialPlanTab({
               </div>
               <div style={{ overflowX: 'auto' }}>
                 <div style={{ minWidth: 760 }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr 0.7fr 1fr 1.8fr', gap: 8, padding: '0.55rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-                    {['PO NUMBER', 'MATERIAL NAME', 'UNIT', 'QUANTITY', 'SUPPLIER'].map(h => <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>)}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 2fr 0.7fr 1fr 1.8fr', gap: 8, padding: '0.55rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+                    {['PO NUMBER', 'PO DATE', 'MATERIAL NAME', 'UNIT', 'QUANTITY', 'SUPPLIER'].map(h => <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>)}
                   </div>
                   {historicalPurchaseRows.length === 0 ? <p style={{ padding: '1rem', fontSize: '0.78rem', color: '#9ca3af' }}>No purchased-order rows extracted yet.</p> : historicalPurchaseRows.map((row, index) => (
-                    <div key={`${row.poNumber ?? 'po'}-${index}`} style={{ display: 'grid', gridTemplateColumns: '1fr 2fr 0.7fr 1fr 1.8fr', gap: 8, padding: '0.7rem 1rem', borderBottom: '1px solid #f3f4f6', alignItems: 'center' }}>
+                    <div key={`${row.poNumber ?? 'po'}-${index}`} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 2fr 0.7fr 1fr 1.8fr', gap: 8, padding: '0.7rem 1rem', borderBottom: '1px solid #f3f4f6', alignItems: 'center' }}>
                       <span style={{ fontSize: '0.76rem', color: '#374151' }}>{row.poNumber || '—'}</span>
+                      <span style={{ fontSize: '0.76rem', color: '#6b7280' }}>{row.poDate ? formatDate(row.poDate) : '—'}</span>
                       <span style={{ fontSize: '0.76rem', color: '#111827' }}>{row.materialName}</span>
                       <span style={{ fontSize: '0.76rem', color: '#6b7280' }}>{row.unit || '—'}</span>
                       <span style={{ fontSize: '0.76rem', color: '#111827' }}>{row.quantity.toLocaleString()}</span>

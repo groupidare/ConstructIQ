@@ -80,6 +80,30 @@ public class MaterialCostTests(DatabaseFixture fixture)
     }
 
     [Fact]
+    public async Task PoPrices_HistoricalLineIsDatedByItsOwnPoDate_NotTheProjectEnd()
+    {
+        await using var db = fixture.CreateContext();
+        var admin = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        var other = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        var material = await TestDataBuilder.CreateMaterialAsync(db, unit: "pcs");
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, other.Id, admin.Id, material.Id, 1, unit: "pcs", unitPrice: 12,
+            orderDate: new DateTime(2026, 3, 1));
+        // Ended after the system PO, but this line was ordered before it.
+        var historical = await TestDataBuilder.CreateProjectAsync(db, admin.Id, isHistorical: true, targetEndDate: new DateTime(2026, 9, 30));
+        var supply = await TestDataBuilder.CreateHistoricalSupplyAsync(db,
+            (await TestDataBuilder.CreateBoqItemAsync(db, historical.Id, material.Id, admin.Id, 1)).Id, 1, "pcs", unitCost: 15);
+        supply.PoDate = new DateTime(2026, 2, 9);
+        await db.SaveChangesAsync();
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, material.Id, admin.Id, 1, estimatedPurchaseQuantity: 10, estimatedPurchaseUnit: "pcs");
+
+        var line = Assert.Single((await new MaterialCostService(db).GetEstimatedMaterialCostAsync(project.Id))!.Lines);
+
+        Assert.Equal(12m, line.UnitPrice);
+        Assert.Equal("Purchase order", line.PriceSource);
+    }
+
+    [Fact]
     public async Task PoPrices_SameLatestDateFromTwoSuppliers_LowestWins()
     {
         await using var db = fixture.CreateContext();

@@ -87,6 +87,8 @@ class HistoricalSupplyLine(BaseModel):
     quantity:      float
     supplier_name: Optional[str] = None
     po_number:     Optional[str] = None
+    # The report's PO DATE, as an ISO date (yyyy-mm-dd); None without one.
+    po_date:       Optional[str] = None
     # The report's UNIT COST (price per unit); None when there's no cost column.
     unit_cost:     Optional[float] = None
 

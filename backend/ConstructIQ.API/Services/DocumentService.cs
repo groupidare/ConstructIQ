@@ -127,6 +127,7 @@ public class DocumentService(
                 HistoricalSupply  = i.HistoricalSupply.Select(s => new HistoricalSupplyLineDto
                 {
                     PoNumber     = s.PoNumber,
+                    PoDate       = s.PoDate,
                     MaterialName = s.MaterialName,
                     Unit         = s.Unit,
                     Quantity     = (decimal)s.Quantity,
