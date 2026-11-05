@@ -118,7 +118,7 @@ export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, warehouseStock, warehouseStockLinks, onBulkRequest, onRefreshStock, onSaveStockLink, onRemoveStockLink, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
   rows, boqItems, onRowsChange, planOpen, planFocus, onViewPlan, onPlanFocus, onSave, onDeleteRow, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
-  purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial, onPurchaseOrdersImported,
+  purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onPurchaseOrdersImported,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
 }: Props) {
@@ -342,21 +342,19 @@ export default function MaterialPlanTab({
 
   // BOQ (planned) vs. linked PO (actual) reconciliation — only meaningful once
   // a project is Completed and both sides have real, saved data with explicit
-  // links between them (see onLinkPoMaterial).
+  // links between them.
+  // A PO line without a BOQ link counts toward the first row of the same
+  // material — the same fallback the server uses.
   const reconciliation = useMemo(() => {
     const actualByBoqItemId = new Map<number, number>();
-    const unlinked: { po: PurchaseOrder; material: PurchaseOrderMaterial }[] = [];
     purchaseOrders.forEach(po => {
       po.materials.forEach(m => {
-        if (m.boqItemId) {
-          actualByBoqItemId.set(m.boqItemId, (actualByBoqItemId.get(m.boqItemId) ?? 0) + m.quantity);
-        } else {
-          unlinked.push({ po, material: m });
-        }
+        const rowId = m.boqItemId ?? (m.materialId != null ? rows.find(r => r.id != null && r.materialId === m.materialId)?.id : undefined);
+        if (rowId != null) actualByBoqItemId.set(rowId, (actualByBoqItemId.get(rowId) ?? 0) + m.quantity);
       });
     });
-    return { actualByBoqItemId, unlinked };
-  }, [purchaseOrders]);
+    return { actualByBoqItemId };
+  }, [purchaseOrders, rows]);
 
   const historicalPurchaseRows = useMemo(
     () => rows.flatMap(row => row.historicalSupply ?? []),
@@ -1425,13 +1423,13 @@ export default function MaterialPlanTab({
           const poLines = purchaseOrders
             .flatMap(po => po.materials.map(m => ({ po, m })))
             .sort((a, b) => a.po.orderDate.localeCompare(b.po.orderDate) || a.po.number.localeCompare(b.po.number));
-          const cols = `1fr 0.9fr 2fr 0.6fr 0.8fr 1.6fr${canSeePrices ? ' 0.9fr' : ''} 0.9fr 1.4fr`;
+          const cols = `1.1fr 0.9fr 2fr 0.6fr 0.8fr 1.6fr${canSeePrices ? ' 0.9fr' : ''} 0.9fr`;
           const cell: React.CSSProperties = { fontSize: '0.76rem', color: '#374151' };
           return (
             <div style={{ overflowX: 'auto' }}>
-              <div style={{ minWidth: canSeePrices ? 1040 : 940 }}>
+              <div style={{ minWidth: canSeePrices ? 900 : 800 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 8, padding: '0.55rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-                  {['PO NUMBER', 'PO DATE', 'MATERIAL NAME', 'UNIT', 'QUANTITY', 'SUPPLIER', ...(canSeePrices ? ['UNIT PRICE'] : []), 'STATUS', 'BOQ LINE'].map(h => (
+                  {['PO NUMBER', 'PO DATE', 'MATERIAL NAME', 'UNIT', 'QUANTITY', 'SUPPLIER', ...(canSeePrices ? ['UNIT PRICE'] : []), 'STATUS'].map(h => (
                     <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
                   ))}
                 </div>
@@ -1440,8 +1438,14 @@ export default function MaterialPlanTab({
                     <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No purchase orders yet.</p>
                   ) : poLines.map(({ po, m }, index) => (
                     <div key={`${po.id}-${m.id ?? index}`} style={{ display: 'grid', gridTemplateColumns: cols, gap: 8, padding: '0.6rem 1rem', borderBottom: '1px solid #f3f4f6', alignItems: 'center' }}>
-                      <span style={cell} title={po.isImported ? `Imported as ${po.number}` : undefined}>
+                      <span style={cell}>
                         {po.isImported ? (po.originalPoNumber || po.number) : po.number}
+                        {po.isImported && (
+                          <span title="An existing PO imported from a file — not made in ConstructIQ"
+                            style={{ display: 'inline-block', marginLeft: 6, fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px', borderRadius: 999, background: '#ede9fe', color: '#6d28d9', verticalAlign: 'middle' }}>
+                            IMPORTED
+                          </span>
+                        )}
                       </span>
                       <span style={{ ...cell, color: '#6b7280' }}>{formatDate(po.orderDate)}</span>
                       <span style={{ ...cell, color: '#111827' }}>{m.name}</span>
@@ -1455,18 +1459,6 @@ export default function MaterialPlanTab({
                           {po.status === 'DeliveryInProgress' ? 'Delivering' : po.status}
                         </span>
                       </span>
-                      {editable ? (
-                        <select
-                          value={m.boqItemId ?? ''}
-                          onChange={e => onLinkPoMaterial(m.id!, e.target.value ? Number(e.target.value) : null)}
-                          style={{ ...sel, padding: '3px 5px', fontSize: '0.68rem' }}
-                        >
-                          <option value="">Link to BOQ line…</option>
-                          {linkableBoqRows.map(r => <option key={r.id} value={r.id}>{materialLabel(r)}</option>)}
-                        </select>
-                      ) : (
-                        <span style={{ fontSize: '0.68rem', color: '#9ca3af' }}>{m.boqItemId ? 'Linked' : 'Not linked'}</span>
-                      )}
                     </div>
                   ))}
                 </div>
@@ -1553,18 +1545,6 @@ export default function MaterialPlanTab({
             })
           )}
 
-          {reconciliation.unlinked.length > 0 && (
-            <div style={{ padding: '0.75rem 1rem', background: '#fffbf5', borderTop: '1px solid #fed7aa' }}>
-              <p style={{ fontSize: '0.72rem', fontWeight: 700, color: '#c2410c', marginBottom: 4 }}>
-                {reconciliation.unlinked.length} PO material(s) not yet linked to a BOQ line — link them above under Purchase Orders so they count toward training.
-              </p>
-              {reconciliation.unlinked.map(({ po, material }) => (
-                <p key={material.id} style={{ fontSize: '0.7rem', color: '#9a3412' }}>
-                  {po.number}: {material.name} ({material.quantity} {material.unit})
-                </p>
-              ))}
-            </div>
-          )}
         </div>
       )}
     </div>
