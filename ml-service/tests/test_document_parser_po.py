@@ -125,3 +125,22 @@ class ScannedPoTests(unittest.TestCase):
     def test_delivery_date_is_not_taken_as_the_po_date(self):
         items = _parse(_SCANNED_TABLE, "Delivery date: 04/01/2025\n").items
         self.assertIsNone(items[0].order_date)
+
+
+class SupplierLineTests(unittest.TestCase):
+    _TABLE = [
+        ["Qty", "UM", "Description", "Unit Cost", "Total"],
+        ["3,000.00", "pcs", "Hardiflex Screw 1 1/2", "0.38", "1,140.00"],
+    ]
+
+    def test_supplier_on_its_own_line_is_read(self):
+        text = "PO No. : 0002009\nName : Sample Marketing Corporation\nProject : Sample Project\n"
+        self.assertEqual(_parse(self._TABLE, text).items[0].supplier_name, "Sample Marketing Corporation")
+
+    def test_supplier_label_and_value_on_separate_lines(self):
+        text = "Name\n: Sample Marketing Corporation\nProject : Sample Project\n"
+        self.assertEqual(_parse(self._TABLE, text).items[0].supplier_name, "Sample Marketing Corporation")
+
+    def test_supplier_followed_by_po_number_on_the_same_line(self):
+        text = "Name : Sample Supply Corp. PO No. : 0002011\n"
+        self.assertEqual(_parse(self._TABLE, text).items[0].supplier_name, "Sample Supply Corp.")

@@ -13,9 +13,11 @@ from app.utils.tabular_extractor import extract_tables, extract_text
 
 UNIT_KEYWORDS = {"pcs", "pc", "bags", "bag", "m", "m2", "m3", "kg", "ltr", "gal", "roll", "set", "length", "sheets", "units"}
 
+# The value ends at a PO No./Date/Terms field on the same line, or at the end
+# of its line (MULTILINE) — on many POs "PO No." sits on a line of its own.
 _SUPPLIER_RE = re.compile(
-    r"(?:supplier|vendor|name)\s*[:\-]\s*(.+?)(?=\s+(?:PO\s*No|P\.?O\.?\s*#|Date|Terms?)\b|$)",
-    re.IGNORECASE,
+    r"\b(?:supplier|vendor|name)\s*[:\-]\s*(.+?)(?=\s+(?:PO\s*No|P\.?O\.?\s*#|Date|Terms?)\b|\s*$)",
+    re.IGNORECASE | re.MULTILINE,
 )
 _ORDER_DATE_RE = re.compile(r"(?:order\s*date|po\s*date|date\s*ordered)\s*[:\-]\s*([\w/,\- ]+)", re.IGNORECASE)
 _DELIVERY_DATE_RE = re.compile(r"(?:expected\s*date|delivery\s*date|promised\s*date|eta)\s*[:\-]\s*([\w/,\- ]+)", re.IGNORECASE)

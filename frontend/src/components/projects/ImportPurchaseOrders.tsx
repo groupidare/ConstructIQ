@@ -117,6 +117,10 @@ export default function ImportPurchaseOrders({ projectId, onImported }: {
   const [drafts, setDrafts] = useState<PoDraft[]>([]);
   // supplier|original PO number of POs already imported into this project.
   const [existing, setExisting] = useState<Set<string>>(new Set());
+  // PO files already in the project's documents that no imported PO uses
+  // yet — e.g. uploaded before the page was reloaded — readable again
+  // without uploading them twice.
+  const [unimportedDocs, setUnimportedDocs] = useState<ProjectDocument[]>([]);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [savingAll, setSavingAll] = useState(false);
@@ -126,11 +130,16 @@ export default function ImportPurchaseOrders({ projectId, onImported }: {
     api.get<BOQItem[]>(`/boq/project/${projectId}`)
       .then(({ data }) => setRows(data))
       .catch(() => setRows([]));
-    api.get<PurchaseOrder[]>('/purchase-orders', { params: { projectId } })
-      .then(({ data }) => setExisting(new Set(data
+    Promise.all([
+      api.get<PurchaseOrder[]>('/purchase-orders', { params: { projectId } }),
+      api.get<ProjectDocument[]>(`/documents/project/${projectId}`),
+    ]).then(([{ data: pos }, { data: docs }]) => {
+      setExisting(new Set(pos
         .filter(p => p.isImported && p.originalPoNumber)
-        .map(p => poKey(p.supplierName, p.originalPoNumber!)))))
-      .catch(() => setExisting(new Set()));
+        .map(p => poKey(p.supplierName, p.originalPoNumber!))));
+      const used = new Set(pos.map(p => p.poFileUrl).filter(Boolean));
+      setUnimportedDocs(docs.filter(d => d.category === 'PurchaseOrder' && !used.has(d.url)));
+    }).catch(() => { setExisting(new Set()); setUnimportedDocs([]); });
   }, [projectId]);
 
   function updateDraft(key: number, patch: (d: PoDraft) => PoDraft) {
@@ -159,18 +168,21 @@ export default function ImportPurchaseOrders({ projectId, onImported }: {
   // One file = one PO. Uploaded to the project's documents, then scanned;
   // a scan that reads nothing still leaves a draft to fill in by hand.
   async function scanFile(file: File): Promise<PoDraft | null> {
-    const draft: PoDraft = { ...blankDraft(), fileName: file.name };
     try {
       const form = new FormData();
       form.append('file', file);
       form.append('projectId', String(projectId));
       form.append('category', 'PurchaseOrder');
       const { data: doc } = await api.post<ProjectDocument>('/documents/upload', form, { headers: { 'Content-Type': 'multipart/form-data' } });
-      draft.documentId = doc.id;
+      return readDocument(doc.id, file.name);
     } catch (error) {
       toast.error(errorMessage(error, `Failed to upload ${file.name}.`));
       return null;
     }
+  }
+
+  async function readDocument(documentId: number, fileName: string): Promise<PoDraft> {
+    const draft: PoDraft = { ...blankDraft(), fileName, documentId };
     try {
       const { data: result } = await api.post<PoParseResult>(`/documents/${draft.documentId}/parse-po`);
       if (result.items.length > 0) {
@@ -199,24 +211,31 @@ export default function ImportPurchaseOrders({ projectId, onImported }: {
   }
 
   // Read one after another, each added to the table as soon as it's done.
-  async function handleFiles(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = '';
-    if (files.length === 0) return;
-    setProgress({ done: 0, total: files.length });
+  async function readAll<T>(items: T[], read: (item: T) => Promise<PoDraft | null>) {
+    if (items.length === 0) return;
+    setProgress({ done: 0, total: items.length });
     let unread = 0;
-    for (const [i, file] of files.entries()) {
-      const draft = await scanFile(file);
+    for (const [i, item] of items.entries()) {
+      const draft = await read(item);
       if (draft) {
         if (draft.unread) unread++;
         setDrafts(prev => [...prev, draft]);
       }
-      setProgress({ done: i + 1, total: files.length });
+      setProgress({ done: i + 1, total: items.length });
     }
     setProgress(null);
-    toast.success(`Read ${files.length} file${files.length === 1 ? '' : 's'} — check each PO, then save.`);
+    toast.success(`Read ${items.length} file${items.length === 1 ? '' : 's'} — check each PO, then save.`);
     if (unread > 0) toast.error(`${unread} file${unread === 1 ? '' : 's'} couldn't be read — type ${unread === 1 ? 'it' : 'them'} in.`);
   }
+
+  function handleFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    void readAll(files, scanFile);
+  }
+
+  const loadedDocIds = new Set(drafts.map(d => d.documentId));
+  const docsToRead = unimportedDocs.filter(d => !loadedDocIds.has(d.id));
 
   async function save(d: PoDraft, quiet = false): Promise<boolean> {
     const problem = draftProblem(d);
@@ -409,9 +428,19 @@ export default function ImportPurchaseOrders({ projectId, onImported }: {
           <Plus style={{ width: 14, height: 14 }} /> Type in a PO
         </button>
         <input ref={fileRef} type="file" multiple accept={ACCEPT} onChange={handleFiles} style={{ display: 'none' }} />
-        {ready.length > 0 && (
-          <button type="button" onClick={saveAllReady} disabled={busy}
-            style={{ ...btn, border: 'none', background: '#111827', color: '#fff', marginLeft: 'auto', opacity: busy ? 0.7 : 1 }}>
+        {docsToRead.length > 0 && (
+          <button type="button" disabled={busy} onClick={() => void readAll(docsToRead, d => readDocument(d.id, d.fileName))}
+            title="PO files already uploaded to this project but not imported yet — read them again without uploading"
+            style={{ ...btn, border: '1px solid #fed7aa', background: '#fff7ed', color: '#c2410c', opacity: busy ? 0.7 : 1 }}>
+            <FileText style={{ width: 14, height: 14 }} /> Read uploaded PO files ({docsToRead.length})
+          </button>
+        )}
+        {drafts.some(d => !d.savedNumber) && (
+          <button type="button" onClick={saveAllReady} disabled={busy || ready.length === 0}
+            title={ready.length === 0 ? 'Fix the POs marked Check first — open a row to see what it needs' : undefined}
+            style={{ ...btn, border: 'none', marginLeft: 'auto',
+              background: ready.length > 0 ? '#111827' : '#e5e7eb', color: ready.length > 0 ? '#fff' : '#6b7280',
+              cursor: ready.length > 0 ? 'pointer' : 'default', opacity: busy ? 0.7 : 1 }}>
             {savingAll ? 'Saving…' : `Save all ready (${ready.length})`}
           </button>
         )}
@@ -422,7 +451,7 @@ export default function ImportPurchaseOrders({ projectId, onImported }: {
           <p style={{ fontSize: '0.72rem', color: '#6b7280' }}>
             {drafts.length} PO{drafts.length === 1 ? '' : 's'}
             {(['Ready', 'Check', 'Duplicate', 'Saved'] as const).filter(s => counts[s]).map(s => ` · ${counts[s]} ${s.toLowerCase()}`).join('')}
-            {' '}— click a row to review it.
+            {' '}— click a row to review it. &quot;Save all ready&quot; saves every <b>Ready</b> PO; one PO can also be saved from its row.
           </p>
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>

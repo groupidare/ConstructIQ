@@ -34,6 +34,8 @@ export interface PurchaseOrder {
   // IMP-001…, with the paper PO's own number kept here.
   isImported?: boolean;
   originalPoNumber?: string | null;
+  // Storage path of the PO's file (an imported PO keeps its document's).
+  poFileUrl?: string | null;
 }
 
 export interface ImportPurchaseOrderRequest {
