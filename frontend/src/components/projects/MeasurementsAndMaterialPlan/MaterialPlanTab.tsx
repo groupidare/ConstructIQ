@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X, AlertTriangle, Link2, Send, Map as MapIcon } from 'lucide-react';
+import { Upload, FileText, Trash2, Plus, ShoppingCart, Package, ExternalLink, X, AlertTriangle, Link2, Send, Map as MapIcon, Folder, ChevronDown, ChevronRight } from 'lucide-react';
 import { baselineAlerts, expectedText } from '@/lib/baseline';
 import { resolveUploadUrl } from '@/lib/avatar';
 import { indexLinks, rowStock, similarInStock, warehouseRequestQuantity, type RowStock } from '@/lib/warehouseStockMatch';
@@ -125,6 +125,8 @@ export default function MaterialPlanTab({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const poFileInputRef = useRef<HTMLInputElement>(null);
   const [showImport, setShowImport] = useState(false);
+  // The uploaded PO files sit in one folder, closed by default.
+  const [poFilesOpen, setPoFilesOpen] = useState(false);
   // PO prices are entered and seen only by the roles that manage POs (the
   // backend also nulls them out for everyone else).
   const role = useAuthStore(s => s.user?.role);
@@ -1310,7 +1312,16 @@ export default function MaterialPlanTab({
         </div>
 
         {poDocs.length > 0 && (
-          <div style={{ padding: '0.625rem 1rem', borderBottom: '1px solid #f3f4f6', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ borderBottom: '1px solid #f3f4f6' }}>
+            <button type="button" onClick={() => setPoFilesOpen(o => !o)} aria-expanded={poFilesOpen}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '0.625rem 1rem', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
+              {poFilesOpen ? <ChevronDown style={{ width: 13, height: 13, color: '#9ca3af' }} /> : <ChevronRight style={{ width: 13, height: 13, color: '#9ca3af' }} />}
+              <Folder style={{ width: 14, height: 14, color: '#f59e0b' }} />
+              <span style={{ fontSize: '0.76rem', fontWeight: 600, color: '#374151' }}>PO files</span>
+              <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>{poDocs.length} file{poDocs.length === 1 ? '' : 's'}</span>
+            </button>
+            {poFilesOpen && (
+          <div style={{ padding: '0 1rem 0.625rem 2.6rem', display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 260, overflowY: 'auto' }}>
             {poDocs.map(doc => (
               <div key={doc.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <FileText style={{ width: 12, height: 12, color: '#9ca3af', flexShrink: 0 }} />
@@ -1330,6 +1341,8 @@ export default function MaterialPlanTab({
                 )}
               </div>
             ))}
+          </div>
+            )}
           </div>
         )}
 
@@ -1405,52 +1418,62 @@ export default function MaterialPlanTab({
           </div>
         )}
 
-        {/* Real, saved purchase orders */}
-        <div style={{ maxHeight: 320, overflowY: 'auto', overflowX: 'hidden' }}>
-          {purchaseOrders.length === 0 ? (
-            <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No purchase orders yet.</p>
-          ) : (
-            purchaseOrders.map(po => (
-              <div key={po.id} style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f9fafb' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-                  <span style={{ fontWeight: 700, fontSize: '0.8rem', color: '#111827' }}>{po.number} · {po.supplierName}</span>
-                  <span style={{ fontSize: '0.65rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: po.status === 'Delivered' ? '#dcfce7' : '#ffedd5', color: po.status === 'Delivered' ? '#15803d' : '#c2410c' }}>
-                    {po.status}
-                  </span>
+        {/* Every saved PO of the project — made in the system or imported —
+            one line per material, in the same layout as a historical
+            project's Purchased Order (PO) table. */}
+        {(() => {
+          const poLines = purchaseOrders
+            .flatMap(po => po.materials.map(m => ({ po, m })))
+            .sort((a, b) => a.po.orderDate.localeCompare(b.po.orderDate) || a.po.number.localeCompare(b.po.number));
+          const cols = `1fr 0.9fr 2fr 0.6fr 0.8fr 1.6fr${canSeePrices ? ' 0.9fr' : ''} 0.9fr 1.4fr`;
+          const cell: React.CSSProperties = { fontSize: '0.76rem', color: '#374151' };
+          return (
+            <div style={{ overflowX: 'auto' }}>
+              <div style={{ minWidth: canSeePrices ? 1040 : 940 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 8, padding: '0.55rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+                  {['PO NUMBER', 'PO DATE', 'MATERIAL NAME', 'UNIT', 'QUANTITY', 'SUPPLIER', ...(canSeePrices ? ['UNIT PRICE'] : []), 'STATUS', 'BOQ LINE'].map(h => (
+                    <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
+                  ))}
                 </div>
-                <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginBottom: 6 }}>
-                  Ordered {formatDate(po.orderDate)} · Expected {formatDate(po.expectedDate)}
-                </p>
-                {po.materials.map(m => (
-                  <div key={m.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,1fr)', gap: 6, alignItems: 'center', padding: '4px 0' }}>
-                    <span style={{ fontSize: '0.76rem', color: '#374151' }}>{m.name}</span>
-                    <span style={{ fontSize: '0.72rem', color: '#6b7280' }}>
-                      {m.quantity} {m.unit}
-                      {m.unitPrice != null && ` · ${formatCurrency(m.unitPrice)}/${m.unit} = ${formatCurrency(lineTotal(m)!)}`}
-                    </span>
-                    {editable ? (
-                      <select
-                        value={m.boqItemId ?? ''}
-                        onChange={e => onLinkPoMaterial(m.id!, e.target.value ? Number(e.target.value) : null)}
-                        style={{ ...sel, padding: '3px 5px', fontSize: '0.68rem' }}
-                      >
-                        <option value="">Link to BOQ line…</option>
-                        {linkableBoqRows.map(r => <option key={r.id} value={r.id}>{materialLabel(r)}</option>)}
-                      </select>
-                    ) : (
-                      <span style={{ fontSize: '0.68rem', color: '#9ca3af' }}>{m.boqItemId ? 'Linked' : 'Not linked'}</span>
-                    )}
-                  </div>
-                ))}
-                {poTotal(po.materials) != null && (
-                  <p style={{ fontSize: '0.72rem', fontWeight: 700, color: '#374151', textAlign: 'right', marginTop: 4 }}>
-                    PO Total: {formatCurrency(poTotal(po.materials)!)}
-                  </p>
-                )}
+                <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+                  {poLines.length === 0 ? (
+                    <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No purchase orders yet.</p>
+                  ) : poLines.map(({ po, m }, index) => (
+                    <div key={`${po.id}-${m.id ?? index}`} style={{ display: 'grid', gridTemplateColumns: cols, gap: 8, padding: '0.6rem 1rem', borderBottom: '1px solid #f3f4f6', alignItems: 'center' }}>
+                      <span style={cell} title={po.isImported ? `Imported as ${po.number}` : undefined}>
+                        {po.isImported ? (po.originalPoNumber || po.number) : po.number}
+                      </span>
+                      <span style={{ ...cell, color: '#6b7280' }}>{formatDate(po.orderDate)}</span>
+                      <span style={{ ...cell, color: '#111827' }}>{m.name}</span>
+                      <span style={{ ...cell, color: '#6b7280' }}>{m.unit || '—'}</span>
+                      <span style={{ ...cell, color: '#111827' }}>{m.quantity.toLocaleString()}</span>
+                      <span style={cell}>{po.supplierName || '—'}</span>
+                      {canSeePrices && <span style={cell}>{m.unitPrice != null ? formatCurrency(m.unitPrice) : '—'}</span>}
+                      <span>
+                        <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, whiteSpace: 'nowrap',
+                          background: po.status === 'Delivered' ? '#dcfce7' : '#ffedd5', color: po.status === 'Delivered' ? '#15803d' : '#c2410c' }}>
+                          {po.status === 'DeliveryInProgress' ? 'Delivering' : po.status}
+                        </span>
+                      </span>
+                      {editable ? (
+                        <select
+                          value={m.boqItemId ?? ''}
+                          onChange={e => onLinkPoMaterial(m.id!, e.target.value ? Number(e.target.value) : null)}
+                          style={{ ...sel, padding: '3px 5px', fontSize: '0.68rem' }}
+                        >
+                          <option value="">Link to BOQ line…</option>
+                          {linkableBoqRows.map(r => <option key={r.id} value={r.id}>{materialLabel(r)}</option>)}
+                        </select>
+                      ) : (
+                        <span style={{ fontSize: '0.68rem', color: '#9ca3af' }}>{m.boqItemId ? 'Linked' : 'Not linked'}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))
-          )}
-        </div>
+            </div>
+          );
+        })()}
       </div>
       )}
 
