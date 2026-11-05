@@ -840,7 +840,7 @@ interface MaterialCostLine {
   priceDate: string | null;
   remainingCost: number;
   needsPrice: boolean;
-  // A price check for it is already waiting in Procurement's Requests tab.
+  // A price check for it is already waiting in Procurement's Quotations tab.
   quotationRequested: boolean;
   note: string | null;
 }
@@ -931,7 +931,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
       setRequestedNow(new Set(requestable.map(keyOf)));
       onRequested();
       toast.success(data.requested > 0
-        ? `Sent ${data.requested} material${data.requested === 1 ? "" : "s"} to Procurement for a quotation.`
+        ? `Sent ${data.requested} material${data.requested === 1 ? "" : "s"} to Procurement > Quotations.`
         : "These materials are already waiting for a quotation.");
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -998,7 +998,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
             {missingPrice.length > 0 && (
               <button type="button" onClick={handleRequestQuotation} disabled={requesting || requestable.length === 0}
                 title={requestable.length > 0
-                  ? "Sends these materials to Procurement's Requests tab to get supplier prices — no PO is made"
+                  ? "Sends these materials to Procurement > Quotations to get supplier prices — no PO is made"
                   : "Every material missing a price is already waiting for a quotation"}
                 style={{ padding:"7px 14px", borderRadius:8, border:"none", background: requestable.length > 0 ? "#f97316" : "#e5e7eb", color: requestable.length > 0 ? "#fff" : "#6b7280", fontSize:"0.75rem", fontWeight:700, cursor: requestable.length > 0 ? "pointer" : "default", opacity: requesting ? 0.7 : 1 }}>
                 {requesting ? "Sending…" : requestable.length > 0 ? `Request quotation (${requestable.length})` : `All sent — waiting (${waiting})`}

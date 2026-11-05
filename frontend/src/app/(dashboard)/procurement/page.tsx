@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
 import {
@@ -8,7 +9,7 @@ import {
   ShoppingCart, Download, Plus, Eye,
   Send, History, X, Mail, Phone, Pencil, Camera, Upload, Check,
   Wind, Droplets, CloudRain, ClipboardList, ChevronRight, ArrowRight,
-  Search, ArrowUpDown, Trash2,
+  Search, ArrowUpDown, Trash2, Tag,
 } from "lucide-react";
 import { useWeatherStore } from "@/store/weatherStore";
 import { useAuthStore } from "@/store/authStore";
@@ -481,12 +482,15 @@ function exportPOs(orders: PO[]) {
 // past POs), which stays editable. The chosen quote per material — the
 // lowest price unless another is picked — becomes the PO; materials sharing a
 // supplier land on one PO with the next sequential number.
+// With priceOnly it's the Quotations tab's form: the price checks sent from a
+// project's cost breakdown — quotes are saved, no PO is ever made.
 
-function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGenerated }: {
+function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onChanged, onGenerated }: {
   projectId: number;
   projectName: string;
+  priceOnly: boolean;
   onClose: () => void;
-  // A request was deleted — the Requests tab's counts need refreshing.
+  // A request was deleted — the tab's counts need refreshing.
   onChanged: () => void;
   onGenerated: () => void;
 }) {
@@ -508,7 +512,7 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
     (async () => {
       setLoading(true);
       try {
-        const { data } = await api.get<ApiMaterialRequest[]>(`/material-requests/project/${projectId}`);
+        const { data } = await api.get<ApiMaterialRequest[]>(`/material-requests/project/${projectId}`, { params: { priceInquiry: priceOnly } });
         const mapped = data.map(mapRequestRow);
         setRows(mapped);
 
@@ -524,7 +528,7 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
         setLoading(false);
       }
     })();
-  }, [projectId]);
+  }, [projectId, priceOnly]);
 
   const generated = Object.keys(poNumbers).length > 0;
 
@@ -670,7 +674,7 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
               <ClipboardList style={{ width: 18, height: 18, color: "#f97316" }} />
             </div>
             <div>
-              <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>Material Request Form</h2>
+              <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>{priceOnly ? "Quotation Request" : "Material Request Form"}</h2>
               <p style={{ fontSize: "0.75rem", color: "#6b7280", margin: 0 }}>
                 <span style={{ fontWeight: 600, color: "#374151" }}>Project Store:</span> {projectName}
               </p>
@@ -685,8 +689,13 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
           ) : (
             <>
               <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginBottom: "0.75rem", maxWidth: 820 }}>
-                Enter up to three suppliers per material. A supplier you&apos;ve ordered from before gets its last price filled in — change it if the quotation is different.
-                The lowest price is chosen automatically; pick &quot;Order from&quot; on another supplier only if you want them instead.
+                {priceOnly ? (
+                  <>Price only — no PO is made. Enter up to three supplier quotations per material and save; a material with a priced quote
+                    leaves this list and its price goes into the project&apos;s cost estimate. The lowest price is used unless you pick &quot;Use this price&quot; on another.</>
+                ) : (
+                  <>Enter up to three suppliers per material. A supplier you&apos;ve ordered from before gets its last price filled in — change it if the quotation is different.
+                    The lowest price is chosen automatically; pick &quot;Order from&quot; on another supplier only if you want them instead.</>
+                )}
               </p>
               <table style={{ width: "100%", minWidth: 1100, borderCollapse: "collapse" }}>
                 <thead>
@@ -697,13 +706,13 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
                     <th style={th}>QTY</th>
                     {Array.from({ length: MAX_QUOTES }, (_, i) => <th key={i} style={{ ...th, minWidth: 170 }}>SUPPLIER {i + 1}</th>)}
                     <th style={{ ...th, minWidth: 140 }}>REMARKS</th>
-                    <th style={th}>PO #</th>
+                    {!priceOnly && <th style={th}>PO #</th>}
                     <th style={{ ...th, width: 40 }} aria-label="Actions" />
                   </tr>
                 </thead>
                 <tbody>
                   {rows.length === 0 && (
-                    <tr><td colSpan={10} style={{ ...td, textAlign: "center", color: "#9ca3af", padding: "1.5rem" }}>No pending requests for this project.</td></tr>
+                    <tr><td colSpan={10} style={{ ...td, textAlign: "center", color: "#9ca3af", padding: "1.5rem" }}>{priceOnly ? "No materials waiting for a quotation." : "No pending requests for this project."}</td></tr>
                   )}
                   {rows.map((r, idx) => {
                     const poNumber = poNumbers[r.id];
@@ -782,7 +791,7 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
                                       <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.68rem", color: isSelected ? "#c2410c" : "#6b7280", fontWeight: isSelected ? 700 : 500, cursor: "pointer" }}>
                                         <input type="radio" name={`mrf-choice-${r.id}`} checked={isSelected}
                                           onChange={() => updateRow(r.id, x => ({ ...x, chosen: slot }))} />
-                                        Order from
+                                        {priceOnly ? "Use this price" : "Order from"}
                                       </label>
                                       <span style={{ fontSize: "0.62rem", color: "#9ca3af", textAlign: "right" }}>
                                         {slot === lowest && <span style={{ color: "#15803d", fontWeight: 700 }}>Lowest · </span>}
@@ -812,9 +821,11 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
                             />
                           )}
                         </td>
-                        <td style={{ ...td, fontWeight: 700, color: "#f97316", whiteSpace: "nowrap" }}>
-                          {r.isPriceInquiry ? <span style={{ fontSize: "0.65rem", fontWeight: 500, color: "#6b7280" }}>No PO needed</span> : (poNumber ?? "—")}
-                        </td>
+                        {!priceOnly && (
+                          <td style={{ ...td, fontWeight: 700, color: "#f97316", whiteSpace: "nowrap" }}>
+                            {r.isPriceInquiry ? <span style={{ fontSize: "0.65rem", fontWeight: 500, color: "#6b7280" }}>No PO needed</span> : (poNumber ?? "—")}
+                          </td>
+                        )}
                         <td style={{ ...td, whiteSpace: "nowrap" }}>
                           {!poNumber && (confirmDeleteId === r.id ? (
                             <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
@@ -866,13 +877,13 @@ function RequestsOverlayModal({ projectId, projectName, onClose, onChanged, onGe
               }}>
                 {saving ? "Saving…" : "Save Quotations"}
               </button>
-              <button onClick={handleGenerate} disabled={busy || orderRows.length === 0} style={{
+              {!priceOnly && <button onClick={handleGenerate} disabled={busy || orderRows.length === 0} style={{
                 display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 8, border: "none",
                 background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.85rem",
                 cursor: (busy || orderRows.length === 0) ? "not-allowed" : "pointer", opacity: (busy || orderRows.length === 0) ? 0.7 : 1,
               }}>
                 {generating ? "Generating…" : "Generate P.O. Number"}
-              </button>
+              </button>}
             </div>
           )}
         </div>
@@ -1669,8 +1680,21 @@ function RateSupplierModal({ po, supplier, onClose, onSubmit }: {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
+type ProcurementTab = "po" | "requests" | "quotations" | "suppliers";
+
 export default function ProcurementPage() {
-  const [tab,      setTab]      = useState<"po" | "requests" | "suppliers">("po");
+  return (
+    <Suspense fallback={null}>
+      <ProcurementContent />
+    </Suspense>
+  );
+}
+
+function ProcurementContent() {
+  // ?tab=quotations — where a "need a price" notification lands.
+  const searchParams = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const [tab,      setTab]      = useState<ProcurementTab>("po");
   const [orders,   setOrders]   = useState<PO[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading,  setLoading]  = useState(true);
@@ -1682,7 +1706,13 @@ export default function ProcurementPage() {
   const [deliveryPOId, setDeliveryPOId] = useState<number | null>(null);
   const [ratingPOId, setRatingPOId] = useState<number | null>(null);
   const [requestsProjects, setRequestsProjects] = useState<ProjectWithRequests[]>([]);
-  const [openRequestsProjectId, setOpenRequestsProjectId] = useState<number | null>(null);
+  const [quotationProjects, setQuotationProjects] = useState<ProjectWithRequests[]>([]);
+  // The project whose form is open, and whether it's its price checks.
+  const [openRequests, setOpenRequests] = useState<{ projectId: number; priceOnly: boolean } | null>(null);
+
+  useEffect(() => {
+    if (tabParam === "quotations" || tabParam === "requests" || tabParam === "suppliers" || tabParam === "po") setTab(tabParam);
+  }, [tabParam]);
 
   // Suppliers tab search/sort — scoped to that tab only, doesn't touch the
   // separate "Supplier Performance" top-5 ranking below it.
@@ -1698,8 +1728,11 @@ export default function ProcurementPage() {
   const ratingSupplier  = suppliers.find(s => s.id === ratingSupplierId) ?? null;
   const deliveryPO = orders.find(o => o.id === deliveryPOId) ?? null;
   const ratingPO   = orders.find(o => o.id === ratingPOId) ?? null;
-  const openRequestsProject = requestsProjects.find(p => p.projectId === openRequestsProjectId) ?? null;
+  const openRequestsProject = openRequests
+    ? (openRequests.priceOnly ? quotationProjects : requestsProjects).find(p => p.projectId === openRequests.projectId) ?? null
+    : null;
   const totalPendingRequests = requestsProjects.reduce((sum, p) => sum + p.pendingCount, 0);
+  const totalPendingQuotations = quotationProjects.reduce((sum, p) => sum + p.pendingCount, 0);
 
   const { user } = useAuthStore();
   const role = user?.role ?? "SiteEngineer";
@@ -1727,10 +1760,15 @@ export default function ProcurementPage() {
     // don't manage POs) must never take down orders/suppliers loading too,
     // and the tab itself is already hidden for those roles regardless.
     try {
-      const requestsRes = await api.get<ApiProjectWithRequests[]>("/material-requests/projects-with-pending");
+      const [requestsRes, quotationsRes] = await Promise.all([
+        api.get<ApiProjectWithRequests[]>("/material-requests/projects-with-pending", { params: { priceInquiry: false } }),
+        api.get<ApiProjectWithRequests[]>("/material-requests/projects-with-pending", { params: { priceInquiry: true } }),
+      ]);
       setRequestsProjects(requestsRes.data);
+      setQuotationProjects(quotationsRes.data);
     } catch {
       setRequestsProjects([]);
+      setQuotationProjects([]);
     }
   }
 
@@ -1908,11 +1946,13 @@ export default function ProcurementPage() {
           onSubmit={submission => handleSubmitRating(ratingPO, submission)}
         />
       )}
-      {openRequestsProject && (
+      {openRequests && openRequestsProject && (
         <RequestsOverlayModal
+          key={`${openRequests.projectId}-${openRequests.priceOnly}`}
           projectId={openRequestsProject.projectId}
           projectName={openRequestsProject.projectName}
-          onClose={() => setOpenRequestsProjectId(null)}
+          priceOnly={openRequests.priceOnly}
+          onClose={() => setOpenRequests(null)}
           onChanged={refetch}
           onGenerated={() => { refetch(); setTab("po"); }}
         />
@@ -2047,7 +2087,7 @@ export default function ProcurementPage() {
           <div className="procurement-tabs" style={{ display: "flex", gap: 4, background: "#e5e7eb", borderRadius: 8, padding: 4 }}>
             {([
               { id: "po", label: "Purchase Orders" },
-              ...(canManagePOs ? [{ id: "requests", label: "Requests" }] as const : []),
+              ...(canManagePOs ? [{ id: "requests", label: "Requests" }, { id: "quotations", label: "Quotations" }] as const : []),
               { id: "suppliers", label: "Suppliers" },
             ] as const).map(t => (
               <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -2060,7 +2100,7 @@ export default function ProcurementPage() {
                 transition: "all 0.15s",
               }}>
                 {t.label}
-                {t.id === "requests" && totalPendingRequests > 0 && (
+                {(t.id === "requests" ? totalPendingRequests : t.id === "quotations" ? totalPendingQuotations : 0) > 0 && (
                   <span style={{
                     position: "absolute", top: -6, right: -6,
                     background: "#ef4444", color: "#fff", borderRadius: 999,
@@ -2069,7 +2109,7 @@ export default function ProcurementPage() {
                     display: "flex", alignItems: "center", justifyContent: "center",
                     boxShadow: "0 0 0 2px #e5e7eb",
                   }}>
-                    {totalPendingRequests}
+                    {t.id === "requests" ? totalPendingRequests : totalPendingQuotations}
                   </span>
                 )}
               </button>
@@ -2244,45 +2284,57 @@ export default function ProcurementPage() {
         )}
 
         {/* ────────────────────────────────────────────────────────────────── */}
-        {/* Tab: Requests — projects with pending material requests only;      */}
-        {/* a project with nothing outstanding simply doesn't appear.          */}
+        {/* Tabs: Requests (material to order → PO) and Quotations (price      */}
+        {/* checks from a project's cost breakdown → no PO). Only projects    */}
+        {/* with something outstanding appear.                                 */}
         {/* ────────────────────────────────────────────────────────────────── */}
-        {tab === "requests" && (
-          <div style={{ background: "#fff", borderRadius: 12, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "1.25rem" }}>
-              <ClipboardList style={{ width: 16, height: 16, color: "#f97316" }} />
-              <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Material Requests</span>
-            </div>
-
-            {requestsProjects.length === 0 ? (
-              <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "2rem 0" }}>
-                No projects have pending material requests right now.
-              </p>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {requestsProjects.map(p => (
-                  <button
-                    key={p.projectId}
-                    onClick={() => setOpenRequestsProjectId(p.projectId)}
-                    style={{
-                      display: "flex", alignItems: "center", justifyContent: "space-between",
-                      width: "100%", padding: "14px 16px", borderRadius: 10, border: "none",
-                      background: "#f9fafb", cursor: "pointer", textAlign: "left",
-                    }}
-                  >
-                    <div>
-                      <p style={{ fontWeight: 700, fontSize: "0.88rem", color: "#111827" }}>{p.projectName}</p>
-                      <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginTop: 2 }}>
-                        {p.pendingCount} material{p.pendingCount !== 1 ? "s" : ""} requested
-                      </p>
-                    </div>
-                    <ChevronRight style={{ width: 16, height: 16, color: "#9ca3af" }} />
-                  </button>
-                ))}
+        {(tab === "requests" || tab === "quotations") && (() => {
+          const priceOnly = tab === "quotations";
+          const list = priceOnly ? quotationProjects : requestsProjects;
+          return (
+            <div style={{ background: "#fff", borderRadius: 12, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: priceOnly ? "0.35rem" : "1.25rem" }}>
+                {priceOnly
+                  ? <Tag style={{ width: 16, height: 16, color: "#2563eb" }} />
+                  : <ClipboardList style={{ width: 16, height: 16, color: "#f97316" }} />}
+                <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>{priceOnly ? "Quotation Requests" : "Material Requests"}</span>
               </div>
-            )}
-          </div>
-        )}
+              {priceOnly && (
+                <p style={{ fontSize: "0.75rem", color: "#6b7280", marginBottom: "1.25rem" }}>
+                  Materials a project&apos;s cost estimate has no price for. Get supplier quotations — no purchase order is made.
+                </p>
+              )}
+
+              {list.length === 0 ? (
+                <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "2rem 0" }}>
+                  {priceOnly ? "No materials are waiting for a quotation right now." : "No projects have pending material requests right now."}
+                </p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {list.map(p => (
+                    <button
+                      key={p.projectId}
+                      onClick={() => setOpenRequests({ projectId: p.projectId, priceOnly })}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        width: "100%", padding: "14px 16px", borderRadius: 10, border: "none",
+                        background: "#f9fafb", cursor: "pointer", textAlign: "left",
+                      }}
+                    >
+                      <div>
+                        <p style={{ fontWeight: 700, fontSize: "0.88rem", color: "#111827" }}>{p.projectName}</p>
+                        <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginTop: 2 }}>
+                          {p.pendingCount} material{p.pendingCount !== 1 ? "s" : ""} {priceOnly ? "need a price" : "requested"}
+                        </p>
+                      </div>
+                      <ChevronRight style={{ width: 16, height: 16, color: "#9ca3af" }} />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* ────────────────────────────────────────────────────────────────── */}
         {/* Tab: Suppliers                                                     */}

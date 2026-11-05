@@ -165,7 +165,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             usedDates.Add(o.Date);
         }
 
-        // Price checks still waiting in Procurement's Requests tab.
+        // Price checks still waiting in Procurement's Quotations tab.
         var openInquiries = (await db.MaterialRequests
                 .Where(r => r.ProjectId == projectId && r.IsPriceInquiry && r.FulfilledByPurchaseOrderId == null
                             && !r.Quotes.Any(q => q.UnitPrice != null))

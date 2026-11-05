@@ -55,7 +55,7 @@ public class MaterialCostLineDto
     public decimal   RemainingCost     { get; set; }
     public bool      NeedsPrice        { get; set; }
     // A price check for this material and unit is waiting in Procurement's
-    // Requests tab (see MaterialRequest.IsPriceInquiry).
+    // Quotations tab (see MaterialRequest.IsPriceInquiry).
     public bool      QuotationRequested { get; set; }
     // Why the line is partly or wholly left out, or where it came from.
     public string?   Note              { get; set; }

@@ -104,13 +104,15 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
 
     // Only projects with at least one unfulfilled request show up — the
     // Requests tab's whole premise is "nothing to see until there's something
-    // to act on".
+    // to act on". ?priceInquiry=false is the Requests tab (material to order),
+    // true the Quotations tab (price checks); left out, both.
     [HttpGet("projects-with-pending")]
     [Authorize(Roles = ManageRoles)]
-    public async Task<IActionResult> GetProjectsWithPending()
+    public async Task<IActionResult> GetProjectsWithPending([FromQuery] bool? priceInquiry = null)
     {
         var groups = await db.MaterialRequests
             .Where(IsPending)
+            .Where(r => priceInquiry == null || r.IsPriceInquiry == priceInquiry)
             .GroupBy(r => new { r.ProjectId, r.Project.Name })
             .Select(g => new ProjectWithRequestsDto
             {
@@ -126,7 +128,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
 
     [HttpGet("project/{projectId:int}")]
     [Authorize(Roles = ManageRoles)]
-    public async Task<IActionResult> GetForProject(int projectId)
+    public async Task<IActionResult> GetForProject(int projectId, [FromQuery] bool? priceInquiry = null)
     {
         var requests = await db.MaterialRequests
             .Include(r => r.Material)
@@ -134,6 +136,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             .Include(r => r.Quotes)
             .Where(r => r.ProjectId == projectId)
             .Where(IsPending)
+            .Where(r => priceInquiry == null || r.IsPriceInquiry == priceInquiry)
             .OrderBy(r => r.CreatedAt)
             .ToListAsync();
 
@@ -186,7 +189,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
 
     // "Request quotation" on the cost breakdown: every Material Plan material
     // still to be ordered that has no recorded price becomes a price check in
-    // Procurement's Requests tab, for the quantity still to order. One that's
+    // Procurement's Quotations tab, for the quantity still to order. One that's
     // already waiting for a quotation isn't sent twice. Open to whoever can
     // see the project's cost.
     [HttpPost("price-inquiries/{projectId:int}")]
@@ -241,8 +244,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             await db.SaveChangesAsync();
             var projectName = await db.Projects.Where(p => p.Id == projectId).Select(p => p.Name).FirstAsync();
             await notifications.CreateForRoleAsync(UserRole.ProcurementOfficer, NotificationKind.ProcurementRequestSubmitted,
-                $"{projectName}: {created} material{(created == 1 ? "" : "s")} need a price — add supplier quotations in the Requests tab.",
-                CurrentUserId, projectId: projectId, actionLink: "/procurement");
+                $"{projectName}: {created} material{(created == 1 ? "" : "s")} need a price — add supplier quotations in the Quotations tab.",
+                CurrentUserId, projectId: projectId, actionLink: "/procurement?tab=quotations");
         }
         return Ok(new PriceInquiryResultDto { Requested = created, AlreadyRequested = already });
     }

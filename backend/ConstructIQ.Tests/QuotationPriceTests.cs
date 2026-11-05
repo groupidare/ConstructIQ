@@ -265,6 +265,29 @@ public class QuotationPriceTests(DatabaseFixture fixture)
         Assert.IsType<ForbidResult>(await RequestAs(db, otherManager, project.Id, new RecordingNotifications()));
     }
 
+    [Fact]
+    public async Task PriceChecks_ListOnlyInQuotations_OrderRequestsOnlyInRequests()
+    {
+        await using var db = fixture.CreateContext();
+        var (admin, project, unpriced) = await SeedAsync(db, "gal");
+        var ordered = await TestDataBuilder.CreateMaterialAsync(db, unit: "pcs");
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, unpriced.Id, admin.Id, 1, estimatedPurchaseQuantity: 67, estimatedPurchaseUnit: "gal");
+        await RequestAs(db, admin, project.Id, new RecordingNotifications());
+        await AddRequestAsync(db, project.Id, ordered.Id, admin.Id, "pcs");
+        var controller = ControllerAs(db, admin, new RecordingNotifications());
+
+        var quotations = Requests(await controller.GetForProject(project.Id, priceInquiry: true)).ToList();
+        var requests = Requests(await controller.GetForProject(project.Id, priceInquiry: false)).ToList();
+
+        Assert.Equal(unpriced.Id, Assert.Single(quotations).MaterialId);
+        Assert.Equal(ordered.Id, Assert.Single(requests).MaterialId);
+        Assert.Equal(2, Requests(await controller.GetForProject(project.Id)).Count());
+
+        var quotationProjects = Assert.IsAssignableFrom<IEnumerable<ProjectWithRequestsDto>>(
+            Assert.IsType<OkObjectResult>(await controller.GetProjectsWithPending(priceInquiry: true)).Value);
+        Assert.Equal(1, quotationProjects.Single(p => p.ProjectId == project.Id).PendingCount);
+    }
+
     // ── helpers ─────────────────────────────────────────────────────────────
 
     private static async Task<(User, Project, Material)> SeedAsync(AppDbContext db, string unit)

@@ -183,6 +183,32 @@ export default function MaterialPlanTab({
     onRowsChange(rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
   }
 
+  // A live project's plan can't be saved with a blank Area Unit, Material
+  // Unit or Material Quantity (Est. Qty) — the cost estimate and quotations
+  // need all three. The blanks turn red once a save is refused, and each
+  // goes back to normal as soon as it's filled.
+  const [showBlanks, setShowBlanks] = useState(false);
+  const blankFields = (r: BOQItemRow) => ({
+    unit: !r.unit?.trim(),
+    purchaseUnit: !r.estimatedPurchaseUnit?.trim(),
+    purchaseQty: r.estimatedPurchaseQuantity == null,
+  });
+  const hasBlank = (r: BOQItemRow) => Object.values(blankFields(r)).some(Boolean);
+  const blankStyle = (blank: boolean): React.CSSProperties =>
+    showBlanks && blank ? { borderColor: '#ef4444', background: '#fef2f2' } : {};
+
+  function handleSavePlan() {
+    const blankRows = isCompleted ? [] : rows.filter(hasBlank);
+    if (blankRows.length > 0) {
+      setShowBlanks(true);
+      toast.error(`${blankRows.length} material${blankRows.length === 1 ? ' is' : 's are'} missing a unit or Est. qty — fill in the fields marked red (Run Forecast can fill Est. qty).`);
+      document.querySelector('[data-blank-row="true"]')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      return;
+    }
+    setShowBlanks(false);
+    void onSave();
+  }
+
   function removeRow(idx: number) {
     onRowsChange(rows.filter((_, i) => i !== idx));
   }
@@ -812,8 +838,10 @@ export default function MaterialPlanTab({
               // total past the estimate — shown alongside "0 left to order"
               // rather than as a negative balance.
               const overEstimate = hasPurchaseEstimate ? Math.max(0, (r.requestedQuantity ?? 0) - purchaseQty) : 0;
+              const blank = blankFields(r);
               return (
                 <div key={i}
+                  data-blank-row={showBlanks && !isCompleted && hasBlank(r) ? 'true' : undefined}
                   // With the plan open, a blueprint row clicked is shown on it.
                   onClickCapture={() => { if (planOpen && sourceOf(r)?.readId != null) onPlanFocus(i); }}
                   style={{ display: 'grid', gridTemplateColumns: columnsTemplate, gap: 4, padding: '8px 1rem', borderBottom: '1px solid #f9fafb', alignItems: 'center', minHeight: 40,
@@ -855,7 +883,7 @@ export default function MaterialPlanTab({
                       placeholder="Material specification" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
                   )}
                   {!isCompleted && (
-                    <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }} />
+                    <input disabled={!editable} value={r.unit ?? ''} onChange={e => updateRow(i, { unit: e.target.value })} placeholder="unit" style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', ...blankStyle(blank.unit) }} />
                   )}
                   {/* Live (not completed) project: the editable Total Area/Qty
                       input as always (its unit is the UNIT column before it). */}
@@ -951,7 +979,7 @@ export default function MaterialPlanTab({
                     disabled={!editable}
                     value={r.estimatedPurchaseUnit ?? ''}
                     onChange={e => updateRow(i, { estimatedPurchaseUnit: e.target.value || undefined, estimatePurchaseManuallySet: true })}
-                    style={{ ...sel, padding: '4px 4px', fontSize: '0.7rem' }}
+                    style={{ ...sel, padding: '4px 4px', fontSize: '0.7rem', ...blankStyle(blank.purchaseUnit) }}
                   >
                     <option value="">—</option>
                     {PURCHASE_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
@@ -970,7 +998,7 @@ export default function MaterialPlanTab({
                       value={r.estimatedPurchaseQuantity ?? ''}
                       onChange={e => updateRow(i, { estimatedPurchaseQuantity: e.target.value === '' ? undefined : parseFloat(e.target.value) || 0, estimatePurchaseManuallySet: true })}
                       placeholder="Est. qty"
-                      style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem' }}
+                      style={{ ...inp, padding: '4px 6px', fontSize: '0.76rem', ...blankStyle(blank.purchaseQty) }}
                     />
                     {(showLeftToOrder || overEstimate > 0 || fullyRequested) && (
                       <p style={{
@@ -1111,7 +1139,7 @@ export default function MaterialPlanTab({
 
       {editable && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: '1rem' }}>
-          <button onClick={() => onSave()} disabled={saving} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
+          <button onClick={handleSavePlan} disabled={saving} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
             {saving ? 'Saving…' : 'Save Material Plan'}
           </button>
           <button
