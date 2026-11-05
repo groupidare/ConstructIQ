@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import ThemeApplier from "@/components/layout/ThemeApplier";
 import PwaRegister from "@/components/layout/PwaRegister";
 import InstallBanner from "@/components/layout/InstallBanner";
+import Preloader, { PRELOADER_SLOW_SCRIPT } from "@/components/layout/Preloader";
 import "./globals.css";
 
 // Browser extensions that scan forms (password managers, form-fillers) tag
@@ -63,6 +64,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {process.env.NODE_ENV === "development" && (
           <script dangerouslySetInnerHTML={{ __html: HYDRATION_NOISE_FILTER_SCRIPT }} />
         )}
+        <Preloader />
+        <script dangerouslySetInnerHTML={{ __html: PRELOADER_SLOW_SCRIPT }} />
         <ThemeApplier />
         <PwaRegister />
         <div id="app-shell">{children}</div>

@@ -59,6 +59,12 @@ public class MaterialRequest
     // tab once a price is saved (that quote then prices the cost estimate).
     public bool IsPriceInquiry { get; set; }
 
+    // When "Save Request" sent this material for approval: Procurement has
+    // entered the supplier quotes, and it now waits in the Requests tab as
+    // "For Approval" until one supplier is chosen and its PO generated. Null
+    // while the quotes are still being filled in. Never set on a price check.
+    public DateTime? SubmittedForApprovalAt { get; set; }
+
     public const int MaxQuotes = 3;
 }
 

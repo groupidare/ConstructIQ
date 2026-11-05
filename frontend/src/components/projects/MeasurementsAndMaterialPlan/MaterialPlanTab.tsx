@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Upload, FileText, Trash2, Plus, ChevronDown, ChevronRight, Search, ShoppingCart, Package, ExternalLink, X, AlertTriangle, Link2, Send, Map as MapIcon } from 'lucide-react';
+import { Upload, FileText, Trash2, Plus, ChevronDown, ChevronRight, Search, ShoppingCart, Package, ExternalLink, X, AlertTriangle, Link2, Send, Map as MapIcon, Folder } from 'lucide-react';
 import { baselineAlerts, expectedText } from '@/lib/baseline';
 import { resolveUploadUrl } from '@/lib/avatar';
 import { indexLinks, rowStock, similarInStock, warehouseRequestQuantity, type RowStock } from '@/lib/warehouseStockMatch';
@@ -147,13 +147,15 @@ export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, warehouseStock, warehouseStockLinks, onBulkRequest, onRefreshStock, onSaveStockLink, onRemoveStockLink, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
   rows, boqItems, onRowsChange, planOpen, planFocus, onViewPlan, onPlanFocus, onSave, onDeleteRow, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
-  purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial, onPurchaseOrdersImported,
+  purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onPurchaseOrdersImported,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const poFileInputRef = useRef<HTMLInputElement>(null);
   const [showImport, setShowImport] = useState(false);
+  // The uploaded PO files sit in one folder, closed by default.
+  const [poFilesOpen, setPoFilesOpen] = useState(false);
   // PO prices are entered and seen only by the roles that manage POs (the
   // backend also nulls them out for everyone else).
   const role = useAuthStore(s => s.user?.role);
@@ -393,21 +395,19 @@ export default function MaterialPlanTab({
 
   // BOQ (planned) vs. linked PO (actual) reconciliation — only meaningful once
   // a project is Completed and both sides have real, saved data with explicit
-  // links between them (see onLinkPoMaterial).
+  // links between them.
+  // A PO line without a BOQ link counts toward the first row of the same
+  // material — the same fallback the server uses.
   const reconciliation = useMemo(() => {
     const actualByBoqItemId = new Map<number, number>();
-    const unlinked: { po: PurchaseOrder; material: PurchaseOrderMaterial }[] = [];
     purchaseOrders.forEach(po => {
       po.materials.forEach(m => {
-        if (m.boqItemId) {
-          actualByBoqItemId.set(m.boqItemId, (actualByBoqItemId.get(m.boqItemId) ?? 0) + m.quantity);
-        } else {
-          unlinked.push({ po, material: m });
-        }
+        const rowId = m.boqItemId ?? (m.materialId != null ? rows.find(r => r.id != null && r.materialId === m.materialId)?.id : undefined);
+        if (rowId != null) actualByBoqItemId.set(rowId, (actualByBoqItemId.get(rowId) ?? 0) + m.quantity);
       });
     });
-    return { actualByBoqItemId, unlinked };
-  }, [purchaseOrders]);
+    return { actualByBoqItemId };
+  }, [purchaseOrders, rows]);
 
   const historicalPurchaseRows = useMemo(
     () => rows.flatMap(row => row.historicalSupply ?? []),
@@ -1447,7 +1447,16 @@ export default function MaterialPlanTab({
         </div>
 
         {poDocs.length > 0 && (
-          <div style={{ padding: '0.625rem 1rem', borderBottom: '1px solid #f3f4f6', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ borderBottom: '1px solid #f3f4f6' }}>
+            <button type="button" onClick={() => setPoFilesOpen(o => !o)} aria-expanded={poFilesOpen}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '0.625rem 1rem', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
+              {poFilesOpen ? <ChevronDown style={{ width: 13, height: 13, color: '#9ca3af' }} /> : <ChevronRight style={{ width: 13, height: 13, color: '#9ca3af' }} />}
+              <Folder style={{ width: 14, height: 14, color: '#f59e0b' }} />
+              <span style={{ fontSize: '0.76rem', fontWeight: 600, color: '#374151' }}>PO files</span>
+              <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>{poDocs.length} file{poDocs.length === 1 ? '' : 's'}</span>
+            </button>
+            {poFilesOpen && (
+          <div style={{ padding: '0 1rem 0.625rem 2.6rem', display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 260, overflowY: 'auto' }}>
             {poDocs.map(doc => (
               <div key={doc.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <FileText style={{ width: 12, height: 12, color: '#9ca3af', flexShrink: 0 }} />
@@ -1467,6 +1476,8 @@ export default function MaterialPlanTab({
                 )}
               </div>
             ))}
+          </div>
+            )}
           </div>
         )}
 
@@ -1542,52 +1553,56 @@ export default function MaterialPlanTab({
           </div>
         )}
 
-        {/* Real, saved purchase orders */}
-        <div style={{ maxHeight: 320, overflowY: 'auto', overflowX: 'hidden' }}>
-          {purchaseOrders.length === 0 ? (
-            <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No purchase orders yet.</p>
-          ) : (
-            purchaseOrders.map(po => (
-              <div key={po.id} style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f9fafb' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-                  <span style={{ fontWeight: 700, fontSize: '0.8rem', color: '#111827' }}>{po.number} · {po.supplierName}</span>
-                  <span style={{ fontSize: '0.65rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: po.status === 'Delivered' ? '#dcfce7' : '#ffedd5', color: po.status === 'Delivered' ? '#15803d' : '#c2410c' }}>
-                    {po.status}
-                  </span>
+        {/* Every saved PO of the project — made in the system or imported —
+            one line per material, in the same layout as a historical
+            project's Purchased Order (PO) table. */}
+        {(() => {
+          const poLines = purchaseOrders
+            .flatMap(po => po.materials.map(m => ({ po, m })))
+            .sort((a, b) => a.po.orderDate.localeCompare(b.po.orderDate) || a.po.number.localeCompare(b.po.number));
+          const cols = `1.1fr 0.9fr 2fr 0.6fr 0.8fr 1.6fr${canSeePrices ? ' 0.9fr' : ''} 0.9fr`;
+          const cell: React.CSSProperties = { fontSize: '0.76rem', color: '#374151' };
+          return (
+            <div style={{ overflowX: 'auto' }}>
+              <div style={{ minWidth: canSeePrices ? 900 : 800 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 8, padding: '0.55rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+                  {['PO NUMBER', 'PO DATE', 'MATERIAL NAME', 'UNIT', 'QUANTITY', 'SUPPLIER', ...(canSeePrices ? ['UNIT PRICE'] : []), 'STATUS'].map(h => (
+                    <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
+                  ))}
                 </div>
-                <p style={{ fontSize: '0.65rem', color: '#9ca3af', marginBottom: 6 }}>
-                  Ordered {formatDate(po.orderDate)} · Expected {formatDate(po.expectedDate)}
-                </p>
-                {po.materials.map(m => (
-                  <div key={m.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,1fr)', gap: 6, alignItems: 'center', padding: '4px 0' }}>
-                    <span style={{ fontSize: '0.76rem', color: '#374151' }}>{m.name}</span>
-                    <span style={{ fontSize: '0.72rem', color: '#6b7280' }}>
-                      {m.quantity} {m.unit}
-                      {m.unitPrice != null && ` · ${formatCurrency(m.unitPrice)}/${m.unit} = ${formatCurrency(lineTotal(m)!)}`}
-                    </span>
-                    {editable ? (
-                      <select
-                        value={m.boqItemId ?? ''}
-                        onChange={e => onLinkPoMaterial(m.id!, e.target.value ? Number(e.target.value) : null)}
-                        style={{ ...sel, padding: '3px 5px', fontSize: '0.68rem' }}
-                      >
-                        <option value="">Link to BOQ line…</option>
-                        {linkableBoqRows.map(r => <option key={r.id} value={r.id}>{materialLabel(r)}</option>)}
-                      </select>
-                    ) : (
-                      <span style={{ fontSize: '0.68rem', color: '#9ca3af' }}>{m.boqItemId ? 'Linked' : 'Not linked'}</span>
-                    )}
-                  </div>
-                ))}
-                {poTotal(po.materials) != null && (
-                  <p style={{ fontSize: '0.72rem', fontWeight: 700, color: '#374151', textAlign: 'right', marginTop: 4 }}>
-                    PO Total: {formatCurrency(poTotal(po.materials)!)}
-                  </p>
-                )}
+                <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+                  {poLines.length === 0 ? (
+                    <p style={{ fontSize: '0.78rem', color: '#d1d5db', padding: '1rem' }}>No purchase orders yet.</p>
+                  ) : poLines.map(({ po, m }, index) => (
+                    <div key={`${po.id}-${m.id ?? index}`} style={{ display: 'grid', gridTemplateColumns: cols, gap: 8, padding: '0.6rem 1rem', borderBottom: '1px solid #f3f4f6', alignItems: 'center' }}>
+                      <span style={cell}>
+                        {po.isImported ? (po.originalPoNumber || po.number) : po.number}
+                        {po.isImported && (
+                          <span title="An existing PO imported from a file — not made in ConstructIQ"
+                            style={{ display: 'inline-block', marginLeft: 6, fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px', borderRadius: 999, background: '#ede9fe', color: '#6d28d9', verticalAlign: 'middle' }}>
+                            IMPORTED
+                          </span>
+                        )}
+                      </span>
+                      <span style={{ ...cell, color: '#6b7280' }}>{formatDate(po.orderDate)}</span>
+                      <span style={{ ...cell, color: '#111827' }}>{m.name}</span>
+                      <span style={{ ...cell, color: '#6b7280' }}>{m.unit || '—'}</span>
+                      <span style={{ ...cell, color: '#111827' }}>{m.quantity.toLocaleString()}</span>
+                      <span style={cell}>{po.supplierName || '—'}</span>
+                      {canSeePrices && <span style={cell}>{m.unitPrice != null ? formatCurrency(m.unitPrice) : '—'}</span>}
+                      <span>
+                        <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, whiteSpace: 'nowrap',
+                          background: po.status === 'Delivered' ? '#dcfce7' : '#ffedd5', color: po.status === 'Delivered' ? '#15803d' : '#c2410c' }}>
+                          {po.status === 'DeliveryInProgress' ? 'Delivering' : po.status}
+                        </span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))
-          )}
-        </div>
+            </div>
+          );
+        })()}
       </div>
       )}
 
@@ -1667,18 +1682,6 @@ export default function MaterialPlanTab({
             })
           )}
 
-          {reconciliation.unlinked.length > 0 && (
-            <div style={{ padding: '0.75rem 1rem', background: '#fffbf5', borderTop: '1px solid #fed7aa' }}>
-              <p style={{ fontSize: '0.72rem', fontWeight: 700, color: '#c2410c', marginBottom: 4 }}>
-                {reconciliation.unlinked.length} PO material(s) not yet linked to a BOQ line — link them above under Purchase Orders so they count toward training.
-              </p>
-              {reconciliation.unlinked.map(({ po, material }) => (
-                <p key={material.id} style={{ fontSize: '0.7rem', color: '#9a3412' }}>
-                  {po.number}: {material.name} ({material.quantity} {material.unit})
-                </p>
-              ))}
-            </div>
-          )}
         </div>
       )}
     </div>
