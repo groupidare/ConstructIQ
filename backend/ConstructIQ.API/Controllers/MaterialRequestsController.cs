@@ -172,6 +172,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
                 ProjectId = g.Key.ProjectId,
                 ProjectName = g.Key.Name,
                 PendingCount = g.Count(),
+                ForApprovalCount = g.Count(r => r.SubmittedForApprovalAt != null),
             })
             .OrderBy(p => p.ProjectName)
             .ToListAsync();
@@ -234,6 +235,11 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             var request = requests.First(x => x.Id == r.RequestId);
             ApplyQuotes(request, r.Quotes, r.Remarks);
             if (r.Quantity is { } qty) request.Quantity = qty;
+            // Only a material with at least one priced supplier goes for
+            // approval; one still missing them is saved as it is, to finish later.
+            if (dto.Submit && !request.IsPriceInquiry
+                && r.Quotes.Any(q => !string.IsNullOrWhiteSpace(q.SupplierName) && q.UnitPrice != null))
+                request.SubmittedForApprovalAt ??= DateTime.UtcNow;
         }
 
         await db.SaveChangesAsync();
@@ -412,6 +418,9 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             return BadRequest(new { message = "One or more materials were already turned into a purchase order — refresh and try again." });
         if (requests.FirstOrDefault(r => r.IsPriceInquiry) is { } priceCheck)
             return BadRequest(new { message = $"{priceCheck.Material.Name} is a price check only — save its quotation instead of making a PO." });
+        // A PO comes only from a saved request whose supplier was then chosen.
+        if (requests.FirstOrDefault(r => r.SubmittedForApprovalAt == null) is { } draft)
+            return BadRequest(new { message = $"{draft.Material.Name} hasn't been saved for approval yet — enter its suppliers and click Save Request first." });
 
         foreach (var a in dto.Assignments)
         {
@@ -577,6 +586,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         Remarks = r.Remarks,
         IsAdditional = r.IsAdditional,
         IsPriceInquiry = r.IsPriceInquiry,
+        ForApproval = r.SubmittedForApprovalAt != null,
         Quotes = r.Quotes.OrderBy(q => q.Slot).Select(q => new MaterialRequestQuoteDto
         {
             Slot = q.Slot, SupplierName = q.SupplierName, UnitPrice = q.UnitPrice,

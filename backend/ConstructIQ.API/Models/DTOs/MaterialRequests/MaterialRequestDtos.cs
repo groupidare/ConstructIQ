@@ -31,6 +31,9 @@ public record MaterialRequestDto
     public List<MaterialRequestQuoteDto> Quotes { get; init; } = [];
     // See MaterialRequest.IsPriceInquiry.
     public bool IsPriceInquiry { get; init; }
+    // Saved with its quotes and waiting for a supplier to be chosen — see
+    // MaterialRequest.SubmittedForApprovalAt.
+    public bool ForApproval { get; init; }
 }
 
 public record PriceInquiryResultDto
@@ -54,6 +57,9 @@ public record MaterialRequestQuoteDto
 public record SaveRequestQuotesDto
 {
     public List<RequestQuotesDto> Requests { get; init; } = [];
+    // "Save Request": also sends for approval every material that has at least
+    // one supplier with a price. Ignored for price checks.
+    public bool Submit { get; init; }
 }
 
 public record RequestQuotesDto
@@ -70,6 +76,8 @@ public record ProjectWithRequestsDto
     public int ProjectId { get; init; }
     public string ProjectName { get; init; } = "";
     public int PendingCount { get; init; }
+    // Of PendingCount, how many are saved and waiting for a supplier choice.
+    public int ForApprovalCount { get; init; }
 }
 
 public record SuggestedSupplierDto

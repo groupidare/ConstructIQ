@@ -92,7 +92,7 @@ public class GeneratePurchaseOrderPriceTests(DatabaseFixture fixture)
         var material = await TestDataBuilder.CreateMaterialAsync(db, unit: "pcs");
         var request = new MaterialRequest
         {
-            ProjectId = project.Id, MaterialId = material.Id, Quantity = 40, Unit = "pcs", RequestedByUserId = admin.Id,
+            ProjectId = project.Id, MaterialId = material.Id, Quantity = 40, Unit = "pcs", RequestedByUserId = admin.Id, SubmittedForApprovalAt = DateTime.UtcNow,
         };
         db.MaterialRequests.Add(request);
         await db.SaveChangesAsync();
