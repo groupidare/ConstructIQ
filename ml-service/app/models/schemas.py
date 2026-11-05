@@ -119,6 +119,9 @@ class ParsedPOItem(BaseModel):
     phase_hint:              Optional[str] = None
     unit_price:              Optional[float] = None  # price per unit, when the PO has a price column
     po_number:               Optional[str] = None  # the number printed on the PO
+    # qty × unit price doesn't match the line's printed total — an OCR misread
+    # or a crossed-out line; the reviewer should look at it.
+    total_mismatch:          bool = False
 
 
 class DocumentParsePOResponse(BaseModel):

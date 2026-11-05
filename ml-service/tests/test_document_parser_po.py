@@ -83,3 +83,45 @@ class PoNumberTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# A scanned PO as OCR reads it: "Stock Number _ Description" is one cell on
+# the header but two on the items, so every column after it is shifted.
+_SCANNED_TABLE = [
+    ["Name", ": Sample Supply Corp.", "PO No.", "2", "0002011"],
+    ["Project", ": Sample Project", "Date", ":", "03/07/2025"],
+    ["Qty", "UM", "Stock Number _ Description", "Unit Cost", "Disct", "VAT", "Cost", "Total"],
+    ["5.00", "bag", "00556", "Skimcoat White", "550.00", "0.00", "0.00", "2,750.00", "2,750.00"],
+    ["5.00", "bags", "03685", "Boral White", "758.00", "0.00", "0.06", "3,730.06", "3,730.00"],
+    ["10.00", "Pes", "00012", "Roller #7", "70.00", "0.00", "0.00", "700.00", "700.00"],
+    ["6.00", "sheet", "03686", "Marine Plywood 3/4 Local", "1,300.00", "0.00", "0.00", "7,800.00", "7,800.00"],
+]
+_SCANNED_TEXT = (
+    "Name : Sample Supply Corp. PO No. 2 0002011\n"
+    "Project : Sample Project Date : 03/07/2025\n"
+)
+
+
+class ScannedPoTests(unittest.TestCase):
+    def setUp(self):
+        self.items = _parse(_SCANNED_TABLE, _SCANNED_TEXT).items
+
+    def test_shifted_columns_are_read_from_the_item_rows(self):
+        self.assertEqual([i.material_name for i in self.items],
+                         ["Skimcoat White", "Boral White", "Roller #7", "Marine Plywood 3/4 Local"])
+        self.assertEqual([i.unit_price for i in self.items], [550, 758, 70, 1300])
+        self.assertEqual(self.items[0].actual_quantity_ordered, 5)
+
+    def test_ocr_unit_misread_is_fixed(self):
+        self.assertEqual(self.items[2].unit, "pcs")
+
+    def test_po_number_and_plain_date_are_read(self):
+        self.assertEqual(self.items[0].po_number, "0002011")
+        self.assertEqual(self.items[0].order_date, "2025-03-07")
+
+    def test_line_whose_total_doesnt_match_is_flagged(self):
+        self.assertEqual([i.total_mismatch for i in self.items], [False, True, False, False])
+
+    def test_delivery_date_is_not_taken_as_the_po_date(self):
+        items = _parse(_SCANNED_TABLE, "Delivery date: 04/01/2025\n").items
+        self.assertIsNone(items[0].order_date)

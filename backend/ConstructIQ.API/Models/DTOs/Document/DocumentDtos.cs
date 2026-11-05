@@ -93,6 +93,7 @@ public class MlParsedPoItem
     [JsonPropertyName("phase_hint")]                public string? PhaseHint             { get; set; }
     [JsonPropertyName("unit_price")]                public double? UnitPrice             { get; set; }
     [JsonPropertyName("po_number")]                 public string? PoNumber              { get; set; }
+    [JsonPropertyName("total_mismatch")]            public bool    TotalMismatch         { get; set; }
 }
 
 public class MlDocumentParsePoResponse
@@ -117,6 +118,9 @@ public class ParsedPoRowDto
     // Read from the PO when it has a price column / a printed PO number.
     public decimal? UnitPrice             { get; set; }
     public string?  PoNumber              { get; set; }
+    // qty × unit price ≠ the line's printed total: an OCR misread or a
+    // crossed-out line — flagged for the reviewer.
+    public bool     TotalMismatch         { get; set; }
 }
 
 public class PoParseResultDto

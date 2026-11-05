@@ -55,6 +55,8 @@ export interface ParsedPoRow {
   // Read from the PO when it has a price column / a printed PO number.
   unitPrice?: number | null;
   poNumber?: string | null;
+  // qty × unit price ≠ the line's printed total (OCR misread / crossed-out line).
+  totalMismatch?: boolean;
 }
 
 export interface PoParseResult {

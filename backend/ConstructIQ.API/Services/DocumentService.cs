@@ -196,6 +196,7 @@ public class DocumentService(
                 PhaseHint             = i.PhaseHint,
                 UnitPrice             = i.UnitPrice is double price ? (decimal)price : null,
                 PoNumber              = i.PoNumber,
+                TotalMismatch         = i.TotalMismatch,
                 MatchedMaterialId     = materialMatches.TryGetValue(i.MaterialName.Trim().ToLower(), out var mid) ? mid : null,
                 MatchedSupplierId     = !string.IsNullOrWhiteSpace(i.SupplierName) && supplierMatches.TryGetValue(i.SupplierName.Trim().ToLower(), out var sid) ? sid : null,
             }).ToList(),

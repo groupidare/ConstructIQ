@@ -1,4 +1,5 @@
 import re
+from collections import Counter
 
 import pandas as pd
 
@@ -20,10 +21,22 @@ _ORDER_DATE_RE = re.compile(r"(?:order\s*date|po\s*date|date\s*ordered)\s*[:\-]\
 _DELIVERY_DATE_RE = re.compile(r"(?:expected\s*date|delivery\s*date|promised\s*date|eta)\s*[:\-]\s*([\w/,\- ]+)", re.IGNORECASE)
 # "PO No.: 2024-118", "P.O. # 0045", "Purchase Order Number: JSB-77" — the
 # value must contain a digit, so a label followed by a word isn't taken.
+# On scans OCR can turn the colon into a stray character ("PO No. 2 0002011"),
+# so one lone character before the value is skipped.
 _PO_NUMBER_RE = re.compile(
-    r"\b(?:purchase\s*order|p\.?\s*o\.?)\s*(?:no\.?|number|#)\s*[:\-]?\s*([A-Za-z0-9][\w\-/]*\d[\w\-/]*)",
+    r"\b(?:purchase\s*order|p\.?\s*o\.?)\s*(?:no\.?|number|#)\s*[:\-]?\s*(?:\S\s+)?([A-Za-z0-9][\w\-/]*\d[\w\-/]*)",
     re.IGNORECASE,
 )
+# A bare "Date : 03/07/2025" header field — the PO date when no "Order date"
+# label is found. Never a delivery/expected date. Month first, as written in
+# the Philippines.
+_PLAIN_DATE_RE = re.compile(
+    r"(?<![A-Za-z])(?<!delivery )(?<!expected )(?<!promised )date\s*[:\-;]?\s*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})",
+    re.IGNORECASE,
+)
+# Common OCR misreads of a unit on scanned POs ("Pcs" read as "Pes").
+_OCR_UNIT_FIX = {"pes": "pcs", "pe": "pc"}
+_STRICT_NUMBER_RE = re.compile(r"^\s*[\d,]+(?:\.\d+)?\s*$")
 
 
 def _is_unit(value: str | None) -> bool:
@@ -160,6 +173,45 @@ def _parse_price(cell) -> float | None:
     text = re.sub(r"(?i)php|₱|\$", "", str(cell)).strip()
     value = parse_quantity_from_cell(text)
     return value if value is not None and value >= 0 else None
+
+
+def _clean_unit(unit: str) -> str:
+    return _OCR_UNIT_FIX.get(unit.strip().lower(), unit.strip())
+
+
+def _infer_po_columns(rows: list) -> tuple[int | None, int | None, int | None, int | None]:
+    """(qty, unit, description, unit price) columns worked out from the item
+    rows themselves — for a scanned table whose header row doesn't line up
+    with its item rows (OCR split "Stock Number  Description" into two cells
+    on the items but kept one on the header). Qty is the first number
+    column, the unit a short word column after it, the description the
+    wordiest column, and the unit price the first number column after the
+    description (PO layouts put the unit price before the line totals)."""
+    width = max((len(r) for r in rows), default=0)
+    if width < 3:
+        return None, None, None, None
+
+    def cells(col: int) -> list[str]:
+        return [str(r[col] or "").strip() for r in rows if col < len(r)]
+
+    def share(col: int, test) -> float:
+        values = cells(col)
+        return sum(1 for v in values if v and test(v)) / max(len(values), 1)
+
+    def letters(col: int) -> float:
+        values = cells(col)
+        return sum(sum(ch.isalpha() for ch in v) for v in values) / max(len(values), 1)
+
+    numeric = [share(c, lambda v: bool(_STRICT_NUMBER_RE.match(v))) >= 0.6 for c in range(width)]
+    qty_col = next((c for c in range(width) if numeric[c]), None)
+    if qty_col is None:
+        return None, None, None, None
+    unit_col = next((c for c in range(qty_col + 1, width)
+                     if share(c, lambda v: v.replace(".", "").isalpha() and len(v) <= 8) >= 0.6), None)
+    word_cols = [c for c in range(width) if not numeric[c] and c != unit_col]
+    desc_col = max(word_cols, key=letters, default=None)
+    price_col = None if desc_col is None else next((c for c in range(desc_col + 1, width) if numeric[c]), None)
+    return qty_col, unit_col, desc_col, price_col
 
 
 def _extract_po_number(text: str) -> str | None:
@@ -404,7 +456,7 @@ def parse_po_document(request: DocumentParseRequest) -> DocumentParsePOResponse:
         supplier_match  = _SUPPLIER_RE.search(all_text)
         if supplier_match:
             doc_supplier = supplier_match.group(1).strip().splitlines()[0][:200]
-        doc_order_date    = _extract_date(_ORDER_DATE_RE, all_text)
+        doc_order_date    = _extract_date(_ORDER_DATE_RE, all_text) or _extract_date(_PLAIN_DATE_RE, all_text)
         doc_delivery_date = _extract_date(_DELIVERY_DATE_RE, all_text)
         doc_po_number     = _extract_po_number(all_text)
 
@@ -436,6 +488,21 @@ def parse_po_document(request: DocumentParseRequest) -> DocumentParsePOResponse:
                 qty_col = next((i for i, h in enumerate(headers) if i != unit_col and ("scope" in h or "area" in h)), None)
             desc_col     = _find_desc_column(headers, table, header_row, qty_col)
             supplier_col = next((i for i, h in enumerate(headers) if "supplier" in h or "vendor" in h), None)
+            total_col    = next((i for i in reversed(range(len(headers)))
+                                 if ("total" in headers[i] or "amount" in headers[i]) and "unit" not in headers[i]), None)
+
+            # Item rows wider than the header: its columns don't line up with
+            # the items (a scan), so the columns are read off the items.
+            item_rows = [r for r in table[header_row + 1:] if r and sum(1 for c in r if str(c or "").strip()) >= 3]
+            if item_rows and Counter(len(r) for r in item_rows).most_common(1)[0][0] > len(headers):
+                inferred = _infer_po_columns(item_rows)
+                if inferred[0] is not None and inferred[2] is not None:
+                    qty_col, unit_col, desc_col, price_col = inferred
+                    supplier_col = None
+                    # The line total is the last number column.
+                    last = max((c for c in range(len(item_rows[0]))
+                                if all(_STRICT_NUMBER_RE.match(str(r[c] or "")) for r in item_rows if c < len(r))), default=None)
+                    total_col = last if last not in (None, qty_col, price_col) else None
 
             if desc_col is None or qty_col is None:
                 continue
@@ -448,7 +515,7 @@ def parse_po_document(request: DocumentParseRequest) -> DocumentParsePOResponse:
 
                 desc = _clean_description(str(row[desc_col] or "").strip()) if desc_col < len(row) else ""
                 qty  = parse_quantity_from_cell(row[qty_col] if qty_col < len(row) else None)
-                unit = str(row[unit_col] or "").strip() if unit_col is not None and unit_col < len(row) else "pcs"
+                unit = _clean_unit(str(row[unit_col] or "")) if unit_col is not None and unit_col < len(row) else "pcs"
                 row_supplier = (
                     str(row[supplier_col] or "").strip()
                     if supplier_col is not None and supplier_col < len(row) else ""
@@ -456,6 +523,10 @@ def parse_po_document(request: DocumentParseRequest) -> DocumentParsePOResponse:
 
                 if qty is None or qty <= 0 or not _looks_like_real_name(desc):
                     continue
+
+                price = _parse_price(row[price_col]) if price_col is not None and price_col < len(row) else None
+                total = _parse_price(row[total_col]) if total_col is not None and total_col < len(row) else None
+                mismatch = price is not None and total is not None and abs(qty * price - total) > max(1.0, 0.01 * total)
 
                 items.append(ParsedPOItem(
                     material_name            = desc,
@@ -465,8 +536,9 @@ def parse_po_document(request: DocumentParseRequest) -> DocumentParsePOResponse:
                     order_date               = doc_order_date,
                     promised_delivery_date   = doc_delivery_date,
                     phase_hint               = current_phase,
-                    unit_price               = _parse_price(row[price_col]) if price_col is not None and price_col < len(row) else None,
+                    unit_price               = price,
                     po_number                = doc_po_number,
+                    total_mismatch           = mismatch,
                 ))
 
         if not items:
