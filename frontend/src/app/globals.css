@@ -98,7 +98,7 @@
     height: 100dvh !important;
   }
 
-  .dashboard-layout > .dashboard-content {
+  .dashboard-layout > main {
     width: 100%;
     height: 100dvh;
     margin-left: 76px;
@@ -423,7 +423,7 @@
 @media (min-width: 768px) and (max-width: 1100px) {
   /* The sidebar is fixed so expanding it overlays the page rather than
      squeezing it; the page keeps a 76px gutter for the collapsed rail. */
-  .dashboard-layout > .dashboard-content {
+  .dashboard-layout > main {
     min-width: 0;
     margin-left: 76px;
   }
@@ -500,7 +500,7 @@
     left: calc(64px + 0.5rem) !important;
   }
 
-  .dashboard-layout > .dashboard-content {
+  .dashboard-layout > main {
     margin-left: 64px;
     width: calc(100% - 64px);
     max-width: calc(100vw - 64px);
@@ -537,7 +537,7 @@
 
 @media (orientation: landscape) and (max-height: 600px) {
   .dashboard-layout,
-  .dashboard-layout > .dashboard-content,
+  .dashboard-layout > main,
   #app-sidebar {
     height: 100svh !important;
   }
@@ -643,7 +643,6 @@ html[data-theme="dark"] #dark-navy-tint {
 
 /* Page-change preloader (app/(dashboard)/loading.tsx) — fades in after a delay. */
 @keyframes preloader-fade-in { from { opacity: 0; } to { opacity: 1; } }
-/* Dark mode inverts the app; the preloader's white video inverts with it
-   (dark background, light logo) instead of staying a white box. */
+/* Dark mode inverts the app; the preloader video inverts with it (light
+   logo over the darkened, blurred page) instead of being flipped back. */
 html[data-theme="dark"] #app-shell video.preloader-video { filter: none; }
-html[data-theme="dark"] #app-preloader { filter: invert(1) hue-rotate(180deg); }

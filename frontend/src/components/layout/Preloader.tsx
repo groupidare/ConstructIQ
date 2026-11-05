@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 
 // The branded loading animation (public/constructiq-preloader.mp4 — white
 // background, logo + "LOADING.." in the middle). The poster is its last
-// frame, shown instantly while the video itself downloads.
+// frame, shown instantly while the video itself downloads. Multiply blending
+// drops its white background, so only the logo shows over the blurred page.
 export function PreloaderVideo({ width }: { width: string }) {
   return (
     <video
@@ -13,10 +14,18 @@ export function PreloaderVideo({ width }: { width: string }) {
       autoPlay muted loop playsInline preload="auto"
       aria-hidden="true"
       className="preloader-video"
-      style={{ width, aspectRatio: "16 / 9", objectFit: "cover", display: "block", pointerEvents: "none" }}
+      style={{ width, aspectRatio: "16 / 9", objectFit: "cover", display: "block", pointerEvents: "none", mixBlendMode: "multiply" }}
     />
   );
 }
+
+// The see-through, blurred cover every preloader uses — the page stays
+// faintly visible behind it.
+export const PRELOADER_OVERLAY: React.CSSProperties = {
+  position: "fixed", inset: 0, background: "rgba(255,255,255,0.5)",
+  backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
+  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+};
 
 // Opening the site: covers the page from the very first HTML (before the
 // app's scripts arrive) until React has started — the gap where a slow
@@ -37,8 +46,7 @@ export default function Preloader() {
   return (
     <div id="app-preloader" role="status" aria-label="Loading ConstructIQ"
       style={{
-        position: "fixed", inset: 0, zIndex: 5000, background: "#ffffff",
-        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        ...PRELOADER_OVERLAY, zIndex: 5000,
         opacity: phase === "leaving" ? 0 : 1, transition: "opacity 0.35s ease",
         pointerEvents: phase === "leaving" ? "none" : "auto",
       }}>

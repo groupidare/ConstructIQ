@@ -3,10 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { getPendingGets, onPendingGetsChange } from "@/lib/api";
-import { PreloaderVideo } from "./Preloader";
+import { PRELOADER_OVERLAY, PreloaderVideo } from "./Preloader";
 
-// Opening a page — from the sidebar, a link or a reload — covers the content
-// area with the preloader until that page's data has arrived: every GET the
+// Opening a page — from the sidebar, a link or a reload — covers the screen
+// with the preloader until that page's data has arrived: every GET the
 // page starts has come back and nothing new has started for a moment. Only
 // the opening of a page counts; saving or clicking around afterwards never
 // brings it back. It fades in after a short delay, so a page whose data is
@@ -58,8 +58,8 @@ export default function PageDataLoader() {
   return (
     <div role="status" aria-label="Loading"
       style={{
-        position: "absolute", inset: 0, zIndex: 800, background: "#ffffff",
-        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        // Above the sidebar rail (900), below pop-ups (1000+).
+        ...PRELOADER_OVERLAY, zIndex: 950,
         animation: "preloader-fade-in 0.25s ease 0.2s both",
       }}>
       <PreloaderVideo width="min(560px, 100%)" />
