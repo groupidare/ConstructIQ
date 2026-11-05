@@ -451,6 +451,15 @@ function selectedSlot(row: RequestRow): number {
   return named.length > 0 ? named[0].i : -1;
 }
 
+// The review's recommended supplier: the lowest price; on a tie, the better
+// delivery rating. -1 with fewer than two priced suppliers to compare.
+function recommendedSlot(row: RequestRow, ratingOf: (supplierName: string) => number): number {
+  const priced = row.quotes.map((q, i) => ({ q, i, price: quotePrice(q) })).filter(x => x.q.supplierName.trim() && x.price != null);
+  if (priced.length < 2) return -1;
+  return priced.reduce((a, b) =>
+    b.price! < a.price! || (b.price === a.price && ratingOf(b.q.supplierName) > ratingOf(a.q.supplierName)) ? b : a).i;
+}
+
 function lowestSlot(row: RequestRow): number {
   const priced = row.quotes.map((q, i) => ({ q, i })).filter(x => x.q.supplierName.trim() && quotePrice(x.q) != null);
   if (priced.length < 2) return -1;
@@ -770,6 +779,7 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                     const review = isReview(r);
                     const sel = selectedSlot(r);
                     const lowest = lowestSlot(r);
+                    const recommended = review ? recommendedSlot(r, name => historyFor(r, name)?.rating ?? 0) : -1;
                     const listId = datalistId(suggestionKey(r));
                     return (
                       <tr key={r.id} style={{ background: review ? "#fafaff" : undefined }}>
@@ -825,11 +835,13 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                           // Requests tab: nothing is highlighted or recommended.
                           const chosenHere = review ? r.chosen === slot : priceOnly && slot === sel;
                           return (
-                            <td key={slot} style={{ ...td, background: named && chosenHere ? "#fff7ed" : undefined }}>
+                            <td key={slot} style={{ ...td, background: named && chosenHere && !review ? "#fff7ed" : undefined }}>
                               {review ? (
                                 named ? (
-                                  <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", padding: "4px 6px", borderRadius: 8,
-                                    border: `1px solid ${chosenHere ? "#fdba74" : "#e5e7eb"}` }}>
+                                  <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", padding: "6px 8px", borderRadius: 8,
+                                    // Chosen: solid orange. Recommended (not chosen yet): a faint orange tint.
+                                    border: `${chosenHere ? 2 : 1}px solid ${chosenHere ? "#f97316" : slot === recommended ? "#fed7aa" : "#e5e7eb"}`,
+                                    background: chosenHere ? "#fff7ed" : slot === recommended ? "#fffaf5" : "#fff" }}>
                                     <input type="radio" name={`mrf-choice-${r.id}`} checked={chosenHere}
                                       onChange={() => updateRow(r.id, x => ({ ...x, chosen: slot }))}
                                       aria-label={`Buy ${r.materialName} from ${q.supplierName}`} style={{ marginTop: 3 }} />
@@ -837,8 +849,21 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                                       <span style={{ fontWeight: chosenHere ? 700 : 500, color: "#111827" }}>{q.supplierName}</span>
                                       <span style={{ display: "block", color: "#6b7280" }}>{price != null ? `${formatCurrency(price)}/${r.unit}` : "No price"}</span>
                                       {price != null && <span style={{ display: "block", fontSize: "0.62rem", color: "#9ca3af" }}>Total {formatCurrency(price * (rowQty(r) ?? r.quantity))}</span>}
-                                      {slot === lowest && <span style={{ display: "block", fontSize: "0.62rem", color: "#15803d", fontWeight: 700 }}>Lowest price</span>}
-                                      {chosenHere && <span style={{ display: "block", fontSize: "0.62rem", color: "#c2410c", fontWeight: 700 }}>Chosen supplier</span>}
+                                      {past && (
+                                        <span style={{ display: "block", fontSize: "0.62rem", color: "#6b7280", marginTop: 2 }}
+                                          title="From Warehouse's delivery evaluations of this supplier's past POs">
+                                          {past.rating > 0
+                                            ? `★ ${past.rating.toFixed(1)} · ${past.onTimePct}% on time · ${past.deliveries} deliver${past.deliveries === 1 ? "y" : "ies"}`
+                                            : past.deliveries > 0 ? `No ratings yet · ${past.deliveries} deliver${past.deliveries === 1 ? "y" : "ies"}` : "No ratings yet"}
+                                        </span>
+                                      )}
+                                      {slot === recommended && (
+                                        <span title="Lowest price of the quotes; on a tie, the better-rated supplier"
+                                          style={{ display: "inline-block", marginTop: 4, padding: "1px 7px", borderRadius: 999, background: "#ffedd5", color: "#c2410c", fontSize: "0.6rem", fontWeight: 700 }}>
+                                          ★ RECOMMENDED · LOWEST PRICE
+                                        </span>
+                                      )}
+                                      {chosenHere && <span style={{ display: "block", marginTop: 4, fontSize: "0.62rem", color: "#c2410c", fontWeight: 700 }}>✓ Chosen supplier</span>}
                                     </span>
                                   </label>
                                 ) : <span style={{ color: "#d1d5db" }}>—</span>
