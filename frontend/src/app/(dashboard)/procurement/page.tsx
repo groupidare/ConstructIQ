@@ -1882,7 +1882,7 @@ function ProcurementContent() {
   const [openRequests, setOpenRequests] = useState<{ projectId: number; priceOnly: boolean } | null>(null);
 
   useEffect(() => {
-    if (tabParam === "quotations" || tabParam === "requests" || tabParam === "suppliers" || tabParam === "po") setTab(tabParam);
+    if (tabParam === "requests" || tabParam === "suppliers" || tabParam === "po") setTab(tabParam);
   }, [tabParam]);
 
   // Suppliers tab search/sort — scoped to that tab only, doesn't touch the
@@ -1931,12 +1931,8 @@ function ProcurementContent() {
     // don't manage POs) must never take down orders/suppliers loading too,
     // and the tab itself is already hidden for those roles regardless.
     try {
-      const [requestsRes, quotationsRes] = await Promise.all([
-        api.get<ApiProjectWithRequests[]>("/material-requests/projects-with-pending", { params: { priceInquiry: false } }),
-        api.get<ApiProjectWithRequests[]>("/material-requests/projects-with-pending", { params: { priceInquiry: true } }),
-      ]);
+      const requestsRes = await api.get<ApiProjectWithRequests[]>("/material-requests/projects-with-pending", { params: { priceInquiry: false } });
       setRequestsProjects(requestsRes.data);
-      setQuotationProjects(quotationsRes.data);
     } catch {
       setRequestsProjects([]);
       setQuotationProjects([]);
@@ -2307,7 +2303,7 @@ function ProcurementContent() {
           <div className="procurement-tabs" style={{ display: "flex", gap: 4, background: "#e5e7eb", borderRadius: 8, padding: 4 }}>
             {([
               { id: "po", label: "Purchase Orders" },
-              ...(canManagePOs ? [{ id: "requests", label: "Requests" }, { id: "quotations", label: "Quotations" }] as const : []),
+              ...(canManagePOs ? [{ id: "requests", label: "Requests" }] as const : []),
               { id: "suppliers", label: "Suppliers" },
             ] as const).map(t => (
               <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -2320,7 +2316,7 @@ function ProcurementContent() {
                 transition: "all 0.15s",
               }}>
                 {t.label}
-                {(t.id === "requests" ? totalPendingRequests : t.id === "quotations" ? totalPendingQuotations : 0) > 0 && (
+                {t.id === "requests" && totalPendingRequests > 0 && (
                   <span style={{
                     position: "absolute", top: -6, right: -6,
                     background: "#ef4444", color: "#fff", borderRadius: 999,
@@ -2329,7 +2325,7 @@ function ProcurementContent() {
                     display: "flex", alignItems: "center", justifyContent: "center",
                     boxShadow: "0 0 0 2px #e5e7eb",
                   }}>
-                    {t.id === "requests" ? totalPendingRequests : totalPendingQuotations}
+                    {totalPendingRequests}
                   </span>
                 )}
               </button>

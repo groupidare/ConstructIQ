@@ -26,11 +26,14 @@ namespace ConstructIQ.API.Services;
 //   2. latest supplier quotation typed on the Material Request Form (the
 //      most recently updated request's chosen quote, else its lowest; a
 //      price auto-filled from a past PO isn't a quotation and is skipped)
-//   3. Material.UnitCost from the catalog, if > 0
-// Whatever can't be priced (or has no forecast quantity) is flagged on its
-// line and left out of the totals. The BOQ area quantity (sq.m) is never priced.
-// A row with no forecast is still priced per its catalog buying unit, so a
-// quotation can be asked for it — it joins the totals once forecast.
+//   3. a SIMILAR material's PO price in the same unit (MaterialNameMatch:
+//      the same product written differently, sizes agreeing; failing that,
+//      the same main noun and another shared keyword) — the latest
+//      date, the lowest on that date — shown as from that material
+//   4. Material.UnitCost from the catalog, if > 0
+// A line nothing prices stays in the breakdown with the reason, at no cost.
+// Lines with no forecast quantity are listed too but left out of the
+// totals. The BOQ area quantity (sq.m) is never priced.
 //
 // Excess cost impact values excess/waste records with the same prices and
 // the same rules (see GetExcessCostImpactAsync).
@@ -42,6 +45,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
     private const string SourceQuotation = "Supplier quotation";
     private const string SourceHistorical = "Past project";
     private const string SourceCatalog = "Material catalog";
+    private const string SourceSimilar = "Similar material";
 
     // One already-ordered line of this project, in its own unit.
     private record OrderedLine(int? BOQItemId, int? MaterialId, string Name, string Unit, decimal Quantity,
@@ -215,7 +219,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
                     ? "No forecasted purchase quantity yet"
                     : "Price ready — not in the total until it has a forecasted purchase quantity";
             else if (dto.NeedsPrice && dto.Note is null)
-                dto.Note = "No recorded price in this unit";
+                dto.Note = "No price — no PO for this material or a similar one in this unit";
 
             dto.CommittedCost = Round(dto.CommittedCost);
             dto.RemainingCost = Round(dto.RemainingCost);
@@ -466,13 +470,78 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             .ToListAsync())
             .ToDictionary(m => (m.Id, CompletedProjectDemandRules.NormalizeUnit(m.Unit)), m => new DatedPrice(m.UnitCost, null, SourceCatalog));
 
+        var similarPrices = await LoadSimilarPricesAsync(
+            materialIds.Where(id => !poPrices.Keys.Any(k => k.Item1 == id)).ToList());
+
         return (materialId, unit) =>
         {
             var key = (materialId, CompletedProjectDemandRules.NormalizeUnit(unit));
             return poPrices.GetValueOrDefault(key)
                 ?? quotePrices.GetValueOrDefault(key)
+                ?? similarPrices.GetValueOrDefault(key)
                 ?? catalogPrices.GetValueOrDefault(key);
         };
+    }
+
+    // For materials with no PO price of their own: the PO price of a similar
+    // material (see MaterialNameMatch.IsSimilar) in each unit — the latest
+    // date, the lowest on that date — referenced by that material's name.
+    // Compared only against materials that have a PO price at all.
+    private async Task<Dictionary<(int, string), DatedPrice>> LoadSimilarPricesAsync(List<int> unpricedIds)
+    {
+        if (unpricedIds.Count == 0) return [];
+
+        var pricedIds = (await db.PurchaseOrderMaterials
+                .Where(m => m.UnitPrice != null && m.MaterialId != null && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
+                .Select(m => m.MaterialId!.Value).Distinct().ToListAsync())
+            .Concat(await db.HistoricalMaterialSupplies
+                .Where(h => h.UnitCost != null)
+                .Select(h => h.BOQItem.MaterialId).Distinct().ToListAsync())
+            .ToHashSet();
+        var names = await db.Materials
+            .Where(m => unpricedIds.Contains(m.Id) || pricedIds.Contains(m.Id))
+            .Select(m => new { m.Id, m.Name })
+            .ToDictionaryAsync(m => m.Id, m => m.Name);
+
+        var candidates = pricedIds.Where(names.ContainsKey).Select(id => (Id: id, Key: MaterialNameMatch.Prepare(names[id]))).ToList();
+        var similarOf = unpricedIds.Where(names.ContainsKey).ToDictionary(id => id, id =>
+        {
+            var key = MaterialNameMatch.Prepare(names[id]);
+            var similar = candidates.Where(c => c.Id != id && MaterialNameMatch.IsSimilar(key, c.Key)).Select(c => c.Id).ToList();
+            // None that close: a second look by keyword.
+            return similar.Count > 0 ? similar
+                : candidates.Where(c => c.Id != id && MaterialNameMatch.IsKeywordMatch(key, c.Key)).Select(c => c.Id).ToList();
+        });
+        var similarIds = similarOf.Values.SelectMany(v => v).Distinct().ToList();
+        if (similarIds.Count == 0) return [];
+
+        var system = (await db.PurchaseOrderMaterials
+                .Where(m => m.UnitPrice != null && m.MaterialId != null && similarIds.Contains(m.MaterialId.Value)
+                    && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
+                .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Date = m.PurchaseOrder.OrderDate, m.Id, m.PurchaseOrder.Number, Supplier = m.PurchaseOrder.Supplier.Name })
+                .ToListAsync())
+            .Select(m => new PoPrice(m.MaterialId, m.Unit, m.Price, m.Date, m.Id, SourcePo, $"{m.Number} · {m.Supplier}"));
+        var historical = (await db.HistoricalMaterialSupplies
+                .Where(h => h.UnitCost != null && similarIds.Contains(h.BOQItem.MaterialId))
+                .Select(h => new { h.BOQItem.MaterialId, h.Unit, Price = h.UnitCost!.Value, Date = h.PoDate ?? h.BOQItem.Project.TargetEndDate, h.Id, Project = h.BOQItem.Project.Name, h.PoNumber })
+                .ToListAsync())
+            .Select(h => new PoPrice(h.MaterialId, h.Unit, h.Price, h.Date, h.Id, SourceHistorical,
+                string.IsNullOrWhiteSpace(h.PoNumber) ? h.Project : $"{h.PoNumber} · {h.Project}"));
+        var all = system.Concat(historical).ToList();
+
+        var result = new Dictionary<(int, string), DatedPrice>();
+        foreach (var (target, similar) in similarOf)
+        {
+            var set = similar.ToHashSet();
+            foreach (var g in all.Where(p => set.Contains(p.MaterialId)).GroupBy(p => CompletedProjectDemandRules.NormalizeUnit(p.Unit)))
+            {
+                var latestDay = g.Max(p => p.Date.Date);
+                var pick = g.Where(p => p.Date.Date == latestDay).OrderBy(p => p.Price).ThenByDescending(p => p.Id).First();
+                result[(target, g.Key)] = new DatedPrice(pick.Price, pick.Date, SourceSimilar,
+                    $"{names.GetValueOrDefault(pick.MaterialId)} · {pick.Reference}");
+            }
+        }
+        return result;
     }
 
     private record PoPrice(int MaterialId, string Unit, decimal Price, DateTime Date, int Id, string Source, string Reference);

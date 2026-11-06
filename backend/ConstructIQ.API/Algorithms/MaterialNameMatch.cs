@@ -21,10 +21,33 @@ public static class MaterialNameMatch
 
     private static readonly Regex NonAlnum = new("[^a-z0-9]+", RegexOptions.Compiled);
 
-    public static bool IsSimilar(string? a, string? b)
+    // A name's words and sizes, worked out once when one name is compared
+    // with many.
+    public sealed record NameKey(HashSet<string> Words, HashSet<string> Sizes, string? Head);
+
+    public static NameKey Prepare(string? name)
     {
-        var (wordsA, sizesA) = Tokens(a);
-        var (wordsB, sizesB) = Tokens(b);
+        var (words, sizes) = Tokens(name);
+        return new NameKey(words, sizes, Head(name));
+    }
+
+    // Looser than IsSimilar, for a second look by keyword: the same main noun
+    // ("… Fan") plus at least one more shared word, and sizes that don't
+    // conflict — an 8-inch exhaust fan matches another 8-inch one, never a
+    // 10-inch one.
+    public static bool IsKeywordMatch(NameKey a, NameKey b)
+    {
+        if (a.Head is null || a.Head != b.Head) return false;
+        if (a.Words.Intersect(b.Words).Count() < 2) return false;
+        return a.Sizes.Count == 0 || b.Sizes.Count == 0 || a.Sizes.Overlaps(b.Sizes);
+    }
+
+    public static bool IsSimilar(string? a, string? b) => IsSimilar(Prepare(a), Prepare(b));
+
+    public static bool IsSimilar(NameKey a, NameKey b)
+    {
+        var (wordsA, sizesA) = (a.Words, a.Sizes);
+        var (wordsB, sizesB) = (b.Words, b.Sizes);
         if (wordsA.Count == 0 || wordsB.Count == 0) return false;
         var shared = wordsA.Intersect(wordsB).Count();
         if (shared < 2 || shared < 0.5 * Math.Min(wordsA.Count, wordsB.Count)) return false;
