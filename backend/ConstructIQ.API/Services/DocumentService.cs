@@ -233,29 +233,40 @@ public class DocumentService(
         return content;
     }
 
-    public async Task<bool> DeleteAsync(int documentId)
+    public async Task<bool> DeleteAsync(int documentId) =>
+        await DeleteManyAsync([documentId]) > 0;
+
+    // Deletes the documents in one go (one save, the stored files removed in
+    // parallel) — "Delete selected" on 30 PO files is one request, not 30.
+    // An imported PO read from one of these files goes with it (see
+    // PurchaseOrderRemoval). Returns how many documents were deleted.
+    public async Task<int> DeleteManyAsync(IReadOnlyCollection<int> documentIds)
     {
-        var doc = await db.ProjectDocuments.FindAsync(documentId);
-        if (doc is null) return false;
+        var docs = await db.ProjectDocuments.Where(d => documentIds.Contains(d.Id)).ToListAsync();
+        if (docs.Count == 0) return 0;
+        var paths = docs.Select(d => d.StoragePath).ToList();
+        var projectIds = docs.Select(d => d.ProjectId).Distinct().ToList();
 
-        // An imported PO read from this file goes with it (see PurchaseOrderRemoval).
-        var importedPos = await db.PurchaseOrders
-            .Where(po => po.IsImported && po.ProjectId == doc.ProjectId && po.PoFileUrl == doc.StoragePath)
-            .ToListAsync();
-        db.PurchaseOrders.RemoveRange(importedPos);
+        db.PurchaseOrders.RemoveRange(await db.PurchaseOrders
+            .Where(po => po.IsImported && projectIds.Contains(po.ProjectId) && po.PoFileUrl != null && paths.Contains(po.PoFileUrl))
+            .ToListAsync());
+        // A PO made in ConstructIQ never comes from these folders; should one
+        // still point at a file, that file itself is kept for it.
+        var keep = (await db.PurchaseOrders
+                .Where(po => !po.IsImported && po.PoFileUrl != null && paths.Contains(po.PoFileUrl))
+                .Select(po => po.PoFileUrl!)
+                .ToListAsync())
+            .ToHashSet();
 
-        // A PO made in ConstructIQ never comes from this folder; should one
-        // still point at the file, the file itself is kept for it.
-        var usedByOtherPo = await db.PurchaseOrders.AnyAsync(po => !po.IsImported && po.PoFileUrl == doc.StoragePath);
-        if (!usedByOtherPo)
-        {
-            try { await storage.DeleteAsync(doc.StoragePath); }
-            catch (Exception ex) { logger.LogWarning(ex, "Couldn't delete R2 object for document {DocumentId}.", documentId); }
-        }
-
-        db.ProjectDocuments.Remove(doc);
+        db.ProjectDocuments.RemoveRange(docs);
         await db.SaveChangesAsync();
-        return true;
+
+        await Task.WhenAll(docs.Where(d => !keep.Contains(d.StoragePath)).Select(async d =>
+        {
+            try { await storage.DeleteAsync(d.StoragePath); }
+            catch (Exception ex) { logger.LogWarning(ex, "Couldn't delete R2 object for document {DocumentId}.", d.Id); }
+        }));
+        return docs.Count;
     }
 
     private static ProjectDocumentDto ToDto(ProjectDocument d) => new()

@@ -425,8 +425,11 @@ function mapRequestRow(a: ApiMaterialRequest): RequestRow {
 // One supplier written two ways ("… Trading" / "… Trading Corp.") is one
 // supplier — the same folding as the server's MaterialNameMatch.SupplierKey.
 const COMPANY_SUFFIXES = new Set(["inc", "incorporated", "corp", "corporation", "co", "company", "ltd", "limited", "llc", "opc", "phil", "phils", "philippines"]);
+// A trailing single letter ("… Trading B") is the same supplier too.
 function supplierKey(name: string): string {
-  return name.toLowerCase().replace(/&/g, " and ").split(/[^a-z0-9]+/).filter(w => w && !COMPANY_SUFFIXES.has(w)).join(" ");
+  const words = name.toLowerCase().replace(/&/g, " and ").split(/[^a-z0-9]+/).filter(w => w && !COMPANY_SUFFIXES.has(w));
+  while (words.length > 1 && /^[a-z]$/.test(words[words.length - 1])) words.pop();
+  return words.join(" ");
 }
 
 // Fills a material's empty supplier slots, each with a different supplier:

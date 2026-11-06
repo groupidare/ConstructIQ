@@ -24,6 +24,8 @@ public class MaterialNameMatchTests
 
     [Theory]
     [InlineData("CircuitPro Electrical Trading", "CircuitPro Electrical Trading Corp.")]
+    [InlineData("CircuitPro Electrical Trading B", "CircuitPro Electrical Trading C")]
+    [InlineData("MechSafe Systems Philippines A", "MechSafe Systems Philippines, Inc.")]
     [InlineData("JS Builders Hardware & Construction Supply", "JS Builders Hardware and Construction Supply, Inc.")]
     public void SupplierSpellings_ShareAKey(string a, string b) =>
         Assert.Equal(MaterialNameMatch.SupplierKey(a), MaterialNameMatch.SupplierKey(b));

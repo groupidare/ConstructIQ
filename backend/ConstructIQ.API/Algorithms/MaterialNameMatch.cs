@@ -70,7 +70,14 @@ public static class MaterialNameMatch
     private static readonly HashSet<string> CompanySuffixes =
         ["inc", "incorporated", "corp", "corporation", "co", "company", "ltd", "limited", "llc", "opc", "phil", "phils", "philippines"];
 
-    public static string SupplierKey(string? name) =>
-        string.Join(' ', NonAlnum.Split((name ?? "").ToLowerInvariant().Replace("&", " and "))
-            .Where(w => w.Length > 0 && !CompanySuffixes.Contains(w)));
+    // A trailing single letter ("CircuitPro Electrical Trading B") is a branch
+    // or entry marker, not a different supplier, so it's dropped too.
+    public static string SupplierKey(string? name)
+    {
+        var words = NonAlnum.Split((name ?? "").ToLowerInvariant().Replace("&", " and "))
+            .Where(w => w.Length > 0 && !CompanySuffixes.Contains(w))
+            .ToList();
+        while (words.Count > 1 && words[^1].Length == 1 && char.IsLetter(words[^1][0])) words.RemoveAt(words.Count - 1);
+        return string.Join(' ', words);
+    }
 }

@@ -76,7 +76,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const [poOrderDate, setPoOrderDate] = useState('');
   const [poExpectedDate, setPoExpectedDate] = useState('');
 
-  const { documents, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument } = useDocuments(project.id);
+  const { documents, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument, deleteDocuments } = useDocuments(project.id);
   const { items: boqItems, fetchItems: fetchBoqItems, saveItems: saveBoqItems, deleteItem: deleteBoqItem, getHistoricalEstimate } = useBOQ(project.id);
   const { inventory, fetchInventory } = useInventory(project.id);
   const { items: warehouseStock, links: warehouseStockLinks, fetchCurrent: fetchWarehouseStock, fetchLinks: fetchWarehouseStockLinks, saveLink: saveWarehouseStockLink, removeLink: removeWarehouseStockLink } = useWarehouseStock();
@@ -192,13 +192,12 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   // Several files at once (the PO files folder's "Delete selected"): one
   // message for the lot instead of one per file.
   async function handleRemoveDocuments(documentIds: number[]) {
-    let failed = 0;
-    for (const id of documentIds) {
-      try { await deleteDocument(id); } catch { failed++; }
+    try {
+      await deleteDocuments(documentIds);
+      toast.success(`${documentIds.length} file${documentIds.length === 1 ? '' : 's'} removed.`);
+    } catch {
+      toast.error(`Couldn't remove the file${documentIds.length === 1 ? '' : 's'} — try again.`);
     }
-    const removed = documentIds.length - failed;
-    if (removed > 0) toast.success(`${removed} file${removed === 1 ? '' : 's'} removed.`);
-    if (failed > 0) toast.error(`${failed} file${failed === 1 ? '' : 's'} couldn't be removed — try again.`);
     // An imported PO read from a deleted file was deleted with it.
     fetchPurchaseOrders();
   }

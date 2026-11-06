@@ -11,6 +11,7 @@ public interface IDocumentService
     Task<DocumentParseResultDto> ParseAsync(int documentId);
     Task<PoParseResultDto> ParsePOAsync(int documentId);
     Task<bool> DeleteAsync(int documentId);
+    Task<int> DeleteManyAsync(IReadOnlyCollection<int> documentIds);
     // The stored file's bytes, wherever it lives (R2 URL or local upload).
     Task<byte[]> ReadFileBytesAsync(string storagePath);
 }

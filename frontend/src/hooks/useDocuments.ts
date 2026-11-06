@@ -46,5 +46,12 @@ export function useDocuments(projectId: number) {
     setDocuments(prev => prev.filter(d => d.id !== documentId));
   }
 
-  return { documents, loading, error, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument };
+  // Many files in one request.
+  async function deleteDocuments(documentIds: number[]): Promise<void> {
+    await api.post('/documents/delete-many', { ids: documentIds });
+    const gone = new Set(documentIds);
+    setDocuments(prev => prev.filter(d => !gone.has(d.id)));
+  }
+
+  return { documents, loading, error, fetchDocuments, uploadDocument, parseDocument, parsePO, deleteDocument, deleteDocuments };
 }

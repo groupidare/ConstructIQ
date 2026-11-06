@@ -114,4 +114,19 @@ public class DocumentsController(IDocumentService documentService, IProjectAcces
         var deleted = await documentService.DeleteAsync(id);
         return deleted ? NoContent() : NotFound();
     }
+
+    public record DeleteDocumentsDto(List<int> Ids);
+
+    // Several files in one request (the PO files folder's "Delete selected").
+    [HttpPost("delete-many")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> DeleteMany([FromBody] DeleteDocumentsDto dto)
+    {
+        var ids = dto.Ids.Distinct().ToList();
+        if (ids.Count == 0) return Ok(new { deleted = 0 });
+        foreach (var id in ids)
+            if (!await projectAccess.CanEditDocumentAsync(id, CurrentUserId, CurrentRole))
+                return Forbid();
+        return Ok(new { deleted = await documentService.DeleteManyAsync(ids) });
+    }
 }
