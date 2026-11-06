@@ -238,8 +238,14 @@ public class DocumentService(
         var doc = await db.ProjectDocuments.FindAsync(documentId);
         if (doc is null) return false;
 
-        try { await storage.DeleteAsync(doc.StoragePath); }
-        catch (Exception ex) { logger.LogWarning(ex, "Couldn't delete R2 object for document {DocumentId}.", documentId); }
+        // A purchase order made from this file (an imported PO) keeps it as its
+        // attached scan — then only the document entry goes, not the file itself.
+        var usedByPo = await db.PurchaseOrders.AnyAsync(po => po.PoFileUrl == doc.StoragePath);
+        if (!usedByPo)
+        {
+            try { await storage.DeleteAsync(doc.StoragePath); }
+            catch (Exception ex) { logger.LogWarning(ex, "Couldn't delete R2 object for document {DocumentId}.", documentId); }
+        }
 
         db.ProjectDocuments.Remove(doc);
         await db.SaveChangesAsync();

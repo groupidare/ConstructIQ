@@ -173,6 +173,18 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     }
   }
 
+  // Several files at once (the PO files folder's "Delete selected"): one
+  // message for the lot instead of one per file.
+  async function handleRemoveDocuments(documentIds: number[]) {
+    let failed = 0;
+    for (const id of documentIds) {
+      try { await deleteDocument(id); } catch { failed++; }
+    }
+    const removed = documentIds.length - failed;
+    if (removed > 0) toast.success(`${removed} file${removed === 1 ? '' : 's'} removed.`);
+    if (failed > 0) toast.error(`${failed} file${failed === 1 ? '' : 's'} couldn't be removed — try again.`);
+  }
+
   async function handleParseBoq(documentId: number) {
     try {
       const result = await parseDocument(documentId);
@@ -621,7 +633,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     loadProcurementRequests: () => fetchSentMaterialRequests(project.id),
     savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
     blueprintDoc, setBlueprintDoc, handleBlueprintRows, compareRows, setCompareRows,
-    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
+    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument, handleRemoveDocuments,
     handleSaveBoq, handleDeleteBoqRow, handleRunForecast, handleNotify,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
     handlePurchaseOrdersImported: () => { fetchPurchaseOrders(); fetchDocuments(); },
@@ -713,6 +725,7 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onUploadBoq={state.handleUploadBoq}
       onParseBoq={state.handleParseBoq}
       onRemoveDocument={state.handleRemoveDocument}
+      onRemoveDocuments={state.handleRemoveDocuments}
       rows={state.boqRows}
       boqItems={state.boqItems}
       onRowsChange={state.setBoqRows}

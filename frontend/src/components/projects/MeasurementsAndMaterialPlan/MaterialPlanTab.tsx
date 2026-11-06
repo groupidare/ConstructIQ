@@ -68,6 +68,7 @@ interface Props {
   saving: boolean;
   onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string, boqItemId: number | undefined) => Promise<boolean>;
   onRemoveDocument: (documentId: number) => void;
+  onRemoveDocuments: (documentIds: number[]) => Promise<void>;
   onRunForecast: () => void;
   forecasting: boolean;
   // Purchase Orders — actuals, paired against the BOQ estimates above.
@@ -150,7 +151,7 @@ function TotalAreaCell({ quantity, unit, editable, missingUnit, onChange }: {
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
   inventory, warehouseStock, warehouseStockLinks, onBulkRequest, onRefreshStock, onLoadWarehouseRequests, onLoadProcurementRequests, onSaveStockLink, onRemoveStockLink, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
-  rows, boqItems, onRowsChange, planOpen, planFocus, onViewPlan, onPlanFocus, onSave, onDeleteRow, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
+  rows, boqItems, onRowsChange, planOpen, planFocus, onViewPlan, onPlanFocus, onSave, onDeleteRow, saving, onNotify, onRemoveDocument, onRemoveDocuments, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onPurchaseOrdersImported,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
@@ -160,6 +161,10 @@ export default function MaterialPlanTab({
   const [showImport, setShowImport] = useState(false);
   // The uploaded PO files sit in one folder, closed by default.
   const [poFilesOpen, setPoFilesOpen] = useState(false);
+  // PO files ticked for "Delete selected", and the confirm step before it.
+  const [selectedPoDocs, setSelectedPoDocs] = useState<Set<number>>(new Set());
+  const [confirmPoDelete, setConfirmPoDelete] = useState(false);
+  const [deletingPoDocs, setDeletingPoDocs] = useState(false);
   // PO prices are entered and seen only by the roles that manage POs (the
   // backend also nulls them out for everyone else).
   const role = useAuthStore(s => s.user?.role);
@@ -1463,10 +1468,62 @@ export default function MaterialPlanTab({
               <span style={{ fontSize: '0.76rem', fontWeight: 600, color: '#374151' }}>PO files</span>
               <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>{poDocs.length} file{poDocs.length === 1 ? '' : 's'}</span>
             </button>
+            {poFilesOpen && editable && (() => {
+              const ids = poDocs.map(d => d.id);
+              const picked = ids.filter(id => selectedPoDocs.has(id));
+              const allPicked = picked.length > 0 && picked.length === ids.length;
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '0 1rem 0.5rem 2.6rem' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: '#374151', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={allPicked}
+                      ref={el => { if (el) el.indeterminate = picked.length > 0 && !allPicked; }}
+                      onChange={() => { setSelectedPoDocs(allPicked ? new Set() : new Set(ids)); setConfirmPoDelete(false); }} />
+                    Select all
+                  </label>
+                  {picked.length > 0 && (confirmPoDelete ? (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: '#991b1b', fontWeight: 600 }}>
+                      Delete {picked.length} file{picked.length === 1 ? '' : 's'}?
+                      <button type="button" disabled={deletingPoDocs}
+                        onClick={async () => {
+                          setDeletingPoDocs(true);
+                          try { await onRemoveDocuments(picked); setSelectedPoDocs(new Set()); setConfirmPoDelete(false); }
+                          finally { setDeletingPoDocs(false); }
+                        }}
+                        style={{ padding: '3px 10px', borderRadius: 6, border: 'none', background: '#dc2626', color: '#fff', fontSize: '0.7rem', fontWeight: 700, cursor: 'pointer', opacity: deletingPoDocs ? 0.7 : 1 }}>
+                        {deletingPoDocs ? 'Deleting…' : 'Yes, delete'}
+                      </button>
+                      <button type="button" disabled={deletingPoDocs} onClick={() => setConfirmPoDelete(false)}
+                        style={{ padding: '3px 10px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.7rem', fontWeight: 600, cursor: 'pointer' }}>
+                        Cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <button type="button" onClick={() => setConfirmPoDelete(true)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 10px', borderRadius: 6, border: '1px solid #fecaca', background: '#fff', color: '#dc2626', fontSize: '0.7rem', fontWeight: 700, cursor: 'pointer' }}>
+                      <Trash2 style={{ width: 12, height: 12 }} /> Delete selected ({picked.length})
+                    </button>
+                  ))}
+                  {picked.length > 0 && !confirmPoDelete && (
+                    <span style={{ fontSize: '0.65rem', color: '#9ca3af' }}>Saved POs keep their attached scan.</span>
+                  )}
+                </div>
+              );
+            })()}
             {poFilesOpen && (
           <div style={{ padding: '0 1rem 0.625rem 2.6rem', display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 260, overflowY: 'auto' }}>
             {poDocs.map(doc => (
               <div key={doc.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {editable && (
+                  <input type="checkbox" checked={selectedPoDocs.has(doc.id)} aria-label={`Select ${doc.fileName}`}
+                    onChange={() => {
+                      setConfirmPoDelete(false);
+                      setSelectedPoDocs(prev => {
+                        const next = new Set(prev);
+                        if (next.has(doc.id)) next.delete(doc.id); else next.add(doc.id);
+                        return next;
+                      });
+                    }} />
+                )}
                 <FileText style={{ width: 12, height: 12, color: '#9ca3af', flexShrink: 0 }} />
                 <a href={resolveUploadUrl(doc.url) ?? "#"} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', color: '#374151', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {doc.fileName}
