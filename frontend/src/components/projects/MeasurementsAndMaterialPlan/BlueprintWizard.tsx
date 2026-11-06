@@ -588,7 +588,7 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                               <td style={td}><input type="number" min="0" step="0.01" value={r.perimeterM} onChange={e => setRoom(i, { perimeterM: Number(e.target.value) || 0 })} style={small} aria-label="Perimeter" />
                                 {r.glassLengthM > 0 && (
                                   <span style={{ display: 'block', fontSize: '0.64rem', color: '#6b7280', marginTop: 2 }}>
-                                    {fmt(r.glassLengthM)} m is glass, not painted · <button style={{ ...link, fontSize: '0.64rem' }} onClick={() => setRoom(i, { glassLengthM: 0 })}>Count it</button>
+                                    {fmt(r.glassLengthM)} m is glass, not painted
                                   </span>
                                 )}</td>
                               <td style={td}><input type="number" min="0" step="0.01" value={r.heightM ?? ''} placeholder="enter for walls" onChange={e => setRoom(i, { heightM: e.target.value === '' ? null : Number(e.target.value) })}
