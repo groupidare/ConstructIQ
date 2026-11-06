@@ -39,9 +39,10 @@ export default function ExcessAnalyticsProjectPage() {
     setSubmitting(true);
     try {
       await createRecord(form);
-      toast.success('Record added!');
-      await fetchSummary();
+      // Saved — close now; the summary refreshes behind it.
       setShowModal(false);
+      toast.success('Record added!');
+      Promise.resolve(fetchSummary()).catch(() => { /* the summary just stays as it was */ });
     } catch {
       toast.error('Failed to save record.');
     } finally {

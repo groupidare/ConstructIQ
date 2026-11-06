@@ -307,20 +307,19 @@ export default function MaterialPlanTab({
       const newRows = rows.slice();
       newRows[index] = { ...row, requestedQuantity: totalRequested };
 
+      // The request is sent — close the dialog now; the running total is
+      // saved in the background rather than holding the dialog open for it.
       onRowsChange(newRows);
-      try {
-        await onSave(newRows, { silent: true });
-        const remainder = (row.estimatedPurchaseQuantity ?? totalRequested) - totalRequested;
-        toast.success(remainder > 0
-          ? `Requested ${qty.toLocaleString()} ${unit}. ${remainder.toLocaleString()} ${unit} still remaining.`
-          : remainder < 0
-          ? `Requested ${qty.toLocaleString()} ${unit}. ${(-remainder).toLocaleString()} ${unit} over the estimate.`
-          : `Requested ${qty.toLocaleString()} ${unit}. Fully covered.`);
-      } catch {
-        toast.error('Request sent, but saving the updated Bill of Quantities failed — click Save Material Plan to retry.');
-      }
       setRequestPrompt(null);
       setRequestPromptQty('');
+      const remainder = (row.estimatedPurchaseQuantity ?? totalRequested) - totalRequested;
+      toast.success(remainder > 0
+        ? `Requested ${qty.toLocaleString()} ${unit}. ${remainder.toLocaleString()} ${unit} still remaining.`
+        : remainder < 0
+        ? `Requested ${qty.toLocaleString()} ${unit}. ${(-remainder).toLocaleString()} ${unit} over the estimate.`
+        : `Requested ${qty.toLocaleString()} ${unit}. Fully covered.`);
+      onSave(newRows, { silent: true }).catch(() =>
+        toast.error('Request sent, but saving the updated Bill of Quantities failed — click Save Material Plan to retry.'));
     } finally {
       setSubmittingRequest(false);
     }
@@ -661,11 +660,9 @@ export default function MaterialPlanTab({
         ? { ...r, requestedQuantity: (r.requestedQuantity ?? 0) + sent.get(r.id)! }
         : r));
       onRowsChange(newRows);
-      try {
-        await onSave(newRows, { silent: true });
-      } catch {
-        toast.error('Requests sent, but saving the updated Bill of Quantities failed — click Save Material Plan to retry.');
-      }
+      // Saved in the background — the dialog doesn't wait for it.
+      onSave(newRows, { silent: true }).catch(() =>
+        toast.error('Requests sent, but saving the updated Bill of Quantities failed — click Save Material Plan to retry.'));
       const parts = [
         counts.warehouse ? `${counts.warehouse} to the warehouse` : '',
         counts.procurement ? `${counts.procurement} to Procurement` : '',

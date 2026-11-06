@@ -2005,9 +2005,10 @@ function ProcurementContent() {
   async function handleCompleteDelivery(po: PO) {
     try {
       await api.post(`/purchase-orders/${po.id}/complete-delivery`, {});
-      await refetch();
+      // Done — close now; the list refreshes behind it.
       setDeliveryPOId(null);
       toast.success(`${displayPoNumber(po)} marked delivered.`);
+      refetch().catch(() => { /* the list just stays as it was */ });
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(message ?? "Failed to complete delivery.");
@@ -2026,9 +2027,9 @@ function ProcurementContent() {
         ActualLeadDays: submission.actualLeadDays,
         Comments: submission.comments || undefined,
       });
-      await refetch();
       setRatingPOId(null);
       toast.success(`${po.supplier} rated.`);
+      refetch().catch(() => { /* the list just stays as it was */ });
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(message ?? "Failed to submit delivery evaluation.");
