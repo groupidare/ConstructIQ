@@ -96,7 +96,7 @@ public class BOQService(AppDbContext db) : IBOQService
     // What the Material Plan's Scan & Fill Rows puts on the rows it adds.
     private const string ScannedRowNote = "Auto-scanned";
 
-    private static string ScannedRowKey(string section, string? subCategory, int materialId, string? unit, string? specification, decimal quantity) =>
+    private static string ScannedRowKey(string? section, string? subCategory, int materialId, string? unit, string? specification, decimal quantity) =>
         string.Join('|',
             new[] { section, subCategory, unit, specification }.Select(v => (v ?? "").Trim().ToLowerInvariant())
                 .Append(materialId.ToString())

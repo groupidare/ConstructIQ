@@ -420,7 +420,8 @@ export default function MaterialPlanTab({
   // material — the same fallback the server uses.
   const reconciliation = useMemo(() => {
     const actualByBoqItemId = new Map<number, number>();
-    purchaseOrders.forEach(po => {
+    // A cancelled PO was never bought.
+    purchaseOrders.filter(po => po.status !== 'Cancelled').forEach(po => {
       po.materials.forEach(m => {
         const rowId = m.boqItemId ?? (m.materialId != null ? rows.find(r => r.id != null && r.materialId === m.materialId)?.id : undefined);
         if (rowId != null) actualByBoqItemId.set(rowId, (actualByBoqItemId.get(rowId) ?? 0) + m.quantity);
