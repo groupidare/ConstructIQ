@@ -508,6 +508,7 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
                 PodPhotoUrls = b.Photos.Where(p => p.DocumentType == DeliveryDocumentType.ProofOfDelivery).Select(p => p.Url).ToList(),
             }).ToList(),
         HasEvaluation = po.Evaluation is not null,
+        DeliveredOnTime = po.Evaluation?.OnTime,
         PoFileUrl = po.PoFileUrl,
         IsImported = po.IsImported,
         OriginalPoNumber = po.OriginalPoNumber,

@@ -497,7 +497,7 @@ function quoteProblem(row: RequestRow): string | null {
 // ── Export CSV ────────────────────────────────────────────────────────────────
 
 function exportPOs(orders: PO[]) {
-  const header = ["PO Number","Project Name","Supplier","Status","Expected Date","Materials"];
+  const header = ["PO Number","Project Name","Supplier","Status","Est. Delivery","Materials"];
   const rows = orders.map(p => [displayPoNumber(p), `"${p.projectName}"`, `"${p.supplier}"`, getEffectiveStatus(p), p.expectedDate, `"${p.materials.map(m => `${m.name} (${m.qty})`).join("; ")}"`].join(","));
   const csv = [header.join(","), ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
@@ -754,6 +754,53 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                     At the review, choose the one supplier to buy each material from; <b>Generate P.O. Number</b> then makes the purchase orders.</>
                 )}
               </p>
+              {rows.length === 0 && (
+                <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "1.5rem 0" }}>
+                  {priceOnly ? "No materials waiting for a quotation." : "No pending requests for this project."}
+                </p>
+              )}
+              {(priceOnly
+                ? [{ key: "all", title: "", hint: "", list: rows }]
+                : [
+                    { key: "entry", title: "New requests", hint: "Fill in the suppliers and prices, then Save Request.", list: entryRows },
+                    { key: "review", title: "For Approval", hint: "Choose the one supplier to buy each material from, then Generate P.O. Number.", list: reviewRows },
+                  ]
+              ).filter(section => section.list.length > 0).map(section => (
+              <div key={section.key} style={priceOnly ? undefined : {
+                border: `1px solid ${section.key === "review" ? "#ddd6fe" : "#e5e7eb"}`, borderRadius: 12,
+                marginBottom: "1rem", overflow: "hidden", background: section.key === "review" ? "#fcfbff" : "#fff",
+              }}>
+              {!priceOnly && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "0.7rem 0.9rem",
+                  borderBottom: "1px solid #f3f4f6", background: section.key === "review" ? "#f5f3ff" : "#f9fafb" }}>
+                  <div>
+                    <p style={{ fontWeight: 800, fontSize: "0.85rem", color: section.key === "review" ? "#6d28d9" : "#111827", margin: 0 }}>
+                      {section.title} <span style={{ fontWeight: 600, color: "#9ca3af" }}>· {section.list.length}</span>
+                    </p>
+                    <p style={{ fontSize: "0.68rem", color: "#6b7280", margin: "2px 0 0" }}>{section.hint}</p>
+                  </div>
+                  {section.key === "entry" ? (
+                    <button onClick={handleSave} disabled={busy} style={{
+                      padding: "8px 16px", borderRadius: 8, border: "none", background: "#111827", color: "#fff",
+                      fontWeight: 700, fontSize: "0.8rem", cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.7 : 1,
+                    }}>
+                      {saving ? "Saving…" : "Save Request"}
+                    </button>
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {!allChosen && <span style={{ fontSize: "0.68rem", color: "#6b7280" }}>Choose a supplier for every material first.</span>}
+                      {/* Active only once every material here has its supplier chosen. */}
+                      <button onClick={handleGenerate} disabled={busy || !allChosen} style={{
+                        padding: "8px 16px", borderRadius: 8, border: "none",
+                        background: allChosen ? "#f97316" : "#e5e7eb", color: allChosen ? "#fff" : "#6b7280", fontWeight: 700, fontSize: "0.8rem",
+                        cursor: (busy || !allChosen) ? "not-allowed" : "pointer", opacity: busy ? 0.7 : 1,
+                      }}>
+                        {generating ? "Generating…" : "Generate P.O. Number"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
               <table style={{ width: "100%", minWidth: 1000, borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
@@ -767,17 +814,14 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.length === 0 && (
-                    <tr><td colSpan={10} style={{ ...td, textAlign: "center", color: "#9ca3af", padding: "1.5rem" }}>{priceOnly ? "No materials waiting for a quotation." : "No pending requests for this project."}</td></tr>
-                  )}
-                  {rows.map((r, idx) => {
+                  {section.list.map((r, idx) => {
                     const review = isReview(r);
                     const sel = selectedSlot(r);
                     const lowest = lowestSlot(r);
                     const recommended = review ? recommendedSlot(r, name => historyFor(r, name)?.rating ?? 0) : -1;
                     const listId = datalistId(suggestionKey(r));
                     return (
-                      <tr key={r.id} style={{ background: review ? "#fafaff" : undefined }}>
+                      <tr key={r.id}>
                         <td style={{ ...td, color: "#9ca3af" }}>{idx + 1}</td>
                         <td style={{ ...td, fontWeight: 600, color: "#111827", minWidth: 150 }}>
                           {r.materialName}
@@ -943,6 +987,8 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                   })}
                 </tbody>
               </table>
+              </div>
+              ))}
               {/* One suggestion list per material + unit, shared by its supplier fields. */}
               {Object.entries(suggestions).map(([key, list]) => (
                 <datalist key={key} id={datalistId(key)}>
@@ -954,34 +1000,17 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
           )}
         </div>
 
-        <div style={{ padding: "1rem 1.5rem 1.25rem", flexShrink: 0, borderTop: "1px solid #f3f4f6", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "1rem", flexWrap: "wrap" }}>
-          {!priceOnly && reviewRows.length > 0 && !allChosen && (
-            <span style={{ fontSize: "0.72rem", color: "#6b7280" }}>
-              Choose one supplier for each material marked For Approval to generate the PO.
-            </span>
-          )}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {(priceOnly || entryRows.length > 0) && (
-              <button onClick={handleSave} disabled={busy || entryRows.length === 0} style={{
-                padding: "10px 16px", borderRadius: 8, border: priceOnly ? "1px solid #e5e7eb" : "none",
-                background: priceOnly ? "#fff" : "#111827", color: priceOnly ? "#374151" : "#fff",
-                fontWeight: 700, fontSize: "0.85rem", cursor: (busy || entryRows.length === 0) ? "not-allowed" : "pointer", opacity: (busy || entryRows.length === 0) ? 0.7 : 1,
-              }}>
-                {saving ? "Saving…" : priceOnly ? "Save Quotations" : "Save Request"}
-              </button>
-            )}
-            {/* Only once a request is saved, and active once every material has its supplier chosen. */}
-            {!priceOnly && reviewRows.length > 0 && (
-              <button onClick={handleGenerate} disabled={busy || !allChosen} style={{
-                display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 8, border: "none",
-                background: allChosen ? "#f97316" : "#e5e7eb", color: allChosen ? "#fff" : "#6b7280", fontWeight: 700, fontSize: "0.85rem",
-                cursor: (busy || !allChosen) ? "not-allowed" : "pointer", opacity: busy ? 0.7 : 1,
-              }}>
-                {generating ? "Generating…" : "Generate P.O. Number"}
-              </button>
-            )}
+        {priceOnly && (
+          <div style={{ padding: "1rem 1.5rem 1.25rem", flexShrink: 0, borderTop: "1px solid #f3f4f6", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "1rem", flexWrap: "wrap" }}>
+            <button onClick={handleSave} disabled={busy || entryRows.length === 0} style={{
+              padding: "10px 16px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151",
+              fontWeight: 700, fontSize: "0.85rem", cursor: (busy || entryRows.length === 0) ? "not-allowed" : "pointer", opacity: (busy || entryRows.length === 0) ? 0.7 : 1,
+            }}>
+              {saving ? "Saving…" : "Save Quotations"}
+            </button>
           </div>
-        </div>
+        )}
+        {!priceOnly && <div style={{ height: "0.75rem", flexShrink: 0 }} />}
       </div>
     </div>
   );
@@ -999,7 +1028,7 @@ function ViewPOModal({ po, onClose }: { po: PO; onClose: () => void }) {
             <p style={{ fontWeight: 800, fontSize: "1.05rem", color: "#f97316" }}>{displayPoNumber(po)}</p>
             <ImportedTag po={po} />
             <p style={{ fontSize: "0.82rem", color: "#111827", fontWeight: 600, marginTop: 2 }}>{po.projectName}</p>
-            <p style={{ fontSize: "0.75rem", color: "#9ca3af", marginTop: 2 }}>{po.supplier} · {po.expectedDate}</p>
+            <p style={{ fontSize: "0.75rem", color: "#9ca3af", marginTop: 2 }} title="Estimated from the supplier's average lead time (7 days for a supplier with no deliveries yet)">{po.supplier} · Est. delivery {po.expectedDate}</p>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
         </div>
@@ -2308,7 +2337,7 @@ function ProcurementContent() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
-                  {["PO NUMBER","SUPPLIER","STATUS","EXPECTED DATE","VIEW"].map(h => (
+                  {["PO NUMBER","SUPPLIER","STATUS","EST. DELIVERY","VIEW"].map(h => (
                     <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontSize: "0.65rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>

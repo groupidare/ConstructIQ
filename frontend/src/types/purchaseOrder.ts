@@ -36,6 +36,8 @@ export interface PurchaseOrder {
   originalPoNumber?: string | null;
   // Storage path of the PO's file (an imported PO keeps its document's).
   poFileUrl?: string | null;
+  // Warehouse's rating of the delivery: on time or late. Null until rated.
+  deliveredOnTime?: boolean | null;
 }
 
 export interface ImportPurchaseOrderRequest {
