@@ -90,6 +90,46 @@ public class ExcessCostImpactTests(DatabaseFixture fixture)
         Assert.Empty(impact.ByMaterial);
     }
 
+    private static async Task<WarehouseRequest> ReleaseAsync(ConstructIQ.API.Data.AppDbContext db, int projectId, int materialId, int userId, int recordId, decimal quantity)
+    {
+        var request = new WarehouseRequest
+        {
+            ProjectId = projectId, MaterialId = materialId, RequestedQuantity = quantity, ApprovedQuantity = quantity, Unit = "pcs",
+            Status = WarehouseRequestStatus.Approved, RequestedByUserId = userId, ApprovedByUserId = userId,
+            RequestedAt = new DateTime(2026, 5, 1), ApprovedAt = new DateTime(2026, 5, 2),
+        };
+        request.ReleaseSources.Add(new WarehouseReleaseSource { ExcessWasteRecordId = recordId, Quantity = quantity });
+        db.WarehouseRequests.Add(request);
+        await db.SaveChangesAsync();
+        return request;
+    }
+
+    [Fact]
+    public async Task ExcessReleasedToAnotherProject_IsRedistributed_OnTheOverviewAndInTheSavings()
+    {
+        await using var db = fixture.CreateContext();
+        var admin = await TestDataBuilder.CreateUserAsync(db);
+        var source = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        var target = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        var material = await TestDataBuilder.CreateMaterialAsync(db, unit: "pcs");  // catalog 10/pc
+        var boq = await TestDataBuilder.CreateBoqItemAsync(db, source.Id, material.Id, admin.Id, 100,
+            estimatedPurchaseQuantity: 100, estimatedPurchaseUnit: "pcs");
+        var record = await TestDataBuilder.CreateExcessWasteRecordAsync(db, source.Id, material.Id, boq.Id, admin.Id, 20, isReusable: true);
+
+        await ReleaseAsync(db, target.Id, material.Id, admin.Id, record.Id, 8);
+        await ReleaseAsync(db, source.Id, material.Id, admin.Id, record.Id, 3);  // back to its own project: moved nothing
+
+        var moved = (await new RedistributionService(db, new NotificationService(db)).GetExcessReleasesAsync()).Where(r => r.SourceProjectId == source.Id).ToList();
+        var release = Assert.Single(moved);
+        Assert.Equal((target.Id, 8m, "pcs"), (release.TargetProjectId, release.Quantity, release.Unit));
+        Assert.Equal(target.Name, release.TargetProjectName);
+
+        var impact = await new MaterialCostService(db).GetExcessCostImpactAsync(source.Id, includeMaterialBreakdown: false);
+        Assert.Equal(80m, impact.RedistributedValue);  // 8 × 10
+        Assert.Equal(80m, Assert.Single(impact.ByProject).RedistributedValue);
+        Assert.Contains(impact.MonthlyTrend, t => t.Month == "2026-05" && t.RedistributedValue == 80m);
+    }
+
     [Fact]
     public async Task ApprovedTransfers_AreRedistributedValue_PendingOrRejectedAreNot()
     {

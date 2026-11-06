@@ -64,6 +64,33 @@ public class RedistributionService(AppDbContext db, INotificationService notific
         return ordered.Select(ToDto);
     }
 
+    // The other way excess reaches another project: a warehouse release for its
+    // request. A release back to the project that logged the excess moved nothing.
+    public async Task<IEnumerable<ExcessReleaseDto>> GetExcessReleasesAsync()
+    {
+        var releases = await db.WarehouseReleaseSources
+            .Include(s => s.WarehouseRequest).ThenInclude(r => r.Project)
+            .Include(s => s.ExcessWasteRecord).ThenInclude(e => e.Project)
+            .Include(s => s.ExcessWasteRecord).ThenInclude(e => e.Material)
+            .Include(s => s.ExcessWasteRecord).ThenInclude(e => e.BOQItem).ThenInclude(b => b!.HistoricalSupplies)
+            .Where(s => s.WarehouseRequest.ProjectId != s.ExcessWasteRecord.ProjectId)
+            .AsNoTracking()
+            .ToListAsync();
+        return releases.Select(s => new ExcessReleaseDto
+        {
+            Id                = s.Id,
+            MaterialName      = s.ExcessWasteRecord.Material.Name,
+            Unit              = ExcessWasteService.PreferredUnit(s.ExcessWasteRecord.BOQItem, s.ExcessWasteRecord.Material.Unit),
+            Quantity          = s.Quantity,
+            SourceProjectId   = s.ExcessWasteRecord.ProjectId,
+            SourceProjectName = s.ExcessWasteRecord.Project.Name,
+            TargetProjectId   = s.WarehouseRequest.ProjectId,
+            TargetProjectName = s.WarehouseRequest.Project.Name,
+            // Stored in UTC but read back unmarked, as ApprovedAt below.
+            ReleasedAt        = DateTime.SpecifyKind(s.WarehouseRequest.ApprovedAt ?? s.WarehouseRequest.RequestedAt, DateTimeKind.Utc),
+        }).ToList();
+    }
+
     public async Task GenerateRecommendationsAsync()
     {
         // Supply signal 1: current project-level excess inventory.

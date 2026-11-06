@@ -7,7 +7,6 @@ import { useProjects } from "@/hooks/useProjects";
 import api from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { canSeeCostImpact, shareOfPurchases, type ExcessCostImpact, type ExcessWasteRecord } from "@/types/excess";
-import RedistributeModal from "@/components/excess/RedistributeModal";
 import RecordExcessModal from "@/components/excess/RecordExcessModal";
 import EditExcessModal from "@/components/excess/EditExcessModal";
 import toast from "react-hot-toast";
@@ -20,9 +19,7 @@ function average(nums: number[]): number {
   return nums.length === 0 ? 0 : nums.reduce((s, n) => s + n, 0) / nums.length;
 }
 
-// Colors for a linked redistribution request's status — shown alongside the
-// "Redistribute" action (not instead of it) so the user still knows the
-// current target project but can still send it elsewhere.
+// Colors for a linked redistribution request's status.
 const REDISTRIBUTION_STATUS_STYLE: Record<string, { bg: string; color: string }> = {
   AiSuggested:     { bg: "#f3f4f6", color: "#6b7280" },
   PendingApproval: { bg: "#fef3c7", color: "#b45309" },
@@ -31,14 +28,13 @@ const REDISTRIBUTION_STATUS_STYLE: Record<string, { bg: string; color: string }>
   Completed:       { bg: "#dcfce7", color: "#15803d" },
 };
 
-// The "Redistribute To" column only names a target once it's actually
+// The "Redistributed To" column only names a target once it's actually
 // approved — a still-pending AI suggestion isn't a real destination yet.
 const APPROVED_REDISTRIBUTION_STATUSES = new Set(["Approved", "InTransit", "Completed"]);
 
-// The "Redistribute" action itself is blocked earlier, while a request is
-// still pending too — not just once it's approved — so a material can't be
-// sent to two places at once. Approved is the terminal state in this app
-// (no InTransit/Completed step).
+// Deleting is blocked earlier, while a request is still pending too — it's
+// holding that excess. Approved is the terminal state in this app (no
+// InTransit/Completed step).
 const ACTIVE_REDISTRIBUTION_STATUSES = new Set(["AiSuggested", "PendingApproval", "Approved"]);
 
 // ── Cost impact ───────────────────────────────────────────────────────────────
@@ -202,7 +198,6 @@ export default function ExcessAnalyticsPage() {
   const [records, setRecords] = useState<ExcessWasteRecord[]>([]);
   const [costImpact, setCostImpact] = useState<ExcessCostImpact | null>(null);
   const [recordsLoading, setRecordsLoading] = useState(false);
-  const [redistributeTarget, setRedistributeTarget] = useState<ExcessWasteRecord | null>(null);
   const [editTarget, setEditTarget] = useState<ExcessWasteRecord | null>(null);
   const [showRecordModal, setShowRecordModal] = useState(false);
   const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
@@ -320,21 +315,6 @@ export default function ExcessAnalyticsPage() {
 
   return (
     <div style={{ background:"#f5f4f0" }}>
-      {redistributeTarget && (
-        <RedistributeModal
-          record={{
-            id: redistributeTarget.id,
-            materialName: redistributeTarget.materialName,
-            quantity: redistributeTarget.quantity,
-            unit: redistributeTarget.unit,
-            projectId: redistributeTarget.projectId,
-            projectName: redistributeTarget.projectName,
-          }}
-          onClose={() => setRedistributeTarget(null)}
-          onSuccess={loadRecords}
-        />
-      )}
-
       {showRecordModal && (
         <RecordExcessModal
           projects={projects}
@@ -543,7 +523,7 @@ export default function ExcessAnalyticsPage() {
                                 <table style={{ width:"100%", borderCollapse:"collapse" }}>
                                   <thead>
                                     <tr>
-                                      {["DATE","MATERIAL","TYPE","QTY","UNIT","REDISTRIBUTE TO","ACTION"].map(h => (
+                                      {["DATE","MATERIAL","TYPE","QTY","UNIT","REDISTRIBUTED TO","ACTION"].map(h => (
                                         <th key={h} style={{ padding:"8px 10px", textAlign:"left", fontSize:"0.62rem", fontWeight:700, color:"#9ca3af", letterSpacing:"0.05em" }}>{h}</th>
                                       ))}
                                     </tr>
@@ -606,25 +586,6 @@ export default function ExcessAnalyticsPage() {
                                                     style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb", background: isBlocked ? "#f3f4f6" : "#fff", color: isBlocked ? "#9ca3af" : "#374151", fontSize:"0.7rem", fontWeight:600, cursor: isBlocked ? "not-allowed" : "pointer", whiteSpace:"nowrap" }}
                                                   >
                                                     <Pencil style={{ width:11, height:11 }} /> Edit
-                                                  </button>
-                                                );
-                                              })()}
-                                              {canManageExcess && e.isReusable && (() => {
-                                                const isActive = ACTIVE_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "");
-                                                const isBlocked = isActive || e.quantity <= 0;
-                                                const title = isActive
-                                                  ? `Already redistributed to ${e.redistributionTargetProjectName}`
-                                                  : e.quantity <= 0
-                                                    ? "Nothing left to redistribute — fully allocated already."
-                                                    : undefined;
-                                                return (
-                                                  <button
-                                                    onClick={() => !isBlocked && setRedistributeTarget(e)}
-                                                    disabled={isBlocked}
-                                                    title={title}
-                                                    style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb", background: isBlocked ? "#f3f4f6" : "#fff", color: isBlocked ? "#9ca3af" : "#374151", fontSize:"0.7rem", fontWeight:600, cursor: isBlocked ? "not-allowed" : "pointer", whiteSpace:"nowrap" }}
-                                                  >
-                                                    <Recycle style={{ width:11, height:11 }} /> Redistribute
                                                   </button>
                                                 );
                                               })()}

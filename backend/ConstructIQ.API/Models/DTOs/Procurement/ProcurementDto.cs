@@ -89,6 +89,21 @@ public class RedistributeFromExcessDto
     public string? Notes { get; set; }
 }
 
+// One project's logged excess going to another through the warehouse: its
+// release for that project's request used up this much of the excess.
+public class ExcessReleaseDto
+{
+    public int      Id                { get; set; }
+    public string   MaterialName      { get; set; } = string.Empty;
+    public string   Unit              { get; set; } = string.Empty;
+    public decimal  Quantity          { get; set; }
+    public int      SourceProjectId   { get; set; }
+    public string   SourceProjectName { get; set; } = string.Empty;
+    public int      TargetProjectId   { get; set; }
+    public string   TargetProjectName { get; set; } = string.Empty;
+    public DateTime ReleasedAt        { get; set; }
+}
+
 public class RedistributionRecommendationDto
 {
     public int      Id                  { get; set; }

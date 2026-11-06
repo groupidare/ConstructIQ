@@ -78,6 +78,19 @@ export type RedistributionPriority = "Low" | "Medium" | "High";
 export type RedistributionStatus =
   | "AiSuggested" | "PendingApproval" | "Approved" | "InTransit" | "Completed" | "Rejected";
 
+/** Excess that went to another project through a warehouse release. */
+export interface ExcessRelease {
+  id: number;
+  materialName: string;
+  unit: string;
+  quantity: number;
+  sourceProjectId: number;
+  sourceProjectName: string;
+  targetProjectId: number;
+  targetProjectName: string;
+  releasedAt: string;
+}
+
 export interface RedistributionRecommendation {
   id: number;
   sourceMaterialId: number;

@@ -250,9 +250,10 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
     // no matching price is counted as unpriced, never guessed.
     //
     // Also, on the same price basis:
-    //  - Redistributed value: approved transfers out of a project. Approving
-    //    one lowers the source record's Quantity, so this is what's no longer
-    //    counted as excess there — material reused instead of bought again.
+    //  - Redistributed value: approved transfers out of a project and warehouse
+    //    releases of its excess to another. Either lowers the source record's
+    //    Quantity, so this is what's no longer counted as excess there —
+    //    material reused instead of bought again.
     //  - Purchased value: delivered PO lines, at the line's own price (else
     //    the latest one). In this app actual usage = delivered − excess −
     //    waste, so excess + waste IS the over-purchase; this is what it's
@@ -267,10 +268,16 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             .Include(r => r.Material)
             .Include(r => r.SourceExcessWasteRecord).ThenInclude(e => e!.BOQItem).ThenInclude(b => b!.HistoricalSupplies)
             .Where(r => TransferredStatuses.Contains(r.Status));
+        var releaseQuery = db.WarehouseReleaseSources
+            .Include(s => s.WarehouseRequest)
+            .Include(s => s.ExcessWasteRecord).ThenInclude(e => e.Material)
+            .Include(s => s.ExcessWasteRecord).ThenInclude(e => e.BOQItem).ThenInclude(b => b!.HistoricalSupplies)
+            .Where(s => s.WarehouseRequest.ProjectId != s.ExcessWasteRecord.ProjectId);
         var deliveryQuery = db.PurchaseOrderMaterials
             .Where(m => m.PurchaseOrder.Status == PurchaseOrderStatus.Delivered);
         if (projectId.HasValue)
         {
+            releaseQuery  = releaseQuery.Where(s => s.ExcessWasteRecord.ProjectId == projectId.Value);
             recordQuery   = recordQuery.Where(e => e.ProjectId == projectId.Value);
             transferQuery = transferQuery.Where(r => r.SourceProjectId == projectId.Value);
             deliveryQuery = deliveryQuery.Where(m => m.PurchaseOrder.ProjectId == projectId.Value);
@@ -278,12 +285,14 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
 
         var records = await recordQuery.AsNoTracking().ToListAsync();
         var transfers = await transferQuery.AsNoTracking().ToListAsync();
+        var releases = await releaseQuery.AsNoTracking().ToListAsync();
         var deliveries = await deliveryQuery
             .Select(m => new { m.PurchaseOrder.ProjectId, m.MaterialId, m.Unit, m.Quantity, m.UnitPrice })
             .ToListAsync();
 
         var priceOf = await LoadPricesAsync(records.Select(r => r.MaterialId)
             .Concat(transfers.Select(t => t.MaterialId))
+            .Concat(releases.Select(s => s.ExcessWasteRecord.MaterialId))
             .Concat(deliveries.Where(d => d.MaterialId.HasValue).Select(d => d.MaterialId!.Value))
             .Distinct().ToList());
 
@@ -314,7 +323,18 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
                 Price = price,
                 Value = price is null ? 0m : t.Quantity * price.Price,
             };
-        }).ToList();
+        }).Concat(releases.Select(s =>
+        {
+            var record = s.ExcessWasteRecord;
+            var price = PriceIn(record.MaterialId, ExcessWasteService.PreferredUnit(record.BOQItem, record.Material?.Unit));
+            return new
+            {
+                SourceProjectId = record.ProjectId,
+                Month = (s.WarehouseRequest.ApprovedAt ?? s.WarehouseRequest.RequestedAt).ToString("yyyy-MM"),
+                Price = price,
+                Value = price is null ? 0m : s.Quantity * price.Price,
+            };
+        })).ToList();
 
         var valuedDeliveries = deliveries.Select(d =>
         {

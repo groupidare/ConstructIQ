@@ -29,6 +29,10 @@ public class RedistributionController(IRedistributionService redistributionServi
     // cancel/create) are all real "manage" actions — ProjectManager's
     // Redistribution access is view-only, so only Admin/WarehousePersonnel
     // get these.
+    [HttpGet("excess-releases")]
+    public async Task<IActionResult> GetExcessReleases() =>
+        Ok(await redistributionService.GetExcessReleasesAsync());
+
     [HttpPost("generate")]
     [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> Generate()
