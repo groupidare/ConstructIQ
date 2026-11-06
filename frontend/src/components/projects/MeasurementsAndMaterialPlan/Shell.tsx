@@ -13,6 +13,7 @@ import { useWarehouseRequests } from '@/hooks/useWarehouseRequests';
 import { useAlertStore } from '@/store/alertStore';
 import { useProjects } from '@/hooks/useProjects';
 import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
+import api from '@/lib/api';
 import type { Project, ProjectType } from '@/types/project';
 import type { BOQItem, BOQItemRow } from '@/types/boq';
 import { hasRequests, materialFromArea, toPurchaseUnitOption } from '@/lib/materialUnitRule';
@@ -173,6 +174,21 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     }
   }
 
+  // An imported PO (with its file) or a Pending one made in ConstructIQ.
+  async function handleDeletePurchaseOrder(purchaseOrderId: number): Promise<boolean> {
+    try {
+      await api.delete(`/purchase-orders/${purchaseOrderId}`);
+      toast.success('Purchase order deleted.');
+      fetchPurchaseOrders();
+      fetchDocuments();
+      return true;
+    } catch (error) {
+      const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? 'Failed to delete the purchase order.');
+      return false;
+    }
+  }
+
   // Several files at once (the PO files folder's "Delete selected"): one
   // message for the lot instead of one per file.
   async function handleRemoveDocuments(documentIds: number[]) {
@@ -183,6 +199,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     const removed = documentIds.length - failed;
     if (removed > 0) toast.success(`${removed} file${removed === 1 ? '' : 's'} removed.`);
     if (failed > 0) toast.error(`${failed} file${failed === 1 ? '' : 's'} couldn't be removed — try again.`);
+    // An imported PO read from a deleted file was deleted with it.
+    fetchPurchaseOrders();
   }
 
   async function handleParseBoq(documentId: number) {
@@ -633,7 +651,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     loadProcurementRequests: () => fetchSentMaterialRequests(project.id),
     savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
     blueprintDoc, setBlueprintDoc, handleBlueprintRows, compareRows, setCompareRows,
-    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument, handleRemoveDocuments,
+    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument, handleRemoveDocuments, handleDeletePurchaseOrder,
     handleSaveBoq, handleDeleteBoqRow, handleRunForecast, handleNotify,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
     handlePurchaseOrdersImported: () => { fetchPurchaseOrders(); fetchDocuments(); },
@@ -726,6 +744,7 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onParseBoq={state.handleParseBoq}
       onRemoveDocument={state.handleRemoveDocument}
       onRemoveDocuments={state.handleRemoveDocuments}
+      onDeletePurchaseOrder={state.handleDeletePurchaseOrder}
       rows={state.boqRows}
       boqItems={state.boqItems}
       onRowsChange={state.setBoqRows}

@@ -225,7 +225,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         var materialIds = requests.Select(r => r.MaterialId).Distinct().ToList();
         // "Last paid": the latest priced PO line, this system's or a historical project's.
         var pricedLines = (await db.PurchaseOrderMaterials
-                .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value))
+                .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value)
+                    && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
                 .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Supplier = (string?)m.PurchaseOrder.Supplier.Name, Date = m.PurchaseOrder.OrderDate })
                 .ToListAsync())
             .Concat(await db.HistoricalMaterialSupplies
@@ -384,7 +385,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         // system's POs and historical projects' PO lines (HistoricalMaterialSupply,
         // dated by its PO DATE, else the project's end).
         var lines = (await db.PurchaseOrderMaterials
-                .Where(m => m.MaterialId != null && relevant.Contains(m.MaterialId.Value))
+                .Where(m => m.MaterialId != null && relevant.Contains(m.MaterialId.Value) && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
                 .Select(m => new SupplyLine(m.PurchaseOrder.SupplierId, m.MaterialId!.Value, m.Unit, m.UnitPrice, m.PurchaseOrder.OrderDate))
                 .ToListAsync())
             .Concat(await db.HistoricalMaterialSupplies

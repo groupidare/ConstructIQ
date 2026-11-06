@@ -163,7 +163,7 @@ export default function DashboardPage() {
   const materialsInStock = useMemo(() => stockItems.filter(i => i.balance > 0).length, [stockItems]);
   const outOfStockCount  = useMemo(() => stockItems.filter(i => i.balance <= 0).length, [stockItems]);
   const forecastRiskCount = useMemo(() => materials.filter(m => m.riskLevel === "High" || m.riskLevel === "Critical").length, [materials]);
-  const pendingPOs = useMemo(() => orders.filter(po => poEffectiveStatus(po) !== "Delivered").length, [orders]);
+  const pendingPOs = useMemo(() => orders.filter(po => poEffectiveStatus(po) !== "Delivered" && po.status !== "Cancelled").length, [orders]);
   // Deliveries Warehouse rated as late — a real record, not a past-the-estimate guess.
   const lateDeliveries = useMemo(() => orders.filter(po => po.deliveredOnTime === false).length, [orders]);
 

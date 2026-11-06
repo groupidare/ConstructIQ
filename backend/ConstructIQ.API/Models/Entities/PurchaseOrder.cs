@@ -16,6 +16,10 @@ public enum PurchaseOrderStatus
     Approved = 1,
     Delivered = 2,
     DeliveryInProgress = 3,
+    // Called off after approval (see PurchaseOrdersController.Cancel). Kept
+    // for the record but never counted: not as ordered, not as a price, not
+    // against what's left to order.
+    Cancelled = 4,
 }
 
 public class PurchaseOrder

@@ -104,7 +104,8 @@ public static class ProcurementCapCalculator
             .ToListAsync();
 
         var poLines = await db.PurchaseOrderMaterials
-            .Where(m => m.MaterialId != null && m.PurchaseOrder.ProjectId == projectId && m.PurchaseOrder.Status != PurchaseOrderStatus.Pending)
+            .Where(m => m.MaterialId != null && m.PurchaseOrder.ProjectId == projectId
+                && m.PurchaseOrder.Status != PurchaseOrderStatus.Pending && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
             .OrderBy(m => m.Id)
             .Select(m => new { m.PurchaseOrderId, MaterialId = m.MaterialId!.Value, m.BOQItemId, m.Quantity })
             .ToListAsync();
@@ -272,7 +273,8 @@ public static class ProcurementCapCalculator
         await db.PurchaseOrderMaterials
             .Where(m => m.MaterialId == materialId
                 && m.PurchaseOrder.ProjectId == projectId
-                && m.PurchaseOrder.Status != PurchaseOrderStatus.Pending)
+                && m.PurchaseOrder.Status != PurchaseOrderStatus.Pending
+                && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
             .SumAsync(m => (decimal?)m.Quantity) ?? 0;
 
     // One material across its rows — used where a whole-material figure is what's

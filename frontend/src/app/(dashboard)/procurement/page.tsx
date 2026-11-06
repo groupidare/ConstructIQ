@@ -37,7 +37,7 @@ function toDisplayDate(dateStr: string): string {
 
 // ── Types & data ──────────────────────────────────────────────────────────────
 
-type POStatus = "PENDING" | "APPROVED" | "DELIVERY_IN_PROGRESS" | "DELIVERED";
+type POStatus = "PENDING" | "APPROVED" | "DELIVERY_IN_PROGRESS" | "DELIVERED" | "CANCELLED";
 
 interface POMaterial {
   name: string;
@@ -103,9 +103,10 @@ const PO_STATUS_STYLE: Record<POStatus, { bg: string; color: string }> = {
   APPROVED:              { bg: "#dcfce7", color: "#15803d"  },
   DELIVERY_IN_PROGRESS:  { bg: "#e0e7ff", color: "#4338ca"  },
   DELIVERED:             { bg: "#f3f4f6", color: "#374151"  },
+  CANCELLED:             { bg: "#fee2e2", color: "#b91c1c"  },
 };
 
-const STATUS_SORT_ORDER: Record<POStatus, number> = { PENDING: 0, APPROVED: 1, DELIVERY_IN_PROGRESS: 2, DELIVERED: 3 };
+const STATUS_SORT_ORDER: Record<POStatus, number> = { PENDING: 0, APPROVED: 1, DELIVERY_IN_PROGRESS: 2, DELIVERED: 3, CANCELLED: 4 };
 
 // The status shown is the PO's own — no "Delayed" is worked out from the
 // expected date any more (POs no longer get one entered by hand).
@@ -2045,6 +2046,35 @@ function ProcurementContent() {
     }
   }
 
+  // An imported PO, or a Pending one made here: removed for good (an
+  // imported PO's file goes with it). Past Pending, a PO is cancelled instead.
+  async function handleDeletePO(po: PO) {
+    const what = po.isImported
+      ? `Delete ${displayPoNumber(po)}?\n\nThis removes the PO, its ${po.materials.length} material line${po.materials.length === 1 ? "" : "s"} and its uploaded file. It can't be undone.`
+      : `Delete ${displayPoNumber(po)}?\n\nIts materials go back to the Requests tab as For Approval, to choose a supplier again. It can't be undone.`;
+    if (!window.confirm(what)) return;
+    try {
+      await api.delete(`/purchase-orders/${po.id}`);
+      toast.success(`${displayPoNumber(po)} deleted.`);
+      refetch().catch(() => { /* the list just stays as it was */ });
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to delete the purchase order.");
+    }
+  }
+
+  async function handleCancelPO(po: PO) {
+    if (!window.confirm(`Cancel ${displayPoNumber(po)}?\n\nIt stays on record as Cancelled and stops counting toward ordered cost and prices. Its materials go back to the Requests tab as For Approval, to choose a supplier again.`)) return;
+    try {
+      await api.post(`/purchase-orders/${po.id}/cancel`, {});
+      toast.success(`${displayPoNumber(po)} cancelled.`);
+      refetch().catch(() => { /* the list just stays as it was */ });
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to cancel the purchase order.");
+    }
+  }
+
   async function handleCompleteDelivery(po: PO) {
     try {
       await api.post(`/purchase-orders/${po.id}/complete-delivery`, {});
@@ -2413,7 +2443,11 @@ function ProcurementContent() {
                       </td>
                       <td style={{ padding: "14px 12px", fontSize: "0.78rem", color: "#6b7280" }}>{po.supplier}</td>
                       <td style={{ padding: "14px 12px" }}>
-                        {status === "DELIVERY_IN_PROGRESS" ? (
+                        {status === "CANCELLED" ? (
+                          <span style={{ fontSize: "0.7rem", fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: st.bg, color: st.color, whiteSpace: "nowrap" }}>
+                            · CANCELLED
+                          </span>
+                        ) : status === "DELIVERY_IN_PROGRESS" ? (
                           // Neither role picks this from a dropdown twice — it's already
                           // selected, so re-opening means clicking the pill to add another
                           // batch or complete the delivery.
@@ -2471,9 +2505,23 @@ function ProcurementContent() {
                       </td>
                       <td style={{ padding: "14px 12px", fontSize: "0.78rem", color: "#6b7280", whiteSpace: "nowrap" }}>{po.expectedDate}</td>
                       <td style={{ padding: "14px 12px" }}>
-                        <button title="View materials" onClick={() => setViewingPOId(po.id)} style={{ color: "#9ca3af", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-                          <Eye style={{ width: 16, height: 16 }} />
-                        </button>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <button title="View materials" onClick={() => setViewingPOId(po.id)} style={{ color: "#9ca3af", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                            <Eye style={{ width: 16, height: 16 }} />
+                          </button>
+                          {canManagePOs && (po.isImported || status === "PENDING") && (
+                            <button title={po.isImported ? "Delete this imported PO and its file" : "Delete this Pending PO"} onClick={() => handleDeletePO(po)}
+                              style={{ color: "#dc2626", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                              <Trash2 style={{ width: 15, height: 15 }} />
+                            </button>
+                          )}
+                          {canManagePOs && !po.isImported && status === "APPROVED" && (
+                            <button title="Cancel this PO" onClick={() => handleCancelPO(po)}
+                              style={{ fontSize: "0.65rem", fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", cursor: "pointer", whiteSpace: "nowrap" }}>
+                              Cancel PO
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

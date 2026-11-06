@@ -432,7 +432,7 @@ function buildProcurementData(
   weatherRisk: string | null,
   weatherAdvisory: string | null,
 ): ReportViewData {
-  const byStatus = new Map<string, number>([["Pending", 0], ["Approved", 0], ["DeliveryInProgress", 0], ["Delivered", 0]]);
+  const byStatus = new Map<string, number>([["Pending", 0], ["Approved", 0], ["DeliveryInProgress", 0], ["Delivered", 0], ["Cancelled", 0]]);
   for (const po of orders) {
     const s = poEffectiveStatus(po);
     byStatus.set(s, (byStatus.get(s) ?? 0) + 1);
@@ -484,7 +484,7 @@ function buildSystemData(
   const real = projects.filter(p => !p.isHistorical);
   const active = real.filter(p => p.status === "Active").length;
   const zeroStock = stockItems.filter(i => i.balance <= 0).length;
-  const activePOs = orders.filter(po => poEffectiveStatus(po) !== "Delivered").length;
+  const activePOs = orders.filter(po => poEffectiveStatus(po) !== "Delivered" && po.status !== "Cancelled").length;
   const activeRedistribution = redistribution.filter(r => REDISTRIBUTION_ACTIVE.includes(r.status)).length;
 
   const summaryTable: ReportTable = {

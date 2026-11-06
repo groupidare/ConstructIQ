@@ -64,6 +64,7 @@ const PO_STATUS: Record<PurchaseOrderStatus, HistoryStatus> = {
   Approved: { label: 'PO approved', background: '#dbeafe', color: '#1d4ed8' },
   DeliveryInProgress: { label: 'Delivery in progress', background: '#ffedd5', color: '#c2410c' },
   Delivered: { label: 'Delivered', background: '#dcfce7', color: '#15803d' },
+  Cancelled: { label: 'PO cancelled', background: '#fee2e2', color: '#b91c1c' },
 };
 
 interface HistoryItem { id: number; name: string; summary: string; status: HistoryStatus; waiting: boolean }
