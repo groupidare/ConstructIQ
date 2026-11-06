@@ -16,6 +16,7 @@ import { useAuthStore } from "@/store/authStore";
 import { RISK_VISUALS, RISK_VISUALS_DARK } from "@/lib/weather";
 import { computeWeatherAtRiskOrders } from "@/lib/deliveryRisk";
 import api from "@/lib/api";
+import { displayPoNumber } from "@/lib/poNumber";
 import { resolveUploadUrl } from "@/lib/avatar";
 import { formatCurrency, formatDate } from "@/lib/utils";
 
@@ -36,7 +37,7 @@ function toDisplayDate(dateStr: string): string {
 
 // ── Types & data ──────────────────────────────────────────────────────────────
 
-type POStatus = "PENDING" | "APPROVED" | "DELIVERY_IN_PROGRESS" | "DELIVERED" | "DELAYED";
+type POStatus = "PENDING" | "APPROVED" | "DELIVERY_IN_PROGRESS" | "DELIVERED";
 
 interface POMaterial {
   name: string;
@@ -79,18 +80,18 @@ interface PO {
   originalPoNumber: string | null;
 }
 
-// "Imported · PO 2024-118" under an imported PO's number.
+// A small "Imported" tag beside an imported PO's number.
 function ImportedTag({ po }: { po: PO }) {
   if (!po.isImported) return null;
   return (
-    <span style={{ display: "block", fontSize: "0.65rem", color: "#6b7280", fontWeight: 500, marginTop: 2 }}>
-      Imported{po.originalPoNumber ? ` · original PO ${po.originalPoNumber}` : ""}
+    <span title={`An existing PO imported from a file — not made in ConstructIQ (system no. ${po.number})`}
+      style={{ display: "inline-block", marginTop: 3, fontSize: "0.58rem", fontWeight: 700, padding: "1px 6px", borderRadius: 999, background: "#ede9fe", color: "#6d28d9" }}>
+      IMPORTED
     </span>
   );
 }
 
-// DELAYED is never manually selectable — it's derived from the expected date
-// having passed while the order is still PENDING/APPROVED. DELIVERED isn't
+// DELIVERED isn't
 // offered here at all — only WarehousePersonnel can click it (see their own
 // dropdown further down), since they're the only ones who physically receive
 // the goods; Admin/ProjectManager/ProcurementOfficer manage the lifecycle up
@@ -102,19 +103,13 @@ const PO_STATUS_STYLE: Record<POStatus, { bg: string; color: string }> = {
   APPROVED:              { bg: "#dcfce7", color: "#15803d"  },
   DELIVERY_IN_PROGRESS:  { bg: "#e0e7ff", color: "#4338ca"  },
   DELIVERED:             { bg: "#f3f4f6", color: "#374151"  },
-  DELAYED:               { bg: "#fee2e2", color: "#dc2626"  },
 };
 
-const STATUS_SORT_ORDER: Record<POStatus, number> = { DELAYED: 0, PENDING: 1, APPROVED: 2, DELIVERY_IN_PROGRESS: 3, DELIVERED: 4 };
+const STATUS_SORT_ORDER: Record<POStatus, number> = { PENDING: 0, APPROVED: 1, DELIVERY_IN_PROGRESS: 2, DELIVERED: 3 };
 
-// A non-delivered, not-yet-in-progress order becomes DELAYED the moment its
-// expected date passes — this is computed, never stored, so it can't drift
-// out of sync or be set by hand. Once delivery has actually started, the real
-// status is more useful than a stale "was this late" guess.
+// The status shown is the PO's own — no "Delayed" is worked out from the
+// expected date any more (POs no longer get one entered by hand).
 function getEffectiveStatus(po: PO): POStatus {
-  if (po.status === "DELIVERED" || po.status === "DELIVERY_IN_PROGRESS") return po.status;
-  const expected = new Date(po.expectedDate).getTime();
-  if (!Number.isNaN(expected) && expected < Date.now()) return "DELAYED";
   return po.status;
 }
 
@@ -503,7 +498,7 @@ function quoteProblem(row: RequestRow): string | null {
 
 function exportPOs(orders: PO[]) {
   const header = ["PO Number","Project Name","Supplier","Status","Expected Date","Materials"];
-  const rows = orders.map(p => [p.number, `"${p.projectName}"`, `"${p.supplier}"`, getEffectiveStatus(p), p.expectedDate, `"${p.materials.map(m => `${m.name} (${m.qty})`).join("; ")}"`].join(","));
+  const rows = orders.map(p => [displayPoNumber(p), `"${p.projectName}"`, `"${p.supplier}"`, getEffectiveStatus(p), p.expectedDate, `"${p.materials.map(m => `${m.name} (${m.qty})`).join("; ")}"`].join(","));
   const csv = [header.join(","), ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
@@ -1001,7 +996,7 @@ function ViewPOModal({ po, onClose }: { po: PO; onClose: () => void }) {
       <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 440, boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>
           <div>
-            <p style={{ fontWeight: 800, fontSize: "1.05rem", color: "#f97316" }}>{po.number}</p>
+            <p style={{ fontWeight: 800, fontSize: "1.05rem", color: "#f97316" }}>{displayPoNumber(po)}</p>
             <ImportedTag po={po} />
             <p style={{ fontSize: "0.82rem", color: "#111827", fontWeight: 600, marginTop: 2 }}>{po.projectName}</p>
             <p style={{ fontSize: "0.75rem", color: "#9ca3af", marginTop: 2 }}>{po.supplier} · {po.expectedDate}</p>
@@ -1534,7 +1529,7 @@ function DeliveryBatchModal({ po, onClose, onSaveBatch, onComplete }: {
             </div>
             <div>
               <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>Proof of Delivery</h2>
-              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{po.number} · {po.supplier}</p>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{displayPoNumber(po)} · {po.supplier}</p>
             </div>
           </div>
           <button onClick={handleClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
@@ -1707,7 +1702,7 @@ function RateSupplierModal({ po, supplier, onClose, onSubmit }: {
             </div>
             <div>
               <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>Rate the Supplier</h2>
-              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{po.number} · {po.supplier}</p>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{displayPoNumber(po)} · {po.supplier}</p>
             </div>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
@@ -1761,7 +1756,7 @@ function RateSupplierModal({ po, supplier, onClose, onSubmit }: {
 
           <div style={{ background: "#f9fafb", borderRadius: 8, padding: "0.75rem 1rem" }}>
             <p style={{ fontSize: "0.75rem", color: "#9ca3af", fontStyle: "italic" }}>
-              This evaluation is logged against <strong style={{ color: "#374151" }}>{po.number}</strong> and will contribute to{" "}
+              This evaluation is logged against <strong style={{ color: "#374151" }}>{displayPoNumber(po)}</strong> and will contribute to{" "}
               <strong style={{ color: "#374151" }}>{po.supplier}</strong>&apos;s aggregate performance score.
             </p>
           </div>
@@ -1894,10 +1889,29 @@ function ProcurementContent() {
 
   function countByStatus(s: POStatus) { return orders.filter(p => getEffectiveStatus(p) === s).length; }
 
-  const sortedOrders = useMemo(
-    () => [...orders].sort((a, b) => STATUS_SORT_ORDER[getEffectiveStatus(a)] - STATUS_SORT_ORDER[getEffectiveStatus(b)]),
+  // Purchase Orders tab: one supplier or all, then grouped by project —
+  // POs made in ConstructIQ and imported ones together.
+  const [poSupplierFilter, setPoSupplierFilter] = useState("");
+  const poSupplierNames = useMemo(
+    () => [...new Set(orders.map(o => o.supplier).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
     [orders]
   );
+  const sortedOrders = useMemo(
+    () => orders
+      .filter(o => !poSupplierFilter || o.supplier === poSupplierFilter)
+      .sort((a, b) => STATUS_SORT_ORDER[getEffectiveStatus(a)] - STATUS_SORT_ORDER[getEffectiveStatus(b)]
+        || displayPoNumber(a).localeCompare(displayPoNumber(b), undefined, { numeric: true })),
+    [orders, poSupplierFilter]
+  );
+  const ordersByProject = useMemo(() => {
+    const groups = new Map<number, { projectName: string; orders: PO[] }>();
+    for (const po of sortedOrders) {
+      const g = groups.get(po.projectId) ?? { projectName: po.projectName, orders: [] };
+      g.orders.push(po);
+      groups.set(po.projectId, g);
+    }
+    return [...groups.values()].sort((a, b) => a.projectName.localeCompare(b.projectName));
+  }, [sortedOrders]);
 
   const filteredSuppliers = useMemo(() => {
     const q = supplierSearch.trim().toLowerCase();
@@ -1922,7 +1936,7 @@ function ProcurementContent() {
     pending:   countByStatus("PENDING"),
     approved:  countByStatus("APPROVED"),
     delivered: countByStatus("DELIVERED"),
-    delayed:   countByStatus("DELAYED"),
+    delivering: countByStatus("DELIVERY_IN_PROGRESS"),
   };
 
   // Progressing delivery (in-progress or delivered) always opens the batch
@@ -1936,7 +1950,7 @@ function ProcurementContent() {
     try {
       await api.patch(`/purchase-orders/${po.id}/status`, { status: frontendStatusToApi(status) });
       await refetch();
-      toast.success(`${po.number} marked ${status.toLowerCase()}`);
+      toast.success(`${displayPoNumber(po)} marked ${status.toLowerCase()}`);
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(message ?? "Failed to update status.");
@@ -1964,7 +1978,7 @@ function ProcurementContent() {
       await api.post(`/purchase-orders/${po.id}/complete-delivery`, {});
       await refetch();
       setDeliveryPOId(null);
-      toast.success(`${po.number} marked delivered.`);
+      toast.success(`${displayPoNumber(po)} marked delivered.`);
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(message ?? "Failed to complete delivery.");
@@ -2067,7 +2081,7 @@ function ProcurementContent() {
             { icon: Clock,        color: "#6b7280", bg: "#f3f4f6", label: "Pending POs",  value: counts.pending   },
             { icon: CheckCircle2, color: "#16a34a", bg: "#dcfce7", label: "Approved POs", value: counts.approved  },
             { icon: PackageCheck, color: "#1d4ed8", bg: "#dbeafe", label: "Delivered",    value: counts.delivered },
-            { icon: AlertTriangle,color: "#dc2626", bg: "#fee2e2", label: "Delayed",      value: counts.delayed   },
+            { icon: Truck,        color: "#4338ca", bg: "#e0e7ff", label: "In Delivery",  value: counts.delivering },
           ].map(s => {
             const Icon = s.icon;
             return (
@@ -2278,7 +2292,12 @@ function ProcurementContent() {
                 <ShoppingCart style={{ width: 16, height: 16, color: "#f97316" }} />
                 <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Purchase Orders</span>
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <select value={poSupplierFilter} onChange={e => setPoSupplierFilter(e.target.value)} aria-label="Filter by supplier"
+                  style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", maxWidth: 260 }}>
+                  <option value="">All suppliers</option>
+                  {poSupplierNames.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
                 <button onClick={() => exportPOs(sortedOrders)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", fontWeight: 500, cursor: "pointer" }}>
                   <Download style={{ width: 14, height: 14 }} /> Export
                 </button>
@@ -2289,25 +2308,35 @@ function ProcurementContent() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
-                  {["PO NUMBER","PROJECT NAME","SUPPLIER","STATUS","EXPECTED DATE","VIEW"].map(h => (
+                  {["PO NUMBER","SUPPLIER","STATUS","EXPECTED DATE","VIEW"].map(h => (
                     <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontSize: "0.65rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {sortedOrders.length === 0 ? (
-                  <tr><td colSpan={6} style={{ padding: "2rem 12px", textAlign: "center", color: "#9ca3af", fontSize: "0.85rem" }}>No purchase orders yet.</td></tr>
-                ) : sortedOrders.map((po, i) => {
+                  <tr><td colSpan={5} style={{ padding: "2rem 12px", textAlign: "center", color: "#9ca3af", fontSize: "0.85rem" }}>
+                    {poSupplierFilter ? `No purchase orders from ${poSupplierFilter}.` : "No purchase orders yet."}
+                  </td></tr>
+                ) : ordersByProject.flatMap(group => [
+                  <tr key={`project-${group.projectName}`}>
+                    <td colSpan={5} style={{ padding: "16px 12px 6px", borderBottom: "1px solid #f3f4f6" }}>
+                      <span style={{ fontSize: "0.85rem", fontWeight: 800, color: "#111827" }}>{group.projectName}</span>
+                      <span style={{ marginLeft: 8, fontSize: "0.7rem", color: "#9ca3af" }}>
+                        {group.orders.length} PO{group.orders.length === 1 ? "" : "s"}
+                        {group.orders.some(o => o.isImported) && group.orders.some(o => !o.isImported)
+                          ? ` · ${group.orders.filter(o => o.isImported).length} imported` : ""}
+                      </span>
+                    </td>
+                  </tr>,
+                  ...group.orders.map(po => {
                   const status = getEffectiveStatus(po);
                   const st = PO_STATUS_STYLE[status];
                   return (
-                    <tr key={po.id} style={{ borderBottom: i < sortedOrders.length - 1 ? "1px solid #f9fafb" : "none" }}>
+                    <tr key={po.id} style={{ borderBottom: "1px solid #f9fafb" }}>
                       <td style={{ padding: "14px 12px" }}>
-                        <span style={{ fontWeight: 700, fontSize: "0.8rem", color: "#f97316" }}>{po.number}</span>
+                        <span style={{ fontWeight: 700, fontSize: "0.8rem", color: "#f97316", display: "block" }}>{displayPoNumber(po)}</span>
                         <ImportedTag po={po} />
-                      </td>
-                      <td style={{ padding: "14px 12px" }}>
-                        <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#111827" }}>{po.projectName}</span>
                       </td>
                       <td style={{ padding: "14px 12px", fontSize: "0.78rem", color: "#6b7280" }}>{po.supplier}</td>
                       <td style={{ padding: "14px 12px" }}>
@@ -2347,16 +2376,15 @@ function ProcurementContent() {
                           // rather than setting the status directly — the backend rejects a
                           // direct PATCH to DeliveryInProgress/Delivered either way).
                           <select
-                            value={status === "DELAYED" ? "DELAYED" : canManagePOs ? po.status : status}
+                            value={canManagePOs ? po.status : status}
                             onChange={e => handleStatusSelect(po, e.target.value as POStatus)}
-                            title={status === "DELAYED" ? "Past its expected delivery date" : !canManagePOs ? "You can only mark this purchase order as delivered" : undefined}
+                            title={!canManagePOs ? "You can only mark this purchase order as delivered" : undefined}
                             style={{
                               fontSize: "0.7rem", fontWeight: 700, padding: "3px 8px", borderRadius: 999,
                               background: st.bg, color: st.color, border: "none", cursor: "pointer", outline: "none",
                               appearance: "none" as const,
                             }}
                           >
-                            {status === "DELAYED" && <option value="DELAYED" disabled hidden>DELAYED</option>}
                             {canManagePOs
                               ? PO_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)
                               : <option value={status} disabled hidden>{statusLabel(status)}</option>}
@@ -2376,7 +2404,8 @@ function ProcurementContent() {
                       </td>
                     </tr>
                   );
-                })}
+                  }),
+                ])}
               </tbody>
             </table>
             </div>

@@ -7,6 +7,7 @@ import { baselineAlerts, expectedText } from '@/lib/baseline';
 import { resolveUploadUrl } from '@/lib/avatar';
 import { indexLinks, rowStock, similarInStock, warehouseRequestQuantity, type RowStock } from '@/lib/warehouseStockMatch';
 import { formatCurrency, formatDate } from '@/lib/utils';
+import { displayPoNumber } from '@/lib/poNumber';
 import { useAuthStore } from '@/store/authStore';
 import type { Project, ProjectType } from '@/types/project';
 import type { ProjectDocument } from '@/types/document';
@@ -1576,7 +1577,7 @@ export default function MaterialPlanTab({
                   ) : poLines.map(({ po, m }, index) => (
                     <div key={`${po.id}-${m.id ?? index}`} style={{ display: 'grid', gridTemplateColumns: cols, gap: 8, padding: '0.6rem 1rem', borderBottom: '1px solid #f3f4f6', alignItems: 'center' }}>
                       <span style={cell}>
-                        {po.isImported ? (po.originalPoNumber || po.number) : po.number}
+                        {displayPoNumber(po)}
                         {po.isImported && (
                           <span title="An existing PO imported from a file — not made in ConstructIQ"
                             style={{ display: 'inline-block', marginLeft: 6, fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px', borderRadius: 999, background: '#ede9fe', color: '#6d28d9', verticalAlign: 'middle' }}>
