@@ -22,11 +22,12 @@ export function PreloaderLogo({ height = "min(220px, 40vh)" }: { height?: string
   );
 }
 
-// Every preloader is just the animated logo over the page: no background,
-// no blur, and clicks pass straight through it, so the sidebar and anything
-// already loaded stay usable while the rest loads.
+// Every preloader is the animated logo over a light, see-through blur of the
+// page. Clicks pass straight through it, so the sidebar and anything already
+// loaded stay usable while the rest loads.
 export const PRELOADER_OVERLAY: React.CSSProperties = {
-  position: "fixed", inset: 0, background: "transparent", pointerEvents: "none",
+  position: "fixed", inset: 0, pointerEvents: "none",
+  background: "rgba(255,255,255,0.2)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)",
   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
 };
 
