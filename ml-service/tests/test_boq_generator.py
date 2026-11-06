@@ -172,6 +172,11 @@ class FinishResolution(unittest.TestCase):
         self.assertEqual(self.source(result, "floor", "Toilet")["template"], "floor_tile_300")
         self.assertEqual(self.source(result, "floor", "Sales Area")["template"], "floor_tile_600")
 
+    def test_an_open_plan_room_is_only_wet_if_all_of_it_is(self):
+        for name, wet in (("Kitchen", True), ("Toilet / Bath", True), ("Common T&B", True), ("Common / Toilet", True), ("Second Floor · Common / Toilet", True), ("Common", False), ("Balcony", True), ("Ground Floor · Laundry Area", True),
+                          ("KITCHEN / DINING AREA / LIVING ROOM", False), ("Kitchen / Living / Dining / Toilet", False), ("Bedroom", False)):
+            self.assertEqual(gen.is_wet_room(name), wet, name)
+
     def test_a_row_partly_picked_says_so_room_by_room(self):
         result = self.generate(ROOMS, [note("MATTE BLACK WALL PAINT FINISH")],
                                finishes=[{"room": "Fitting Room", "wall": "painted_wall"}])
@@ -193,6 +198,43 @@ class FinishResolution(unittest.TestCase):
                          "600mmx600mm Acoustic Ceiling Panel in White")
         self.assertEqual(gen.spec_from_note('MDF FACADE ARCHITRAVE "DECATHLON BLUE" WALL PAINT FINISH'),
                          'MDF Facade Architrave "Decathlon Blue" Wall Paint Finish')
+
+
+class WallArea(unittest.TestCase):
+    ROOM = {"room": "Sales", "floor_area_sqm": 50.0, "perimeter_m": 32.0, "height_m": 4.0}
+    PAINTED = [{"room": "Sales", "wall": "painted_wall"}]
+
+    def wall(self, room, openings=None):
+        rows = gen.generate([room], self.PAINTED, CATALOG, openings=openings, history=finish_history.History())["rows"]
+        return next(r for r in rows if r["source"]["surface"] == "wall")
+
+    def test_glass_is_left_out_and_says_so(self):
+        row = self.wall(dict(self.ROOM, glass_length_m=9.0))
+        self.assertEqual(row["boq_quantity"], 92.0)  # (32 − 9) × 4
+        self.assertIn("9 m of glass wall left out", row["source"]["rooms"][0]["wall_note"])
+
+    def test_the_height_note_is_passed_along(self):
+        row = self.wall(dict(self.ROOM, height_note="painted up to the 4 m ceiling line"))
+        self.assertIn("4 m ceiling line", row["source"]["rooms"][0]["wall_note"])
+
+    def test_doors_and_windows_come_off_at_their_size_or_a_standard_one(self):
+        row = self.wall(self.ROOM, [{"type": "door", "count": 2, "width_m": None, "height_m": None},
+                                    {"type": "window", "count": 1, "width_m": 2.0, "height_m": 1.5}])
+        self.assertEqual(row["boq_quantity"], 128 - (2 * 0.9 * 2.1 + 3.0))
+        self.assertIn("6.78 sq.m of doors and windows", row["source"]["rooms"][0]["wall_note"])
+
+    def test_openings_are_shared_between_rooms_by_wall_area(self):
+        rooms = [self.ROOM, {"room": "Back", "floor_area_sqm": 10.0, "perimeter_m": 8.0, "height_m": 4.0}]
+        finishes = [{"room": r["room"], "wall": "painted_gypsum"} for r in rooms]
+        rows = gen.generate(rooms, finishes, CATALOG, openings=[{"type": "door", "count": 1, "width_m": 1.0, "height_m": 2.0}],
+                            history=finish_history.History())["rows"]
+        board = next(r for r in rows if r["specification"] == "Gypsum board")
+        self.assertEqual(board["boq_quantity"], 158.0)  # 128 + 32 − 2, whichever room it's in
+        self.assertAlmostEqual(gen._opening_shares(rooms, [{"type": "door", "count": 1, "width_m": 1.0, "height_m": 2.0}])["Back"], 0.4)
+
+    def test_a_room_given_its_own_openings_keeps_them(self):
+        row = self.wall(dict(self.ROOM, openings_sqm=6.0), [{"type": "door", "count": 5}])
+        self.assertEqual(row["boq_quantity"], 122.0)
 
 
 class HistoricalFinishes(unittest.TestCase):

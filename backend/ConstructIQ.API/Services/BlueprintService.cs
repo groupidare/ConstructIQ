@@ -64,6 +64,7 @@ public class BlueprintService(
                 room = m.Room, floor_area_sqm = m.FloorAreaSqm, perimeter_m = m.PerimeterM,
                 height_m = m.HeightM, openings_sqm = m.OpeningsSqm,
                 ceiling_notes = m.CeilingNotes.Select(Note), has_ceiling_plan = m.HasCeilingPlan,
+                glass_length_m = m.GlassLengthM, height_note = m.HeightNote,
             }),
             finishes = request.Finishes.Select(f => new { room = f.Room, floor = f.Floor, wall = f.Wall, ceiling = f.Ceiling }),
             openings = request.Openings.Select(o => new { type = o.Type, count = o.Count, width_m = o.WidthM, height_m = o.HeightM }),

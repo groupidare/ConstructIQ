@@ -55,6 +55,10 @@ public class BlueprintRoomDto
     public List<string> CeilingNotes { get; set; } = [];
     public List<BlueprintNoteDto> CeilingNoteDetails { get; set; } = [];
     public double? CeilingHeightM { get; set; }
+    // How high its walls are finished (below the slab of an open ceiling), and
+    // the metres of its perimeter that are glass, so not painted.
+    public double? WallHeightM  { get; set; }
+    public double  GlassLengthM { get; set; }
 }
 
 // One floor of the plan set and the drawing it is read from. Confirm: a
@@ -152,6 +156,8 @@ public class RoomMeasurementInputDto
     // the floor had one (a room with no note there then has no ceiling on the drawing).
     public List<BlueprintNoteDto> CeilingNotes { get; set; } = [];
     public bool HasCeilingPlan { get; set; }
+    [Range(0, 100_000)] public double GlassLengthM { get; set; }
+    [MaxLength(200)] public string? HeightNote { get; set; }
 }
 
 public class RoomFinishInputDto
@@ -214,6 +220,7 @@ public class BlueprintRoomSourceDto
     public string  Kind     { get; set; } = "default";
     public string? Reason   { get; set; }
     public string? Template { get; set; }
+    public string? WallNote { get; set; }
 }
 
 public class GeneratedBoqRowDto

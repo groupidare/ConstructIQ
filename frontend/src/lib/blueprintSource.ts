@@ -41,6 +41,8 @@ export function sourceTooltip(row: BOQItemRow): string | undefined {
     lines.push(`Rooms: ${s.roomNames.join(', ')}`);
   }
   if (s.materialReason) lines.push(s.materialReason);
+  // What shaped a wall row's area: glass left out, the height used, openings subtracted.
+  for (const r of s.rooms) if (r.wallNote) lines.push(`${r.room} walls: ${r.wallNote}`);
   if (s.readId) lines.push('Open View Plan, then click this row to see it on the blueprint.');
   return lines.join('\n');
 }

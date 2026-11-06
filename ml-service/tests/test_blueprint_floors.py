@@ -12,7 +12,7 @@ from pathlib import Path
 
 from app.services import blueprint_ocr
 from app.services import blueprint_parser_service as bp
-from app.services.blueprint_geometry import Label, best_rooms
+from app.services.blueprint_geometry import Label, RoomResult, best_rooms, refine_rooms
 from app.services.blueprint_parser_service import parse_blueprint
 from tests.fixtures import blueprints
 
@@ -104,6 +104,13 @@ class StackedLetters(unittest.TestCase):
                  bp.TextLine("TOILET", 300, 100, 320, 104, 6.0), bp.TextLine("FLOOR DRAIN", 400, 100, 430, 104, 6.0)]
         labels = {l.text: minor for l, minor in bp._labels_from(lines, [])}
         self.assertEqual(labels, {"BEDROOM": False, "GUESTROOM": False, "TOILET": True})
+
+
+class ShortRoomWords(unittest.TestCase):
+    def test_tb_under_common_is_part_of_the_name(self):
+        lines = [bp.TextLine("COMMON", 100, 100, 140, 110, 10.0), bp.TextLine("T&B", 110, 112, 130, 122, 10.0),
+                 bp.TextLine("BEDROOM", 300, 100, 350, 110, 10.0), bp.TextLine("D2", 400, 100, 410, 110, 10.0)]
+        self.assertEqual([l.text for l, _ in bp._labels_from(lines, [])], ["COMMON T&B", "BEDROOM"])
 
 
 class WallObjects(unittest.TestCase):
@@ -226,6 +233,96 @@ class Preview(unittest.TestCase):
         self.assertEqual([f["drawing_id"] for f in self.pdf["floor_plans"]], ["A-1:A"])
         self.assertEqual(self.pdf["scale_used"], "1:50")
         self.assertEqual(self.dxf["floor_plans"][0]["drawing_id"], "DXF:A")
+
+
+class WallArea(unittest.TestCase):
+    """What's painted: not a glass side, and not above an open ceiling's finish line."""
+
+    def rooms(self, *polygons):
+        from shapely import Polygon
+        from app.services.blueprint_geometry import Room
+        return RoomResult([Room(f"R{i}", Polygon(p), [f"R{i}"]) for i, p in enumerate(polygons)], None, 0.6, [])
+
+    def label(self, text, x, y):
+        # 1 PDF point is 1 m here (m_per_pt=1), so the label's place reads in metres.
+        return bp.TextLine(text, x - 1, y - 0.2, x + 1, y + 0.2, 0.4)
+
+    def test_a_glass_label_takes_only_the_edge_it_runs_along(self):
+        result = self.rooms([(0, 0), (10, 0), (10, 6), (0, 6)])
+        lines = [self.label("PERIMETER GLASS WALL", 3, 7), self.label("PERIMETER GLASS WALL", 7, 7)]
+        self.assertEqual(bp._glass_lengths(result, lines, 1.0), {0: 10})  # the same side, counted once
+
+    def test_a_label_far_from_any_wall_or_about_something_else_counts_nothing(self):
+        result = self.rooms([(0, 0), (10, 0), (10, 6), (0, 6)])
+        self.assertEqual(bp._glass_lengths(result, [self.label("PERIMETER GLASS WALL", 5, 12)], 1.0), {})
+        self.assertEqual(bp._glass_lengths(result, [self.label("TEMPERED GLASS PANEL", 5, 7)], 1.0), {})
+
+    def test_most_of_a_room_marked_glass_is_treated_as_a_misread(self):
+        result = self.rooms([(0, 0), (10, 0), (10, 1), (0, 1)])  # the long sides are 20 of its 22 m
+        lines = [self.label("GLASS WALL", 5, 2), self.label("GLASS WALL", 5, -1)]
+        self.assertEqual(bp._glass_lengths(result, lines, 1.0), {})
+
+    def test_finish_heights_are_only_those_marked_as_a_ceiling_line(self):
+        t = lambda text, top, size=10.0: bp.TextLine(text, 100, top, 180, top + size, size)
+        sheet = bp.Sheet("A-3", "A", "ELEV", 2, [t("+4000mm", 100), t("MALL FINISH CEILING LINE", 113, 8.0),
+                                                 t("+2600mm", 300), t("FINISH CEILING LINE", 313, 8.0),
+                                                 t("+7500mm", 500), t("ROOF DECK", 513, 8.0)], [])
+        self.assertEqual(bp._finish_ceiling_heights([sheet]), [2.6, 4.0])
+
+    def test_an_open_ceiling_stops_at_the_highest_finish_line_below_the_slab(self):
+        soffit = ["L-01 SLAB SOFFIT:H=4745mm OPEN-UTILITIES CEILING PAINTED IN BLACK"]
+        self.assertEqual(bp._wall_height(soffit, [2.6, 3.0, 4.0]), 4.0)
+        self.assertEqual(bp._wall_height(soffit, []), 4.745)  # no line to go by: as noted
+        self.assertEqual(bp._wall_height(soffit, [5.0]), 4.745)
+        self.assertEqual(bp._wall_height(["CH=2600mm"], [4.0]), 2.6)  # a real ceiling is its own height
+        self.assertIsNone(bp._wall_height(["ACOUSTIC CEILING PANEL"], [4.0]))
+
+
+class ThinnerPens(unittest.TestCase):
+    """A thinner pen corrects a room only where the plan gives a reason."""
+
+    @staticmethod
+    def result(*rooms):
+        from shapely import Polygon
+        from app.services.blueprint_geometry import Room
+        return RoomResult([Room("/".join(n), Polygon(p), list(n), 0.9, ids) for p, n, ids in rooms], None, 0.6, [])
+
+    BIG = [(0, 0), (10, 0), (10, 5), (0, 5)]
+    PART = [(0, 0), (6, 0), (6, 5), (0, 5)]
+
+    def test_a_room_that_leaked_through_a_wide_door_takes_the_thin_outline(self):
+        labels = [Label("BEDROOM", 3, 2)]
+        heavy = self.result((self.BIG, ["BEDROOM"], [0]))
+        thin = self.result((self.PART, ["BEDROOM"], [0]))
+        rooms = refine_rooms(heavy, labels, [(8, 2)], None, thin).rooms  # RD tag in the part that leaked
+        self.assertEqual(sorted(round(r.area_sqm) for r in rooms), [20, 30])
+        self.assertEqual(rooms[0].name, "BEDROOM")
+        self.assertEqual(rooms[1].name, "Unlabelled room 1")
+
+    def test_no_door_tag_where_the_outlines_differ_changes_nothing(self):
+        labels = [Label("BEDROOM", 3, 2)]
+        heavy = self.result((self.BIG, ["BEDROOM"], [0]))
+        thin = self.result((self.PART, ["BEDROOM"], [0]))
+        self.assertIs(refine_rooms(heavy, labels, [], None, thin), heavy)
+        self.assertIs(refine_rooms(heavy, labels, [(3, 2)], None, thin), heavy)  # the tag is inside the thin outline
+
+    def test_a_thin_pen_that_chops_the_room_up_is_not_believed(self):
+        labels = [Label("LAUNDRY", 1, 1)]
+        heavy = self.result((self.BIG, ["LAUNDRY"], [0]))
+        thin = self.result(([(0, 0), (3, 0), (3, 5), (0, 5)], ["LAUNDRY"], [0]))  # 30% of it: a grid line cut it
+        self.assertIs(refine_rooms(heavy, labels, [(8, 2)], None, thin), heavy)
+
+    def test_a_toilet_merged_into_a_room_is_cut_out_with_its_label(self):
+        labels = [Label("KITCHEN", 3, 2), Label("TOILET", 8, 2)]
+        heavy = self.result((self.BIG, ["KITCHEN", "TOILET"], [0, 1]))
+        mid = self.result((self.PART, ["KITCHEN"], [0]))
+        rooms = refine_rooms(heavy, labels, [], mid, None).rooms
+        self.assertEqual({r.name: round(r.area_sqm) for r in rooms}, {"KITCHEN": 30, "TOILET": 20})
+
+    def test_a_room_with_only_toilet_labels_is_left_alone(self):
+        labels = [Label("TOILET", 3, 2), Label("T&B", 8, 2)]
+        heavy = self.result((self.BIG, ["TOILET", "T&B"], [0, 1]))
+        self.assertIs(refine_rooms(heavy, labels, [], self.result((self.PART, ["TOILET"], [0])), None), heavy)
 
 
 class PlanNotes(unittest.TestCase):

@@ -330,7 +330,7 @@ public class BlueprintJsonTests
         {
           "page": 2, "ceiling_plan_page": 3,
           "plan_notes": [ { "text": "600x600mm FLOOR TILES", "page": 2, "sheet": "A-2", "box": [10.0, 20.0, 90.0, 30.0] } ],
-          "rooms": [ { "name": "STORAGE", "outline_pt": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+          "rooms": [ { "name": "STORAGE", "outline_pt": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], "wall_height_m": 4.0, "glass_length_m": 9.78,
                        "ceiling_note_details": [ { "text": "ACOUSTIC CEILING PANEL", "page": 3, "box": [1.0, 1.0, 2.0, 2.0] } ] } ]
         }
         """;
@@ -339,6 +339,7 @@ public class BlueprintJsonTests
         Assert.Equal("A-2", Assert.Single(result.PlanNotes).Sheet);
         Assert.Equal([5.0, 6.0], result.Rooms[0].OutlinePt[2]);
         Assert.Equal(3, Assert.Single(result.Rooms[0].CeilingNoteDetails).Page);
+        Assert.Equal((4.0, 9.78), (result.Rooms[0].WallHeightM, result.Rooms[0].GlassLengthM));
 
         const string generated = """
         { "rows": [ { "specification": "600mmx600mm Acoustic Ceiling Panel", "specification_from_drawing": true,

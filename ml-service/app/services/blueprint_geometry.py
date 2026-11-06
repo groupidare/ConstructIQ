@@ -10,6 +10,7 @@ never form closed outlines on their own, so plain polygonizing finds nothing.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -150,6 +151,62 @@ def split_merged_rooms(result: RoomResult, finer_results: list[RoomResult], labe
     _number_unlabelled(rooms)
     return RoomResult(sorted(rooms, key=lambda r: (not r.labels, -r.area_sqm)), result.gross_sqm, result.gap_m,
                       result.unplaced_labels)
+
+
+TOILET_WORD = re.compile(r"\b(toilets?|t\s*&\s*b|c\.?r\.?|bath(room)?|wc|lavatory|powder)\b", re.I)
+REFINE_MIN_SHARE = 0.4       # a thinner pen leaving less of the room than this has chopped it up, not found its walls
+REFINE_MIN_CHANGE = 0.03     # a smaller difference is just the two pens' line positions
+REFINE_PIECE_SQM = 1.0       # the parts cut away this big or more stay on the list, as rooms of their own
+
+
+def refine_rooms(result: RoomResult, labels: list[Label], door_tags: list[tuple[float, float]],
+                 mid_pen: RoomResult | None, all_pens: RoomResult | None) -> RoomResult:
+    """Walls the heaviest pens missed. A thinner pen also draws grid lines,
+    tiles and furniture, so it's only trusted where the plan gives a reason:
+    - a room labelled both as a toilet and as something else has run into the
+      toilet: the mid-weight pens (which leave tile patterns out) separate them;
+    - a wide door's tag ("RD", "SD") left outside what the thinnest pens enclose
+      means the room leaked out through that door: its real outline is theirs.
+    What's cut away stays listed: a labelled toilet, or an unlabelled space
+    (another toilet, a porch) for the user to name or leave unticked."""
+    text = {i: l.text for i, l in enumerate(labels)}
+    out: list[Room] = []
+    changed = False
+
+    def split(room: Room, polygon, keep_ids: list[int]) -> None:
+        nonlocal changed
+        polygon = Polygon(polygon.exterior)
+        out.append(_room(polygon, keep_ids, labels, result.gap_m))
+        for piece in getattr(room.polygon.difference(polygon), "geoms", [room.polygon.difference(polygon)]):
+            if piece.is_empty or piece.area < REFINE_PIECE_SQM or piece.geom_type != "Polygon":
+                continue
+            inside = [i for i in room.label_ids if i not in keep_ids and piece.contains(Point(labels[i].x, labels[i].y))]
+            out.append(_room(piece, inside, labels, result.gap_m))
+        changed = True
+
+    for room in result.rooms:
+        names = [text[i] for i in room.label_ids]
+        mixed = any(TOILET_WORD.search(n) for n in names) and not all(TOILET_WORD.search(n) for n in names)
+        if mixed and mid_pen is not None:
+            main = [i for i in room.label_ids if not TOILET_WORD.search(text[i])]
+            piece = next((p for p in mid_pen.rooms if set(main) <= set(p.label_ids)
+                          and room.polygon.buffer(0.1).contains(p.polygon.representative_point())), None)
+            if piece is not None and REFINE_MIN_SHARE * room.area_sqm <= piece.area_sqm <= (1 - REFINE_MIN_CHANGE) * room.area_sqm:
+                split(room, piece.polygon, main)
+                continue
+        if room.label_ids and all_pens is not None:
+            piece = next((p for p in all_pens.rooms if set(room.label_ids) <= set(p.label_ids)
+                          and room.polygon.buffer(0.1).contains(p.polygon.representative_point())), None)
+            if piece is not None and REFINE_MIN_SHARE * room.area_sqm <= piece.area_sqm <= (1 - REFINE_MIN_CHANGE) * room.area_sqm:
+                outline = Polygon(piece.polygon.exterior)
+                if any(room.polygon.buffer(0.3).contains(Point(t)) and not outline.buffer(0.1).contains(Point(t)) for t in door_tags):
+                    split(room, piece.polygon, list(room.label_ids))
+                    continue
+        out.append(room)
+    if not changed:
+        return result
+    _number_unlabelled(out)
+    return RoomResult(sorted(out, key=lambda r: (not r.labels, -r.area_sqm)), result.gross_sqm, result.gap_m, result.unplaced_labels)
 
 
 def rooms_from_walls(segments: list[tuple[float, float, float, float]], labels: list[Label],

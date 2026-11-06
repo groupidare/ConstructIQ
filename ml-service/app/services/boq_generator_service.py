@@ -81,9 +81,19 @@ def match_material(options: list[list[str]], materials: list[dict], boq_unit: st
     return None
 
 
-WET_ROOM = re.compile(r"\b(c\.?r\.?|toilet|t\s*&\s*b|bath|wc|lavatory|kitchen|laundry|powder|shower)\b", re.I)
+WET_ROOM = re.compile(r"\b(c\.?r\.?|toilet|t\s*&\s*b|bath|wc|lavatory|kitchen|laundry|powder|shower|balcony|terrace|lanai|porch)\b", re.I)
 DEFAULTS = {"floor": "floor_tile_600", "wet_floor": "floor_tile_300", "wall": "painted_plaster", "ceiling": "fiber_cement_ceiling"}
 WET_FLOORS = {"floor_tile_300", "vinyl_floor"}
+
+
+def is_wet_room(name: str) -> bool:
+    """Every label of the room is a wet one. An open-plan "Kitchen / Dining /
+    Living" is finished as its living space; a kitchen on its own is wet. A
+    word that only qualifies the next ("Common / Toilet") doesn't count."""
+    parts = [p for p in re.split(r"/", name) if p.strip() and not re.fullmatch(r"\s*(.*·\s*)?(common|master)\s*", p, re.I)]
+    return bool(parts) and all(WET_ROOM.search(p) for p in parts)
+
+
 _SMALL_WORDS = {"in", "of", "on", "at", "the", "and", "with", "to", "for", "c/w", "w/", "or", "a"}
 
 
@@ -167,7 +177,7 @@ def resolve_finishes(measurements: list[dict], finishes: list[dict], plan_notes:
     for room in measurements:
         name = room.get("room") or "Room"
         mine = chosen.get(name, {})
-        wet = bool(WET_ROOM.search(name))
+        wet = is_wet_room(name)
         picks: dict[str, tuple[str, dict]] = {}
         for surface in ("floor", "wall", "ceiling"):
             if mine.get(surface):
@@ -204,6 +214,40 @@ def resolve_finishes(measurements: list[dict], finishes: list[dict], plan_notes:
     return out
 
 
+DEFAULT_OPENING_M = {"door": (0.9, 2.1), "window": (1.2, 1.2)}
+
+
+def _opening_shares(measurements: list[dict], openings: list[dict] | None) -> dict[str, float]:
+    """room → sq.m of the plan's doors and windows to take off its walls. Which
+    room an opening is in isn't known, so each room takes its share of the total
+    by wall area. A room given its own openings_sqm keeps that."""
+    total = 0.0
+    for o in openings or []:
+        width, height = DEFAULT_OPENING_M.get(o.get("type"), (0.0, 0.0))
+        total += int(o.get("count") or 0) * float(o.get("width_m") or width) * float(o.get("height_m") or height)
+    walls = {(r.get("room") or "Room"): _gross_wall(r) for r in measurements if not r.get("openings_sqm")}
+    all_walls = sum(walls.values())
+    return {name: total * area / all_walls for name, area in walls.items()} if total > 0 and all_walls > 0 else {}
+
+
+def _gross_wall(room: dict) -> float:
+    """Wall area before openings: the perimeter less any glass, × the height."""
+    perimeter = float(room.get("perimeter_m") or 0) - float(room.get("glass_length_m") or 0)
+    return max(perimeter, 0.0) * float(room.get("height_m") or 0)
+
+
+def _wall_note(room: dict, opening_share: float) -> str | None:
+    """What was taken into account for a room's wall area, for its rows' hover text."""
+    parts = []
+    if room.get("glass_length_m"):
+        parts.append(f"{float(room['glass_length_m']):g} m of glass wall left out")
+    if room.get("height_note"):
+        parts.append(room["height_note"])
+    if opening_share > 0:
+        parts.append(f"{opening_share:.2f} sq.m of doors and windows subtracted")
+    return "; ".join(parts) or None
+
+
 def _quantity(basis: str, room: dict, openings: dict[str, int]) -> float | None:
     area = float(room.get("floor_area_sqm") or 0)
     perimeter = float(room.get("perimeter_m") or 0)
@@ -215,7 +259,7 @@ def _quantity(basis: str, room: dict, openings: dict[str, int]) -> float | None:
     if basis in ("wall_net_area", "wall_net_area_x2"):
         if not height:
             return None
-        net = max(perimeter * float(height) - float(room.get("openings_sqm") or 0), 0.0)
+        net = max(_gross_wall(room) - float(room.get("openings_sqm") or 0), 0.0)
         return net * (2 if basis == "wall_net_area_x2" else 1)
     if basis == "door_count":
         return float(openings.get("door", 0))
@@ -241,7 +285,8 @@ def _row_source(sources: list[tuple[str | None, dict]], material: dict | None, u
     n = used.get(material["id"], 0) if material else 0
     return {"kind": kind, "surface": first["surface"], "reason": first["reason"], "notes": notes[:4],
             "projects": first["projects"], "of": first["of"],
-            "rooms": [{"room": room, "kind": s["kind"], "reason": s["reason"], "template": s["template"]} for room, s in sources if room],
+            "rooms": [{"room": room, "kind": s["kind"], "reason": s["reason"], "template": s["template"], "wall_note": s.get("wall_note")}
+                      for room, s in sources if room],
             "template": first["template"],
             "material_reason": f"Catalog material used in {n} past project{'s' if n != 1 else ''}" if n else None}
 
@@ -312,10 +357,16 @@ def generate(measurements: list[dict], finishes: list[dict], materials: list[dic
             entry["rooms"].append(room_name)
         entry["_sources"].append((room_name, {**why, "template": template["key"]}))
 
+    shares = _opening_shares(measurements, openings)
     for room in measurements:
         name = room.get("room") or "Room"
+        share = shares.get(name, 0.0)
+        if share:
+            room = {**room, "openings_sqm": share}
         for surface in ("floor", "wall", "ceiling"):
             key, why = resolved[name][surface]
+            if surface == "wall":
+                why = {**why, "wall_note": _wall_note(room, share)}
             template = templates.get(key)
             if template is None:
                 warnings.append(f"Unknown finish template '{key}' for {name}.")

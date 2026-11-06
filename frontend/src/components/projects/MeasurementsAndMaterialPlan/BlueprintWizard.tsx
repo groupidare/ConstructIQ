@@ -39,6 +39,7 @@ interface EditableRoom {
   include: boolean; name: string; floorAreaSqm: number; perimeterM: number;
   lengthM: number; widthM: number; heightM: number | null; confidence: number;
   traced: number | null;  // index of the traced room it came from (its outline); null for one added by hand
+  glassLengthM: number;   // metres of the perimeter that are glass, left out of the wall area
   ceilingNotes: BlueprintNote[]; // what the ceiling plan says about the room
 }
 interface EditableOpening { type: string; count: number; widthM: number; heightM: number }
@@ -151,9 +152,10 @@ function editableRooms(data: BlueprintResult): EditableRoom[] {
       traced: i,
       include: r.labels.length > 0, name: seen[r.name] > 1 ? `${r.name} ${seen[r.name]}` : r.name,
       floorAreaSqm: r.floorAreaSqm, perimeterM: r.perimeterM, lengthM: r.lengthM, widthM: r.widthM, confidence: r.confidence,
-      // The room's own height on the ceiling plan; else, from the plan's
-      // "CH = …" notes, the taller height for the larger spaces.
-      heightM: r.ceilingHeightM ?? (heights.length === 0 ? null : heights.length === 1 ? heights[0]
+      glassLengthM: r.glassLengthM ?? 0,
+      // How high the room's walls are finished, from the ceiling plan; else,
+      // from the plan's "CH = …" notes, the taller height for the larger spaces.
+      heightM: r.wallHeightM ?? r.ceilingHeightM ?? (heights.length === 0 ? null : heights.length === 1 ? heights[0]
         : r.floorAreaSqm >= 10 ? heights[heights.length - 1] : heights[0]),
       ceilingNotes: r.ceilingNoteDetails ?? [],
     };
@@ -298,6 +300,13 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
     planNotes,
   });
 
+  // Why a room's wall height isn't its ceiling height, while it's still the one read off the plan.
+  function heightNote(floor: Floor, room: EditableRoom): string | null {
+    const read = room.traced != null ? floor.result?.rooms[room.traced] : undefined;
+    if (!read?.wallHeightM || !read.ceilingHeightM || read.wallHeightM === read.ceilingHeightM || room.heightM !== read.wallHeightM) return null;
+    return `painted up to the ${fmt(read.wallHeightM)} m ceiling line, not the ${fmt(read.ceilingHeightM)} m slab`;
+  }
+
   async function addToMaterialPlan() {
     setGenerating(true);
     try {
@@ -308,6 +317,7 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
         measurements: includedRooms.map(({ floor, room: r }) => ({
           room: roomName(floor, r.name), floorAreaSqm: r.floorAreaSqm, perimeterM: r.perimeterM, heightM: r.heightM, openingsSqm: 0,
           ceilingNotes: r.ceilingNotes, hasCeilingPlan: !!floor.result?.ceilingPlan,
+          glassLengthM: r.glassLengthM, heightNote: heightNote(floor, r),
         })),
         finishes: [],
         planNotes,
@@ -338,7 +348,7 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
           const prefix = floorPrefix(`${floor.name} ${drawings[floor.drawingId]?.title ?? ''}`);
           return [
             { ...base, elementType: 'Floor', phaseId: phaseFor('Floor'), areaLabel: `${prefix} · ${r.name}`, lengthM: r.lengthM, widthM: r.widthM, heightM: 0, areaSqm: r.floorAreaSqm, perimeterM: r.perimeterM },
-            ...(r.heightM ? [{ ...base, elementType: 'Wall', phaseId: phaseFor('Wall'), areaLabel: `${prefix} · ${r.name} walls`, lengthM: r.perimeterM, widthM: 0, heightM: r.heightM }] : []),
+            ...(r.heightM ? [{ ...base, elementType: 'Wall', phaseId: phaseFor('Wall'), areaLabel: `${prefix} · ${r.name} walls`, lengthM: Math.max(r.perimeterM - r.glassLengthM, 0), widthM: 0, heightM: r.heightM }] : []),
           ];
         });
         api.post('/measurements/bulk', { projectId: project.id, items }).catch(() => toast.error('Rows added, but the room measurements couldn\'t be saved.'));
@@ -555,18 +565,18 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                     </div>
                     {/* A floor plan has no heights; most rooms share one, read off the plan's sections. */}
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <label htmlFor={`height-${f.key}`} style={{ fontSize: '0.76rem', color: '#374151' }}>Ceiling height for all rooms (m)</label>
+                      <label htmlFor={`height-${f.key}`} style={{ fontSize: '0.76rem', color: '#374151' }}>Wall height for all rooms (m)</label>
                       <input id={`height-${f.key}`} type="number" min="0" step="0.01" value={f.allHeight} placeholder="e.g. 2.75"
                         onChange={e => patchFloor(f.key, { allHeight: e.target.value })} style={{ ...small, width: 90 }} />
                       <button disabled={!(Number(f.allHeight) > 0)} style={{ ...btn(), padding: '5px 12px', opacity: Number(f.allHeight) > 0 ? 1 : 0.5 }}
                         onClick={() => patchFloor(f.key, { rooms: f.rooms.map(r => ({ ...r, heightM: Number(f.allHeight) })) })}>
                         Apply
                       </button>
-                      <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>Floor plans don&apos;t show heights — take it from the sections (floor to ceiling line).</span>
+                      <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>How high the walls are finished, from the plan&apos;s notes where it has them — else take it from the sections (floor to ceiling line).</span>
                     </div>
                     <div style={{ overflowX: 'auto' }}>
                       <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
-                        <thead><tr>{['', 'Room', 'Floor area (m²)', 'Perimeter (m)', 'Ceiling height (m)'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+                        <thead><tr>{['', 'Room', 'Floor area (m²)', 'Perimeter (m)', 'Wall height (m)'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
                         <tbody>
                           {f.rooms.map((r, i) => (
                             <tr key={i} onMouseEnter={() => setHighlight(r.traced)} onMouseLeave={() => setHighlight(null)}
@@ -575,9 +585,14 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                               <td style={td}><input type="checkbox" checked={r.include} onChange={e => setRoom(i, { include: e.target.checked })} aria-label={`Include ${r.name}`} /></td>
                               <td style={td}><input value={r.name} placeholder="Room name" onChange={e => setRoom(i, { name: e.target.value })} style={small} aria-label="Room name" /></td>
                               <td style={td}><input type="number" min="0" step="0.01" value={r.floorAreaSqm} onChange={e => setRoom(i, { floorAreaSqm: Number(e.target.value) || 0 })} style={small} aria-label="Floor area" /></td>
-                              <td style={td}><input type="number" min="0" step="0.01" value={r.perimeterM} onChange={e => setRoom(i, { perimeterM: Number(e.target.value) || 0 })} style={small} aria-label="Perimeter" /></td>
+                              <td style={td}><input type="number" min="0" step="0.01" value={r.perimeterM} onChange={e => setRoom(i, { perimeterM: Number(e.target.value) || 0 })} style={small} aria-label="Perimeter" />
+                                {r.glassLengthM > 0 && (
+                                  <span style={{ display: 'block', fontSize: '0.64rem', color: '#6b7280', marginTop: 2 }}>
+                                    {fmt(r.glassLengthM)} m is glass, not painted · <button style={{ ...link, fontSize: '0.64rem' }} onClick={() => setRoom(i, { glassLengthM: 0 })}>Count it</button>
+                                  </span>
+                                )}</td>
                               <td style={td}><input type="number" min="0" step="0.01" value={r.heightM ?? ''} placeholder="enter for walls" onChange={e => setRoom(i, { heightM: e.target.value === '' ? null : Number(e.target.value) })}
-                                style={{ ...small, borderColor: r.heightM == null ? '#fbbf24' : '#e5e7eb' }} aria-label="Ceiling height" /></td>
+                                style={{ ...small, borderColor: r.heightM == null ? '#fbbf24' : '#e5e7eb' }} aria-label="Wall height" /></td>
                             </tr>
                           ))}
                         </tbody>
@@ -585,7 +600,7 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                     </div>
                     <button style={{ ...link, display: 'inline-flex', alignItems: 'center', gap: 4, justifySelf: 'start' }}
                       onClick={() => patchFloor(f.key, { rooms: [...f.rooms, { include: true, name: '', floorAreaSqm: 0, perimeterM: 0, lengthM: 0, widthM: 0,
-                        heightM: Number(f.allHeight) > 0 ? Number(f.allHeight) : null, confidence: 1, traced: null, ceilingNotes: [] }] })}>
+                        heightM: Number(f.allHeight) > 0 ? Number(f.allHeight) : null, confidence: 1, traced: null, glassLengthM: 0, ceilingNotes: [] }] })}>
                       <Plus style={{ width: 12, height: 12 }} /> Add a room that wasn&apos;t traced (e.g. a toilet)
                     </button>
                   </section>
@@ -605,13 +620,16 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
                 })}
               </div>
               <p style={{ fontSize: '0.72rem', color: '#6b7280', lineHeight: 1.5 }}>
+                Doors and windows are subtracted from the wall area, so check their counts here — a door the plan doesn&apos;t show still needs painting around it.
+              </p>
+              <p style={{ fontSize: '0.72rem', color: '#6b7280', lineHeight: 1.5 }}>
                 Floor, wall and ceiling finishes are read from the drawing&apos;s notes
                 {included.some(f => f.result?.ceilingPlan) ? ' (each room\'s ceiling from the reflected ceiling plan)' : ''};
                 where it says nothing, from your past projects, else a standard finish. Check them in the Material Plan:
                 hover over a specification to see where it came from, or open it on the plan.
                 {multiFloor && ' Each room\'s row is named with its floor ("Ground Floor · Bedroom").'}
               </p>
-              {includedRooms.some(({ room }) => room.heightM == null) && <p style={{ fontSize: '0.72rem', color: '#b45309' }}>Rooms without a ceiling height get no wall rows.</p>}
+              {includedRooms.some(({ room }) => room.heightM == null) && <p style={{ fontSize: '0.72rem', color: '#b45309' }}>Rooms without a wall height get no wall rows.</p>}
             </div>
             </div>
           )}

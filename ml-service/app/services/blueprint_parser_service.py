@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services import blueprint_ocr
-from app.services.blueprint_geometry import Label, RoomResult, best_rooms
+from app.services.blueprint_geometry import Label, RoomResult, TOILET_WORD, best_rooms, refine_rooms, rooms_from_walls
 from app.utils.pdf_render import page_image
 
 logger = logging.getLogger(__name__)
@@ -249,7 +249,8 @@ def _labels_from(lines: list[TextLine], exclude: list[TextLine]) -> list[tuple[T
     lines = [replace(l, text=blueprint_ocr.room_words(l.text)) if l.ocr else l
              for l in _stack_letters([l for l in lines if l not in exclude])]
     candidates = [l for l in lines
-                  if sum(ch.isalpha() for ch in l.text) >= max(3, 0.5 * len(l.text.replace(" ", "")))
+                  # A short room word ("T&B", "CR") is a name despite its few letters.
+                  if (sum(ch.isalpha() for ch in l.text) >= max(3, 0.5 * len(l.text.replace(" ", ""))) or _is_room_word(l.text))
                   and not _GRID_REF.match(l.text.strip()) and not _SCALE.search(l.text)]
     if not candidates:
         return []
@@ -539,6 +540,27 @@ def _is_hatch(segs: list[tuple], m_per_pt: float) -> bool:
     return dominant >= 0.8 and lengths[len(lengths) // 2] * m_per_pt < 1.5
 
 
+_WIDE_DOOR_TAG = re.compile(r"^(RD|SD)\W*\d?\W*$", re.I)
+REFINE_GAP_M = 0.3            # thin pens draw the door lines themselves: nothing wide to bridge
+REFINE_MID_PEN = 2            # mid-weight: walls and fixtures, not tile patterns or grid lines
+REFINE_ALL_PENS = 1
+
+
+def _refined(result: RoomResult, walls: list[dict], labels: list[Label], lines: list[TextLine], m_per_pt: float) -> RoomResult:
+    """Rooms corrected with the thinner pens, where the plan gives a reason
+    (see refine_rooms). Traced only then: the thinnest pens are slow."""
+    def traced(pen: int) -> RoomResult:
+        segs = _segments([o for o in walls if round(float(o.get("linewidth") or 0)) >= pen])
+        return rooms_from_walls([(a * m_per_pt, b * m_per_pt, c * m_per_pt, d * m_per_pt) for a, b, c, d in segs], labels, REFINE_GAP_M)
+
+    tags = [(l.cx * m_per_pt, l.cy * m_per_pt) for l in lines if _WIDE_DOOR_TAG.match(l.text.strip())]
+    mixed = any(len(r.labels) > 1 and any(TOILET_WORD.search(n) for n in r.labels) and not all(TOILET_WORD.search(n) for n in r.labels)
+                for r in result.rooms)
+    if not tags and not mixed:
+        return result
+    return refine_rooms(result, labels, tags, traced(REFINE_MID_PEN) if mixed else None, traced(REFINE_ALL_PENS) if tags else None)
+
+
 def _wall_candidates(objs: list[dict], m_per_pt: float) -> list[list[tuple]]:
     """Heaviest non-hatch pen styles first, as growing prefixes (1–3 styles),
     converted to metres."""
@@ -591,11 +613,14 @@ def _openings(door_widths: list[float], window_count: int, window_widths: list[f
     return out
 
 
-def _rooms_json(result: RoomResult | None, to_px=None, ceilings: dict[int, dict] | None = None, to_pt=None) -> list[dict]:
+def _rooms_json(result: RoomResult | None, to_px=None, ceilings: dict[int, dict] | None = None, to_pt=None,
+                glass: dict[int, float] | None = None) -> list[dict]:
     """to_px: metres → preview-image pixels, for each room's outline; to_pt:
     metres → PDF points on its page (where the Material Plan's plan viewer
-    draws it). ceilings: room index → what the ceiling plan says about it."""
+    draws it). ceilings: room index → what the ceiling plan says about it.
+    glass: room index → metres of its perimeter that are glass."""
     ceilings = ceilings or {}
+    glass = glass or {}
     if not result:
         return []
     def bbox(r):
@@ -611,7 +636,8 @@ def _rooms_json(result: RoomResult | None, to_px=None, ceilings: dict[int, dict]
              "length_m": bbox(r)[0], "width_m": bbox(r)[1],
              "confidence": r.confidence, "labels": r.labels, "outline": outline(r), "outline_pt": outline(r, to_pt),
              "ceiling_notes": ceilings.get(i, {}).get("notes", []), "ceiling_height_m": ceilings.get(i, {}).get("height_m"),
-             "ceiling_note_details": ceilings.get(i, {}).get("details", [])}
+             "ceiling_note_details": ceilings.get(i, {}).get("details", []),
+             "wall_height_m": ceilings.get(i, {}).get("wall_height_m"), "glass_length_m": glass.get(i, 0)}
             for i, r in enumerate(result.rooms)]
 
 
@@ -1025,6 +1051,71 @@ def _leader_target(block: TextLine, objs: list[dict], leaders: list[tuple[int, t
     return None
 
 
+_GLASS_WALL = re.compile(r"\b(GLASS|GLAZED)\s+(WALL|PARTITION)|\bCURTAIN\s+WALL|\bSTOREFRONT\s+(GLASS|GLAZING)", re.I)
+GLASS_LABEL_REACH_M = 1.5    # a wall's label sits this close to it
+GLASS_MIN_EDGE_M = 1.0       # shorter edges are returns and notches, not the glazed run
+GLASS_MAX_SHARE = 0.6        # more of a room's perimeter than this is a misread label, not a glazed side
+_FINISH_HEIGHT = re.compile(r"^\+\s*(\d{4})\s*MM$", re.I)
+_CEILING_LINE = re.compile(r"CEILING\s+LINE", re.I)
+
+
+def _glass_lengths(result: RoomResult, lines: list[TextLine], m_per_pt: float) -> dict[int, float]:
+    """room index → metres of its perimeter that are glass, so not painted: for
+    each "PERIMETER GLASS WALL" on the plan, the room edge it runs along. A
+    label with no clear edge beside it counts nothing, and neither does a room
+    with most of its perimeter marked: walls then stay as traced."""
+    from shapely import LineString, Point
+    edges = []
+    for i, room in enumerate(result.rooms):
+        ring = list(room.polygon.simplify(0.02).exterior.coords)
+        for a, b in zip(ring, ring[1:]):
+            if math.dist(a, b) >= GLASS_MIN_EDGE_M:
+                edges.append((i, a, b, LineString([a, b])))
+    found: dict[int, set[tuple]] = defaultdict(set)
+    for l in lines:
+        if not _GLASS_WALL.search(l.text):
+            continue
+        across = l.x1 - l.x0 >= l.bottom - l.top  # the label runs along its wall
+        point = Point(l.cx * m_per_pt, l.cy * m_per_pt)
+        along = [e for e in edges if (abs(e[1][0] - e[2][0]) >= abs(e[1][1] - e[2][1])) == across]
+        near = min(along, key=lambda e: e[3].distance(point), default=None)
+        if near is not None and near[3].distance(point) <= GLASS_LABEL_REACH_M:
+            found[near[0]].add((near[1], near[2]))
+    out = {}
+    for i, sides in found.items():
+        length = sum(math.dist(a, b) for a, b in sides)
+        if length <= GLASS_MAX_SHARE * result.rooms[i].perimeter_m:
+            out[i] = round(length, 2)
+    return out
+
+
+def _finish_ceiling_heights(sheets: list[Sheet]) -> list[float]:
+    """Heights the sections and elevations mark as a ceiling line ("+4000mm"
+    over "MALL FINISH CEILING LINE"), in metres."""
+    heights = set()
+    for s in sheets:
+        marks = [l for l in s.lines if _CEILING_LINE.search(l.text)]
+        for l in s.lines:
+            m = _FINISH_HEIGHT.match(l.text.strip())
+            if m and 1800 <= int(m.group(1)) <= 8000 and any(
+                    0 <= c.top - l.top <= 2.5 * l.size and c.x0 < l.x1 and l.x0 < c.x1 for c in marks):
+                heights.add(int(m.group(1)) / 1000)
+    return sorted(heights)
+
+
+def _wall_height(notes: list[str], finish_heights: list[float]) -> float | None:
+    """How high a room's walls are finished. Its own ceiling height when it has
+    one; an open ceiling only notes the slab far above, so its walls stop at the
+    highest ceiling line drawn below that slab."""
+    own = _room_height(notes[:0] + [n for n in notes if _ROOM_CEILING_HEIGHT[0].search(n)])
+    if own:
+        return own
+    soffit = _room_height(notes)
+    if soffit is None:
+        return None
+    return max((h for h in finish_heights if h < soffit), default=soffit)
+
+
 def _room_height(notes: list[str]) -> float | None:
     for pattern in _ROOM_CEILING_HEIGHT:
         for n in notes:
@@ -1178,6 +1269,8 @@ def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_ov
         plan_total = _plan_total(_rows(sheet.lines)) or _plan_total(all_text)
         walls = _wall_objects(objs, region_lines, m_per_pt)
         result = best_rooms(_wall_candidates(walls, m_per_pt), label_pts, plan_total)
+        if result and result.rooms:
+            result = _refined(result, walls, label_pts, region_lines, m_per_pt)
         if result is None or not result.rooms:
             response["errors"].append("No closed rooms could be traced on this drawing — enter the measurements by hand.")
             result = None
@@ -1190,6 +1283,9 @@ def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_ov
             plan, ceilings, note = _ceilings_from_plan(pages, plan_sheets, drawing, walls, m_per_pt, result)
             response["ceiling_plan"] = plan
             response["ceiling_plan_page"] = next((s.page_index + 1 for s in plan_sheets for d in s.drawings if d.id == plan), None)
+            finish_heights = _finish_ceiling_heights(plan_sheets)
+            for ceiling in ceilings.values():
+                ceiling["wall_height_m"] = _wall_height(ceiling["notes"], finish_heights)
             if note:
                 warnings.append(note)
 
@@ -1197,7 +1293,8 @@ def _parse_pdf(path: str, sheet_id: str | None, drawing_id: str | None, scale_ov
         to_px = lambda x, y: ((x / m_per_pt - ox) * px_per_pt, (y / m_per_pt - oy) * px_per_pt)
         response.update({
             "rooms": _rooms_json(result, to_px if response["preview"] else None, ceilings,
-                                 lambda x, y: (x / m_per_pt, y / m_per_pt)),
+                                 lambda x, y: (x / m_per_pt, y / m_per_pt),
+                                 _glass_lengths(result, region_lines, m_per_pt) if result else None),
             "openings": _openings(_doors_from_arcs(region.curves, m_per_pt), windows),
             "schedule_check": _schedule_check(plan_total, result),
         })

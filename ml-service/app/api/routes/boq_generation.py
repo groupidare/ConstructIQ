@@ -26,6 +26,10 @@ class RoomMeasurement(BaseModel):
     # the floor had one, so a room with no note there has no ceiling on the drawing.
     ceiling_notes: list[NoteRef] = []
     has_ceiling_plan: bool = False
+    # Metres of the perimeter that are glass (not painted), and why the height
+    # isn't the room's ceiling height, when it isn't.
+    glass_length_m: float = 0
+    height_note: Optional[str] = None
 
 
 class RoomFinish(BaseModel):

@@ -22,6 +22,10 @@ export interface BlueprintRoom {
   ceilingNotes: string[];
   ceilingNoteDetails: BlueprintNote[];
   ceilingHeightM: number | null;
+  /** How high its walls are finished: below the slab of an open ceiling. */
+  wallHeightM: number | null;
+  /** Metres of its perimeter that are glass, so not painted. */
+  glassLengthM: number;
 }
 
 /** One floor of the plan set and the drawing it is read from. `confirm`: a
@@ -95,7 +99,7 @@ export interface BlueprintRowSource {
   notes: BlueprintNote[];
   projects: number | null;
   of: number | null;
-  rooms: { room: string; kind: FinishSourceKind; reason: string | null; template?: string | null }[];
+  rooms: { room: string; kind: FinishSourceKind; reason: string | null; template?: string | null; wallNote?: string | null }[];
   template?: string | null;
   materialReason: string | null;
 }
