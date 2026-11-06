@@ -184,10 +184,18 @@ public class RedistributionService(AppDbContext db, INotificationService notific
     public async Task<bool> ApproveTransferAsync(int recommendationId, int userId)
     {
         var request = await db.RedistributionRequests
-            .Include(r => r.SourceExcessWasteRecord)
+            .Include(r => r.Material)
+            .Include(r => r.SourceExcessWasteRecord).ThenInclude(e => e!.BOQItem)
             .FirstOrDefaultAsync(r => r.Id == recommendationId);
         if (request is null) return false;
         if (request.Status is RedistributionStatus.Completed or RedistributionStatus.Rejected) return false;
+
+        await EnsureNoWarehouseRequestWaitingAsync(request.TargetProjectId,
+            new(request.MaterialId, request.SourceExcessWasteRecord?.BOQItem?.Specification, request.Material.Name));
+        // The warehouse may have released it since this was suggested. It would
+        // still go out on the sheet in full, so it can't be approved for more.
+        if (request.Status != RedistributionStatus.Approved && request.SourceExcessWasteRecord is { } available && available.Quantity < request.Quantity)
+            throw new InvalidOperationException($"Only {available.Quantity:0.##} of this excess is left. Reject this transfer and request what's left.");
 
         request.Status           = RedistributionStatus.Approved;
         request.ApprovedByUserId = userId;
@@ -218,12 +226,40 @@ public class RedistributionService(AppDbContext db, INotificationService notific
         return true;
     }
 
+    // A transfer and a warehouse release of the same item to the same project
+    // would each take it out of the warehouse: approving the release does it all.
+    private async Task EnsureNoWarehouseRequestWaitingAsync(int targetProjectId, WarehouseItemMatch.Item item)
+    {
+        var waiting = await db.WarehouseRequests
+            .Include(w => w.Material).Include(w => w.BOQItem).Include(w => w.Project)
+            .Where(w => w.ProjectId == targetProjectId && w.Status == WarehouseRequestStatus.Pending)
+            .ToListAsync();
+        if (waiting.Count == 0) return;
+
+        var links = await WarehouseItemMatch.LoadLinksAsync(db);
+        var match = waiting.FirstOrDefault(w => WarehouseItemMatch.Same(item, new(w.MaterialId, w.BOQItem?.Specification, w.Material.Name), links));
+        if (match is not null)
+            throw new InvalidOperationException(
+                $"{match.Project.Name} already has a warehouse request waiting for {match.RequestedQuantity:0.##} {match.Unit} of this material. Approve it in Inventory instead: that uses the excess oldest first and takes it out once.");
+    }
+
     // Undoes an accidental approval — back to PendingApproval, not Rejected,
     // since the recommendation itself is still valid and may be approved again.
+    // What the approval moved goes back, so approving again can move it again.
     public async Task<bool> CancelApprovalAsync(int recommendationId)
     {
-        var request = await db.RedistributionRequests.FindAsync(recommendationId);
+        var request = await db.RedistributionRequests
+            .Include(r => r.SourceExcessWasteRecord)
+            .FirstOrDefaultAsync(r => r.Id == recommendationId);
         if (request is null || request.Status != RedistributionStatus.Approved) return false;
+
+        if (request.SourceExcessWasteRecord is { } excess)
+        {
+            var moved = Math.Min(excess.RedistributedQuantity, request.Quantity);
+            excess.RedistributedQuantity -= moved;
+            excess.Quantity += moved;
+            excess.TotalCost = excess.Quantity * excess.UnitCost;
+        }
 
         request.Status           = RedistributionStatus.PendingApproval;
         request.ApprovedByUserId = null;
@@ -280,6 +316,8 @@ public class RedistributionService(AppDbContext db, INotificationService notific
 
         var targetProject = await db.Projects.FindAsync(dto.TargetProjectId)
             ?? throw new KeyNotFoundException("Target project not found.");
+
+        await EnsureNoWarehouseRequestWaitingAsync(dto.TargetProjectId, new(record.MaterialId, record.BOQItem?.Specification, record.Material.Name));
 
         var quantity = dto.Quantity ?? record.Quantity;
         if (quantity > record.Quantity)

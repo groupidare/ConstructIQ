@@ -31,7 +31,23 @@ public class ExcessWasteService(AppDbContext db, IExcessSheetSync? sheetSync = n
             .GroupBy(r => r.SourceExcessWasteRecordId!.Value)
             .ToDictionary(g => g.Key, g => g.OrderByDescending(r => r.RequestedAt).First());
 
-        return records.Select(e => ToDto(e, redistributionByRecordId.GetValueOrDefault(e.Id)));
+        var releasesByRecordId = (await db.WarehouseReleaseSources
+                .Where(s => recordIds.Contains(s.ExcessWasteRecordId))
+                .OrderBy(s => s.Id)
+                .Select(s => new { s.ExcessWasteRecordId, ProjectName = s.WarehouseRequest.Project.Name, s.Quantity })
+                .ToListAsync())
+            .GroupBy(s => s.ExcessWasteRecordId)
+            .ToDictionary(g => g.Key, g => g
+                .GroupBy(s => s.ProjectName)
+                .Select(p => new ExcessWarehouseReleaseDto { ProjectName = p.Key, Quantity = p.Sum(s => s.Quantity) })
+                .ToList());
+
+        return records.Select(e =>
+        {
+            var dto = ToDto(e, redistributionByRecordId.GetValueOrDefault(e.Id));
+            dto.WarehouseReleases = releasesByRecordId.GetValueOrDefault(e.Id) ?? [];
+            return dto;
+        });
     }
 
     public async Task<ExcessWasteResponseDto> CreateAsync(ExcessWasteCreateDto dto, int userId)
@@ -247,6 +263,8 @@ public class ExcessWasteService(AppDbContext db, IExcessSheetSync? sheetSync = n
             .AnyAsync(r => r.SourceExcessWasteRecordId == id && r.Status == RedistributionStatus.Approved);
         if (alreadyRedistributed)
             throw new InvalidOperationException("This entry has already been redistributed and can no longer be edited.");
+        if (await db.WarehouseReleaseSources.AnyAsync(s => s.ExcessWasteRecordId == id))
+            throw new InvalidOperationException("Part of this entry has already been released by the warehouse, so it can no longer be edited.");
 
         if (!string.IsNullOrWhiteSpace(dto.NewMaterialName) &&
             !string.Equals(dto.NewMaterialName.Trim(), record.Material.Name, StringComparison.OrdinalIgnoreCase))
@@ -318,6 +336,8 @@ public class ExcessWasteService(AppDbContext db, IExcessSheetSync? sheetSync = n
             .AnyAsync(r => r.SourceExcessWasteRecordId == id && r.Status != RedistributionStatus.Rejected);
         if (hasActiveRedistribution)
             throw new InvalidOperationException("This entry is linked to a redistribution request and can't be deleted — reject or cancel that request first.");
+        if (await db.WarehouseReleaseSources.AnyAsync(s => s.ExcessWasteRecordId == id))
+            throw new InvalidOperationException("Part of this entry has already been released by the warehouse, so it can't be deleted.");
 
         // Symmetric undo of CreateAsync's inventory effects.
         var inventory = await db.InventoryRecords

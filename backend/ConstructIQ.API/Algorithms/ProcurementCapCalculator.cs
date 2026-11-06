@@ -38,7 +38,9 @@ public static class ProcurementCapCalculator
     // A row with no purchase estimate yet has only its BOQ measure to go on, so
     // the Material Plan works out what's left from these and the quantity on
     // screen, not from those figures.
-    public sealed record RowStatus(decimal NetLeftToOrder, decimal RemainingRequestable, bool WarehouseApproved, decimal WarehousePendingQuantity = 0, decimal ApprovedQuantity = 0, decimal AskedQuantity = 0);
+    // WarehouseRejected: the warehouse turned a check for this row down, which
+    // answers it just as an approval does: Procurement is what's left.
+    public sealed record RowStatus(decimal NetLeftToOrder, decimal RemainingRequestable, bool WarehouseApproved, decimal WarehousePendingQuantity = 0, decimal ApprovedQuantity = 0, decimal AskedQuantity = 0, bool WarehouseRejected = false);
 
     public sealed record RowNeed(int RowId, int MaterialId, decimal Estimate);
 
@@ -89,6 +91,11 @@ public static class ProcurementCapCalculator
             .Select(w => new { BOQItemId = w.BOQItemId!.Value, w.RequestedQuantity })
             .ToListAsync();
         var pendingByRow = pendingChecks.GroupBy(w => w.BOQItemId).ToDictionary(g => g.Key, g => g.Sum(w => w.RequestedQuantity));
+
+        var rejectedRows = (await db.WarehouseRequests
+            .Where(w => w.ProjectId == projectId && w.Status == WarehouseRequestStatus.Rejected && w.BOQItemId != null)
+            .Select(w => w.BOQItemId!.Value)
+            .ToListAsync()).ToHashSet();
 
         var requests = await db.MaterialRequests
             .Where(m => m.ProjectId == projectId && !m.IsPriceInquiry) // a price check isn't asking for material
@@ -170,7 +177,8 @@ public static class ProcurementCapCalculator
             netLeft[r.RowId], remaining[r.RowId],
             approvedRows.Contains(r.RowId) || approvedMaterials.Contains(r.MaterialId),
             pendingByRow.GetValueOrDefault(r.RowId),
-            approvedQuantities[r.RowId], askedQuantities[r.RowId]));
+            approvedQuantities[r.RowId], askedQuantities[r.RowId],
+            rejectedRows.Contains(r.RowId)));
     }
 
     private sealed record FulfilledRequest(int PurchaseOrderId, int MaterialId, int RowId, decimal Quantity);

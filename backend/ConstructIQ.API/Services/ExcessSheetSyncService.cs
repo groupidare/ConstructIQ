@@ -16,8 +16,8 @@ namespace ConstructIQ.API.Services;
 // Writes every logged Excess entry into the warehouse Google Sheet's STOCK IN
 // columns (GOOGLE_SHEET_STOCK_IN_RANGE, default 'SBMI 2026'!F7:J), so the
 // sheet's BAL formula counts it as stock back in, and every approved
-// redistribution into STOCK OUT (GOOGLE_SHEET_STOCK_OUT_RANGE, default
-// 'SBMI 2026'!L7:P), so it comes back out. The read-only API key the
+// redistribution or warehouse release into STOCK OUT (GOOGLE_SHEET_STOCK_OUT_RANGE,
+// default 'SBMI 2026'!L7:P), so it comes back out. The read-only API key the
 // Inventory sync uses can't write, so this signs in as a Google service
 // account (GOOGLE_SERVICE_ACCOUNT_KEY_FILE) the sheet is shared with as an
 // Editor. Off — and entries are never marked pending — until that's set.
@@ -102,7 +102,13 @@ public sealed class ExcessSheetSyncService(
             .Where(r => r.SheetSyncPending)
             .OrderBy(r => r.Id)
             .ToListAsync(ct);
-        if (pending.Count == 0 && pendingOut.Count == 0) return;
+        var pendingReleases = await db.WarehouseRequests
+            .Include(w => w.Material).Include(w => w.Project).Include(w => w.BOQItem)
+            .Include(w => w.ReleaseSources).ThenInclude(s => s.ExcessWasteRecord).ThenInclude(e => e.Project)
+            .Where(w => w.SheetSyncPending)
+            .OrderBy(w => w.Id)
+            .ToListAsync(ct);
+        if (pending.Count == 0 && pendingOut.Count == 0 && pendingReleases.Count == 0) return;
 
         var client = httpFactory.CreateClient("GoogleSheets");
         string? failure = null;
@@ -148,6 +154,8 @@ public sealed class ExcessSheetSyncService(
             // written in this same pass.
             if (pendingOut.Count > 0)
                 await WriteStockOutAsync(client, pendingOut, sheetMaterials, ct);
+            if (pendingReleases.Count > 0)
+                await WriteReleasesAsync(client, db, pendingReleases, sheetMaterials, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -161,17 +169,64 @@ public sealed class ExcessSheetSyncService(
                 record.SheetSyncError = failure;
             foreach (var request in pendingOut.Where(r => r.SheetSyncPending))
                 request.SheetSyncError = failure;
+            foreach (var release in pendingReleases.Where(w => w.SheetSyncPending))
+                release.SheetSyncError = failure;
         }
         await db.SaveChangesAsync(ct);
+    }
+
+    private async Task<List<StockOutSheetRows.StockInRow>> ReadStockInAsync(HttpClient client, CancellationToken ct) =>
+        (await GetValuesAsync(client, StockInRange, ct))
+            .Select(r => new StockOutSheetRows.StockInRow(Cell(r, 1), Cell(r, 2), Cell(r, 3),
+                decimal.TryParse(Cell(r, 4), NumberStyles.Number, CultureInfo.InvariantCulture, out var qty) ? qty : 0))
+            .ToList();
+
+    // The warehouse's own name for it when the BOQ wording is linked to one, and
+    // the Excess entry it used first when there is one, so it hits the same balance.
+    public static StockOutSheetRows.Entry ReleaseEntry(WarehouseRequest release, IReadOnlyDictionary<string, string> links)
+    {
+        var linked = links.GetValueOrDefault(StockInSheetRows.NameKey(release.BOQItem?.Specification ?? string.Empty));
+        var source = release.ReleaseSources.OrderBy(s => s.Id).FirstOrDefault()?.ExcessWasteRecord;
+        return new StockOutSheetRows.Entry(
+            release.Id, linked ?? release.Material.Name,
+            string.IsNullOrWhiteSpace(release.Unit) ? release.Material.Unit : release.Unit,
+            release.ApprovedQuantity ?? 0, release.Project.Name,
+            source?.Project?.Name, source?.LoggedQuantity);
+    }
+
+    private async Task WriteReleasesAsync(
+        HttpClient client, AppDbContext db, List<WarehouseRequest> releases, List<StockInSheetRows.SheetMaterial> sheetMaterials, CancellationToken ct)
+    {
+        var links = await db.WarehouseStockLinks
+            .Where(l => l.WarehouseMaterialName != null)
+            .ToDictionaryAsync(l => l.BoqNameKey, l => l.WarehouseMaterialName!, ct);
+        var (rows, skipped) = StockOutSheetRows.Build(
+            releases.Select(w => ReleaseEntry(w, links)), sheetMaterials, await ReadStockInAsync(client, ct));
+
+        var byId = releases.ToDictionary(w => w.Id);
+        foreach (var s in skipped)
+        {
+            var release = byId[s.RecordId];
+            release.SheetSyncPending = false;
+            release.SheetSyncError = Truncate(s.Reason);
+        }
+
+        if (rows.Count == 0) return;
+        await AppendRowsAsync(client, StockOutRange, rows.Select(r => r.Values).ToList(), ct);
+        foreach (var row in rows)
+        {
+            var release = byId[row.RecordId];
+            release.SheetSyncPending = false;
+            release.SheetSyncedAt = DateTime.UtcNow;
+            release.SheetSyncError = Truncate(row.Note);
+        }
+        logger.LogInformation("Wrote {Count} warehouse release(s) to the Google Sheet's STOCK OUT.", rows.Count);
     }
 
     private async Task WriteStockOutAsync(
         HttpClient client, List<RedistributionRequest> pendingOut, List<StockInSheetRows.SheetMaterial> sheetMaterials, CancellationToken ct)
     {
-        var stockIn = (await GetValuesAsync(client, StockInRange, ct))
-            .Select(r => new StockOutSheetRows.StockInRow(Cell(r, 1), Cell(r, 2), Cell(r, 3),
-                decimal.TryParse(Cell(r, 4), NumberStyles.Number, CultureInfo.InvariantCulture, out var qty) ? qty : 0))
-            .ToList();
+        var stockIn = await ReadStockInAsync(client, ct);
 
         var (rows, skipped) = StockOutSheetRows.Build(
             pendingOut.Select(r =>

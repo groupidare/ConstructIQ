@@ -374,6 +374,11 @@ function InventoryPageInner() {
                                               {r.linkedStockBalance != null && ` (${r.linkedStockBalance.toLocaleString()} ${r.linkedStockUnit ?? ""})`}
                                             </div>
                                           )}
+                                          {!!r.releaseSources?.length && (
+                                            <div style={{ fontSize: "0.68rem", fontWeight: 400, color: "#6b7280", marginTop: 2 }}>
+                                              Excess from {r.releaseSources.map(s => `${s.projectName} (${s.quantity.toLocaleString()} ${r.unit})`).join(", ")}
+                                            </div>
+                                          )}
                                         </td>
                                         <td style={{ padding: "10px", fontSize: "0.8rem", color: "#374151" }}>
                                           {canApprove && r.status === "Pending" ? (

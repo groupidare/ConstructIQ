@@ -179,6 +179,34 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         return Ok(groups);
     }
 
+    // For whoever can request materials for the project, unlike the worklist
+    // below: everything asked for, on a PO or not, without prices or quotes.
+    // A price check isn't asking for material, so it isn't one of these.
+    [HttpGet("project/{projectId:int}/sent")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> GetSent(int projectId, [FromServices] Services.Interfaces.IProjectAccessService projectAccess)
+    {
+        var role = User.FindFirst(ClaimTypes.Role)?.Value ?? string.Empty;
+        if (!await projectAccess.CanEditProjectAsync(projectId, CurrentUserId, role))
+            return Forbid();
+
+        var sent = await db.MaterialRequests
+            .Where(r => r.ProjectId == projectId && !r.IsPriceInquiry)
+            .OrderByDescending(r => r.CreatedAt).ThenByDescending(r => r.Id)
+            .Select(r => new
+            {
+                Dto = new SentMaterialRequestDto
+                {
+                    Id = r.Id, BOQItemId = r.BOQItemId, MaterialName = r.Material.Name,
+                    Quantity = r.Quantity, Unit = r.Unit, IsAdditional = r.IsAdditional, CreatedAt = r.CreatedAt,
+                    PoNumber = r.FulfilledByPurchaseOrder != null ? r.FulfilledByPurchaseOrder.Number : null,
+                },
+                PoStatus = r.FulfilledByPurchaseOrder != null ? (PurchaseOrderStatus?)r.FulfilledByPurchaseOrder.Status : null,
+            })
+            .ToListAsync();
+        return Ok(sent.Select(r => r.Dto with { PoStatus = r.PoStatus?.ToString() }).ToList());
+    }
+
     [HttpGet("project/{projectId:int}")]
     [Authorize(Roles = ManageRoles)]
     public async Task<IActionResult> GetForProject(int projectId, [FromQuery] bool? priceInquiry = null)

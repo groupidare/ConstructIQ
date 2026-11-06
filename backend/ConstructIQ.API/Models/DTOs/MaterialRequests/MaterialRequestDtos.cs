@@ -11,6 +11,20 @@ public record CreateMaterialRequestDto
     public int? BOQItemId { get; init; }
 }
 
+// What's been asked of Procurement for a project, for whoever asked to look back on.
+public record SentMaterialRequestDto
+{
+    public int Id { get; init; }
+    public int? BOQItemId { get; init; }
+    public string MaterialName { get; init; } = string.Empty;
+    public decimal Quantity { get; init; }
+    public string? Unit { get; init; }
+    public bool IsAdditional { get; init; }
+    public DateTime CreatedAt { get; init; }
+    public string? PoNumber { get; init; }
+    public string? PoStatus { get; init; }
+}
+
 public record MaterialRequestDto
 {
     public bool IsAdditional { get; init; }

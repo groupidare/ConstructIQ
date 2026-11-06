@@ -63,4 +63,12 @@ public class WarehouseRequestResponseDto
     public string?  LinkedStockName    { get; set; }
     public string?  LinkedStockUnit    { get; set; }
     public decimal? LinkedStockBalance { get; set; }
+    // Whose logged Excess this release used up, oldest first. Empty if none.
+    public List<WarehouseReleaseSourceDto> ReleaseSources { get; set; } = [];
+}
+
+public class WarehouseReleaseSourceDto
+{
+    public string  ProjectName { get; set; } = string.Empty;
+    public decimal Quantity    { get; set; }
 }

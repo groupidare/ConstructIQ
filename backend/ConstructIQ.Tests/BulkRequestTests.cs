@@ -225,6 +225,55 @@ public class BulkRequestTests(DatabaseFixture fixture)
     }
 
     [Fact]
+    public async Task SentRequests_ListWhatWasAsked_WithItsPo_WithoutPriceChecksOrOtherProjects()
+    {
+        await using var db = fixture.CreateContext();
+        var s = await SeedAsync(db);
+        var otherProject = await TestDataBuilder.CreateProjectAsync(db, s.User.Id);
+        var poLine = await TestDataBuilder.CreateDeliveredPoLineAsync(db, s.Project.Id, s.User.Id, s.Material.Id, 3);
+        var po = await db.PurchaseOrders.SingleAsync(p => p.Id == poLine.PurchaseOrderId);
+        db.MaterialRequests.AddRange(
+            new MaterialRequest { ProjectId = s.Project.Id, MaterialId = s.Material.Id, BOQItemId = s.Row.Id, Quantity = 4, Unit = "pc", RequestedByUserId = s.User.Id },
+            new MaterialRequest { ProjectId = s.Project.Id, MaterialId = s.Material.Id, Quantity = 3, Unit = "pc", RequestedByUserId = s.User.Id, FulfilledByPurchaseOrderId = po.Id },
+            new MaterialRequest { ProjectId = s.Project.Id, MaterialId = s.Material.Id, Quantity = 9, Unit = "pc", RequestedByUserId = s.User.Id, IsPriceInquiry = true },
+            new MaterialRequest { ProjectId = otherProject.Id, MaterialId = s.Material.Id, Quantity = 8, Unit = "pc", RequestedByUserId = s.User.Id });
+        await db.SaveChangesAsync();
+
+        var ok = Assert.IsType<OkObjectResult>(await Procurement(db, s.User).GetSent(s.Project.Id, new ProjectAccessService(db)));
+
+        var sent = Assert.IsAssignableFrom<IEnumerable<SentMaterialRequestDto>>(ok.Value).ToList();
+        Assert.Equal(2, sent.Count);
+        var waiting = sent.Single(r => r.Quantity == 4);
+        Assert.Equal(s.Row.Id, waiting.BOQItemId);
+        Assert.Null(waiting.PoNumber);
+        Assert.Null(waiting.PoStatus);
+        var onPo = sent.Single(r => r.Quantity == 3);
+        Assert.Equal(po.Number, onPo.PoNumber);
+        Assert.Equal("Delivered", onPo.PoStatus);
+
+        po.Status = PurchaseOrderStatus.Pending;
+        await db.SaveChangesAsync();
+        var again = Assert.IsType<OkObjectResult>(await Procurement(db, s.User).GetSent(s.Project.Id, new ProjectAccessService(db)));
+        Assert.Equal("Pending", Assert.IsAssignableFrom<IEnumerable<SentMaterialRequestDto>>(again.Value).Single(r => r.Quantity == 3).PoStatus);
+    }
+
+    [Fact]
+    public async Task SentRequests_ByARoleThatCantEditThePlan_IsForbidden()
+    {
+        await using var db = fixture.CreateContext();
+        var s = await SeedAsync(db);
+        var engineer = await TestDataBuilder.CreateUserAsync(db, UserRole.SiteEngineer);
+        var controller = Procurement(db, engineer);
+        controller.ControllerContext.HttpContext.User = new ClaimsPrincipal(new ClaimsIdentity(
+        [
+            new Claim(ClaimTypes.NameIdentifier, engineer.Id.ToString()),
+            new Claim(ClaimTypes.Role, nameof(UserRole.SiteEngineer)),
+        ], "Test"));
+
+        Assert.IsType<ForbidResult>(await controller.GetSent(s.Project.Id, new ProjectAccessService(db)));
+    }
+
+    [Fact]
     public async Task DeletingARow_KeepsItsRequests()
     {
         await using var db = fixture.CreateContext();
@@ -241,6 +290,27 @@ public class BulkRequestTests(DatabaseFixture fixture)
         Assert.False(await after.BOQItems.AnyAsync(b => b.Id == s.Row.Id));
         var kept = await after.WarehouseRequests.SingleAsync(w => w.Id == request.Id);
         Assert.Null(kept.BOQItemId);
+    }
+
+    [Fact]
+    public async Task RejectedCheck_IsReportedOnItsRow_WithNothingCovered()
+    {
+        await using var db = fixture.CreateContext();
+        var s = await SeedAsync(db);
+        var other = await TestDataBuilder.CreateBoqItemAsync(db, s.Project.Id, s.Material.Id, s.User.Id, 50, "sq.m", 5, "pc");
+        var request = await Warehouse(db).CreateAsync(new WarehouseRequestCreateDto
+        {
+            ProjectId = s.Project.Id, MaterialId = s.Material.Id, BOQItemId = s.Row.Id, RequestedQuantity = 4, Unit = "pc",
+        }, s.User.Id);
+
+        Assert.True(await Warehouse(db).RejectAsync(request.Id, s.User.Id));
+
+        var statuses = await ProcurementCapCalculator.GetRowStatusesAsync(db, s.Project.Id);
+        Assert.True(statuses[s.Row.Id].WarehouseRejected);
+        Assert.False(statuses[s.Row.Id].WarehouseApproved);
+        Assert.Equal(0, statuses[s.Row.Id].WarehousePendingQuantity);
+        Assert.Equal(10, statuses[s.Row.Id].NetLeftToOrder);
+        Assert.False(statuses[other.Id].WarehouseRejected);
     }
 
     [Fact]

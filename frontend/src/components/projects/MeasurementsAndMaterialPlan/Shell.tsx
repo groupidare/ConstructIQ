@@ -81,8 +81,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const { items: warehouseStock, links: warehouseStockLinks, fetchCurrent: fetchWarehouseStock, fetchLinks: fetchWarehouseStockLinks, saveLink: saveWarehouseStockLink, removeLink: removeWarehouseStockLink } = useWarehouseStock();
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
   const { sendNotification } = useNotifications();
-  const { createRequest: createMaterialRequest, createBulk: createBulkMaterialRequests } = useMaterialRequests();
-  const { createRequest: createWarehouseRequest, createBulk: createBulkWarehouseRequests } = useWarehouseRequests();
+  const { createRequest: createMaterialRequest, createBulk: createBulkMaterialRequests, fetchSent: fetchSentMaterialRequests } = useMaterialRequests();
+  const { createRequest: createWarehouseRequest, createBulk: createBulkWarehouseRequests, fetchByProject: fetchWarehouseRequests } = useWarehouseRequests();
   const addAlert = useAlertStore(s => s.addAlert);
   const { editProject } = useProjects();
   const { items: purchaseOrders, fetchItems: fetchPurchaseOrders, createOrder, linkMaterial } = usePurchaseOrders(project.id);
@@ -110,6 +110,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       estimatePurchaseManuallySet: b.estimatedPurchaseQuantity != null,
       approvedQuantity: b.approvedQuantity,
       warehouseApproved: b.warehouseApproved,
+      warehouseRejected: b.warehouseRejected,
       askedQuantity: b.askedQuantity,
       warehousePendingQuantity: b.warehousePendingQuantity,
     };
@@ -592,6 +593,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     planOpen, setPlanOpen, planFocus, setPlanFocus,
     blueprints, boqDocs, poDocs, inventory, warehouseStock, warehouseStockLinks, handleSaveStockLink, handleRemoveStockLink, forecastedMaterials,
     handleBulkRequest, fetchWarehouseStock,
+    loadWarehouseRequests: () => fetchWarehouseRequests(project.id),
+    loadProcurementRequests: () => fetchSentMaterialRequests(project.id),
     savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
     blueprintDoc, setBlueprintDoc, handleBlueprintRows, compareRows, setCompareRows,
     handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
@@ -676,6 +679,8 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       warehouseStockLinks={state.warehouseStockLinks}
       onBulkRequest={state.handleBulkRequest}
       onRefreshStock={state.fetchWarehouseStock}
+      onLoadWarehouseRequests={state.loadWarehouseRequests}
+      onLoadProcurementRequests={state.loadProcurementRequests}
       onSaveStockLink={state.handleSaveStockLink}
       onRemoveStockLink={state.handleRemoveStockLink}
       forecastedMaterials={state.forecastedMaterials}

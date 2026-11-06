@@ -17,7 +17,8 @@ import type { BOQItem, BOQItemRow } from '@/types/boq';
 import { PRIMARY_SECTIONS, PURCHASE_UNITS } from '@/types/boq';
 import type { PurchaseOrder, PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import { missingRequestFields, type BulkRowInput } from '@/lib/bulkRequestPlan';
-import type { BulkRequestItem, BulkRequestResult } from '@/types/warehouseRequest';
+import type { BulkRequestItem, BulkRequestResult, WarehouseRequest } from '@/types/warehouseRequest';
+import type { SentMaterialRequest } from '@/types/materialRequest';
 import BulkRequestDialog, { type BulkSendItem } from './BulkRequestDialog';
 import StockLinkDialog from './StockLinkDialog';
 import { inp, sel, lbl } from './styles';
@@ -35,6 +36,8 @@ interface Props {
   warehouseStockLinks: WarehouseStockLink[];
   onBulkRequest: (kind: 'warehouse' | 'procurement', items: BulkRequestItem[]) => Promise<BulkRequestResult[] | null>;
   onRefreshStock: () => Promise<void>;
+  onLoadWarehouseRequests: () => Promise<WarehouseRequest[]>;
+  onLoadProcurementRequests: () => Promise<SentMaterialRequest[]>;
   onSaveStockLink: (boqName: string, warehouseMaterialName: string | null) => Promise<boolean>;
   onRemoveStockLink: (boqName: string) => Promise<boolean>;
   forecastedMaterials: ForecastedMaterial[];
@@ -116,7 +119,7 @@ function StockBadge({ stock, onClick }: { stock?: RowStock; onClick?: () => void
 
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
-  inventory, warehouseStock, warehouseStockLinks, onBulkRequest, onRefreshStock, onSaveStockLink, onRemoveStockLink, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
+  inventory, warehouseStock, warehouseStockLinks, onBulkRequest, onRefreshStock, onLoadWarehouseRequests, onLoadProcurementRequests, onSaveStockLink, onRemoveStockLink, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
   rows, boqItems, onRowsChange, planOpen, planFocus, onViewPlan, onPlanFocus, onSave, onDeleteRow, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onLinkPoMaterial, onPurchaseOrdersImported,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
@@ -518,6 +521,7 @@ export default function MaterialPlanTab({
     netLeftToOrder: r.estimatedPurchaseQuantity != null ? leftAfter(r.estimatedPurchaseQuantity, r.approvedQuantity) : undefined,
     remainingRequestable: r.estimatedPurchaseQuantity != null ? leftAfter(r.estimatedPurchaseQuantity, r.askedQuantity) : undefined,
     warehouseApproved: !!r.warehouseApproved,
+    warehouseRejected: !!r.warehouseRejected,
     warehousePendingQuantity: r.warehousePendingQuantity ?? 0,
     onSiteStock: currentStock(r),
     stock: stockOf(r),
@@ -619,6 +623,8 @@ export default function MaterialPlanTab({
           stockLoaded={warehouseStock.length > 0}
           onResolveSimilar={rowName => setLinkPrompt({ rowName, beforePurchase: true })}
           onSend={handleSendBulk}
+          onLoadWarehouseRequests={onLoadWarehouseRequests}
+          onLoadProcurementRequests={onLoadProcurementRequests}
           onClose={() => setBulkOpen(false)}
         />
       )}
@@ -941,11 +947,12 @@ export default function MaterialPlanTab({
               const stockNote = stockStatus && stockStatus.status !== 'notListed'
                 ? `In warehouse: ${stockStatus.item.balance.toLocaleString()} ${stockStatus.item.unit}` : undefined;
               const canRequestWarehouse = canRequestBase;
-              const canRequestProcurement = canRequestBase && (hasNoStock || !!r.warehouseApproved);
+              const warehouseAnswered = !!r.warehouseApproved || !!r.warehouseRejected;
+              const canRequestProcurement = canRequestBase && (hasNoStock || warehouseAnswered);
               // Clickable with fields missing, so the click can say why it won't go.
               const warnOnClick = editable && !isCompleted && missingFields.length > 0;
               const needsAlert = toOrder > 0 && !fullyRequested;
-              const suggestWarehouse = canRequestWarehouse && stockStatus?.status === 'inStock' && !r.warehouseApproved && !fullyRequested;
+              const suggestWarehouse = canRequestWarehouse && stockStatus?.status === 'inStock' && !warehouseAnswered && !fullyRequested;
               // The subtext only appears once something's actually been
               // approved against this row (net < the full estimate) — never
               // for a still-Pending request, and never with nothing requested.
@@ -1168,7 +1175,7 @@ export default function MaterialPlanTab({
                         // name is the costly mistake, so stop here once — the
                         // answer is remembered for this wording either way.
                         const name = stockName(r);
-                        if (stockStatus?.status === 'notListed' && !stockStatus.confirmed && !r.warehouseApproved && similarInStock(name, warehouseStock).length > 0) {
+                        if (stockStatus?.status === 'notListed' && !stockStatus.confirmed && !warehouseAnswered && similarInStock(name, warehouseStock).length > 0) {
                           setLinkPrompt({ rowName: name, beforePurchase: true, onContinue: openRequest });
                           return;
                         }
@@ -1178,7 +1185,7 @@ export default function MaterialPlanTab({
                         !editable || isCompleted ? undefined
                           : missingFields.length > 0 ? `Fill in the ${missingFields.join(', ')} first`
                           : !r.materialId || r.id == null ? 'Save the Material Plan first'
-                          : !canRequestProcurement ? 'Notify the warehouse first — Procurement unlocks once Warehouse approves a check for this material'
+                          : !canRequestProcurement ? 'Notify the warehouse first — Procurement unlocks once Warehouse answers a check for this material'
                           : toOrder <= 0 || fullyRequested ? 'Fully requested. Click to send Procurement an additional request.'
                           : `Notify procurement — ${Math.min(toOrder, remainingRequestable)} ${purchaseUnit} suggested`
                       }
@@ -1256,7 +1263,7 @@ export default function MaterialPlanTab({
 
       {editable && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: '1rem' }}>
-          <button onClick={() => void onSave()} disabled={saving} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
+          <button onClick={() => { onSave().catch(() => { /* already shown */ }); }} disabled={saving} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
             {saving ? 'Saving…' : 'Save Material Plan'}
           </button>
           <button

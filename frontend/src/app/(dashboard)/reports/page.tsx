@@ -284,7 +284,8 @@ function buildExcessData(records: ExcessWasteRecord[], costImpact: ExcessCostImp
       .map(r => [
         r.projectName, r.materialName, r.excessType, num(r.loggedQuantity), r.unit,
         `${num(r.excessPercent)}%`,
-        r.isReusable ? "Yes" : "No", r.redistributionStatus ?? "—",
+        r.isReusable ? "Yes" : "No",
+        [r.redistributionStatus, ...(r.warehouseReleases ?? []).map(w => `Released to ${w.projectName} (${num(w.quantity)} ${r.unit})`)].filter(Boolean).join("; ") || "—",
         r.recordedBy, formatDate(r.recordedAt),
       ]),
   };

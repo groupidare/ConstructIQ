@@ -1,3 +1,5 @@
+import type { PurchaseOrderStatus } from '@/types/purchaseOrder';
+
 export interface MaterialRequest {
   id: number;
   materialId: number;
@@ -6,6 +8,19 @@ export interface MaterialRequest {
   unit: string;
   requestedByName: string;
   createdAt: string;
+}
+
+// What's been asked of Procurement for a project, on a PO or not.
+export interface SentMaterialRequest {
+  id: number;
+  boqItemId?: number | null;
+  materialName: string;
+  quantity: number;
+  unit?: string | null;
+  isAdditional: boolean;
+  createdAt: string;
+  poNumber?: string | null;
+  poStatus?: PurchaseOrderStatus | null;
 }
 
 export interface ProjectWithRequests {

@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ConstructIQ.API.Services;
 
-public class WarehouseRequestService(AppDbContext db, INotificationService notifications) : IWarehouseRequestService
+public class WarehouseRequestService(AppDbContext db, INotificationService notifications, IExcessSheetSync? sheetSync = null) : IWarehouseRequestService
 {
     public async Task<IEnumerable<WarehouseRequestResponseDto>> GetAllAsync()
     {
@@ -16,6 +16,7 @@ public class WarehouseRequestService(AppDbContext db, INotificationService notif
             .Include(m => m.Material)
             .Include(m => m.RequestedBy)
             .Include(m => m.ApprovedBy)
+            .Include(m => m.ReleaseSources).ThenInclude(s => s.ExcessWasteRecord).ThenInclude(e => e.Project)
             .OrderByDescending(m => m.RequestedAt)
             .ToListAsync();
 
@@ -117,7 +118,7 @@ public class WarehouseRequestService(AppDbContext db, INotificationService notif
 
     public async Task<bool> ApproveAsync(int id, decimal approvedQuantity, int userId)
     {
-        var request = await db.WarehouseRequests.FindAsync(id);
+        var request = await db.WarehouseRequests.Include(w => w.Material).Include(w => w.BOQItem).FirstOrDefaultAsync(w => w.Id == id);
         if (request is null || request.Status != WarehouseRequestStatus.Pending) return false;
 
         // The warehouse can release less than was asked (e.g. only 3 of 12,
@@ -129,9 +130,76 @@ public class WarehouseRequestService(AppDbContext db, INotificationService notif
         request.ApprovedQuantity = approvedQuantity;
         request.ApprovedByUserId = userId;
         request.ApprovedAt       = DateTime.UtcNow;
+        request.SheetSyncPending = approvedQuantity > 0 && sheetSync?.Enabled == true;
+
+        var links = await WarehouseItemMatch.LoadLinksAsync(db);
+        await SettleTransfersToThisProjectAsync(request, links);
+        await UseUpExcessAsync(request, approvedQuantity, links);
 
         await db.SaveChangesAsync();
+        if (request.SheetSyncPending) sheetSync!.Trigger();
         return true;
+    }
+
+    private static WarehouseItemMatch.Item ItemOf(WarehouseRequest request) =>
+        new(request.MaterialId, request.BOQItem?.Specification, request.Material.Name);
+
+    // This release and a transfer of the same item to the same project would each
+    // take it out of the warehouse. One someone asked for has to be decided first;
+    // an AI suggestion is only an idea, and this approval makes it out of date.
+    private async Task SettleTransfersToThisProjectAsync(WarehouseRequest request, Dictionary<string, string> links)
+    {
+        var transfers = await db.RedistributionRequests
+            .Include(r => r.Material)
+            .Include(r => r.SourceExcessWasteRecord).ThenInclude(e => e!.BOQItem)
+            .Where(r => r.TargetProjectId == request.ProjectId && RedistributionStatuses.Pending.Contains(r.Status))
+            .ToListAsync();
+        var same = transfers
+            .Where(r => WarehouseItemMatch.Same(ItemOf(request), new(r.MaterialId, r.SourceExcessWasteRecord?.BOQItem?.Specification, r.Material.Name), links))
+            .ToList();
+
+        if (same.FirstOrDefault(r => r.Status == RedistributionStatus.PendingApproval) is { } undecided)
+            throw new InvalidOperationException(
+                $"A redistribution of {undecided.Quantity:0.##} {request.Material.Name} to this project is still waiting for a decision. Approve or reject it on the Redistribution page first, so it isn't taken out of the warehouse twice.");
+
+        foreach (var suggestion in same) suggestion.Status = RedistributionStatus.Rejected;
+    }
+
+    // Excess logged as stock back in is part of the warehouse's balance, so what
+    // leaves the warehouse leaves it too; otherwise it could also be redistributed.
+    // Only what's really on the sheet, in this unit, and not already promised to
+    // a transfer someone asked for. Moved the way a transfer moves it.
+    private async Task UseUpExcessAsync(WarehouseRequest request, decimal quantity, Dictionary<string, string> links)
+    {
+        var promised = await db.RedistributionRequests
+            .Where(r => r.SourceExcessWasteRecordId != null && r.Status == RedistributionStatus.PendingApproval)
+            .Select(r => r.SourceExcessWasteRecordId!.Value)
+            .ToListAsync();
+        var unit = CompletedProjectDemandRules.NormalizeUnit(UnitOf(request));
+        var records = (await db.ExcessWasteRecords
+                .Include(e => e.Material)
+                .Include(e => e.BOQItem).ThenInclude(b => b!.HistoricalSupplies)
+                .Where(e => e.IsReusable && e.Quantity > 0 && e.SheetSyncedAt != null && !promised.Contains(e.Id))
+                .OrderBy(e => e.RecordedAt).ThenBy(e => e.Id)
+                .ToListAsync())
+            .Where(e => WarehouseItemMatch.Same(ItemOf(request), new(e.MaterialId, e.BOQItem?.Specification, e.Material.Name), links)
+                && CompletedProjectDemandRules.NormalizeUnit(ExcessWasteService.PreferredUnit(e.BOQItem, e.Material.Unit)) == unit)
+            .ToList();
+
+        var byId = records.ToDictionary(e => e.Id);
+        foreach (var taken in OldestExcessFirst.Allocate(records.Select(e => new OldestExcessFirst.Available(e.Id, e.Quantity)), quantity))
+        {
+            var record = byId[taken.RecordId];
+            record.Quantity -= taken.Quantity;
+            record.RedistributedQuantity += taken.Quantity;
+            record.TotalCost = record.Quantity * record.UnitCost;
+            request.ReleaseSources.Add(new WarehouseReleaseSource { ExcessWasteRecordId = record.Id, Quantity = taken.Quantity });
+
+            var inventory = await db.InventoryRecords
+                .FirstOrDefaultAsync(i => i.ProjectId == record.ProjectId && i.MaterialId == record.MaterialId);
+            if (inventory is not null)
+                inventory.ExcessQuantity = Math.Max(0, inventory.ExcessQuantity - taken.Quantity);
+        }
     }
 
     public async Task<bool> RejectAsync(int id, int userId)
@@ -156,6 +224,7 @@ public class WarehouseRequestService(AppDbContext db, INotificationService notif
             .Include(m => m.Material)
             .Include(m => m.RequestedBy)
             .Include(m => m.ApprovedBy)
+            .Include(m => m.ReleaseSources).ThenInclude(s => s.ExcessWasteRecord).ThenInclude(e => e.Project)
             .Where(m => m.ProjectId == projectId)
             .OrderByDescending(m => m.RequestedAt)
             .ToListAsync();
@@ -232,5 +301,10 @@ public class WarehouseRequestService(AppDbContext db, INotificationService notif
         RequestedAt       = m.RequestedAt,
         ApprovedBy        = m.ApprovedBy is null ? null : $"{m.ApprovedBy.FirstName} {m.ApprovedBy.LastName}",
         ApprovedAt        = m.ApprovedAt,
+        ReleaseSources    = m.ReleaseSources
+            .OrderBy(s => s.Id)
+            .Where(s => s.ExcessWasteRecord?.Project is not null)
+            .Select(s => new WarehouseReleaseSourceDto { ProjectName = s.ExcessWasteRecord.Project.Name, Quantity = s.Quantity })
+            .ToList(),
     };
 }

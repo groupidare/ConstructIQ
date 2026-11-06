@@ -484,6 +484,7 @@ public class BOQService(AppDbContext db) : IBOQService
         RequestedQuantity         = b.RequestedQuantity,
         NetLeftToOrder            = f.NetLeftToOrder,
         WarehouseApproved         = f.WarehouseApproved,
+        WarehouseRejected         = f.WarehouseRejected,
         RemainingRequestable      = f.RemainingRequestable,
         WarehousePendingQuantity  = f.WarehousePendingQuantity,
         ApprovedQuantity          = f.ApprovedQuantity,

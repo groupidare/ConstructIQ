@@ -41,8 +41,15 @@ public class RedistributionController(IRedistributionService redistributionServi
     [Authorize(Roles = "Admin,WarehousePersonnel")]
     public async Task<IActionResult> Approve(int id)
     {
-        var success = await redistributionService.ApproveTransferAsync(id, CurrentUserId);
-        return success ? Ok(new { message = "Transfer approved." }) : NotFound();
+        try
+        {
+            var success = await redistributionService.ApproveTransferAsync(id, CurrentUserId);
+            return success ? Ok(new { message = "Transfer approved." }) : NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
     [HttpPost("{id:int}/reject")]

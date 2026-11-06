@@ -105,6 +105,8 @@ public class BOQItemResponseDto
     // True once at least one WarehouseRequest for this row's material has
     // been Approved — Procurement can't be requested before that.
     public bool     WarehouseApproved { get; set; }
+    // The warehouse turned a check for this row down, which unlocks Procurement too.
+    public bool     WarehouseRejected { get; set; }
     // The real cap the Notify Procurement/Warehouse endpoints will actually
     // enforce — unlike NetLeftToOrder above, this ALSO subtracts every
     // MaterialRequest ever submitted for this material (not just approved
