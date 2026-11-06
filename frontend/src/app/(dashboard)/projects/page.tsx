@@ -944,9 +944,10 @@ function MaterialCostBreakdownModal({ cost, projectName, onClose }: { cost: Esti
           <div>
             <p style={{ fontWeight:700, fontSize:"1rem", color:"#111827" }}>Estimated Material Cost — {projectName}</p>
             <p style={{ fontSize:"0.72rem", color:"#6b7280", marginTop:4, maxWidth:760 }}>
-              Estimated cost = forecast qty × unit price — the latest PO price for the same material and unit (this system&apos;s and past projects&apos;
-              POs; lowest if several suppliers on that date), else a quotation, else the catalog. Ordered cost = this project&apos;s purchase orders at the price paid.
-              Total cost = the ordered cost, plus the estimated cost of anything not ordered yet. Materials without a recorded price are marked and left out — prices are never guessed. Materials only (no labor or equipment).
+              Estimated cost = forecast qty × unit price. The price is the latest PO for the same material and unit (this system&apos;s and past projects&apos;
+              POs; lowest if several suppliers on that date), else a similar material&apos;s latest PO price in that unit, else the catalog. Ordered cost = this
+              project&apos;s purchase orders at the price paid. Total cost = the ordered cost, plus the estimated cost of anything not ordered yet. A material with
+              no price stays listed at no cost, with the reason. Materials only (no labor or equipment).
             </p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" style={{ background:"none", border:"none", cursor:"pointer", color:"#6b7280", padding:4 }}>

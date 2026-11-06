@@ -23,6 +23,18 @@ public class MaterialNameMatchTests
         Assert.Equal(expected, MaterialNameMatch.IsSameKind(a, b));
 
     [Theory]
+    [InlineData("Stainless Steel Tile Termination Trim", "Stainless Steel Kitchen Sink", true)]
+    [InlineData("CHB, 150mm thick, Class A", "Concrete Hollow Block, 150mm, Class A", false)]
+    [InlineData("Porcelain Floor Tile, 600mm x 600mm", "Homogeneous Floor Tile, 600mm x 600mm, 10mm thick", false)]
+    public void DifferentProduct(string spec, string linked, bool expected) =>
+        Assert.Equal(expected, MaterialNameMatch.IsDifferentProduct(spec, linked));
+
+    [Theory]
+    [InlineData("Matte Black Wall Paint Finish, 2 coats + primer", "Interior Acrylic Latex Topcoat Paint, 1 gallon")]
+    public void PaintMatchesPaint_ByItsProductWord(string a, string b) =>
+        Assert.True(MaterialNameMatch.IsProductMatch(MaterialNameMatch.Prepare(a), MaterialNameMatch.Prepare(b)));
+
+    [Theory]
     [InlineData("CircuitPro Electrical Trading", "CircuitPro Electrical Trading Corp.")]
     [InlineData("CircuitPro Electrical Trading B", "CircuitPro Electrical Trading C")]
     [InlineData("MechSafe Systems Philippines A", "MechSafe Systems Philippines, Inc.")]

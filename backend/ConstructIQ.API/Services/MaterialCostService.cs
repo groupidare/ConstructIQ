@@ -88,7 +88,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
                 .ToListAsync())
             .ToList();
 
-        var priceOf = await LoadPricesAsync(rows.Select(r => r.MaterialId)
+        var prices = await LoadPricesAsync(rows.Select(r => r.MaterialId)
             .Concat(ordered.Where(o => o.MaterialId.HasValue).Select(o => o.MaterialId!.Value))
             .Distinct().ToList());
 
@@ -162,7 +162,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             }
 
             line.Dto.OrderedQuantity += o.Quantity;
-            var price = o.OwnPrice ?? (o.MaterialId is int mid ? priceOf(mid, o.Unit)?.Price : null);
+            var price = o.OwnPrice ?? (o.MaterialId is int mid ? prices.ById(mid, o.Unit)?.Price : null);
             if (price is null)
             {
                 line.CommittedFullyPriced = false;
@@ -186,7 +186,16 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
         {
             var dto = line.Dto;
             dto.MaterialId = line.MaterialId;
-            if (line.MaterialId is int materialId && priceOf(materialId, dto.Unit) is DatedPrice latest)
+            // A row linked to a catalog material of a different kind than its
+            // specification (spec "Tile Termination Trim", linked "Kitchen
+            // Sink") is priced from its specification, and flagged.
+            var mislinked = line.MaterialId is int && !string.IsNullOrWhiteSpace(dto.Specification)
+                && !string.IsNullOrWhiteSpace(dto.MaterialName)
+                && MaterialNameMatch.IsDifferentProduct(dto.Specification, dto.MaterialName);
+            var found = mislinked
+                ? prices.ByName(dto.Specification!, dto.Unit, line.MaterialId)
+                : line.MaterialId is int mid ? prices.ById(mid, dto.Unit) : null;
+            if (found is DatedPrice latest)
             {
                 dto.UnitPrice = latest.Price;
                 dto.PriceSource = latest.Source;
@@ -220,6 +229,9 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
                     : "Price ready — not in the total until it has a forecasted purchase quantity";
             else if (dto.NeedsPrice && dto.Note is null)
                 dto.Note = "No price — no PO for this material or a similar one in this unit";
+            if (mislinked)
+                dto.Note = $"Linked to {dto.MaterialName}, which doesn't match the specification — check the link in the Material Plan"
+                    + (dto.UnitPrice is null ? ". No price found for the specification either." : ". Priced from the specification instead.");
 
             dto.CommittedCost = Round(dto.CommittedCost);
             dto.RemainingCost = Round(dto.RemainingCost);
@@ -294,14 +306,14 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             .Select(m => new { m.PurchaseOrder.ProjectId, m.MaterialId, m.Unit, m.Quantity, m.UnitPrice })
             .ToListAsync();
 
-        var priceOf = await LoadPricesAsync(records.Select(r => r.MaterialId)
+        var prices = await LoadPricesAsync(records.Select(r => r.MaterialId)
             .Concat(transfers.Select(t => t.MaterialId))
             .Concat(releases.Select(s => s.ExcessWasteRecord.MaterialId))
             .Concat(deliveries.Where(d => d.MaterialId.HasValue).Select(d => d.MaterialId!.Value))
             .Distinct().ToList());
 
         DatedPrice? PriceIn(int materialId, string unit) =>
-            string.IsNullOrWhiteSpace(unit) ? null : priceOf(materialId, unit);
+            string.IsNullOrWhiteSpace(unit) ? null : prices.ById(materialId, unit);
 
         var valued = records.Select(r =>
         {
@@ -428,7 +440,9 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
     // Price for each (material, unit) among the given materials, from the
     // three sources in order — POs (this system's and historical projects'),
     // quotation, catalog. The returned lookup normalizes the unit itself.
-    private async Task<Func<int, string?, DatedPrice?>> LoadPricesAsync(List<int> materialIds)
+    private sealed record PriceLookup(Func<int, string?, DatedPrice?> ById, Func<string, string?, int?, DatedPrice?> ByName);
+
+    private async Task<PriceLookup> LoadPricesAsync(List<int> materialIds)
     {
         var systemPoPrices = (await db.PurchaseOrderMaterials
             .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value)
@@ -470,78 +484,82 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             .ToListAsync())
             .ToDictionary(m => (m.Id, CompletedProjectDemandRules.NormalizeUnit(m.Unit)), m => new DatedPrice(m.UnitCost, null, SourceCatalog));
 
-        var similarPrices = await LoadSimilarPricesAsync(
-            materialIds.Where(id => !poPrices.Keys.Any(k => k.Item1 == id)).ToList());
+        var similar = await SimilarPricePool.LoadAsync(db);
+        var names = await db.Materials.Where(m => materialIds.Contains(m.Id))
+            .Select(m => new { m.Id, m.Name }).ToDictionaryAsync(m => m.Id, m => m.Name);
 
-        return (materialId, unit) =>
-        {
-            var key = (materialId, CompletedProjectDemandRules.NormalizeUnit(unit));
-            return poPrices.GetValueOrDefault(key)
-                ?? quotePrices.GetValueOrDefault(key)
-                ?? similarPrices.GetValueOrDefault(key)
-                ?? catalogPrices.GetValueOrDefault(key);
-        };
+        return new PriceLookup(
+            (materialId, unit) =>
+            {
+                var key = (materialId, CompletedProjectDemandRules.NormalizeUnit(unit));
+                return poPrices.GetValueOrDefault(key)
+                    ?? quotePrices.GetValueOrDefault(key)
+                    ?? (names.TryGetValue(materialId, out var name) ? similar.Find(name, unit, materialId) : null)
+                    ?? catalogPrices.GetValueOrDefault(key);
+            },
+            (name, unit, excludeId) => similar.Find(name, unit, excludeId));
     }
 
-    // For materials with no PO price of their own: the PO price of a similar
-    // material (see MaterialNameMatch.IsSimilar) in each unit — the latest
-    // date, the lowest on that date — referenced by that material's name.
-    // Compared only against materials that have a PO price at all.
-    private async Task<Dictionary<(int, string), DatedPrice>> LoadSimilarPricesAsync(List<int> unpricedIds)
+    // Every material that has a PO price, with its latest one per unit (the
+    // lowest on that date), for finding a similar material's price by name:
+    // a close match first (IsSimilar), then by keyword, then by the main
+    // product word — always in the same unit, sizes never conflicting.
+    private sealed class SimilarPricePool
     {
-        if (unpricedIds.Count == 0) return [];
+        private readonly List<(int Id, string Name, MaterialNameMatch.NameKey Key)> materials;
+        private readonly Dictionary<(int, string), PoPrice> latest;
 
-        var pricedIds = (await db.PurchaseOrderMaterials
-                .Where(m => m.UnitPrice != null && m.MaterialId != null && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
-                .Select(m => m.MaterialId!.Value).Distinct().ToListAsync())
-            .Concat(await db.HistoricalMaterialSupplies
-                .Where(h => h.UnitCost != null)
-                .Select(h => h.BOQItem.MaterialId).Distinct().ToListAsync())
-            .ToHashSet();
-        var names = await db.Materials
-            .Where(m => unpricedIds.Contains(m.Id) || pricedIds.Contains(m.Id))
-            .Select(m => new { m.Id, m.Name })
-            .ToDictionaryAsync(m => m.Id, m => m.Name);
-
-        var candidates = pricedIds.Where(names.ContainsKey).Select(id => (Id: id, Key: MaterialNameMatch.Prepare(names[id]))).ToList();
-        var similarOf = unpricedIds.Where(names.ContainsKey).ToDictionary(id => id, id =>
+        private SimilarPricePool(List<(int, string, MaterialNameMatch.NameKey)> materials, Dictionary<(int, string), PoPrice> latest)
         {
-            var key = MaterialNameMatch.Prepare(names[id]);
-            var similar = candidates.Where(c => c.Id != id && MaterialNameMatch.IsSimilar(key, c.Key)).Select(c => c.Id).ToList();
-            // None that close: a second look by keyword.
-            return similar.Count > 0 ? similar
-                : candidates.Where(c => c.Id != id && MaterialNameMatch.IsKeywordMatch(key, c.Key)).Select(c => c.Id).ToList();
-        });
-        var similarIds = similarOf.Values.SelectMany(v => v).Distinct().ToList();
-        if (similarIds.Count == 0) return [];
-
-        var system = (await db.PurchaseOrderMaterials
-                .Where(m => m.UnitPrice != null && m.MaterialId != null && similarIds.Contains(m.MaterialId.Value)
-                    && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
-                .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Date = m.PurchaseOrder.OrderDate, m.Id, m.PurchaseOrder.Number, Supplier = m.PurchaseOrder.Supplier.Name })
-                .ToListAsync())
-            .Select(m => new PoPrice(m.MaterialId, m.Unit, m.Price, m.Date, m.Id, SourcePo, $"{m.Number} · {m.Supplier}"));
-        var historical = (await db.HistoricalMaterialSupplies
-                .Where(h => h.UnitCost != null && similarIds.Contains(h.BOQItem.MaterialId))
-                .Select(h => new { h.BOQItem.MaterialId, h.Unit, Price = h.UnitCost!.Value, Date = h.PoDate ?? h.BOQItem.Project.TargetEndDate, h.Id, Project = h.BOQItem.Project.Name, h.PoNumber })
-                .ToListAsync())
-            .Select(h => new PoPrice(h.MaterialId, h.Unit, h.Price, h.Date, h.Id, SourceHistorical,
-                string.IsNullOrWhiteSpace(h.PoNumber) ? h.Project : $"{h.PoNumber} · {h.Project}"));
-        var all = system.Concat(historical).ToList();
-
-        var result = new Dictionary<(int, string), DatedPrice>();
-        foreach (var (target, similar) in similarOf)
-        {
-            var set = similar.ToHashSet();
-            foreach (var g in all.Where(p => set.Contains(p.MaterialId)).GroupBy(p => CompletedProjectDemandRules.NormalizeUnit(p.Unit)))
-            {
-                var latestDay = g.Max(p => p.Date.Date);
-                var pick = g.Where(p => p.Date.Date == latestDay).OrderBy(p => p.Price).ThenByDescending(p => p.Id).First();
-                result[(target, g.Key)] = new DatedPrice(pick.Price, pick.Date, SourceSimilar,
-                    $"{names.GetValueOrDefault(pick.MaterialId)} · {pick.Reference}");
-            }
+            this.materials = materials;
+            this.latest = latest;
         }
-        return result;
+
+        public static async Task<SimilarPricePool> LoadAsync(AppDbContext db)
+        {
+            var system = (await db.PurchaseOrderMaterials
+                    .Where(m => m.UnitPrice != null && m.MaterialId != null && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
+                    .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Date = m.PurchaseOrder.OrderDate, m.Id, m.PurchaseOrder.Number, Supplier = m.PurchaseOrder.Supplier.Name })
+                    .ToListAsync())
+                .Select(m => new PoPrice(m.MaterialId, m.Unit, m.Price, m.Date, m.Id, SourcePo, $"{m.Number} · {m.Supplier}"));
+            var historical = (await db.HistoricalMaterialSupplies
+                    .Where(h => h.UnitCost != null)
+                    .Select(h => new { h.BOQItem.MaterialId, h.Unit, Price = h.UnitCost!.Value, Date = h.PoDate ?? h.BOQItem.Project.TargetEndDate, h.Id, Project = h.BOQItem.Project.Name, h.PoNumber })
+                    .ToListAsync())
+                .Select(h => new PoPrice(h.MaterialId, h.Unit, h.Price, h.Date, h.Id, SourceHistorical,
+                    string.IsNullOrWhiteSpace(h.PoNumber) ? h.Project : $"{h.PoNumber} · {h.Project}"));
+            var latest = system.Concat(historical)
+                .GroupBy(p => (p.MaterialId, CompletedProjectDemandRules.NormalizeUnit(p.Unit)))
+                .ToDictionary(g => g.Key, g =>
+                {
+                    var day = g.Max(p => p.Date.Date);
+                    return g.Where(p => p.Date.Date == day).OrderBy(p => p.Price).ThenByDescending(p => p.Id).First();
+                });
+            var ids = latest.Keys.Select(k => k.Item1).Distinct().ToList();
+            var materials = (await db.Materials.Where(m => ids.Contains(m.Id)).Select(m => new { m.Id, m.Name }).ToListAsync())
+                .Select(m => (m.Id, m.Name, MaterialNameMatch.Prepare(m.Name))).ToList();
+            return new SimilarPricePool(materials, latest);
+        }
+
+        public DatedPrice? Find(string name, string? unit, int? excludeId)
+        {
+            if (string.IsNullOrWhiteSpace(unit)) return null;
+            var unitKey = CompletedProjectDemandRules.NormalizeUnit(unit);
+            var key = MaterialNameMatch.Prepare(name);
+            Func<MaterialNameMatch.NameKey, MaterialNameMatch.NameKey, bool>[] passes =
+                [MaterialNameMatch.IsSimilar, MaterialNameMatch.IsKeywordMatch, MaterialNameMatch.IsProductMatch];
+            foreach (var matches in passes)
+            {
+                var pick = materials
+                    .Where(m => m.Id != excludeId && matches(key, m.Key) && latest.ContainsKey((m.Id, unitKey)))
+                    .Select(m => (m.Name, Price: latest[(m.Id, unitKey)]))
+                    .OrderByDescending(x => x.Price.Date.Date).ThenBy(x => x.Price.Price)
+                    .FirstOrDefault();
+                if (pick.Name != null)
+                    return new DatedPrice(pick.Price.Price, pick.Price.Date, SourceSimilar, $"{pick.Name} · {pick.Price.Reference}");
+            }
+            return null;
+        }
     }
 
     private record PoPrice(int MaterialId, string Unit, decimal Price, DateTime Date, int Id, string Source, string Reference);

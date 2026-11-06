@@ -17,7 +17,13 @@ public static class MaterialNameMatch
     [
         "with", "and", "for", "the", "per", "pack", "bag", "box", "pcs", "piece", "pieces", "roll",
         "sheet", "thick", "class", "type", "grade", "size", "unit", "set", "each", "length", "gauge",
+        // Units written into names ("Topcoat Paint, 1 gallon") aren't the product.
+        "gallon", "gal", "liter", "litre", "ltr", "kilo", "meter", "metre", "pail", "can", "bottle",
+        "tube", "bundle", "dozen", "pair", "lot", "point", "sack", "cubic", "material", "item",
     ];
+
+    private static readonly HashSet<string> MeasureUnits =
+        ["mm", "cm", "m", "inch", "in", "ft", "feet", "w", "watt", "v", "volt", "kg", "lb", "amp", "a", "hp", "mpa", "psi", "mm2"];
 
     private static readonly Regex NonAlnum = new("[^a-z0-9]+", RegexOptions.Compiled);
 
@@ -35,6 +41,28 @@ public static class MaterialNameMatch
     // ("… Fan") plus at least one more shared word, and sizes that don't
     // conflict — an 8-inch exhaust fan matches another 8-inch one, never a
     // 10-inch one.
+    // Loosest look: one name's main product word appears in the other
+    // ("Wall Paint Finish … + primer" and "Topcoat Paint"), sizes not
+    // conflicting. Used last, and only within the same unit.
+    public static bool IsProductMatch(NameKey a, NameKey b)
+    {
+        var shared = (a.Head != null && b.Words.Contains(a.Head)) || (b.Head != null && a.Words.Contains(b.Head));
+        return shared && (a.Sizes.Count == 0 || b.Sizes.Count == 0 || a.Sizes.Overlaps(b.Sizes));
+    }
+
+    // Two names that share words but name different products ("Stainless
+    // Steel Kitchen Sink" vs "Stainless Steel Tile Termination Trim") — a
+    // sign a row was linked to the wrong catalog material. Names sharing no
+    // words at all (an abbreviation, "CHB" for "Concrete Hollow Block") are
+    // not flagged: there's no evidence either way.
+    public static bool IsDifferentProduct(string? a, string? b)
+    {
+        var ka = Prepare(a);
+        var kb = Prepare(b);
+        if (ka.Head is null || kb.Head is null || !ka.Words.Overlaps(kb.Words)) return false;
+        return !IsSameKind(a, b);
+    }
+
     public static bool IsKeywordMatch(NameKey a, NameKey b)
     {
         if (a.Head is null || a.Head != b.Head) return false;
@@ -72,9 +100,17 @@ public static class MaterialNameMatch
     {
         var words = new HashSet<string>();
         var sizes = new HashSet<string>();
-        foreach (var w in Words(name))
+        var all = Words(name).ToList();
+        for (var i = 0; i < all.Count; i++)
         {
-            if (w.Any(char.IsDigit)) sizes.Add(w);
+            var w = all[i];
+            if (w.All(char.IsDigit))
+            {
+                // A bare number is a size only with a measuring unit after it
+                // ("8 inch" → 8inch); otherwise it's a count ("2 coats", "1 gallon").
+                if (i + 1 < all.Count && MeasureUnits.Contains(all[i + 1])) sizes.Add(w + all[i + 1]);
+            }
+            else if (w.Any(char.IsDigit)) sizes.Add(w);
             else if (w.Length >= 3 && !Generic.Contains(w)) words.Add(w);
         }
         return (words, sizes);
