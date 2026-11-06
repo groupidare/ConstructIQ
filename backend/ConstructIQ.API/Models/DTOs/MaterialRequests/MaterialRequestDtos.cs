@@ -109,6 +109,13 @@ public record SuggestedSupplierDto
     // the requested unit — auto-fills the quote when the supplier is picked.
     public decimal? LastUnitPrice { get; init; }
     public DateTime? LastPriceDate { get; init; }
+    // With no price of its own for this material: its latest PO price for a
+    // similar material in the same unit, and which material that was.
+    public decimal? SimilarUnitPrice { get; init; }
+    public DateTime? SimilarPriceDate { get; init; }
+    public string? SimilarMaterialName { get; init; }
+    // Has supplied a material of the same kind (see MaterialNameMatch).
+    public bool SuppliesSameKind { get; init; }
 }
 
 public record GeneratePOAssignmentDto

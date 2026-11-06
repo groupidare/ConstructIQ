@@ -220,6 +220,35 @@ public class MaterialRequestQuotesTests(DatabaseFixture fixture)
         Assert.Equal(new DateTime(2026, 2, 16), g.LastPriceDate);
     }
 
+    [Fact]
+    public async Task SuggestedSuppliers_OneEntryPerSupplierSpelling_AndSimilarMaterialPrices()
+    {
+        await using var db = fixture.CreateContext();
+        var (admin, project, _, _) = await SeedAsync(db);
+        var tag = Guid.NewGuid().ToString("N")[..6];
+        var light = await TestDataBuilder.CreateMaterialAsync(db, unit: "pc");
+        light.Name = $"LED Ceiling Light 18W {tag}";
+        var similarLight = await TestDataBuilder.CreateMaterialAsync(db, unit: "pc");
+        similarLight.Name = $"LED Ceiling Light, 18W, daylight {tag}";
+        await db.SaveChangesAsync();
+        var circuit = $"CircuitPro {tag} Electrical Trading";
+        var older = await AddPricedPoAsync(db, project.Id, admin.Id, light.Id, circuit, "pc", 580, new DateTime(2023, 10, 2));
+        var newer = await AddPricedPoAsync(db, project.Id, admin.Id, light.Id, circuit + " Corp.", "pc", 450, new DateTime(2025, 2, 3));
+        var similarOnly = await AddPricedPoAsync(db, project.Id, admin.Id, similarLight.Id, $"Volt {tag} Supply", "pc", 700, new DateTime(2026, 1, 9));
+
+        var ok = Assert.IsType<OkObjectResult>(await ControllerAs(db, admin).GetSuggestedSuppliers(light.Id, "pc"));
+        var list = Assert.IsAssignableFrom<IEnumerable<SuggestedSupplierDto>>(ok.Value).ToList();
+
+        // The two CircuitPro spellings are one supplier, at its latest price.
+        var circuitPro = Assert.Single(list, s => s.Id == older.Id || s.Id == newer.Id);
+        Assert.Equal(450m, circuitPro.LastUnitPrice);
+        // A supplier of only the similar light carries that price, marked as such.
+        var volt = list.Single(s => s.Id == similarOnly.Id);
+        Assert.Null(volt.LastUnitPrice);
+        Assert.Equal(700m, volt.SimilarUnitPrice);
+        Assert.Equal(similarLight.Name, volt.SimilarMaterialName);
+    }
+
     // ── Edit quantity / delete / default delivery date ──────────────────────
 
     [Fact]

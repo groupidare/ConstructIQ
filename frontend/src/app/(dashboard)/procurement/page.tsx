@@ -328,6 +328,9 @@ interface QuoteDraft {
   price: string;
   // True while the price is the supplier's last recorded price, untouched.
   fromHistory: boolean;
+  // Why an auto-filled slot holds this supplier/price, when it isn't the
+  // material's own PO history (a similar material, or the same kind).
+  note?: string;
 }
 
 interface RequestRow {
@@ -365,6 +368,12 @@ interface SuggestedSupplier {
   hasHistoryWithMaterial: boolean;
   lastUnitPrice: number | null;
   lastPriceDate: string | null;
+  // Its latest price for a similar material in this unit, when it has none of its own.
+  similarUnitPrice?: number | null;
+  similarPriceDate?: string | null;
+  similarMaterialName?: string | null;
+  // Has supplied a material of the same kind.
+  suppliesSameKind?: boolean;
 }
 
 interface ApiProjectWithRequests { projectId: number; projectName: string; pendingCount: number; forApprovalCount?: number; }
@@ -380,6 +389,8 @@ interface ApiMaterialRequest {
 interface ApiSuggestedSupplier {
   id: number; name: string; rating: number; onTimePct: number; deliveries: number; hasHistoryWithMaterial: boolean;
   lastUnitPrice?: number | null; lastPriceDate?: string | null;
+  similarUnitPrice?: number | null; similarPriceDate?: string | null; similarMaterialName?: string | null;
+  suppliesSameKind?: boolean;
 }
 interface ApiGeneratedResult {
   purchaseOrders: unknown[];
@@ -410,22 +421,53 @@ function mapRequestRow(a: ApiMaterialRequest): RequestRow {
   };
 }
 
-// Fills a material's empty supplier slots with the suppliers who sold it
-// most recently in its unit, at their latest PO price — skipping any already
-// listed. Slots already filled in are left as they are.
+// One supplier written two ways ("… Trading" / "… Trading Corp.") is one
+// supplier — the same folding as the server's MaterialNameMatch.SupplierKey.
+const COMPANY_SUFFIXES = new Set(["inc", "incorporated", "corp", "corporation", "co", "company", "ltd", "limited", "llc", "opc", "phil", "phils", "philippines"]);
+function supplierKey(name: string): string {
+  return name.toLowerCase().replace(/&/g, " and ").split(/[^a-z0-9]+/).filter(w => w && !COMPANY_SUFFIXES.has(w)).join(" ");
+}
+
+// Fills a material's empty supplier slots, each with a different supplier:
+// first those who sold this material in its unit (latest PO price), then
+// those who sold a similar material in that unit (their price, marked as
+// such), then suppliers of the same kind of material (no price — type it
+// in). Slots already filled in are left as they are; fewer suppliers on
+// record means fewer slots filled, never the same supplier twice.
 function prefillSuppliers(row: RequestRow, suggested: SuggestedSupplier[]): RequestRow {
   if (row.forApproval) return row;
-  const listed = new Set(row.quotes.map(q => q.supplierName.trim().toLowerCase()).filter(Boolean));
-  const latest = suggested
-    .filter(x => x.lastUnitPrice != null && !listed.has(x.name.trim().toLowerCase()))
-    .sort((a, b) => (b.lastPriceDate ?? "").localeCompare(a.lastPriceDate ?? ""));
-  if (latest.length === 0) return row;
+  // An auto-filled slot repeating a supplier already listed is cleared first.
+  const seen = new Set<string>();
+  row = { ...row, quotes: row.quotes.map(q => {
+    const key = supplierKey(q.supplierName);
+    if (!key) return q;
+    if (seen.has(key) && q.fromHistory) return emptyQuote();
+    seen.add(key);
+    return q;
+  }) };
+  const listed = new Set(row.quotes.map(q => supplierKey(q.supplierName)).filter(Boolean));
+  const byDate = (a?: string | null, b?: string | null) => (b ?? "").localeCompare(a ?? "");
+  const candidates: QuoteDraft[] = [];
+  const take = (x: SuggestedSupplier, quote: QuoteDraft) => {
+    const key = supplierKey(x.name);
+    if (!key || listed.has(key)) return;
+    listed.add(key);
+    candidates.push(quote);
+  };
+  suggested.filter(x => x.lastUnitPrice != null)
+    .sort((a, b) => byDate(a.lastPriceDate, b.lastPriceDate) || a.lastUnitPrice! - b.lastUnitPrice!)
+    .forEach(x => take(x, { supplierName: x.name, price: String(x.lastUnitPrice), fromHistory: true }));
+  suggested.filter(x => x.lastUnitPrice == null && x.similarUnitPrice != null)
+    .sort((a, b) => byDate(a.similarPriceDate, b.similarPriceDate) || a.similarUnitPrice! - b.similarUnitPrice!)
+    .forEach(x => take(x, { supplierName: x.name, price: String(x.similarUnitPrice), fromHistory: true,
+      note: `Price from a similar material: ${x.similarMaterialName ?? "—"}` }));
+  suggested.filter(x => x.lastUnitPrice == null && x.similarUnitPrice == null && x.suppliesSameKind)
+    .sort((a, b) => b.rating - a.rating || b.deliveries - a.deliveries)
+    .forEach(x => take(x, { supplierName: x.name, price: "", fromHistory: false,
+      note: "Supplies this kind of material — enter a price" }));
+  if (candidates.length === 0) return row;
   let next = 0;
-  const quotes = row.quotes.map(q => {
-    if (q.supplierName.trim() || next >= latest.length) return q;
-    const x = latest[next++];
-    return { supplierName: x.name, price: String(x.lastUnitPrice), fromHistory: true };
-  });
+  const quotes = row.quotes.map(q => (q.supplierName.trim() || next >= candidates.length ? q : candidates[next++]));
   return { ...row, quotes };
 }
 
@@ -485,7 +527,7 @@ function rowQty(row: RequestRow): number | null {
 function quoteProblem(row: RequestRow): string | null {
   if (rowQty(row) == null) return `${row.materialName}: quantity must be greater than zero.`;
   const named = row.quotes.filter(q => q.supplierName.trim());
-  const names = named.map(q => q.supplierName.trim().toLowerCase());
+  const names = named.map(q => supplierKey(q.supplierName));
   if (new Set(names).size !== names.length) return `${row.materialName}: the same supplier is listed twice.`;
   for (const q of named) {
     if (q.price.trim() && (quotePrice(q) == null || quotePrice(q)! < 0))
@@ -597,7 +639,7 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
       } else if (current.fromHistory) {
         quotes[slot] = { supplierName, price: "", fromHistory: false };
       } else {
-        quotes[slot] = { ...current, supplierName };
+        quotes[slot] = { ...current, supplierName, note: undefined };
       }
       return { ...r, quotes };
     });
@@ -606,7 +648,7 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
   function setPrice(row: RequestRow, slot: number, price: string) {
     updateRow(row.id, r => {
       const quotes = [...r.quotes];
-      quotes[slot] = { ...quotes[slot], price, fromHistory: false };
+      quotes[slot] = { ...quotes[slot], price, fromHistory: false, note: undefined };
       return { ...r, quotes };
     });
   }
@@ -936,7 +978,8 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                                       )}
                                       <span style={{ fontSize: "0.62rem", color: "#9ca3af", textAlign: "right" }}>
                                         {priceOnly && slot === lowest && <span style={{ color: "#15803d", fontWeight: 700 }}>Lowest · </span>}
-                                        {q.fromHistory && past?.lastPriceDate ? `Last PO ${formatDate(past.lastPriceDate)}` : q.price.trim() && !q.fromHistory ? "Entered" : past?.hasHistoryWithMaterial ? "" : "New supplier"}
+                                        {q.note ? <span style={{ color: "#b45309" }}>{q.note}</span>
+                                          : q.fromHistory && past?.lastPriceDate ? `Last PO ${formatDate(past.lastPriceDate)}` : q.price.trim() && !q.fromHistory ? "Entered" : past?.hasHistoryWithMaterial ? "" : "New supplier"}
                                       </span>
                                     </div>
                                   )}
