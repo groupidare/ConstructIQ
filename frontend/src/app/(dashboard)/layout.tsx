@@ -1,5 +1,6 @@
 import Sidebar from "@/components/layout/Sidebar";
 import { Toaster } from "react-hot-toast";
+import PageDataLoader from "@/components/layout/PageDataLoader";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -14,6 +15,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <main style={{ flex: 1, minWidth: 0, overflowY: "auto", overflowX: "hidden", minHeight: 0 }}>
         {children}
       </main>
+      <PageDataLoader />
     </div>
   );
 }

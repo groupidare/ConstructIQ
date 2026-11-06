@@ -172,6 +172,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
                 ProjectId = g.Key.ProjectId,
                 ProjectName = g.Key.Name,
                 PendingCount = g.Count(),
+                ForApprovalCount = g.Count(r => r.SubmittedForApprovalAt != null),
             })
             .OrderBy(p => p.ProjectName)
             .ToListAsync();
@@ -222,11 +223,17 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             .ToListAsync();
 
         var materialIds = requests.Select(r => r.MaterialId).Distinct().ToList();
-        var pricedLines = await db.PurchaseOrderMaterials
-            .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value))
-            .OrderByDescending(m => m.PurchaseOrder.OrderDate).ThenByDescending(m => m.Id)
-            .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Supplier = m.PurchaseOrder.Supplier.Name })
-            .ToListAsync();
+        // "Last paid": the latest priced PO line, this system's or a historical project's.
+        var pricedLines = (await db.PurchaseOrderMaterials
+                .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value))
+                .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Supplier = (string?)m.PurchaseOrder.Supplier.Name, Date = m.PurchaseOrder.OrderDate })
+                .ToListAsync())
+            .Concat(await db.HistoricalMaterialSupplies
+                .Where(h => h.UnitCost != null && materialIds.Contains(h.BOQItem.MaterialId))
+                .Select(h => new { h.BOQItem.MaterialId, h.Unit, Price = h.UnitCost!.Value, Supplier = h.Supplier != null ? h.Supplier.Name : null, Date = h.PoDate ?? h.BOQItem.Project.TargetEndDate })
+                .ToListAsync())
+            .OrderByDescending(p => p.Date)
+            .ToList();
 
         return Ok(requests.Select(r =>
         {
@@ -262,6 +269,11 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             var request = requests.First(x => x.Id == r.RequestId);
             ApplyQuotes(request, r.Quotes, r.Remarks);
             if (r.Quantity is { } qty) request.Quantity = qty;
+            // Only a material with at least one priced supplier goes for
+            // approval; one still missing them is saved as it is, to finish later.
+            if (dto.Submit && !request.IsPriceInquiry
+                && r.Quotes.Any(q => !string.IsNullOrWhiteSpace(q.SupplierName) && q.UnitPrice != null))
+                request.SubmittedForApprovalAt ??= DateTime.UtcNow;
         }
 
         await db.SaveChangesAsync();
@@ -357,22 +369,34 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
     [Authorize(Roles = ManageRoles)]
     public async Task<IActionResult> GetSuggestedSuppliers(int materialId, [FromQuery] string? unit = null)
     {
+        // Who has supplied this material, from this system's POs and from
+        // historical projects' PO lines (HistoricalMaterialSupply, dated by
+        // its PO DATE, else the project's end).
         var supplierIdsWithHistory = (await db.PurchaseOrderMaterials
             .Include(m => m.PurchaseOrder)
             .Where(m => m.MaterialId == materialId)
             .Select(m => m.PurchaseOrder.SupplierId)
             .Distinct()
             .ToListAsync())
+            .Concat(await db.HistoricalMaterialSupplies
+                .Where(h => h.BOQItem.MaterialId == materialId && h.SupplierId != null)
+                .Select(h => h.SupplierId!.Value)
+                .Distinct()
+                .ToListAsync())
             .ToHashSet();
 
-        var lastPrices = (string.IsNullOrWhiteSpace(unit) ? [] : await db.PurchaseOrderMaterials
+        var lastPrices = (string.IsNullOrWhiteSpace(unit) ? [] : (await db.PurchaseOrderMaterials
                 .Where(m => m.MaterialId == materialId && m.UnitPrice != null)
-                .OrderByDescending(m => m.PurchaseOrder.OrderDate).ThenByDescending(m => m.Id)
                 .Select(m => new SupplierPrice(m.PurchaseOrder.SupplierId, m.Unit, m.UnitPrice!.Value, m.PurchaseOrder.OrderDate))
                 .ToListAsync())
+            .Concat(await db.HistoricalMaterialSupplies
+                .Where(h => h.BOQItem.MaterialId == materialId && h.SupplierId != null && h.UnitCost != null)
+                .Select(h => new SupplierPrice(h.SupplierId!.Value, h.Unit, h.UnitCost!.Value, h.PoDate ?? h.BOQItem.Project.TargetEndDate))
+                .ToListAsync()))
             .Where(p => SameUnit(p.Unit, unit))
             .GroupBy(p => p.SupplierId)
-            .ToDictionary(g => g.Key, g => g.First());
+            // Each supplier's price on its latest PO; the lower one if two share that date.
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(p => p.Date.Date).ThenBy(p => p.Price).First());
 
         var suppliers = await db.Suppliers
             .Include(s => s.PurchaseOrders).ThenInclude(po => po.Evaluation)
@@ -440,6 +464,9 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             return BadRequest(new { message = "One or more materials were already turned into a purchase order — refresh and try again." });
         if (requests.FirstOrDefault(r => r.IsPriceInquiry) is { } priceCheck)
             return BadRequest(new { message = $"{priceCheck.Material.Name} is a price check only — save its quotation instead of making a PO." });
+        // A PO comes only from a saved request whose supplier was then chosen.
+        if (requests.FirstOrDefault(r => r.SubmittedForApprovalAt == null) is { } draft)
+            return BadRequest(new { message = $"{draft.Material.Name} hasn't been saved for approval yet — enter its suppliers and click Save Request first." });
 
         foreach (var a in dto.Assignments)
         {
@@ -481,6 +508,9 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
                     Quantity = request.Quantity,
                     Unit = request.Unit,
                     MaterialId = request.MaterialId,
+                    // The Material Plan row it was requested for, so the PO line
+                    // counts toward that row without linking it by hand.
+                    BOQItemId = request.BOQItemId,
                     UnitPrice = assignment.UnitPrice,
                 });
                 request.FulfilledByPurchaseOrder = po;
@@ -602,6 +632,7 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         Remarks = r.Remarks,
         IsAdditional = r.IsAdditional,
         IsPriceInquiry = r.IsPriceInquiry,
+        ForApproval = r.SubmittedForApprovalAt != null,
         Quotes = r.Quotes.OrderBy(q => q.Slot).Select(q => new MaterialRequestQuoteDto
         {
             Slot = q.Slot, SupplierName = q.SupplierName, UnitPrice = q.UnitPrice,

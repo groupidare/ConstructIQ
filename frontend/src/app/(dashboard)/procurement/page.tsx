@@ -16,6 +16,7 @@ import { useAuthStore } from "@/store/authStore";
 import { RISK_VISUALS, RISK_VISUALS_DARK } from "@/lib/weather";
 import { computeWeatherAtRiskOrders } from "@/lib/deliveryRisk";
 import api from "@/lib/api";
+import { displayPoNumber } from "@/lib/poNumber";
 import { resolveUploadUrl } from "@/lib/avatar";
 import { formatCurrency, formatDate } from "@/lib/utils";
 
@@ -36,7 +37,7 @@ function toDisplayDate(dateStr: string): string {
 
 // ── Types & data ──────────────────────────────────────────────────────────────
 
-type POStatus = "PENDING" | "APPROVED" | "DELIVERY_IN_PROGRESS" | "DELIVERED" | "DELAYED";
+type POStatus = "PENDING" | "APPROVED" | "DELIVERY_IN_PROGRESS" | "DELIVERED";
 
 interface POMaterial {
   name: string;
@@ -79,18 +80,18 @@ interface PO {
   originalPoNumber: string | null;
 }
 
-// "Imported · PO 2024-118" under an imported PO's number.
+// A small "Imported" tag beside an imported PO's number.
 function ImportedTag({ po }: { po: PO }) {
   if (!po.isImported) return null;
   return (
-    <span style={{ display: "block", fontSize: "0.65rem", color: "#6b7280", fontWeight: 500, marginTop: 2 }}>
-      Imported{po.originalPoNumber ? ` · original PO ${po.originalPoNumber}` : ""}
+    <span title={`An existing PO imported from a file — not made in ConstructIQ (system no. ${po.number})`}
+      style={{ display: "inline-block", marginTop: 3, fontSize: "0.58rem", fontWeight: 700, padding: "1px 6px", borderRadius: 999, background: "#ede9fe", color: "#6d28d9" }}>
+      IMPORTED
     </span>
   );
 }
 
-// DELAYED is never manually selectable — it's derived from the expected date
-// having passed while the order is still PENDING/APPROVED. DELIVERED isn't
+// DELIVERED isn't
 // offered here at all — only WarehousePersonnel can click it (see their own
 // dropdown further down), since they're the only ones who physically receive
 // the goods; Admin/ProjectManager/ProcurementOfficer manage the lifecycle up
@@ -102,19 +103,13 @@ const PO_STATUS_STYLE: Record<POStatus, { bg: string; color: string }> = {
   APPROVED:              { bg: "#dcfce7", color: "#15803d"  },
   DELIVERY_IN_PROGRESS:  { bg: "#e0e7ff", color: "#4338ca"  },
   DELIVERED:             { bg: "#f3f4f6", color: "#374151"  },
-  DELAYED:               { bg: "#fee2e2", color: "#dc2626"  },
 };
 
-const STATUS_SORT_ORDER: Record<POStatus, number> = { DELAYED: 0, PENDING: 1, APPROVED: 2, DELIVERY_IN_PROGRESS: 3, DELIVERED: 4 };
+const STATUS_SORT_ORDER: Record<POStatus, number> = { PENDING: 0, APPROVED: 1, DELIVERY_IN_PROGRESS: 2, DELIVERED: 3 };
 
-// A non-delivered, not-yet-in-progress order becomes DELAYED the moment its
-// expected date passes — this is computed, never stored, so it can't drift
-// out of sync or be set by hand. Once delivery has actually started, the real
-// status is more useful than a stale "was this late" guess.
+// The status shown is the PO's own — no "Delayed" is worked out from the
+// expected date any more (POs no longer get one entered by hand).
 function getEffectiveStatus(po: PO): POStatus {
-  if (po.status === "DELIVERED" || po.status === "DELIVERY_IN_PROGRESS") return po.status;
-  const expected = new Date(po.expectedDate).getTime();
-  if (!Number.isNaN(expected) && expected < Date.now()) return "DELAYED";
   return po.status;
 }
 
@@ -319,6 +314,8 @@ interface ProjectWithRequests {
   projectId: number;
   projectName: string;
   pendingCount: number;
+  // Of pendingCount, saved with "Save Request" and waiting for a supplier choice.
+  forApprovalCount?: number;
 }
 
 // Up to three suppliers quoted per material, as on the client's Material
@@ -354,6 +351,9 @@ interface RequestRow {
   // Sent from a project's cost breakdown for a price only — never a PO.
   // Leaves this form once a price is saved for it.
   isPriceInquiry: boolean;
+  // Saved with "Save Request": its quotes are in, and it waits here as
+  // "For Approval" until one supplier is chosen and its PO generated.
+  forApproval: boolean;
 }
 
 interface SuggestedSupplier {
@@ -367,7 +367,7 @@ interface SuggestedSupplier {
   lastPriceDate: string | null;
 }
 
-interface ApiProjectWithRequests { projectId: number; projectName: string; pendingCount: number; }
+interface ApiProjectWithRequests { projectId: number; projectName: string; pendingCount: number; forApprovalCount?: number; }
 interface ApiQuote { slot: number; supplierName: string; unitPrice: number | null; priceFromHistory: boolean; isSelected: boolean; }
 interface ApiMaterialRequest {
   id: number; materialId: number; materialName: string; specification?: string;
@@ -375,6 +375,7 @@ interface ApiMaterialRequest {
   lastUnitPrice?: number | null; lastUnitPriceSupplier?: string | null;
   remarks?: string | null; quotes?: ApiQuote[]; isAdditional?: boolean;
   isPriceInquiry?: boolean;
+  forApproval?: boolean;
 }
 interface ApiSuggestedSupplier {
   id: number; name: string; rating: number; onTimePct: number; deliveries: number; hasHistoryWithMaterial: boolean;
@@ -400,9 +401,32 @@ function mapRequestRow(a: ApiMaterialRequest): RequestRow {
     id: a.id, materialId: a.materialId, materialName: a.materialName, specification: a.specification ?? "",
     quantity: a.quantity, qty: String(a.quantity), unit: a.unit, requestedByName: a.requestedByName, createdAt: a.createdAt,
     lastUnitPrice: a.lastUnitPrice ?? null, lastUnitPriceSupplier: a.lastUnitPriceSupplier ?? null,
-    isAdditional: a.isAdditional ?? false, remarks: a.remarks ?? "", quotes, chosen,
+    isAdditional: a.isAdditional ?? false, remarks: a.remarks ?? "", quotes,
     isPriceInquiry: !!a.isPriceInquiry,
+    forApproval: !!a.forApproval,
+    // On the Requests tab a supplier is chosen only at the review, never
+    // carried in from typing; a price check keeps its "Use this price" pick.
+    chosen: a.forApproval || a.isPriceInquiry ? chosen : null,
   };
+}
+
+// Fills a material's empty supplier slots with the suppliers who sold it
+// most recently in its unit, at their latest PO price — skipping any already
+// listed. Slots already filled in are left as they are.
+function prefillSuppliers(row: RequestRow, suggested: SuggestedSupplier[]): RequestRow {
+  if (row.forApproval) return row;
+  const listed = new Set(row.quotes.map(q => q.supplierName.trim().toLowerCase()).filter(Boolean));
+  const latest = suggested
+    .filter(x => x.lastUnitPrice != null && !listed.has(x.name.trim().toLowerCase()))
+    .sort((a, b) => (b.lastPriceDate ?? "").localeCompare(a.lastPriceDate ?? ""));
+  if (latest.length === 0) return row;
+  let next = 0;
+  const quotes = row.quotes.map(q => {
+    if (q.supplierName.trim() || next >= latest.length) return q;
+    const x = latest[next++];
+    return { supplierName: x.name, price: String(x.lastUnitPrice), fromHistory: true };
+  });
+  return { ...row, quotes };
 }
 
 function quotePrice(q: QuoteDraft): number | null {
@@ -420,6 +444,15 @@ function selectedSlot(row: RequestRow): number {
   const priced = named.filter(x => quotePrice(x.q) != null);
   if (priced.length > 0) return priced.reduce((a, b) => (quotePrice(b.q)! < quotePrice(a.q)! ? b : a)).i;
   return named.length > 0 ? named[0].i : -1;
+}
+
+// The review's recommended supplier: the lowest price; on a tie, the better
+// delivery rating. -1 with fewer than two priced suppliers to compare.
+function recommendedSlot(row: RequestRow, ratingOf: (supplierName: string) => number): number {
+  const priced = row.quotes.map((q, i) => ({ q, i, price: quotePrice(q) })).filter(x => x.q.supplierName.trim() && x.price != null);
+  if (priced.length < 2) return -1;
+  return priced.reduce((a, b) =>
+    b.price! < a.price! || (b.price === a.price && ratingOf(b.q.supplierName) > ratingOf(a.q.supplierName)) ? b : a).i;
 }
 
 function lowestSlot(row: RequestRow): number {
@@ -465,7 +498,7 @@ function quoteProblem(row: RequestRow): string | null {
 
 function exportPOs(orders: PO[]) {
   const header = ["PO Number","Project Name","Supplier","Status","Expected Date","Materials"];
-  const rows = orders.map(p => [p.number, `"${p.projectName}"`, `"${p.supplier}"`, getEffectiveStatus(p), p.expectedDate, `"${p.materials.map(m => `${m.name} (${m.qty})`).join("; ")}"`].join(","));
+  const rows = orders.map(p => [displayPoNumber(p), `"${p.projectName}"`, `"${p.supplier}"`, getEffectiveStatus(p), p.expectedDate, `"${p.materials.map(m => `${m.name} (${m.qty})`).join("; ")}"`].join(","));
   const csv = [header.join(","), ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
@@ -482,6 +515,12 @@ function exportPOs(orders: PO[]) {
 // past POs), which stays editable. The chosen quote per material — the
 // lowest price unless another is picked — becomes the PO; materials sharing a
 // supplier land on one PO with the next sequential number.
+// The Requests tab works in two steps: Procurement enters up to three
+// suppliers and prices per material and clicks "Save Request" (no supplier
+// is highlighted or recommended yet); each material with a priced supplier
+// then shows "For Approval". At the review the purchasing head picks exactly
+// one supplier per material, and only then can "Generate P.O. Number" turn
+// them into purchase orders, which move to the Purchase Orders tab.
 // With priceOnly it's the Quotations tab's form: the price checks sent from a
 // project's cost breakdown — quotes are saved, no PO is ever made.
 
@@ -502,14 +541,12 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [poNumbers, setPoNumbers] = useState<Record<number, string>>({});
 
   const suggestionKey = (r: { materialId: number; unit: string }) => `${r.materialId}|${r.unit}`;
   // An element id can't hold spaces ("sq m") — keep it to safe characters.
   const datalistId = (key: string) => `mrf-suppliers-${key.replace(/[^A-Za-z0-9]+/g, "-")}`;
 
-  useEffect(() => {
-    (async () => {
+  async function loadRows() {
       setLoading(true);
       try {
         const { data } = await api.get<ApiMaterialRequest[]>(`/material-requests/project/${projectId}`, { params: { priceInquiry: priceOnly } });
@@ -521,16 +558,23 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
           const res = await api.get<ApiSuggestedSupplier[]>(`/material-requests/suggested-suppliers/${r.materialId}`, { params: { unit: r.unit } });
           return [suggestionKey(r), res.data.map(s => ({ ...s, lastUnitPrice: s.lastUnitPrice ?? null, lastPriceDate: s.lastPriceDate ?? null }))] as const;
         }));
-        setSuggestions(Object.fromEntries(entries));
+        const byKey: Record<string, SuggestedSupplier[]> = Object.fromEntries(entries);
+        setSuggestions(byKey);
+        // Requests tab: a material not filled in yet starts with the (up to
+        // three) suppliers who sold it most recently in this unit, at their
+        // latest PO price — editable, and none of them chosen.
+        if (!priceOnly) setRows(mapped.map(r => prefillSuppliers(r, byKey[suggestionKey(r)] ?? [])));
       } catch {
         toast.error("Failed to load material requests.");
       } finally {
         setLoading(false);
       }
-    })();
-  }, [projectId, priceOnly]);
+  }
 
-  const generated = Object.keys(poNumbers).length > 0;
+  useEffect(() => {
+    void loadRows();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, priceOnly]);
 
   function updateRow(id: number, change: (r: RequestRow) => RequestRow) {
     setRows(prev => prev.map(r => (r.id === id ? change(r) : r)));
@@ -567,14 +611,18 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
     });
   }
 
-  // Price checks only ever get quotations saved — never a PO.
-  const orderRows = rows.filter(r => !r.isPriceInquiry);
+  // Rows still being filled in, and rows saved and waiting for the review
+  // (only on the Requests tab — price checks never become a PO).
+  const isReview = (r: RequestRow) => !priceOnly && r.forApproval;
+  const entryRows = rows.filter(r => !isReview(r));
+  const reviewRows = rows.filter(isReview);
+  const allChosen = reviewRows.length > 0 && reviewRows.every(r => r.chosen != null && !!r.quotes[r.chosen]?.supplierName.trim());
 
   function firstProblem(forGenerate: boolean): string | null {
-    for (const r of forGenerate ? orderRows : rows) {
+    for (const r of forGenerate ? reviewRows : entryRows) {
       const problem = quoteProblem(r);
       if (problem) return problem;
-      if (forGenerate && selectedSlot(r) < 0) return `Add at least one supplier for ${r.materialName}.`;
+      if (forGenerate && (r.chosen == null || !r.quotes[r.chosen]?.supplierName.trim())) return `Choose the supplier to buy ${r.materialName} from.`;
     }
     return null;
   }
@@ -601,8 +649,20 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
     setSaving(true);
     try {
       await api.put(`/material-requests/project/${projectId}/quotes`, {
-        requests: rows.map(r => ({ requestId: r.id, quantity: rowQty(r), remarks: r.remarks, quotes: apiQuotes(r, r.chosen != null) })),
+        submit: !priceOnly,
+        requests: entryRows.map(r => ({ requestId: r.id, quantity: rowQty(r), remarks: r.remarks, quotes: apiQuotes(r, priceOnly && r.chosen != null) })),
       });
+      if (!priceOnly) {
+        const ready = entryRows.filter(r => r.quotes.some(q => q.supplierName.trim() && quotePrice(q) != null)).length;
+        const notYet = entryRows.length - ready;
+        onChanged();
+        await loadRows();
+        toast.success(ready > 0
+          ? `Request saved — ${ready} material${ready === 1 ? " is" : "s are"} now For Approval.`
+          : "Request saved.");
+        if (notYet > 0) toast(`${notYet} material${notYet === 1 ? " still needs" : "s still need"} a supplier with a price before ${notYet === 1 ? "it goes" : "they go"} for approval.`);
+        return;
+      }
       const answered = rows.filter(r => r.isPriceInquiry && r.quotes.some(q => q.supplierName.trim() && quotePrice(q) != null));
       if (answered.length > 0) {
         // Priced price checks are done: off this form, onto the cost estimate.
@@ -614,7 +674,7 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
       }
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      toast.error(message ?? "Failed to save quotations.");
+      toast.error(message ?? (priceOnly ? "Failed to save quotations." : "Failed to save the request."));
     } finally {
       setSaving(false);
     }
@@ -627,8 +687,8 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
     try {
       const { data } = await api.post<ApiGeneratedResult>("/material-requests/generate-pos", {
         projectId,
-        assignments: orderRows.map(r => {
-          const sel = r.quotes[selectedSlot(r)];
+        assignments: reviewRows.map(r => {
+          const sel = r.quotes[r.chosen!];
           return {
             requestId: r.id,
             supplierName: sel.supplierName.trim(),
@@ -639,19 +699,16 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
           };
         }),
       });
-      setPoNumbers(data.requestPoNumbers);
-      toast.success("Purchase order(s) generated.");
+      const numbers = [...new Set(Object.values(data.requestPoNumbers))];
+      toast.success(`${numbers.length === 1 ? "Purchase order" : "Purchase orders"} ${numbers.join(", ")} generated — see the Purchase Orders tab.`);
+      onGenerated();
+      onClose();
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(message ?? "Failed to generate purchase orders.");
     } finally {
       setGenerating(false);
     }
-  }
-
-  function handleGoToPurchaseOrders() {
-    onGenerated();
-    onClose();
   }
 
   const fieldStyle: React.CSSProperties = {
@@ -693,11 +750,11 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                   <>Price only — no PO is made. Enter up to three supplier quotations per material and save; a material with a priced quote
                     leaves this list and its price goes into the project&apos;s cost estimate. The lowest price is used unless you pick &quot;Use this price&quot; on another.</>
                 ) : (
-                  <>Enter up to three suppliers per material. A supplier you&apos;ve ordered from before gets its last price filled in — change it if the quotation is different.
-                    The lowest price is chosen automatically; pick &quot;Order from&quot; on another supplier only if you want them instead.</>
+                  <>Each material starts with the suppliers who sold it most recently and their latest PO prices — edit, add or clear them (up to three), then click <b>Save Request</b>; each material with a priced supplier goes <b>For Approval</b>.
+                    At the review, choose the one supplier to buy each material from; <b>Generate P.O. Number</b> then makes the purchase orders.</>
                 )}
               </p>
-              <table style={{ width: "100%", minWidth: 1100, borderCollapse: "collapse" }}>
+              <table style={{ width: "100%", minWidth: 1000, borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
                     <th style={{ ...th, width: 28 }}>#</th>
@@ -705,8 +762,7 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                     <th style={th}>UNIT</th>
                     <th style={th}>QTY</th>
                     {Array.from({ length: MAX_QUOTES }, (_, i) => <th key={i} style={{ ...th, minWidth: 170 }}>SUPPLIER {i + 1}</th>)}
-                    <th style={{ ...th, minWidth: 140 }}>REMARKS</th>
-                    {!priceOnly && <th style={th}>PO #</th>}
+                    {priceOnly && <th style={{ ...th, minWidth: 140 }}>REMARKS</th>}
                     <th style={{ ...th, width: 40 }} aria-label="Actions" />
                   </tr>
                 </thead>
@@ -715,15 +771,22 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                     <tr><td colSpan={10} style={{ ...td, textAlign: "center", color: "#9ca3af", padding: "1.5rem" }}>{priceOnly ? "No materials waiting for a quotation." : "No pending requests for this project."}</td></tr>
                   )}
                   {rows.map((r, idx) => {
-                    const poNumber = poNumbers[r.id];
+                    const review = isReview(r);
                     const sel = selectedSlot(r);
                     const lowest = lowestSlot(r);
+                    const recommended = review ? recommendedSlot(r, name => historyFor(r, name)?.rating ?? 0) : -1;
                     const listId = datalistId(suggestionKey(r));
                     return (
-                      <tr key={r.id}>
+                      <tr key={r.id} style={{ background: review ? "#fafaff" : undefined }}>
                         <td style={{ ...td, color: "#9ca3af" }}>{idx + 1}</td>
                         <td style={{ ...td, fontWeight: 600, color: "#111827", minWidth: 150 }}>
                           {r.materialName}
+                          {review && (
+                            <span title="Saved — choose the one supplier to buy from, then generate the PO"
+                              style={{ display: "inline-block", marginLeft: 6, padding: "1px 7px", borderRadius: 999, background: "#ede9fe", color: "#6d28d9", fontSize: "0.6rem", fontWeight: 700, verticalAlign: "middle", whiteSpace: "nowrap" }}>
+                              FOR APPROVAL
+                            </span>
+                          )}
                           {r.isAdditional && (
                             <span title="Beyond what this BOQ row still needed when it was requested" style={{ marginLeft: 6, fontSize: "0.62rem", fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "#fef3c7", color: "#92400e", whiteSpace: "nowrap" }}>Additional</span>
                           )}
@@ -735,14 +798,20 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                           )}
                           {r.lastUnitPrice != null && (
                             <p style={{ fontSize: "0.65rem", fontWeight: 400, color: "#9ca3af", margin: "3px 0 0" }}>
-                              Last paid {formatCurrency(r.lastUnitPrice)}/{r.unit}{r.lastUnitPriceSupplier ? ` · ${r.lastUnitPriceSupplier}` : ""}
+                              Last ordered {formatCurrency(r.lastUnitPrice)}/{r.unit}{r.lastUnitPriceSupplier ? ` · ${r.lastUnitPriceSupplier}` : ""}
                             </p>
+                          )}
+                          {review && (
+                            <button type="button" onClick={() => updateRow(r.id, x => ({ ...x, forApproval: false, chosen: null }))}
+                              style={{ display: "block", marginTop: 4, padding: 0, background: "none", border: "none", color: "#6b7280", fontSize: "0.65rem", fontWeight: 600, textDecoration: "underline", cursor: "pointer" }}>
+                              Edit suppliers
+                            </button>
                           )}
                         </td>
                         <td style={{ ...td, color: "#6b7280" }}>{r.unit}</td>
                         <td style={{ ...td, minWidth: 80 }}>
-                          {poNumber ? (
-                            <span style={{ color: "#6b7280" }}>{(rowQty(r) ?? r.quantity).toLocaleString()}</span>
+                          {review ? (
+                            <span style={{ color: "#374151" }}>{(rowQty(r) ?? r.quantity).toLocaleString()}</span>
                           ) : (
                             <input
                               type="number" min="1" step="1" inputMode="numeric"
@@ -756,16 +825,42 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                         {r.quotes.map((q, slot) => {
                           const named = !!q.supplierName.trim();
                           const price = quotePrice(q);
-                          const isSelected = slot === sel;
                           const past = named ? historyFor(r, q.supplierName) : undefined;
+                          // Review: the head's pick is highlighted. Entry on the
+                          // Requests tab: nothing is highlighted or recommended.
+                          const chosenHere = review ? r.chosen === slot : priceOnly && slot === sel;
                           return (
-                            <td key={slot} style={{ ...td, background: named && isSelected ? "#fff7ed" : undefined }}>
-                              {poNumber ? (
+                            <td key={slot} style={{ ...td, background: named && chosenHere && !review ? "#fff7ed" : undefined }}>
+                              {review ? (
                                 named ? (
-                                  <div style={{ fontSize: "0.78rem" }}>
-                                    <span style={{ fontWeight: isSelected ? 700 : 400, color: "#111827" }}>{q.supplierName}</span>
-                                    <span style={{ display: "block", color: "#6b7280" }}>{price != null ? `${formatCurrency(price)}/${r.unit}` : "—"}{isSelected ? " · ordered" : ""}</span>
-                                  </div>
+                                  <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", padding: "6px 8px", borderRadius: 8,
+                                    // Chosen: solid orange. Recommended (not chosen yet): a faint orange tint.
+                                    border: `${chosenHere ? 2 : 1}px solid ${chosenHere ? "#f97316" : slot === recommended ? "#fed7aa" : "#e5e7eb"}`,
+                                    background: chosenHere ? "#fff7ed" : slot === recommended ? "#fffaf5" : "#fff" }}>
+                                    <input type="radio" name={`mrf-choice-${r.id}`} checked={chosenHere}
+                                      onChange={() => updateRow(r.id, x => ({ ...x, chosen: slot }))}
+                                      aria-label={`Buy ${r.materialName} from ${q.supplierName}`} style={{ marginTop: 3 }} />
+                                    <span style={{ fontSize: "0.78rem" }}>
+                                      <span style={{ fontWeight: chosenHere ? 700 : 500, color: "#111827" }}>{q.supplierName}</span>
+                                      <span style={{ display: "block", color: "#6b7280" }}>{price != null ? `${formatCurrency(price)}/${r.unit}` : "No price"}</span>
+                                      {price != null && <span style={{ display: "block", fontSize: "0.62rem", color: "#9ca3af" }}>Total {formatCurrency(price * (rowQty(r) ?? r.quantity))}</span>}
+                                      {past && (
+                                        <span style={{ display: "block", fontSize: "0.62rem", color: "#6b7280", marginTop: 2 }}
+                                          title="From Warehouse's delivery evaluations of this supplier's past POs">
+                                          {past.rating > 0
+                                            ? `★ ${past.rating.toFixed(1)} · ${past.onTimePct}% on time · ${past.deliveries} deliver${past.deliveries === 1 ? "y" : "ies"}`
+                                            : past.deliveries > 0 ? `No ratings yet · ${past.deliveries} deliver${past.deliveries === 1 ? "y" : "ies"}` : "No ratings yet"}
+                                        </span>
+                                      )}
+                                      {slot === recommended && (
+                                        <span title="Lowest price of the quotes; on a tie, the better-rated supplier"
+                                          style={{ display: "inline-block", marginTop: 4, padding: "1px 7px", borderRadius: 999, background: "#ffedd5", color: "#c2410c", fontSize: "0.6rem", fontWeight: 700 }}>
+                                          ★ RECOMMENDED · LOWEST PRICE
+                                        </span>
+                                      )}
+                                      {chosenHere && <span style={{ display: "block", marginTop: 4, fontSize: "0.62rem", color: "#c2410c", fontWeight: 700 }}>✓ Chosen supplier</span>}
+                                    </span>
+                                  </label>
                                 ) : <span style={{ color: "#d1d5db" }}>—</span>
                               ) : (
                                 <div style={{ display: "grid", gap: 4 }}>
@@ -788,13 +883,15 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                                   />
                                   {named && (
                                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, flexWrap: "wrap" }}>
-                                      <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.68rem", color: isSelected ? "#c2410c" : "#6b7280", fontWeight: isSelected ? 700 : 500, cursor: "pointer" }}>
-                                        <input type="radio" name={`mrf-choice-${r.id}`} checked={isSelected}
-                                          onChange={() => updateRow(r.id, x => ({ ...x, chosen: slot }))} />
-                                        {priceOnly ? "Use this price" : "Order from"}
-                                      </label>
+                                      {priceOnly && (
+                                        <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.68rem", color: chosenHere ? "#c2410c" : "#6b7280", fontWeight: chosenHere ? 700 : 500, cursor: "pointer" }}>
+                                          <input type="radio" name={`mrf-choice-${r.id}`} checked={chosenHere}
+                                            onChange={() => updateRow(r.id, x => ({ ...x, chosen: slot }))} />
+                                          Use this price
+                                        </label>
+                                      )}
                                       <span style={{ fontSize: "0.62rem", color: "#9ca3af", textAlign: "right" }}>
-                                        {slot === lowest && <span style={{ color: "#15803d", fontWeight: 700 }}>Lowest · </span>}
+                                        {priceOnly && slot === lowest && <span style={{ color: "#15803d", fontWeight: 700 }}>Lowest · </span>}
                                         {q.fromHistory && past?.lastPriceDate ? `Last PO ${formatDate(past.lastPriceDate)}` : q.price.trim() && !q.fromHistory ? "Entered" : past?.hasHistoryWithMaterial ? "" : "New supplier"}
                                       </span>
                                     </div>
@@ -807,10 +904,8 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                             </td>
                           );
                         })}
-                        <td style={td}>
-                          {poNumber ? (
-                            <span style={{ fontSize: "0.78rem" }}>{r.remarks || "—"}</span>
-                          ) : (
+                        {priceOnly && (
+                          <td style={td}>
                             <textarea
                               value={r.remarks}
                               onChange={e => updateRow(r.id, x => ({ ...x, remarks: e.target.value }))}
@@ -819,15 +914,10 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                               aria-label={`Remarks for ${r.materialName}`}
                               style={{ ...fieldStyle, resize: "vertical", fontFamily: "inherit" }}
                             />
-                          )}
-                        </td>
-                        {!priceOnly && (
-                          <td style={{ ...td, fontWeight: 700, color: "#f97316", whiteSpace: "nowrap" }}>
-                            {r.isPriceInquiry ? <span style={{ fontSize: "0.65rem", fontWeight: 500, color: "#6b7280" }}>No PO needed</span> : (poNumber ?? "—")}
                           </td>
                         )}
                         <td style={{ ...td, whiteSpace: "nowrap" }}>
-                          {!poNumber && (confirmDeleteId === r.id ? (
+                          {confirmDeleteId === r.id ? (
                             <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
                               <span style={{ fontSize: "0.68rem", color: "#991b1b", fontWeight: 600 }}>Delete?</span>
                               <div style={{ display: "flex", gap: 4 }}>
@@ -846,7 +936,7 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                               style={{ background: "none", border: "1px solid #fecaca", borderRadius: 6, padding: 5, cursor: "pointer", color: "#dc2626", display: "flex" }}>
                               <Trash2 style={{ width: 14, height: 14 }} />
                             </button>
-                          ))}
+                          )}
                         </td>
                       </tr>
                     );
@@ -865,27 +955,32 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
         </div>
 
         <div style={{ padding: "1rem 1.5rem 1.25rem", flexShrink: 0, borderTop: "1px solid #f3f4f6", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "1rem", flexWrap: "wrap" }}>
-          {generated ? (
-            <button onClick={handleGoToPurchaseOrders} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 8, border: "none", background: "#111827", color: "#fff", fontWeight: 700, fontSize: "0.85rem", cursor: "pointer" }}>
-              Purchase Order <ArrowRight style={{ width: 14, height: 14 }} />
-            </button>
-          ) : (
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button onClick={handleSave} disabled={busy || rows.length === 0} style={{
-                padding: "10px 16px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151",
-                fontWeight: 700, fontSize: "0.85rem", cursor: (busy || rows.length === 0) ? "not-allowed" : "pointer", opacity: (busy || rows.length === 0) ? 0.7 : 1,
+          {!priceOnly && reviewRows.length > 0 && !allChosen && (
+            <span style={{ fontSize: "0.72rem", color: "#6b7280" }}>
+              Choose one supplier for each material marked For Approval to generate the PO.
+            </span>
+          )}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {(priceOnly || entryRows.length > 0) && (
+              <button onClick={handleSave} disabled={busy || entryRows.length === 0} style={{
+                padding: "10px 16px", borderRadius: 8, border: priceOnly ? "1px solid #e5e7eb" : "none",
+                background: priceOnly ? "#fff" : "#111827", color: priceOnly ? "#374151" : "#fff",
+                fontWeight: 700, fontSize: "0.85rem", cursor: (busy || entryRows.length === 0) ? "not-allowed" : "pointer", opacity: (busy || entryRows.length === 0) ? 0.7 : 1,
               }}>
-                {saving ? "Saving…" : "Save Quotations"}
+                {saving ? "Saving…" : priceOnly ? "Save Quotations" : "Save Request"}
               </button>
-              {!priceOnly && <button onClick={handleGenerate} disabled={busy || orderRows.length === 0} style={{
+            )}
+            {/* Only once a request is saved, and active once every material has its supplier chosen. */}
+            {!priceOnly && reviewRows.length > 0 && (
+              <button onClick={handleGenerate} disabled={busy || !allChosen} style={{
                 display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 8, border: "none",
-                background: "#f97316", color: "#fff", fontWeight: 700, fontSize: "0.85rem",
-                cursor: (busy || orderRows.length === 0) ? "not-allowed" : "pointer", opacity: (busy || orderRows.length === 0) ? 0.7 : 1,
+                background: allChosen ? "#f97316" : "#e5e7eb", color: allChosen ? "#fff" : "#6b7280", fontWeight: 700, fontSize: "0.85rem",
+                cursor: (busy || !allChosen) ? "not-allowed" : "pointer", opacity: busy ? 0.7 : 1,
               }}>
                 {generating ? "Generating…" : "Generate P.O. Number"}
-              </button>}
-            </div>
-          )}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -901,7 +996,7 @@ function ViewPOModal({ po, onClose }: { po: PO; onClose: () => void }) {
       <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 440, boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>
           <div>
-            <p style={{ fontWeight: 800, fontSize: "1.05rem", color: "#f97316" }}>{po.number}</p>
+            <p style={{ fontWeight: 800, fontSize: "1.05rem", color: "#f97316" }}>{displayPoNumber(po)}</p>
             <ImportedTag po={po} />
             <p style={{ fontSize: "0.82rem", color: "#111827", fontWeight: 600, marginTop: 2 }}>{po.projectName}</p>
             <p style={{ fontSize: "0.75rem", color: "#9ca3af", marginTop: 2 }}>{po.supplier} · {po.expectedDate}</p>
@@ -1434,7 +1529,7 @@ function DeliveryBatchModal({ po, onClose, onSaveBatch, onComplete }: {
             </div>
             <div>
               <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>Proof of Delivery</h2>
-              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{po.number} · {po.supplier}</p>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{displayPoNumber(po)} · {po.supplier}</p>
             </div>
           </div>
           <button onClick={handleClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
@@ -1607,7 +1702,7 @@ function RateSupplierModal({ po, supplier, onClose, onSubmit }: {
             </div>
             <div>
               <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>Rate the Supplier</h2>
-              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{po.number} · {po.supplier}</p>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{displayPoNumber(po)} · {po.supplier}</p>
             </div>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
@@ -1661,7 +1756,7 @@ function RateSupplierModal({ po, supplier, onClose, onSubmit }: {
 
           <div style={{ background: "#f9fafb", borderRadius: 8, padding: "0.75rem 1rem" }}>
             <p style={{ fontSize: "0.75rem", color: "#9ca3af", fontStyle: "italic" }}>
-              This evaluation is logged against <strong style={{ color: "#374151" }}>{po.number}</strong> and will contribute to{" "}
+              This evaluation is logged against <strong style={{ color: "#374151" }}>{displayPoNumber(po)}</strong> and will contribute to{" "}
               <strong style={{ color: "#374151" }}>{po.supplier}</strong>&apos;s aggregate performance score.
             </p>
           </div>
@@ -1794,10 +1889,29 @@ function ProcurementContent() {
 
   function countByStatus(s: POStatus) { return orders.filter(p => getEffectiveStatus(p) === s).length; }
 
-  const sortedOrders = useMemo(
-    () => [...orders].sort((a, b) => STATUS_SORT_ORDER[getEffectiveStatus(a)] - STATUS_SORT_ORDER[getEffectiveStatus(b)]),
+  // Purchase Orders tab: one supplier or all, then grouped by project —
+  // POs made in ConstructIQ and imported ones together.
+  const [poSupplierFilter, setPoSupplierFilter] = useState("");
+  const poSupplierNames = useMemo(
+    () => [...new Set(orders.map(o => o.supplier).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
     [orders]
   );
+  const sortedOrders = useMemo(
+    () => orders
+      .filter(o => !poSupplierFilter || o.supplier === poSupplierFilter)
+      .sort((a, b) => STATUS_SORT_ORDER[getEffectiveStatus(a)] - STATUS_SORT_ORDER[getEffectiveStatus(b)]
+        || displayPoNumber(a).localeCompare(displayPoNumber(b), undefined, { numeric: true })),
+    [orders, poSupplierFilter]
+  );
+  const ordersByProject = useMemo(() => {
+    const groups = new Map<number, { projectName: string; orders: PO[] }>();
+    for (const po of sortedOrders) {
+      const g = groups.get(po.projectId) ?? { projectName: po.projectName, orders: [] };
+      g.orders.push(po);
+      groups.set(po.projectId, g);
+    }
+    return [...groups.values()].sort((a, b) => a.projectName.localeCompare(b.projectName));
+  }, [sortedOrders]);
 
   const filteredSuppliers = useMemo(() => {
     const q = supplierSearch.trim().toLowerCase();
@@ -1822,7 +1936,7 @@ function ProcurementContent() {
     pending:   countByStatus("PENDING"),
     approved:  countByStatus("APPROVED"),
     delivered: countByStatus("DELIVERED"),
-    delayed:   countByStatus("DELAYED"),
+    delivering: countByStatus("DELIVERY_IN_PROGRESS"),
   };
 
   // Progressing delivery (in-progress or delivered) always opens the batch
@@ -1836,7 +1950,7 @@ function ProcurementContent() {
     try {
       await api.patch(`/purchase-orders/${po.id}/status`, { status: frontendStatusToApi(status) });
       await refetch();
-      toast.success(`${po.number} marked ${status.toLowerCase()}`);
+      toast.success(`${displayPoNumber(po)} marked ${status.toLowerCase()}`);
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(message ?? "Failed to update status.");
@@ -1864,7 +1978,7 @@ function ProcurementContent() {
       await api.post(`/purchase-orders/${po.id}/complete-delivery`, {});
       await refetch();
       setDeliveryPOId(null);
-      toast.success(`${po.number} marked delivered.`);
+      toast.success(`${displayPoNumber(po)} marked delivered.`);
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(message ?? "Failed to complete delivery.");
@@ -1967,7 +2081,7 @@ function ProcurementContent() {
             { icon: Clock,        color: "#6b7280", bg: "#f3f4f6", label: "Pending POs",  value: counts.pending   },
             { icon: CheckCircle2, color: "#16a34a", bg: "#dcfce7", label: "Approved POs", value: counts.approved  },
             { icon: PackageCheck, color: "#1d4ed8", bg: "#dbeafe", label: "Delivered",    value: counts.delivered },
-            { icon: AlertTriangle,color: "#dc2626", bg: "#fee2e2", label: "Delayed",      value: counts.delayed   },
+            { icon: Truck,        color: "#4338ca", bg: "#e0e7ff", label: "In Delivery",  value: counts.delivering },
           ].map(s => {
             const Icon = s.icon;
             return (
@@ -2178,7 +2292,12 @@ function ProcurementContent() {
                 <ShoppingCart style={{ width: 16, height: 16, color: "#f97316" }} />
                 <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Purchase Orders</span>
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <select value={poSupplierFilter} onChange={e => setPoSupplierFilter(e.target.value)} aria-label="Filter by supplier"
+                  style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", maxWidth: 260 }}>
+                  <option value="">All suppliers</option>
+                  {poSupplierNames.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
                 <button onClick={() => exportPOs(sortedOrders)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", fontWeight: 500, cursor: "pointer" }}>
                   <Download style={{ width: 14, height: 14 }} /> Export
                 </button>
@@ -2189,25 +2308,35 @@ function ProcurementContent() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
-                  {["PO NUMBER","PROJECT NAME","SUPPLIER","STATUS","EXPECTED DATE","VIEW"].map(h => (
+                  {["PO NUMBER","SUPPLIER","STATUS","EXPECTED DATE","VIEW"].map(h => (
                     <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontSize: "0.65rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {sortedOrders.length === 0 ? (
-                  <tr><td colSpan={6} style={{ padding: "2rem 12px", textAlign: "center", color: "#9ca3af", fontSize: "0.85rem" }}>No purchase orders yet.</td></tr>
-                ) : sortedOrders.map((po, i) => {
+                  <tr><td colSpan={5} style={{ padding: "2rem 12px", textAlign: "center", color: "#9ca3af", fontSize: "0.85rem" }}>
+                    {poSupplierFilter ? `No purchase orders from ${poSupplierFilter}.` : "No purchase orders yet."}
+                  </td></tr>
+                ) : ordersByProject.flatMap(group => [
+                  <tr key={`project-${group.projectName}`}>
+                    <td colSpan={5} style={{ padding: "16px 12px 6px", borderBottom: "1px solid #f3f4f6" }}>
+                      <span style={{ fontSize: "0.85rem", fontWeight: 800, color: "#111827" }}>{group.projectName}</span>
+                      <span style={{ marginLeft: 8, fontSize: "0.7rem", color: "#9ca3af" }}>
+                        {group.orders.length} PO{group.orders.length === 1 ? "" : "s"}
+                        {group.orders.some(o => o.isImported) && group.orders.some(o => !o.isImported)
+                          ? ` · ${group.orders.filter(o => o.isImported).length} imported` : ""}
+                      </span>
+                    </td>
+                  </tr>,
+                  ...group.orders.map(po => {
                   const status = getEffectiveStatus(po);
                   const st = PO_STATUS_STYLE[status];
                   return (
-                    <tr key={po.id} style={{ borderBottom: i < sortedOrders.length - 1 ? "1px solid #f9fafb" : "none" }}>
+                    <tr key={po.id} style={{ borderBottom: "1px solid #f9fafb" }}>
                       <td style={{ padding: "14px 12px" }}>
-                        <span style={{ fontWeight: 700, fontSize: "0.8rem", color: "#f97316" }}>{po.number}</span>
+                        <span style={{ fontWeight: 700, fontSize: "0.8rem", color: "#f97316", display: "block" }}>{displayPoNumber(po)}</span>
                         <ImportedTag po={po} />
-                      </td>
-                      <td style={{ padding: "14px 12px" }}>
-                        <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#111827" }}>{po.projectName}</span>
                       </td>
                       <td style={{ padding: "14px 12px", fontSize: "0.78rem", color: "#6b7280" }}>{po.supplier}</td>
                       <td style={{ padding: "14px 12px" }}>
@@ -2247,16 +2376,15 @@ function ProcurementContent() {
                           // rather than setting the status directly — the backend rejects a
                           // direct PATCH to DeliveryInProgress/Delivered either way).
                           <select
-                            value={status === "DELAYED" ? "DELAYED" : canManagePOs ? po.status : status}
+                            value={canManagePOs ? po.status : status}
                             onChange={e => handleStatusSelect(po, e.target.value as POStatus)}
-                            title={status === "DELAYED" ? "Past its expected delivery date" : !canManagePOs ? "You can only mark this purchase order as delivered" : undefined}
+                            title={!canManagePOs ? "You can only mark this purchase order as delivered" : undefined}
                             style={{
                               fontSize: "0.7rem", fontWeight: 700, padding: "3px 8px", borderRadius: 999,
                               background: st.bg, color: st.color, border: "none", cursor: "pointer", outline: "none",
                               appearance: "none" as const,
                             }}
                           >
-                            {status === "DELAYED" && <option value="DELAYED" disabled hidden>DELAYED</option>}
                             {canManagePOs
                               ? PO_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)
                               : <option value={status} disabled hidden>{statusLabel(status)}</option>}
@@ -2276,7 +2404,8 @@ function ProcurementContent() {
                       </td>
                     </tr>
                   );
-                })}
+                  }),
+                ])}
               </tbody>
             </table>
             </div>
@@ -2327,6 +2456,12 @@ function ProcurementContent() {
                           {p.pendingCount} material{p.pendingCount !== 1 ? "s" : ""} {priceOnly ? "need a price" : "requested"}
                         </p>
                       </div>
+                      {!priceOnly && (p.forApprovalCount ?? 0) > 0 && (
+                        <span title="Saved — choose the supplier for each, then generate the PO"
+                          style={{ marginLeft: "auto", marginRight: 10, padding: "3px 10px", borderRadius: 999, background: "#ede9fe", color: "#6d28d9", fontSize: "0.68rem", fontWeight: 700, whiteSpace: "nowrap" }}>
+                          {p.forApprovalCount === p.pendingCount ? "For Approval" : `${p.forApprovalCount} For Approval`}
+                        </span>
+                      )}
                       <ChevronRight style={{ width: 16, height: 16, color: "#9ca3af" }} />
                     </button>
                   ))}

@@ -815,6 +815,9 @@ namespace ConstructIQ.API.Migrations
                     b.Property<int>("RequestedByUserId")
                         .HasColumnType("int");
 
+                    b.Property<DateTime?>("SubmittedForApprovalAt")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<string>("Unit")
                         .IsRequired()
                         .HasMaxLength(20)

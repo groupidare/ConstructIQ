@@ -15,7 +15,7 @@ import { useProjects } from '@/hooks/useProjects';
 import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
 import type { Project, ProjectType } from '@/types/project';
 import type { BOQItem, BOQItemRow } from '@/types/boq';
-import { PURCHASE_UNITS } from '@/types/boq';
+import { hasRequests, materialFromArea, toPurchaseUnitOption } from '@/lib/materialUnitRule';
 import type { PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import type { ProjectDocument } from '@/types/document';
 import MeasurementsTab from './MeasurementsTab';
@@ -379,6 +379,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     setSavingBoq(true);
     try {
       const saved = await saveBoqItems(rowsToSave);
+      rememberTyped(rowsToSave, saved);
       setBoqRows(saved.map(boqItemToRow));
       if (!opts?.silent) toast.success('Material plan saved.');
     } catch (error) {
@@ -406,10 +407,21 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   // dropdown can actually show it. A unit with no dropdown option at all
   // returns undefined: the row then gets the historical-average suggestion,
   // which is limited to those same units server-side (BOQService.PurchaseUnits).
-  function toPurchaseUnitOption(unit: string): string | undefined {
-    const lower = unit.trim().toLowerCase();
-    const folded = lower === 'pcs' || lower === 'piece' || lower === 'pieces' ? 'pc' : lower;
-    return (PURCHASE_UNITS as readonly string[]).find(u => u === folded);
+  // (toPurchaseUnitOption, lib/materialUnitRule.ts.)
+
+  // Rows whose Material Unit/Quantity were typed since this plan was opened —
+  // kept across saves, which reload every row. A row saved for the first time
+  // has no id before it, so it's found by what was typed.
+  const typedRowIds = useRef(new Set<number>());
+  function rememberTyped(before: BOQItemRow[], saved: BOQItem[]) {
+    const left = [...saved];
+    for (const row of before) {
+      if (!row.purchaseTypedThisSession) continue;
+      const match = row.id != null ? left.find(s => s.id === row.id)
+        : left.find(s => !typedRowIds.current.has(s.id) && s.subCategory === row.subCategory
+            && s.estimatedPurchaseUnit === row.estimatedPurchaseUnit && s.estimatedPurchaseQuantity === row.estimatedPurchaseQuantity);
+      if (match) typedRowIds.current.add(match.id);
+    }
   }
 
   async function handleRunForecast() {
@@ -429,6 +441,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       let rows = boqRows;
       if (rows.length > 0) {
         const saved = await saveBoqItems(rows);
+        rememberTyped(rows, saved);
         rows = saved.map(boqItemToRow);
         setBoqRows(rows);
       }
@@ -452,6 +465,10 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       // unit is known for that material yet) does the historical-average
       // suggestion stand in. A row with any value already in Est. Qty — or
       // one the user cleared themselves — is left exactly as it is.
+      // First, though, a row whose Area Unit is pc or set takes its Material
+      // Unit and Quantity from the BOQ (7 sets is 7 sets) — replacing
+      // an earlier value too, so it follows the BOQ — unless the user typed
+      // them since opening the plan or something's been requested against it.
       // Historical projects record what was actually bought instead (their
       // PO lines, set server-side), so nothing is filled there.
       if (!project.isHistorical && rows.length > 0) {
@@ -459,6 +476,13 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
         const materialNameById = new Map(boqItems.map(b => [b.materialId, b.materialName]));
         let changed = false;
         const filledRows = await Promise.all(rows.map(async row => {
+          const fromArea = materialFromArea(row);
+          if (fromArea && !hasRequests(row) && !(row.id != null && typedRowIds.current.has(row.id))) {
+            if (fromArea.estimatedPurchaseQuantity !== row.estimatedPurchaseQuantity
+                || fromArea.estimatedPurchaseUnit !== row.estimatedPurchaseUnit) changed = true;
+            return { ...row, ...fromArea };
+          }
+
           if (row.estimatedPurchaseQuantity != null || (row.id != null && manuallySetIds.has(row.id))) return row;
 
           const line = row.id != null ? lineByBoqItemId.get(row.id) : undefined;

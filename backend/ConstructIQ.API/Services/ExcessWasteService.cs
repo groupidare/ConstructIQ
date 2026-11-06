@@ -379,7 +379,9 @@ public class ExcessWasteService(AppDbContext db, IExcessSheetSync? sheetSync = n
     private async Task<int> FindOrCreateMaterialAsync(string name, string? unit)
     {
         var trimmed = name.Trim();
-        var existing = await db.Materials.FirstOrDefaultAsync(m => m.Name.ToLower() == trimmed.ToLower());
+        var canonical = Algorithms.MaterialNames.Canonical(trimmed);
+        var existing = (await db.Materials.OrderBy(m => m.Id).Select(m => new { m.Id, m.Name }).ToListAsync())
+            .FirstOrDefault(m => Algorithms.MaterialNames.Canonical(m.Name) == canonical);
         if (existing is not null) return existing.Id;
 
         var uncategorized = await db.MaterialCategories.FirstOrDefaultAsync(c => c.Name == "Uncategorized");

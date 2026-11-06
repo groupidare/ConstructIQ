@@ -9,7 +9,7 @@ import type { ProjectDocument } from '@/types/document';
 import type { BOQItem, BOQItemRow } from '@/types/boq';
 import type { BlueprintNote, BlueprintReadData, BlueprintReadRecord, BlueprintResult, GeneratedBoq } from '@/types/blueprint';
 import { matchPhases, measurementWorkType, floorPrefix } from '@/lib/workPhases';
-import { generatedToRows, isGuess } from '@/lib/blueprintSource';
+import { generatedToRows } from '@/lib/blueprintSource';
 import { inp, sel, lbl } from './styles';
 
 // Blueprint → rows in the Material Plan. Every floor of the plan set is read
@@ -345,12 +345,7 @@ export default function BlueprintWizard({ project, document: doc, savedBoq, exis
       }
 
       if (data.warnings.length) toast(data.warnings[0], { icon: '⚠️' });
-      const guessed = data.rows.filter(r => isGuess({ ...r.source, readId, roomNames: r.rooms })).length;
       toast.success(`${rows.length} row(s) added to the Material Plan — review them, then Save.`);
-      if (guessed) {
-        toast(`${guessed} material(s) weren't on the drawing — hover over their specification in the Material Plan to check them.`,
-          { icon: '⚠️', duration: 8000 });
-      }
       onClose();
     } catch (error) {
       toast.error(apiError(error, 'Failed to generate the BOQ.'));

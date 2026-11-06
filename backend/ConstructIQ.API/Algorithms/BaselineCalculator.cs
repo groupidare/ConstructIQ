@@ -67,6 +67,7 @@ public static class BaselineCalculator
         ["bag"] = "bag", ["bags"] = "bag", ["box"] = "box", ["boxes"] = "box",
         ["set"] = "set", ["sets"] = "set", ["roll"] = "roll", ["rolls"] = "roll",
         ["pail"] = "pail", ["pails"] = "pail", ["can"] = "can", ["cans"] = "can",
+        ["sack"] = "sack", ["sacks"] = "sack", ["length"] = "length", ["lengths"] = "length",
     };
 
     // Folds label variants of one purchase unit (sht/sheet, pcs/pc, …) so a

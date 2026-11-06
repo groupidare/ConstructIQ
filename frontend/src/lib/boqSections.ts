@@ -24,7 +24,36 @@ function knownSection(section?: string): string | undefined {
 
 // For comparing sections: the known name, else the heading without numbering.
 export function sectionKey(section?: string): string {
-  return knownSection(section) ?? (section ?? '').trim().replace(/^[ivxlc\d]+[.)]?\s+/i, '').toLowerCase();
+  return knownSection(section) ?? withoutNumbering(section).toLowerCase();
+}
+
+// "4. PLUMBING WORKS" → "PLUMBING WORKS". A roman numeral needs its point, so
+// a heading that merely starts with those letters ("CIVIL WORKS") stays whole.
+const withoutNumbering = (section?: string) =>
+  (section ?? '').trim().replace(/^(?:[ivxlc]+[.)]|\d+[.)]?)\s+/i, '');
+
+/** The heading a section shows: the standard name, else the BOQ's own without numbering or shouting. */
+export function sectionLabel(section?: string): string {
+  const known = knownSection(section);
+  if (known) return known;
+  const name = withoutNumbering(section);
+  return name === name.toUpperCase() ? name.toLowerCase().replace(/(^|[\s/-])\p{L}/gu, c => c.toUpperCase()) : name;
+}
+
+export interface SectionGroup { key: string; label: string; indexes: number[] }
+
+/** A plan's rows under one heading per section, however each BOQ wrote it —
+ *  sections in the order they first appear, rows in plan order, so a new row
+ *  lands at the bottom of its section. Rows with no section come last. */
+export function groupBySection(rows: BOQItemRow[]): SectionGroup[] {
+  const groups = new Map<string, SectionGroup>();
+  rows.forEach((row, index) => {
+    const key = sectionKey(row.primarySection);
+    const group = groups.get(key) ?? { key, label: sectionLabel(row.primarySection), indexes: [] };
+    groups.set(key, group);
+    group.indexes.push(index);
+  });
+  return [...groups.values()].sort((a, b) => Number(a.key === '') - Number(b.key === ''));
 }
 
 export const isBlueprintRow = (row: BOQItemRow) => /^from blueprint/i.test(row.notes ?? '');

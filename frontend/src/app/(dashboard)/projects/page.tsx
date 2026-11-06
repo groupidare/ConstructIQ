@@ -845,6 +845,15 @@ interface MaterialCostLine {
   note: string | null;
 }
 
+// Estimated = the whole forecast at the unit price (null with no forecast
+// or no price) — compared with what was actually ordered.
+function lineEstimatedCost(l: MaterialCostLine): number | null {
+  return !l.noForecast && l.forecastQuantity != null && l.unitPrice != null ? l.forecastQuantity * l.unitPrice : null;
+}
+function totalEstimatedOf(cost: EstimatedMaterialCost): number {
+  return cost.lines.reduce((sum, l) => sum + (lineEstimatedCost(l) ?? 0), 0);
+}
+
 interface EstimatedMaterialCost {
   projectId: number;
   totalEstimatedCost: number;
@@ -898,7 +907,7 @@ function EstimatedMaterialCostCard({ cost, projectName, onRefresh }: { cost: Est
       <p style={{ fontWeight:700, fontSize:"0.95rem", color:"#111827" }}>{peso(cost.totalEstimatedCost)}</p>
       {cost.committedCost > 0 && (
         <p style={{ fontSize:"0.65rem", color:"#6b7280", marginTop:1 }}>
-          Ordered {peso(cost.committedCost)} · Still to order {peso(cost.remainingCost)}
+          Estimated {peso(totalEstimatedOf(cost))} · Ordered {peso(cost.committedCost)}
         </p>
       )}
       <p style={{ fontSize:"0.6rem", color:"#9ca3af", marginTop:2 }}>
@@ -946,11 +955,10 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
   const td: React.CSSProperties = { padding:"8px 10px", fontSize:"0.75rem", color:"#111827", borderBottom:"1px solid #f3f4f6", verticalAlign:"top" };
   const num: React.CSSProperties = { ...td, textAlign:"right", whiteSpace:"nowrap" };
   const dash = <span style={{ color:"#d1d5db" }}>—</span>;
-  // Estimated = the whole forecast at the unit price; Total = what's ordered
-  // at the price paid + what's still to order at the unit price.
-  const estimatedCost = (l: MaterialCostLine) =>
-    !l.noForecast && l.forecastQuantity != null && l.unitPrice != null ? l.forecastQuantity * l.unitPrice : null;
-  const totalEstimated = cost.lines.reduce((sum, l) => sum + (estimatedCost(l) ?? 0), 0);
+  // Total = what's ordered at the price paid + the estimated cost of
+  // whatever of the forecast isn't ordered yet.
+  const estimatedCost = lineEstimatedCost;
+  const totalEstimated = totalEstimatedOf(cost);
   const withUnit = (n: number, unit: string) => `${qty(n)}${unit ? ` ${unit}` : ""}`;
   const EST_HEAD = "#f6b26b", EST_CELL = "#fdebd8", TOTAL_HEAD = "#b6d7a8", TOTAL_CELL = "#e6f2df";
 
@@ -963,7 +971,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
             <p style={{ fontSize:"0.72rem", color:"#6b7280", marginTop:4, maxWidth:760 }}>
               Estimated cost = forecast qty × unit price — the latest PO price for the same material and unit (this system&apos;s and past projects&apos;
               POs; lowest if several suppliers on that date), else a quotation, else the catalog. Ordered cost = this project&apos;s purchase orders at the price paid.
-              Total cost = ordered cost + whatever of the forecast isn&apos;t ordered yet at the unit price. Materials without a recorded price are marked and left out — prices are never guessed. Materials only (no labor or equipment).
+              Total cost = the ordered cost, plus the estimated cost of anything not ordered yet. Materials without a recorded price are marked and left out — prices are never guessed. Materials only (no labor or equipment).
             </p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" style={{ background:"none", border:"none", cursor:"pointer", color:"#6b7280", padding:4 }}>
@@ -1027,7 +1035,7 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
                 <th style={{ ...th, textAlign:"right" }}>ACTUAL ORDERED QTY</th>
                 <th style={{ ...th, textAlign:"right" }}>ORDERED COST</th>
                 <th style={{ ...th, textAlign:"right", background:TOTAL_HEAD, color:"#14532d" }}
-                  title="Ordered cost + what's still to order (forecast qty − ordered qty) at the unit price">TOTAL COST</th>
+                  title="The ordered cost, plus the estimated cost of anything not ordered yet">TOTAL COST</th>
               </tr>
             </thead>
             <tbody>
@@ -1074,9 +1082,13 @@ function MaterialCostBreakdownModal({ cost, projectName, onRequested, onClose }:
         </div>
 
         <div style={{ padding:"0.75rem 1.5rem 1.25rem", borderTop:"1px solid #f3f4f6", display:"flex", justifyContent:"flex-end", gap:"1.5rem", flexWrap:"wrap", fontSize:"0.8rem" }}>
+          <span style={{ color:"#6b7280" }}>Estimated <b style={{ color:"#c2410c" }}>{peso(totalEstimated)}</b></span>
           <span style={{ color:"#6b7280" }}>Ordered <b style={{ color:"#111827" }}>{peso(cost.committedCost)}</b></span>
-          <span style={{ color:"#6b7280" }}>+ Still to order <b style={{ color:"#111827" }}>{peso(cost.remainingCost)}</b></span>
-          <span style={{ color:"#6b7280" }}>= Total cost <b style={{ color:"#15803d" }}>{peso(cost.totalEstimatedCost)}</b></span>
+          <span style={{ color:"#6b7280" }} title="Estimated minus ordered — positive means less was spent than estimated">
+            Difference <b style={{ color: totalEstimated - cost.committedCost < 0 ? "#b91c1c" : "#15803d" }}>
+              {totalEstimated - cost.committedCost < 0 ? "−" : ""}{peso(Math.abs(totalEstimated - cost.committedCost))}
+            </b>
+          </span>
         </div>
       </div>
     </Overlay>

@@ -367,10 +367,13 @@ public class BOQService(AppDbContext db) : IBOQService
     private async Task<int> FindOrCreateMaterialAsync(string name, string? unit)
     {
         var trimmed = name.Trim();
-        var existing = await db.Materials.FirstOrDefaultAsync(m => m.Name.ToLower() == trimmed.ToLower());
+        var candidates = await db.Materials.OrderBy(m => m.Id).Select(m => new { m.Id, m.Name }).ToListAsync();
+        // The same name however it's written ("0.50mm" is "0.5mm"), the oldest
+        // entry first — it's the one with the stock and price history.
+        var canonical = MaterialNames.Canonical(trimmed);
+        var existing = candidates.FirstOrDefault(m => MaterialNames.Canonical(m.Name) == canonical);
         if (existing is not null) return existing.Id;
 
-        var candidates = await db.Materials.Select(m => new { m.Id, m.Name }).ToListAsync();
         var fuzzyMatch = candidates
             .Select(m => new { m.Id, m.Name, Overlap = TokenOverlap(m.Name, trimmed) })
             // A high word-overlap ratio alone isn't enough here — unlike
@@ -493,15 +496,12 @@ public class BOQService(AppDbContext db) : IBOQService
     };
     }
 
-    // Units a real historical PO line can carry — mirrors the frontend's Est.
-    // Qty unit dropdown. Originally restricted to purchasable containers only
-    // (pc/bag/sheet/...), on the assumption measurement units (sq.m, l.m,
-    // cu.m) weren't real order quantities — but real extracted PO data proved
-    // that wrong (roofing sheets, gutters, and pipe are genuinely ordered by
-    // sq.m/l.m in the actual historical reports), which was silently blocking
-    // a real, available match for those rows.
+    // Units a real historical PO line can carry — mirrors the frontend's
+    // Material Unit dropdown. How a material is bought, so never a measure of
+    // the work (sq.m, l.m, cu.m): gutters are bought by the length, gravel by
+    // the sack, whatever the BOQ measures them in.
     private static readonly HashSet<string> PurchaseUnits = new(StringComparer.OrdinalIgnoreCase)
-    { "pc", "bag", "sheet", "pail", "gal", "roll", "set", "box", "sq.m", "l.m", "cu.m", "lot", "kg", "pack" };
+    { "pc", "bag", "sack", "sheet", "length", "pail", "gal", "roll", "set", "box", "lot", "kg", "pack" };
 
     private static string NormalizeSection(string? s) =>
         Regex.Replace((s ?? string.Empty).Trim(), @"^\d+[\.\)]?\s*", string.Empty).ToLowerInvariant();
@@ -512,8 +512,10 @@ public class BOQService(AppDbContext db) : IBOQService
     // (chb, 150mm) but neither text is a substring of the other, so a plain
     // Contains check (the original approach here) never matched real data at
     // all — this only surfaced once tested against actual historical rows.
+    // A decimal stays one token: split at its point, "0.5mm" and "0.50mm" read
+    // as the different sizes "5mm" and "50mm" and made a duplicate material.
     private static HashSet<string> Tokenize(string? s) =>
-        Regex.Matches((s ?? string.Empty).ToLowerInvariant(), @"[a-z0-9]+")
+        Regex.Matches(MaterialNames.Canonical(s), @"[a-z0-9]+(?:(?<=\d)\.\d+[a-z0-9]*)*")
             .Select(m => m.Value)
             .Where(t => t.Length >= 2)
             .ToHashSet();
