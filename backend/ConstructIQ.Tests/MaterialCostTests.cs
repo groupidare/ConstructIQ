@@ -320,8 +320,38 @@ public class MaterialCostTests(DatabaseFixture fixture)
         Assert.Null(line.UnitPrice);
         Assert.Equal(67m, line.RemainingQuantity);
         Assert.Equal(0m, line.RemainingCost);
-        Assert.Equal("No recorded price in this unit", line.Note);
+        Assert.Equal("No price — no PO for this material or a similar one in this unit", line.Note);
         Assert.Equal(1, cost.UnpricedItems);
+    }
+
+    [Fact]
+    public async Task NoOwnPoPrice_UsesASimilarMaterialsLatestPrice_InTheSameUnit()
+    {
+        await using var db = fixture.CreateContext();
+        var admin = await TestDataBuilder.CreateUserAsync(db);
+        var project = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        var other = await TestDataBuilder.CreateProjectAsync(db, admin.Id);
+        // Letters only: a tag with digits would read as a shared "size".
+        var tag = new string(Guid.NewGuid().ToString("N").Select(c => (char)('a' + c % 26)).Take(8).ToArray());
+        var wanted = await TestDataBuilder.CreateMaterialAsync(db, unit: "box");
+        wanted.Name = $"300mm x 300mm Ceramic Floor Tiles (FF-2) {tag}";
+        wanted.UnitCost = 0;
+        var similar = await TestDataBuilder.CreateMaterialAsync(db, unit: "box");
+        similar.Name = $"Non-slip Ceramic Floor Tile, 300mm x 300mm {tag}";
+        var otherSize = await TestDataBuilder.CreateMaterialAsync(db, unit: "box");
+        otherSize.Name = $"Ceramic Floor Tile, 600mm x 600mm {tag}";
+        await db.SaveChangesAsync();
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, other.Id, admin.Id, similar.Id, 1, unit: "box", unitPrice: 254, orderDate: new DateTime(2026, 10, 28));
+        await TestDataBuilder.CreateDeliveredPoLineAsync(db, other.Id, admin.Id, otherSize.Id, 1, unit: "box", unitPrice: 979, orderDate: new DateTime(2026, 11, 1));
+        await TestDataBuilder.CreateBoqItemAsync(db, project.Id, wanted.Id, admin.Id, 1, estimatedPurchaseQuantity: 10, estimatedPurchaseUnit: "box");
+
+        var line = Assert.Single((await new MaterialCostService(db).GetEstimatedMaterialCostAsync(project.Id))!.Lines);
+
+        // The 300×300 tile's price — never the newer 600×600 one.
+        Assert.Equal(254m, line.UnitPrice);
+        Assert.Equal("Similar material", line.PriceSource);
+        Assert.StartsWith(similar.Name, line.PriceReference);
+        Assert.False(line.NeedsPrice);
     }
 
     [Fact]

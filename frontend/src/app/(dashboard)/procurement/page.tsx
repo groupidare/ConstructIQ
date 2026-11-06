@@ -570,10 +570,13 @@ function exportPOs(orders: PO[]) {
 // With priceOnly it's the Quotations tab's form: the price checks sent from a
 // project's cost breakdown — quotes are saved, no PO is ever made.
 
-function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onChanged, onGenerated }: {
+function RequestsOverlayModal({ projectId, projectName, priceOnly, stage = "entry", onClose, onChanged, onGenerated }: {
   projectId: number;
   projectName: string;
   priceOnly: boolean;
+  // Requests tab ("entry"): materials still being filled in. For Approval tab
+  // ("review"): saved materials waiting for their supplier to be chosen.
+  stage?: "entry" | "review";
   onClose: () => void;
   // A request was deleted — the tab's counts need refreshing.
   onChanged: () => void;
@@ -581,6 +584,8 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
 }) {
   const [rows, setRows] = useState<RequestRow[]>([]);
   const [loading, setLoading] = useState(true);
+  // For Approval: materials sent back with "Edit suppliers", shown for editing here.
+  const [editing, setEditing] = useState<Set<number>>(new Set());
   // Keyed by `${materialId}|${unit}` — a supplier's last price is per unit.
   const [suggestions, setSuggestions] = useState<Record<string, SuggestedSupplier[]>>({});
   const [saving, setSaving] = useState(false);
@@ -660,8 +665,8 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
   // Rows still being filled in, and rows saved and waiting for the review
   // (only on the Requests tab — price checks never become a PO).
   const isReview = (r: RequestRow) => !priceOnly && r.forApproval;
-  const entryRows = rows.filter(r => !isReview(r));
-  const reviewRows = rows.filter(isReview);
+  const entryRows = rows.filter(r => !isReview(r) && (priceOnly || stage === "entry" || editing.has(r.id)));
+  const reviewRows = stage === "review" ? rows.filter(isReview) : [];
   const allChosen = reviewRows.length > 0 && reviewRows.every(r => r.chosen != null && !!r.quotes[r.chosen]?.supplierName.trim());
 
   function firstProblem(forGenerate: boolean): string | null {
@@ -703,8 +708,9 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
         const notYet = entryRows.length - ready;
         onChanged();
         await loadRows();
+        setEditing(new Set());
         toast.success(ready > 0
-          ? `Request saved — ${ready} material${ready === 1 ? " is" : "s are"} now For Approval.`
+          ? `Request saved — ${ready} material${ready === 1 ? " is" : "s are"} now in the For Approval tab.`
           : "Request saved.");
         if (notYet > 0) toast(`${notYet} material${notYet === 1 ? " still needs" : "s still need"} a supplier with a price before ${notYet === 1 ? "it goes" : "they go"} for approval.`);
         return;
@@ -777,7 +783,7 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
               <ClipboardList style={{ width: 18, height: 18, color: "#f97316" }} />
             </div>
             <div>
-              <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>{priceOnly ? "Quotation Request" : "Material Request Form"}</h2>
+              <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>{priceOnly ? "Quotation Request" : stage === "review" ? "For Approval" : "Material Request Form"}</h2>
               <p style={{ fontSize: "0.75rem", color: "#6b7280", margin: 0 }}>
                 <span style={{ fontWeight: 600, color: "#374151" }}>Project Store:</span> {projectName}
               </p>
@@ -800,15 +806,15 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                     At the review, choose the one supplier to buy each material from; <b>Generate P.O. Number</b> then makes the purchase orders.</>
                 )}
               </p>
-              {rows.length === 0 && (
+              {entryRows.length + reviewRows.length === 0 && (
                 <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "1.5rem 0" }}>
-                  {priceOnly ? "No materials waiting for a quotation." : "No pending requests for this project."}
+                  {priceOnly ? "No materials waiting for a quotation." : stage === "review" ? "Nothing waiting for approval in this project." : "No new requests for this project."}
                 </p>
               )}
               {(priceOnly
                 ? [{ key: "all", title: "", hint: "", list: rows }]
                 : [
-                    { key: "entry", title: "New requests", hint: "Fill in the suppliers and prices, then Save Request.", list: entryRows },
+                    { key: "entry", title: stage === "review" ? "Editing" : "New requests", hint: stage === "review" ? "Change the suppliers or prices, then Save Request to send them back for approval." : "Fill in the suppliers and prices, then Save Request — they move to the For Approval tab.", list: entryRows },
                     { key: "review", title: "For Approval", hint: "Choose the one supplier to buy each material from, then Generate P.O. Number.", list: reviewRows },
                   ]
               ).filter(section => section.list.length > 0).map(section => (
@@ -892,7 +898,7 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                             </p>
                           )}
                           {review && (
-                            <button type="button" onClick={() => updateRow(r.id, x => ({ ...x, forApproval: false, chosen: null }))}
+                            <button type="button" onClick={() => { setEditing(prev => new Set(prev).add(r.id)); updateRow(r.id, x => ({ ...x, forApproval: false, chosen: null })); }}
                               style={{ display: "block", marginTop: 4, padding: 0, background: "none", border: "none", color: "#6b7280", fontSize: "0.65rem", fontWeight: 600, textDecoration: "underline", cursor: "pointer" }}>
                               Edit suppliers
                             </button>
@@ -1851,7 +1857,7 @@ function RateSupplierModal({ po, supplier, onClose, onSubmit }: {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-type ProcurementTab = "po" | "requests" | "quotations" | "suppliers";
+type ProcurementTab = "po" | "requests" | "approval" | "quotations" | "suppliers";
 
 export default function ProcurementPage() {
   return (
@@ -1879,10 +1885,10 @@ function ProcurementContent() {
   const [requestsProjects, setRequestsProjects] = useState<ProjectWithRequests[]>([]);
   const [quotationProjects, setQuotationProjects] = useState<ProjectWithRequests[]>([]);
   // The project whose form is open, and whether it's its price checks.
-  const [openRequests, setOpenRequests] = useState<{ projectId: number; priceOnly: boolean } | null>(null);
+  const [openRequests, setOpenRequests] = useState<{ projectId: number; priceOnly: boolean; stage: "entry" | "review" } | null>(null);
 
   useEffect(() => {
-    if (tabParam === "quotations" || tabParam === "requests" || tabParam === "suppliers" || tabParam === "po") setTab(tabParam);
+    if (tabParam === "requests" || tabParam === "approval" || tabParam === "suppliers" || tabParam === "po") setTab(tabParam);
   }, [tabParam]);
 
   // Suppliers tab search/sort — scoped to that tab only, doesn't touch the
@@ -1902,7 +1908,10 @@ function ProcurementContent() {
   const openRequestsProject = openRequests
     ? (openRequests.priceOnly ? quotationProjects : requestsProjects).find(p => p.projectId === openRequests.projectId) ?? null
     : null;
-  const totalPendingRequests = requestsProjects.reduce((sum, p) => sum + p.pendingCount, 0);
+  // Requests tab = materials not yet saved; For Approval tab = saved ones.
+  const newRequestCount = (p: ProjectWithRequests) => p.pendingCount - (p.forApprovalCount ?? 0);
+  const totalPendingRequests = requestsProjects.reduce((sum, p) => sum + newRequestCount(p), 0);
+  const totalForApproval = requestsProjects.reduce((sum, p) => sum + (p.forApprovalCount ?? 0), 0);
   const totalPendingQuotations = quotationProjects.reduce((sum, p) => sum + p.pendingCount, 0);
 
   const { user } = useAuthStore();
@@ -1931,12 +1940,8 @@ function ProcurementContent() {
     // don't manage POs) must never take down orders/suppliers loading too,
     // and the tab itself is already hidden for those roles regardless.
     try {
-      const [requestsRes, quotationsRes] = await Promise.all([
-        api.get<ApiProjectWithRequests[]>("/material-requests/projects-with-pending", { params: { priceInquiry: false } }),
-        api.get<ApiProjectWithRequests[]>("/material-requests/projects-with-pending", { params: { priceInquiry: true } }),
-      ]);
+      const requestsRes = await api.get<ApiProjectWithRequests[]>("/material-requests/projects-with-pending", { params: { priceInquiry: false } });
       setRequestsProjects(requestsRes.data);
-      setQuotationProjects(quotationsRes.data);
     } catch {
       setRequestsProjects([]);
       setQuotationProjects([]);
@@ -2168,10 +2173,11 @@ function ProcurementContent() {
       )}
       {openRequests && openRequestsProject && (
         <RequestsOverlayModal
-          key={`${openRequests.projectId}-${openRequests.priceOnly}`}
+          key={`${openRequests.projectId}-${openRequests.priceOnly}-${openRequests.stage}`}
           projectId={openRequestsProject.projectId}
           projectName={openRequestsProject.projectName}
           priceOnly={openRequests.priceOnly}
+          stage={openRequests.stage}
           onClose={() => setOpenRequests(null)}
           onChanged={refetch}
           onGenerated={() => { refetch(); setTab("po"); }}
@@ -2307,7 +2313,7 @@ function ProcurementContent() {
           <div className="procurement-tabs" style={{ display: "flex", gap: 4, background: "#e5e7eb", borderRadius: 8, padding: 4 }}>
             {([
               { id: "po", label: "Purchase Orders" },
-              ...(canManagePOs ? [{ id: "requests", label: "Requests" }, { id: "quotations", label: "Quotations" }] as const : []),
+              ...(canManagePOs ? [{ id: "requests", label: "Requests" }, { id: "approval", label: "For Approval" }] as const : []),
               { id: "suppliers", label: "Suppliers" },
             ] as const).map(t => (
               <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -2320,7 +2326,7 @@ function ProcurementContent() {
                 transition: "all 0.15s",
               }}>
                 {t.label}
-                {(t.id === "requests" ? totalPendingRequests : t.id === "quotations" ? totalPendingQuotations : 0) > 0 && (
+                {(t.id === "requests" ? totalPendingRequests : t.id === "approval" ? totalForApproval : 0) > 0 && (
                   <span style={{
                     position: "absolute", top: -6, right: -6,
                     background: "#ef4444", color: "#fff", borderRadius: 999,
@@ -2329,7 +2335,7 @@ function ProcurementContent() {
                     display: "flex", alignItems: "center", justifyContent: "center",
                     boxShadow: "0 0 0 2px #e5e7eb",
                   }}>
-                    {t.id === "requests" ? totalPendingRequests : totalPendingQuotations}
+                    {t.id === "requests" ? totalPendingRequests : totalForApproval}
                   </span>
                 )}
               </button>
@@ -2541,17 +2547,24 @@ function ProcurementContent() {
         {/* checks from a project's cost breakdown → no PO). Only projects    */}
         {/* with something outstanding appear.                                 */}
         {/* ────────────────────────────────────────────────────────────────── */}
-        {(tab === "requests" || tab === "quotations") && (() => {
+        {(tab === "requests" || tab === "approval" || tab === "quotations") && (() => {
           const priceOnly = tab === "quotations";
-          const list = priceOnly ? quotationProjects : requestsProjects;
+          const review = tab === "approval";
+          const list = priceOnly ? quotationProjects
+            : requestsProjects.filter(p => (review ? (p.forApprovalCount ?? 0) : newRequestCount(p)) > 0);
           return (
             <div style={{ background: "#fff", borderRadius: 12, padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: priceOnly ? "0.35rem" : "1.25rem" }}>
                 {priceOnly
                   ? <Tag style={{ width: 16, height: 16, color: "#2563eb" }} />
                   : <ClipboardList style={{ width: 16, height: 16, color: "#f97316" }} />}
-                <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>{priceOnly ? "Quotation Requests" : "Material Requests"}</span>
+                <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>{priceOnly ? "Quotation Requests" : review ? "For Approval" : "Material Requests"}</span>
               </div>
+              {review && (
+                <p style={{ fontSize: "0.75rem", color: "#6b7280", marginTop: "-0.9rem", marginBottom: "1.25rem" }}>
+                  Saved requests waiting for a decision. Open a project, choose one supplier per material, then Generate P.O. Number.
+                </p>
+              )}
               {priceOnly && (
                 <p style={{ fontSize: "0.75rem", color: "#6b7280", marginBottom: "1.25rem" }}>
                   Materials a project&apos;s cost estimate has no price for. Get supplier quotations — no purchase order is made.
@@ -2560,14 +2573,14 @@ function ProcurementContent() {
 
               {list.length === 0 ? (
                 <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "2rem 0" }}>
-                  {priceOnly ? "No materials are waiting for a quotation right now." : "No projects have pending material requests right now."}
+                  {priceOnly ? "No materials are waiting for a quotation right now." : review ? "Nothing is waiting for approval right now." : "No projects have new material requests right now."}
                 </p>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {list.map(p => (
                     <button
                       key={p.projectId}
-                      onClick={() => setOpenRequests({ projectId: p.projectId, priceOnly })}
+                      onClick={() => setOpenRequests({ projectId: p.projectId, priceOnly, stage: review ? "review" : "entry" })}
                       style={{
                         display: "flex", alignItems: "center", justifyContent: "space-between",
                         width: "100%", padding: "14px 16px", borderRadius: 10, border: "none",
@@ -2577,15 +2590,12 @@ function ProcurementContent() {
                       <div>
                         <p style={{ fontWeight: 700, fontSize: "0.88rem", color: "#111827" }}>{p.projectName}</p>
                         <p style={{ fontSize: "0.72rem", color: "#9ca3af", marginTop: 2 }}>
-                          {p.pendingCount} material{p.pendingCount !== 1 ? "s" : ""} {priceOnly ? "need a price" : "requested"}
+                          {(() => {
+                            const n = priceOnly ? p.pendingCount : review ? (p.forApprovalCount ?? 0) : newRequestCount(p);
+                            return `${n} material${n !== 1 ? "s" : ""} ${priceOnly ? "need a price" : review ? "waiting for approval" : "to fill in"}`;
+                          })()}
                         </p>
                       </div>
-                      {!priceOnly && (p.forApprovalCount ?? 0) > 0 && (
-                        <span title="Saved — choose the supplier for each, then generate the PO"
-                          style={{ marginLeft: "auto", marginRight: 10, padding: "3px 10px", borderRadius: 999, background: "#ede9fe", color: "#6d28d9", fontSize: "0.68rem", fontWeight: 700, whiteSpace: "nowrap" }}>
-                          {p.forApprovalCount === p.pendingCount ? "For Approval" : `${p.forApprovalCount} For Approval`}
-                        </span>
-                      )}
                       <ChevronRight style={{ width: 16, height: 16, color: "#9ca3af" }} />
                     </button>
                   ))}
