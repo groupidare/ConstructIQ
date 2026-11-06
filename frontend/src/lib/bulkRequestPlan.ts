@@ -16,6 +16,7 @@ export interface BulkRowInput {
   netLeftToOrder?: number;
   remainingRequestable?: number;
   warehouseApproved: boolean;
+  warehouseRejected: boolean;
   warehousePendingQuantity: number;
   onSiteStock: number;
   // undefined: the warehouse list couldn't be loaded.
@@ -61,7 +62,9 @@ export function planBulkRequests(rows: BulkRowInput[]): BulkEntry[] {
     const missing = missingRequestFields({ unit: row.areaUnit, estimatedPurchaseUnit: row.materialUnit, estimatedPurchaseQuantity: row.materialQuantity });
     if (missing.length > 0) return { row, group: 'needsInput', quantity: null, reason: 'missing', missing, note: `Missing: ${missing.join(', ')}` };
 
-    if (row.warehousePendingQuantity > 0) return { row, group: 'hidden', quantity: null, hiddenBecause: 'waiting' };
+    if (row.warehousePendingQuantity > 0) {
+      return { row, group: 'hidden', quantity: null, hiddenBecause: 'waiting', note: `Asked for ${row.warehousePendingQuantity.toLocaleString()} ${row.materialUnit}` };
+    }
 
     const estimate = row.materialQuantity!;
     const needed = Math.min(row.netLeftToOrder ?? estimate, row.remainingRequestable ?? estimate, estimate);
@@ -75,6 +78,7 @@ export function planBulkRequests(rows: BulkRowInput[]): BulkEntry[] {
 
     if (row.stock.status === 'inStock') {
       if (row.warehouseApproved) return procurement('afterWarehouse', 'Warehouse has answered; this is the rest');
+      if (row.warehouseRejected) return procurement('afterWarehouse', 'Warehouse turned this down, so it goes to Procurement');
 
       const { item } = row.stock;
       const stockNote = `In warehouse: ${item.balance.toLocaleString()} ${item.unit}`;

@@ -13,6 +13,7 @@ import { useWarehouseRequests } from '@/hooks/useWarehouseRequests';
 import { useAlertStore } from '@/store/alertStore';
 import { useProjects } from '@/hooks/useProjects';
 import { usePurchaseOrders } from '@/hooks/usePurchaseOrders';
+import api from '@/lib/api';
 import type { Project, ProjectType } from '@/types/project';
 import type { BOQItem, BOQItemRow } from '@/types/boq';
 import { hasRequests, materialFromArea, toPurchaseUnitOption } from '@/lib/materialUnitRule';
@@ -81,8 +82,8 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
   const { items: warehouseStock, links: warehouseStockLinks, fetchCurrent: fetchWarehouseStock, fetchLinks: fetchWarehouseStockLinks, saveLink: saveWarehouseStockLink, removeLink: removeWarehouseStockLink } = useWarehouseStock();
   const { forecasts, fetchForecasts, generateForecast } = useForecasting(project.id);
   const { sendNotification } = useNotifications();
-  const { createRequest: createMaterialRequest, createBulk: createBulkMaterialRequests } = useMaterialRequests();
-  const { createRequest: createWarehouseRequest, createBulk: createBulkWarehouseRequests } = useWarehouseRequests();
+  const { createRequest: createMaterialRequest, createBulk: createBulkMaterialRequests, fetchSent: fetchSentMaterialRequests } = useMaterialRequests();
+  const { createRequest: createWarehouseRequest, createBulk: createBulkWarehouseRequests, fetchByProject: fetchWarehouseRequests } = useWarehouseRequests();
   const addAlert = useAlertStore(s => s.addAlert);
   const { editProject } = useProjects();
   const { items: purchaseOrders, fetchItems: fetchPurchaseOrders, createOrder, linkMaterial } = usePurchaseOrders(project.id);
@@ -110,6 +111,7 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
       estimatePurchaseManuallySet: b.estimatedPurchaseQuantity != null,
       approvedQuantity: b.approvedQuantity,
       warehouseApproved: b.warehouseApproved,
+      warehouseRejected: b.warehouseRejected,
       askedQuantity: b.askedQuantity,
       warehousePendingQuantity: b.warehousePendingQuantity,
     };
@@ -170,6 +172,35 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     } catch {
       toast.error('Failed to remove file.');
     }
+  }
+
+  // An imported PO (with its file) or a Pending one made in ConstructIQ.
+  async function handleDeletePurchaseOrder(purchaseOrderId: number): Promise<boolean> {
+    try {
+      await api.delete(`/purchase-orders/${purchaseOrderId}`);
+      toast.success('Purchase order deleted.');
+      fetchPurchaseOrders();
+      fetchDocuments();
+      return true;
+    } catch (error) {
+      const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? 'Failed to delete the purchase order.');
+      return false;
+    }
+  }
+
+  // Several files at once (the PO files folder's "Delete selected"): one
+  // message for the lot instead of one per file.
+  async function handleRemoveDocuments(documentIds: number[]) {
+    let failed = 0;
+    for (const id of documentIds) {
+      try { await deleteDocument(id); } catch { failed++; }
+    }
+    const removed = documentIds.length - failed;
+    if (removed > 0) toast.success(`${removed} file${removed === 1 ? '' : 's'} removed.`);
+    if (failed > 0) toast.error(`${failed} file${failed === 1 ? '' : 's'} couldn't be removed — try again.`);
+    // An imported PO read from a deleted file was deleted with it.
+    fetchPurchaseOrders();
   }
 
   async function handleParseBoq(documentId: number) {
@@ -616,9 +647,11 @@ export function useMeasurementsAndMaterialPlan({ project, initialEditable = true
     planOpen, setPlanOpen, planFocus, setPlanFocus,
     blueprints, boqDocs, poDocs, inventory, warehouseStock, warehouseStockLinks, handleSaveStockLink, handleRemoveStockLink, forecastedMaterials,
     handleBulkRequest, fetchWarehouseStock,
+    loadWarehouseRequests: () => fetchWarehouseRequests(project.id),
+    loadProcurementRequests: () => fetchSentMaterialRequests(project.id),
     savingBoq, forecasting, uploadingBlueprint, uploadingBoq, uploadingPo, savingPo,
     blueprintDoc, setBlueprintDoc, handleBlueprintRows, compareRows, setCompareRows,
-    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument,
+    handleUploadBlueprint, handleUploadBoq, handleParseBoq, handleRemoveDocument, handleRemoveDocuments, handleDeletePurchaseOrder,
     handleSaveBoq, handleDeleteBoqRow, handleRunForecast, handleNotify,
     purchaseOrders, handleUploadPO, handleParsePO, handleSavePO, handleLinkPoMaterial,
     handlePurchaseOrdersImported: () => { fetchPurchaseOrders(); fetchDocuments(); },
@@ -700,6 +733,8 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       warehouseStockLinks={state.warehouseStockLinks}
       onBulkRequest={state.handleBulkRequest}
       onRefreshStock={state.fetchWarehouseStock}
+      onLoadWarehouseRequests={state.loadWarehouseRequests}
+      onLoadProcurementRequests={state.loadProcurementRequests}
       onSaveStockLink={state.handleSaveStockLink}
       onRemoveStockLink={state.handleRemoveStockLink}
       forecastedMaterials={state.forecastedMaterials}
@@ -708,6 +743,8 @@ export function TabBody({ project, state }: { project: Project; state: ReturnTyp
       onUploadBoq={state.handleUploadBoq}
       onParseBoq={state.handleParseBoq}
       onRemoveDocument={state.handleRemoveDocument}
+      onRemoveDocuments={state.handleRemoveDocuments}
+      onDeletePurchaseOrder={state.handleDeletePurchaseOrder}
       rows={state.boqRows}
       boqItems={state.boqItems}
       onRowsChange={state.setBoqRows}

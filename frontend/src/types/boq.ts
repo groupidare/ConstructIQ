@@ -68,6 +68,9 @@ export interface BOQItemRow extends RowBaseline {
   // this row's material has been approved by Warehouse personnel.
   // Procurement must not be requestable before this.
   warehouseApproved?: boolean;
+  // Server-computed, read-only — the warehouse turned a check for this row
+  // down, which answers it just as an approval does.
+  warehouseRejected?: boolean;
   // Server-computed, read-only — approvedQuantity plus every MaterialRequest
   // ever submitted for this row (not just approved sources). Est. Qty minus
   // this is what can still be requested, which can be LOWER than what's left
@@ -120,6 +123,7 @@ export interface BOQItem {
   // plain response type too.
   approvedQuantity?: number;
   warehouseApproved?: boolean;
+  warehouseRejected?: boolean;
   askedQuantity?: number;
   warehousePendingQuantity?: number;
   materialQuantity?: number;

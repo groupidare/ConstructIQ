@@ -75,7 +75,7 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
             .ToListAsync();
 
         var ordered = (await db.PurchaseOrderMaterials
-                .Where(m => m.PurchaseOrder.ProjectId == projectId)
+                .Where(m => m.PurchaseOrder.ProjectId == projectId && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
                 .Select(m => new OrderedLine(m.BOQItemId, m.MaterialId, m.Name, m.Unit, m.Quantity, m.UnitPrice, m.PurchaseOrder.OrderDate))
                 .ToListAsync())
             .Concat(await db.HistoricalMaterialSupplies
@@ -407,7 +407,8 @@ public class MaterialCostService(AppDbContext db) : IMaterialCostService
     private async Task<Func<int, string?, DatedPrice?>> LoadPricesAsync(List<int> materialIds)
     {
         var systemPoPrices = (await db.PurchaseOrderMaterials
-            .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value))
+            .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value)
+                && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
             .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Date = m.PurchaseOrder.OrderDate, m.Id, m.PurchaseOrder.Number, Supplier = m.PurchaseOrder.Supplier.Name })
             .ToListAsync())
             .Select(m => new PoPrice(m.MaterialId, m.Unit, m.Price, m.Date, m.Id, SourcePo, $"{m.Number} · {m.Supplier}"));

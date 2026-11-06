@@ -22,11 +22,11 @@ export function PreloaderLogo({ height = "min(220px, 40vh)" }: { height?: string
   );
 }
 
-// The see-through, blurred cover every preloader uses — the page stays
-// faintly visible behind it.
+// Every preloader is just the animated logo over the page: no background,
+// no blur, and clicks pass straight through it, so the sidebar and anything
+// already loaded stay usable while the rest loads.
 export const PRELOADER_OVERLAY: React.CSSProperties = {
-  position: "fixed", inset: 0, background: "rgba(255,255,255,0.5)",
-  backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
+  position: "fixed", inset: 0, background: "transparent", pointerEvents: "none",
   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
 };
 
@@ -51,11 +51,10 @@ export default function Preloader() {
       style={{
         ...PRELOADER_OVERLAY, zIndex: 5000,
         opacity: phase === "leaving" ? 0 : 1, transition: "opacity 0.35s ease",
-        pointerEvents: phase === "leaving" ? "none" : "auto",
       }}>
       <PreloaderLogo />
       <p id="app-preloader-slow" suppressHydrationWarning
-        style={{ minHeight: "1.5rem", marginTop: "1rem", fontSize: "0.8rem", color: "#6b7280", textAlign: "center", padding: "0 1rem" }} />
+        style={{ pointerEvents: "auto", minHeight: "1.5rem", marginTop: "1rem", fontSize: "0.8rem", color: "#6b7280", textAlign: "center", padding: "0 1rem" }} />
     </div>
   );
 }

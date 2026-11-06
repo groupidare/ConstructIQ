@@ -285,13 +285,16 @@ export default function RedistributionPage() {
     }
   }
 
+  const approveFailure = (error: unknown) =>
+    (error as { response?: { data?: { message?: string } } })?.response?.data?.message ?? "Failed to approve transfer.";
+
   async function handleApprove(id: number) {
     setApprovingId(id);
     try {
       await approveTransfer(id);
       toast.success("Transfer approved.");
-    } catch {
-      toast.error("Failed to approve transfer.");
+    } catch (error) {
+      toast.error(approveFailure(error));
     } finally {
       setApprovingId(null);
     }
@@ -326,10 +329,11 @@ export default function RedistributionPage() {
     if (approvableOpportunities.length === 0) return;
     setExecutingAll(true);
     try {
-      await Promise.all(approvableOpportunities.map(r => approveTransfer(r.id)));
-      toast.success(`Approved ${approvableOpportunities.length} redistribution${approvableOpportunities.length > 1 ? "s" : ""}.`);
-    } catch {
-      toast.error("Some transfers failed to approve.");
+      const results = await Promise.allSettled(approvableOpportunities.map(r => approveTransfer(r.id)));
+      const done = results.filter(r => r.status === "fulfilled").length;
+      if (done > 0) toast.success(`Approved ${done} redistribution${done > 1 ? "s" : ""}.`);
+      // Each says why: one may need approving in Inventory instead.
+      results.forEach(r => { if (r.status === "rejected") toast.error(approveFailure(r.reason)); });
     } finally {
       setExecutingAll(false);
     }

@@ -21,7 +21,7 @@ import type { ForecastResult, TopForecastedDemand } from "@/types/forecast";
 
 // ── Real data shapes for the bits this page reads directly (not via a hook) ──
 
-interface ApiPO { id: number; status: string; expectedDate: string; }
+interface ApiPO { id: number; status: string; expectedDate: string; deliveredOnTime?: boolean | null; }
 
 interface ActivityLogEntry {
   id: number;
@@ -60,9 +60,9 @@ function describeActivity(log: ActivityLogEntry): { text: string; dot: string } 
   return { text: `${log.userDisplay} ${verb} ${resource}`, dot };
 }
 
+// A PO's own status — no "Delayed" is worked out from its estimated delivery.
 function poEffectiveStatus(po: ApiPO): string {
-  if (po.status === "Delivered" || po.status === "DeliveryInProgress") return po.status;
-  return new Date(po.expectedDate).getTime() < Date.now() ? "Delayed" : po.status;
+  return po.status;
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -163,24 +163,25 @@ export default function DashboardPage() {
   const materialsInStock = useMemo(() => stockItems.filter(i => i.balance > 0).length, [stockItems]);
   const outOfStockCount  = useMemo(() => stockItems.filter(i => i.balance <= 0).length, [stockItems]);
   const forecastRiskCount = useMemo(() => materials.filter(m => m.riskLevel === "High" || m.riskLevel === "Critical").length, [materials]);
-  const pendingPOs = useMemo(() => orders.filter(po => poEffectiveStatus(po) !== "Delivered").length, [orders]);
-  const delayedPOs = useMemo(() => orders.filter(po => poEffectiveStatus(po) === "Delayed").length, [orders]);
+  const pendingPOs = useMemo(() => orders.filter(po => poEffectiveStatus(po) !== "Delivered" && po.status !== "Cancelled").length, [orders]);
+  // Deliveries Warehouse rated as late — a real record, not a past-the-estimate guess.
+  const lateDeliveries = useMemo(() => orders.filter(po => po.deliveredOnTime === false).length, [orders]);
 
   const STATS: { icon: React.ElementType; iconBg: string; iconColor: string; value: string; label: string; sub: string }[] = [
     { icon: Package,     iconBg: "#dcfce7", iconColor: "#16a34a", value: materialsInStock.toLocaleString(), label: "Total Materials", sub: "Materials currently in stock" },
     { icon: AlertCircle, iconBg: "#fee2e2", iconColor: "#dc2626", value: String(outOfStockCount),           label: "Shortage Alerts",  sub: "Materials out of stock" },
     { icon: ShoppingCart,iconBg: "#ede9fe", iconColor: "#7c3aed", value: String(pendingPOs),                  label: "Procurement",      sub: "Purchase orders in progress" },
-    { icon: Truck,       iconBg: "#f3f4f6", iconColor: "#6b7280", value: String(delayedPOs),                  label: "Delayed Deliveries", sub: "Past expected delivery date" },
+    { icon: Truck,       iconBg: "#f3f4f6", iconColor: "#6b7280", value: String(lateDeliveries),              label: "Late Deliveries",    sub: "Rated late by Warehouse" },
   ];
 
   const insights = useMemo(() => {
     const list: { type: "warning" | "success" | "info"; text: string }[] = [];
     if (outOfStockCount > 0) list.push({ type: "warning", text: `${outOfStockCount} material(s) are out of stock and may need reordering.` });
-    if (delayedPOs > 0) list.push({ type: "warning", text: `${delayedPOs} purchase order(s) are past their expected delivery date.` });
+    if (lateDeliveries > 0) list.push({ type: "warning", text: `${lateDeliveries} deliver${lateDeliveries === 1 ? "y was" : "ies were"} rated late by Warehouse.` });
     if (forecastRiskCount > 0) list.push({ type: "info", text: `${forecastRiskCount} material(s) are at High or Critical shortage risk based on the latest forecasts.` });
-    if (list.length === 0) list.push({ type: "success", text: "No out-of-stock materials, delayed deliveries, or forecasted shortage risks right now." });
+    if (list.length === 0) list.push({ type: "success", text: "No out-of-stock materials, late deliveries, or forecasted shortage risks right now." });
     return list.slice(0, 3);
-  }, [outOfStockCount, delayedPOs, forecastRiskCount]);
+  }, [outOfStockCount, lateDeliveries, forecastRiskCount]);
 
   const watchlist = useMemo(() =>
     [...stockItems].sort((a, b) => a.balance - b.balance).slice(0, 5),

@@ -23,6 +23,8 @@ export interface ExcessWasteRecord {
   recordedAt: string;
   redistributionStatus?: string;
   redistributionTargetProjectName?: string;
+  // Where the warehouse released this excess to, per project.
+  warehouseReleases?: { projectName: string; quantity: number }[];
 }
 
 export interface ExcessWasteCreateRequest {

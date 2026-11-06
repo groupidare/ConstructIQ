@@ -34,6 +34,8 @@ public record PurchaseOrderDto
     // True once a WarehousePersonnel has rated this delivery — lets the
     // frontend show/hide the "Rate Supplier" action without a second call.
     public bool HasEvaluation { get; init; }
+    // From that rating: whether the delivery arrived on time. Null until rated.
+    public bool? DeliveredOnTime { get; init; }
     // The master PO document — uploaded once, with the first delivery batch,
     // and reused by every later one. See PurchaseOrder.PoFileUrl.
     public string? PoFileUrl { get; init; }

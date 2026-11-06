@@ -252,6 +252,52 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
         return NoContent();
     }
 
+    // An imported PO (with the file it was read from), or a Pending one made
+    // in ConstructIQ — see Services.PurchaseOrderRemoval.
+    [HttpDelete("{id:int}")]
+    [Authorize(Roles = ManageRoles)]
+    public async Task<IActionResult> Delete(int id)
+    {
+        var po = await db.PurchaseOrders.FirstOrDefaultAsync(p => p.Id == id);
+        if (po is null) return NotFound();
+        if (Services.PurchaseOrderRemoval.CannotDelete(po) is { } reason)
+            return BadRequest(new { message = reason });
+
+        await Services.PurchaseOrderRemoval.DeleteAsync(db, storage, po);
+        return NoContent();
+    }
+
+    // Calls off a PO made in ConstructIQ that's past Pending but not yet in
+    // delivery. It stays on record as Cancelled; the material requests it
+    // came from go back to "For Approval" so another supplier can be chosen.
+    [HttpPost("{id:int}/cancel")]
+    [Authorize(Roles = ManageRoles)]
+    public async Task<IActionResult> Cancel(int id)
+    {
+        var po = await db.PurchaseOrders
+            .Include(p => p.Project).Include(p => p.Supplier).Include(p => p.Materials)
+            .FirstOrDefaultAsync(p => p.Id == id);
+        if (po is null) return NotFound();
+        if (po.IsImported)
+            return BadRequest(new { message = "An imported PO is deleted rather than cancelled." });
+        if (po.Status is not (PurchaseOrderStatus.Pending or PurchaseOrderStatus.Approved))
+            return BadRequest(new { message = po.Status == PurchaseOrderStatus.Cancelled
+                ? "This purchase order is already cancelled."
+                : "A purchase order already in delivery or delivered can't be cancelled." });
+
+        po.Status = PurchaseOrderStatus.Cancelled;
+        po.UpdatedAt = DateTime.UtcNow;
+        var requests = await db.MaterialRequests.Where(r => r.FulfilledByPurchaseOrderId == po.Id).ToListAsync();
+        foreach (var r in requests) r.FulfilledByPurchaseOrderId = null;
+        await db.SaveChangesAsync();
+
+        await notifications.CreateForRoleAsync(UserRole.ProjectManager, NotificationKind.PurchaseOrderStatusChanged,
+            $"{po.Number} ({po.Project.Name}) was cancelled.", CurrentUserId,
+            projectId: po.ProjectId, actionLink: "/procurement");
+
+        return Ok(ToDto(po));
+    }
+
     [HttpPatch("{id:int}/status")]
     [Authorize(Roles = ManageRoles)]
     public async Task<IActionResult> UpdateStatus(int id, [FromBody] UpdatePurchaseOrderStatusDto dto)
@@ -265,6 +311,8 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
             return BadRequest(new { message = "Invalid status." });
         if (status is PurchaseOrderStatus.DeliveryInProgress or PurchaseOrderStatus.Delivered)
             return BadRequest(new { message = "Upload a proof-of-delivery batch to move a PO into delivery — it can't be set by hand." });
+        if (status == PurchaseOrderStatus.Cancelled || po.Status == PurchaseOrderStatus.Cancelled)
+            return BadRequest(new { message = "Use Cancel PO to cancel a purchase order; a cancelled one can't be changed." });
 
         po.Status = status;
         po.UpdatedAt = DateTime.UtcNow;
@@ -312,6 +360,8 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
             return BadRequest(new { message = "This PO has already been delivered." });
         if (po.Status == PurchaseOrderStatus.Pending)
             return BadRequest(new { message = "Approve this PO before recording a delivery." });
+        if (po.Status == PurchaseOrderStatus.Cancelled)
+            return BadRequest(new { message = "This PO was cancelled." });
 
         // The PO file is required only once — the very first batch, and only
         // if nothing was uploaded for it yet (a retry after a failed first
@@ -508,6 +558,7 @@ public class PurchaseOrdersController(AppDbContext db, Services.Interfaces.IFile
                 PodPhotoUrls = b.Photos.Where(p => p.DocumentType == DeliveryDocumentType.ProofOfDelivery).Select(p => p.Url).ToList(),
             }).ToList(),
         HasEvaluation = po.Evaluation is not null,
+        DeliveredOnTime = po.Evaluation?.OnTime,
         PoFileUrl = po.PoFileUrl,
         IsImported = po.IsImported,
         OriginalPoNumber = po.OriginalPoNumber,

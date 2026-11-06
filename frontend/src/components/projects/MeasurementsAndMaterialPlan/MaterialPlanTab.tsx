@@ -7,6 +7,7 @@ import { baselineAlerts, expectedText } from '@/lib/baseline';
 import { resolveUploadUrl } from '@/lib/avatar';
 import { indexLinks, rowStock, similarInStock, warehouseRequestQuantity, type RowStock } from '@/lib/warehouseStockMatch';
 import { formatCurrency, formatDate } from '@/lib/utils';
+import { displayPoNumber } from '@/lib/poNumber';
 import { useAuthStore } from '@/store/authStore';
 import type { Project, ProjectType } from '@/types/project';
 import type { ProjectDocument } from '@/types/document';
@@ -17,7 +18,8 @@ import type { BOQItem, BOQItemRow } from '@/types/boq';
 import { PRIMARY_SECTIONS, PURCHASE_UNITS } from '@/types/boq';
 import type { PurchaseOrder, PurchaseOrderMaterial } from '@/types/purchaseOrder';
 import { missingRequestFields, type BulkRowInput } from '@/lib/bulkRequestPlan';
-import type { BulkRequestItem, BulkRequestResult } from '@/types/warehouseRequest';
+import type { BulkRequestItem, BulkRequestResult, WarehouseRequest } from '@/types/warehouseRequest';
+import type { SentMaterialRequest } from '@/types/materialRequest';
 import BulkRequestDialog, { type BulkSendItem } from './BulkRequestDialog';
 import StockLinkDialog from './StockLinkDialog';
 import { inp, sel, lbl } from './styles';
@@ -36,6 +38,8 @@ interface Props {
   warehouseStockLinks: WarehouseStockLink[];
   onBulkRequest: (kind: 'warehouse' | 'procurement', items: BulkRequestItem[]) => Promise<BulkRequestResult[] | null>;
   onRefreshStock: () => Promise<void>;
+  onLoadWarehouseRequests: () => Promise<WarehouseRequest[]>;
+  onLoadProcurementRequests: () => Promise<SentMaterialRequest[]>;
   onSaveStockLink: (boqName: string, warehouseMaterialName: string | null) => Promise<boolean>;
   onRemoveStockLink: (boqName: string) => Promise<boolean>;
   forecastedMaterials: ForecastedMaterial[];
@@ -64,6 +68,8 @@ interface Props {
   saving: boolean;
   onNotify: (kind: 'ProcurementOrder' | 'WarehouseCheck', materialId: number | undefined, materialName: string, quantity: number, unit: string, boqItemId: number | undefined) => Promise<boolean>;
   onRemoveDocument: (documentId: number) => void;
+  onRemoveDocuments: (documentIds: number[]) => Promise<void>;
+  onDeletePurchaseOrder: (purchaseOrderId: number) => Promise<boolean>;
   onRunForecast: () => void;
   forecasting: boolean;
   // Purchase Orders — actuals, paired against the BOQ estimates above.
@@ -145,8 +151,8 @@ function TotalAreaCell({ quantity, unit, editable, missingUnit, onChange }: {
 
 export default function MaterialPlanTab({
   project, editable, projectType, otherTypeSpecify,
-  inventory, warehouseStock, warehouseStockLinks, onBulkRequest, onRefreshStock, onSaveStockLink, onRemoveStockLink, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
-  rows, boqItems, onRowsChange, planOpen, planFocus, onViewPlan, onPlanFocus, onSave, onDeleteRow, saving, onNotify, onRemoveDocument, onRunForecast, forecasting,
+  inventory, warehouseStock, warehouseStockLinks, onBulkRequest, onRefreshStock, onLoadWarehouseRequests, onLoadProcurementRequests, onSaveStockLink, onRemoveStockLink, forecastedMaterials, boqDocs, uploading, onUploadBoq, onParseBoq,
+  rows, boqItems, onRowsChange, planOpen, planFocus, onViewPlan, onPlanFocus, onSave, onDeleteRow, saving, onNotify, onRemoveDocument, onRemoveDocuments, onDeletePurchaseOrder, onRunForecast, forecasting,
   purchaseOrders, poDocs, uploadingPo, savingPo, onUploadPO, onParsePO, onSavePO, onPurchaseOrdersImported,
   poDraftRows, onPoDraftRowsChange, poSupplierName, onPoSupplierNameChange,
   poOrderDate, onPoOrderDateChange, poExpectedDate, onPoExpectedDateChange,
@@ -156,6 +162,21 @@ export default function MaterialPlanTab({
   const [showImport, setShowImport] = useState(false);
   // The uploaded PO files sit in one folder, closed by default.
   const [poFilesOpen, setPoFilesOpen] = useState(false);
+  // PO files ticked for "Delete selected", and the confirm step before it.
+  const [selectedPoDocs, setSelectedPoDocs] = useState<Set<number>>(new Set());
+  const [confirmPoDelete, setConfirmPoDelete] = useState(false);
+  const [deletingPoDocs, setDeletingPoDocs] = useState(false);
+  // The imported POs read from these files — deleted along with them.
+  const posFromFiles = (docIds: number[]) => {
+    const urls = new Set(poDocs.filter(d => docIds.includes(d.id)).map(d => d.url));
+    return purchaseOrders.filter(po => po.isImported && po.poFileUrl && urls.has(po.poFileUrl));
+  };
+  const alsoDeletes = (pos: PurchaseOrder[]) => {
+    if (pos.length === 0) return '';
+    const lines = pos.reduce((n, po) => n + po.materials.length, 0);
+    const names = pos.slice(0, 3).map(displayPoNumber).join(', ') + (pos.length > 3 ? ` and ${pos.length - 3} more` : '');
+    return ` This also deletes ${names} (${lines} material${lines === 1 ? '' : 's'}), imported from ${pos.length === 1 ? 'it' : 'them'}.`;
+  };
   // PO prices are entered and seen only by the roles that manage POs (the
   // backend also nulls them out for everyone else).
   const role = useAuthStore(s => s.user?.role);
@@ -298,20 +319,19 @@ export default function MaterialPlanTab({
       const newRows = rows.slice();
       newRows[index] = { ...row, requestedQuantity: totalRequested };
 
+      // The request is sent — close the dialog now; the running total is
+      // saved in the background rather than holding the dialog open for it.
       onRowsChange(newRows);
-      try {
-        await onSave(newRows, { silent: true });
-        const remainder = (row.estimatedPurchaseQuantity ?? totalRequested) - totalRequested;
-        toast.success(remainder > 0
-          ? `Requested ${qty.toLocaleString()} ${unit}. ${remainder.toLocaleString()} ${unit} still remaining.`
-          : remainder < 0
-          ? `Requested ${qty.toLocaleString()} ${unit}. ${(-remainder).toLocaleString()} ${unit} over the estimate.`
-          : `Requested ${qty.toLocaleString()} ${unit}. Fully covered.`);
-      } catch {
-        toast.error('Request sent, but saving the updated Bill of Quantities failed — click Save Material Plan to retry.');
-      }
       setRequestPrompt(null);
       setRequestPromptQty('');
+      const remainder = (row.estimatedPurchaseQuantity ?? totalRequested) - totalRequested;
+      toast.success(remainder > 0
+        ? `Requested ${qty.toLocaleString()} ${unit}. ${remainder.toLocaleString()} ${unit} still remaining.`
+        : remainder < 0
+        ? `Requested ${qty.toLocaleString()} ${unit}. ${(-remainder).toLocaleString()} ${unit} over the estimate.`
+        : `Requested ${qty.toLocaleString()} ${unit}. Fully covered.`);
+      onSave(newRows, { silent: true }).catch(() =>
+        toast.error('Request sent, but saving the updated Bill of Quantities failed — click Save Material Plan to retry.'));
     } finally {
       setSubmittingRequest(false);
     }
@@ -600,6 +620,7 @@ export default function MaterialPlanTab({
     netLeftToOrder: r.estimatedPurchaseQuantity != null ? leftAfter(r.estimatedPurchaseQuantity, r.approvedQuantity) : undefined,
     remainingRequestable: r.estimatedPurchaseQuantity != null ? leftAfter(r.estimatedPurchaseQuantity, r.askedQuantity) : undefined,
     warehouseApproved: !!r.warehouseApproved,
+    warehouseRejected: !!r.warehouseRejected,
     warehousePendingQuantity: r.warehousePendingQuantity ?? 0,
     onSiteStock: currentStock(r),
     stock: stockOf(r),
@@ -651,11 +672,9 @@ export default function MaterialPlanTab({
         ? { ...r, requestedQuantity: (r.requestedQuantity ?? 0) + sent.get(r.id)! }
         : r));
       onRowsChange(newRows);
-      try {
-        await onSave(newRows, { silent: true });
-      } catch {
-        toast.error('Requests sent, but saving the updated Bill of Quantities failed — click Save Material Plan to retry.');
-      }
+      // Saved in the background — the dialog doesn't wait for it.
+      onSave(newRows, { silent: true }).catch(() =>
+        toast.error('Requests sent, but saving the updated Bill of Quantities failed — click Save Material Plan to retry.'));
       const parts = [
         counts.warehouse ? `${counts.warehouse} to the warehouse` : '',
         counts.procurement ? `${counts.procurement} to Procurement` : '',
@@ -701,6 +720,8 @@ export default function MaterialPlanTab({
           stockLoaded={warehouseStock.length > 0}
           onResolveSimilar={rowName => setLinkPrompt({ rowName, beforePurchase: true })}
           onSend={handleSendBulk}
+          onLoadWarehouseRequests={onLoadWarehouseRequests}
+          onLoadProcurementRequests={onLoadProcurementRequests}
           onClose={() => setBulkOpen(false)}
         />
       )}
@@ -1067,11 +1088,12 @@ export default function MaterialPlanTab({
               const stockNote = stockStatus && stockStatus.status !== 'notListed'
                 ? `In warehouse: ${stockStatus.item.balance.toLocaleString()} ${stockStatus.item.unit}` : undefined;
               const canRequestWarehouse = canRequestBase;
-              const canRequestProcurement = canRequestBase && (hasNoStock || !!r.warehouseApproved);
+              const warehouseAnswered = !!r.warehouseApproved || !!r.warehouseRejected;
+              const canRequestProcurement = canRequestBase && (hasNoStock || warehouseAnswered);
               // Clickable with fields missing, so the click can say why it won't go.
               const warnOnClick = editable && !isCompleted && missingFields.length > 0;
               const needsAlert = toOrder > 0 && !fullyRequested;
-              const suggestWarehouse = canRequestWarehouse && stockStatus?.status === 'inStock' && !r.warehouseApproved && !fullyRequested;
+              const suggestWarehouse = canRequestWarehouse && stockStatus?.status === 'inStock' && !warehouseAnswered && !fullyRequested;
               // The subtext only appears once something's actually been
               // approved against this row (net < the full estimate) — never
               // for a still-Pending request, and never with nothing requested.
@@ -1284,7 +1306,7 @@ export default function MaterialPlanTab({
                         // name is the costly mistake, so stop here once — the
                         // answer is remembered for this wording either way.
                         const name = stockName(r);
-                        if (stockStatus?.status === 'notListed' && !stockStatus.confirmed && !r.warehouseApproved && similarInStock(name, warehouseStock).length > 0) {
+                        if (stockStatus?.status === 'notListed' && !stockStatus.confirmed && !warehouseAnswered && similarInStock(name, warehouseStock).length > 0) {
                           setLinkPrompt({ rowName: name, beforePurchase: true, onContinue: openRequest });
                           return;
                         }
@@ -1294,7 +1316,7 @@ export default function MaterialPlanTab({
                         !editable || isCompleted ? undefined
                           : missingFields.length > 0 ? `Fill in the ${missingFields.join(', ')} first`
                           : !r.materialId || r.id == null ? 'Save the Material Plan first'
-                          : !canRequestProcurement ? 'Notify the warehouse first — Procurement unlocks once Warehouse approves a check for this material'
+                          : !canRequestProcurement ? 'Notify the warehouse first — Procurement unlocks once Warehouse answers a check for this material'
                           : toOrder <= 0 || fullyRequested ? 'Fully requested. Click to send Procurement an additional request.'
                           : `Notify procurement — ${Math.min(toOrder, remainingRequestable)} ${purchaseUnit} suggested`
                       }
@@ -1393,7 +1415,7 @@ export default function MaterialPlanTab({
 
       {editable && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: '1rem' }}>
-          <button onClick={() => void onSave()} disabled={saving} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
+          <button onClick={() => { onSave().catch(() => { /* already shown */ }); }} disabled={saving} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
             {saving ? 'Saving…' : 'Save Material Plan'}
           </button>
           <button
@@ -1455,10 +1477,64 @@ export default function MaterialPlanTab({
               <span style={{ fontSize: '0.76rem', fontWeight: 600, color: '#374151' }}>PO files</span>
               <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>{poDocs.length} file{poDocs.length === 1 ? '' : 's'}</span>
             </button>
+            {poFilesOpen && editable && (() => {
+              const ids = poDocs.map(d => d.id);
+              const picked = ids.filter(id => selectedPoDocs.has(id));
+              const allPicked = picked.length > 0 && picked.length === ids.length;
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '0 1rem 0.5rem 2.6rem' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: '#374151', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={allPicked}
+                      ref={el => { if (el) el.indeterminate = picked.length > 0 && !allPicked; }}
+                      onChange={() => { setSelectedPoDocs(allPicked ? new Set() : new Set(ids)); setConfirmPoDelete(false); }} />
+                    Select all
+                  </label>
+                  {picked.length > 0 && (confirmPoDelete ? (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: '#991b1b', fontWeight: 600 }}>
+                      Delete {picked.length} file{picked.length === 1 ? '' : 's'}?{alsoDeletes(posFromFiles(picked))}
+                      <button type="button" disabled={deletingPoDocs}
+                        onClick={async () => {
+                          setDeletingPoDocs(true);
+                          try { await onRemoveDocuments(picked); setSelectedPoDocs(new Set()); setConfirmPoDelete(false); }
+                          finally { setDeletingPoDocs(false); }
+                        }}
+                        style={{ padding: '3px 10px', borderRadius: 6, border: 'none', background: '#dc2626', color: '#fff', fontSize: '0.7rem', fontWeight: 700, cursor: 'pointer', opacity: deletingPoDocs ? 0.7 : 1 }}>
+                        {deletingPoDocs ? 'Deleting…' : 'Yes, delete'}
+                      </button>
+                      <button type="button" disabled={deletingPoDocs} onClick={() => setConfirmPoDelete(false)}
+                        style={{ padding: '3px 10px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: '0.7rem', fontWeight: 600, cursor: 'pointer' }}>
+                        Cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <button type="button" onClick={() => setConfirmPoDelete(true)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 10px', borderRadius: 6, border: '1px solid #fecaca', background: '#fff', color: '#dc2626', fontSize: '0.7rem', fontWeight: 700, cursor: 'pointer' }}>
+                      <Trash2 style={{ width: 12, height: 12 }} /> Delete selected ({picked.length})
+                    </button>
+                  ))}
+                  {picked.length > 0 && !confirmPoDelete && posFromFiles(picked).length > 0 && (
+                    <span style={{ fontSize: '0.65rem', color: '#b45309' }}>
+                      {posFromFiles(picked).length} imported PO{posFromFiles(picked).length === 1 ? ' was' : 's were'} read from these — {posFromFiles(picked).length === 1 ? 'it goes' : 'they go'} too.
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
             {poFilesOpen && (
           <div style={{ padding: '0 1rem 0.625rem 2.6rem', display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 260, overflowY: 'auto' }}>
             {poDocs.map(doc => (
               <div key={doc.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {editable && (
+                  <input type="checkbox" checked={selectedPoDocs.has(doc.id)} aria-label={`Select ${doc.fileName}`}
+                    onChange={() => {
+                      setConfirmPoDelete(false);
+                      setSelectedPoDocs(prev => {
+                        const next = new Set(prev);
+                        if (next.has(doc.id)) next.delete(doc.id); else next.add(doc.id);
+                        return next;
+                      });
+                    }} />
+                )}
                 <FileText style={{ width: 12, height: 12, color: '#9ca3af', flexShrink: 0 }} />
                 <a href={resolveUploadUrl(doc.url) ?? "#"} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', color: '#374151', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {doc.fileName}
@@ -1470,7 +1546,11 @@ export default function MaterialPlanTab({
                   </button>
                 )}
                 {editable && (
-                  <button onClick={() => onRemoveDocument(doc.id)} title="Remove file" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 2, flexShrink: 0 }}>
+                  <button onClick={async () => {
+                      const pos = posFromFiles([doc.id]);
+                      if (pos.length > 0 && !window.confirm(`Delete ${doc.fileName}?${alsoDeletes(pos)} It can't be undone.`)) return;
+                      await onRemoveDocuments([doc.id]);
+                    }} title="Remove file" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 2, flexShrink: 0 }}>
                     <X style={{ width: 12, height: 12 }} />
                   </button>
                 )}
@@ -1560,13 +1640,15 @@ export default function MaterialPlanTab({
           const poLines = purchaseOrders
             .flatMap(po => po.materials.map(m => ({ po, m })))
             .sort((a, b) => a.po.orderDate.localeCompare(b.po.orderDate) || a.po.number.localeCompare(b.po.number));
-          const cols = `1.1fr 0.9fr 2fr 0.6fr 0.8fr 1.6fr${canSeePrices ? ' 0.9fr' : ''} 0.9fr`;
+          const cols = `1.1fr 0.9fr 2fr 0.6fr 0.8fr 1.6fr${canSeePrices ? ' 0.9fr' : ''} 0.9fr${editable ? ' 28px' : ''}`;
+          const firstLineOf = new Set<string>();
+          for (const { po, m } of poLines) if (![...firstLineOf].some(k => k.startsWith(`${po.id}-`))) firstLineOf.add(`${po.id}-${m.id}`);
           const cell: React.CSSProperties = { fontSize: '0.76rem', color: '#374151' };
           return (
             <div style={{ overflowX: 'auto' }}>
               <div style={{ minWidth: canSeePrices ? 900 : 800 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 8, padding: '0.55rem 1rem', background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-                  {['PO NUMBER', 'PO DATE', 'MATERIAL NAME', 'UNIT', 'QUANTITY', 'SUPPLIER', ...(canSeePrices ? ['UNIT PRICE'] : []), 'STATUS'].map(h => (
+                  {['PO NUMBER', 'PO DATE', 'MATERIAL NAME', 'UNIT', 'QUANTITY', 'SUPPLIER', ...(canSeePrices ? ['UNIT PRICE'] : []), 'STATUS', ...(editable ? [''] : [])].map(h => (
                     <span key={h} style={{ fontSize: '0.6rem', color: '#9ca3af', fontWeight: 700 }}>{h}</span>
                   ))}
                 </div>
@@ -1576,7 +1658,7 @@ export default function MaterialPlanTab({
                   ) : poLines.map(({ po, m }, index) => (
                     <div key={`${po.id}-${m.id ?? index}`} style={{ display: 'grid', gridTemplateColumns: cols, gap: 8, padding: '0.6rem 1rem', borderBottom: '1px solid #f3f4f6', alignItems: 'center' }}>
                       <span style={cell}>
-                        {po.isImported ? (po.originalPoNumber || po.number) : po.number}
+                        {displayPoNumber(po)}
                         {po.isImported && (
                           <span title="An existing PO imported from a file — not made in ConstructIQ"
                             style={{ display: 'inline-block', marginLeft: 6, fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px', borderRadius: 999, background: '#ede9fe', color: '#6d28d9', verticalAlign: 'middle' }}>
@@ -1592,10 +1674,28 @@ export default function MaterialPlanTab({
                       {canSeePrices && <span style={cell}>{m.unitPrice != null ? formatCurrency(m.unitPrice) : '—'}</span>}
                       <span>
                         <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 999, whiteSpace: 'nowrap',
-                          background: po.status === 'Delivered' ? '#dcfce7' : '#ffedd5', color: po.status === 'Delivered' ? '#15803d' : '#c2410c' }}>
+                          background: po.status === 'Delivered' ? '#dcfce7' : po.status === 'Cancelled' ? '#fee2e2' : '#ffedd5',
+                          color: po.status === 'Delivered' ? '#15803d' : po.status === 'Cancelled' ? '#b91c1c' : '#c2410c' }}>
                           {po.status === 'DeliveryInProgress' ? 'Delivering' : po.status}
                         </span>
                       </span>
+                      {editable && (
+                        <span>
+                          {firstLineOf.has(`${po.id}-${m.id}`) && (po.isImported || po.status === 'Pending') && (
+                            <button type="button"
+                              title={po.isImported ? 'Delete this imported PO and its file' : 'Delete this Pending PO'}
+                              onClick={() => {
+                                const what = po.isImported
+                                  ? `Delete ${displayPoNumber(po)}?\n\nThis removes the PO, its ${po.materials.length} material line${po.materials.length === 1 ? '' : 's'} and its uploaded file. It can't be undone.`
+                                  : `Delete ${displayPoNumber(po)}?\n\nIts materials go back to Procurement's Requests tab as For Approval. It can't be undone.`;
+                                if (window.confirm(what)) void onDeletePurchaseOrder(po.id);
+                              }}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', padding: 2, display: 'flex' }}>
+                              <Trash2 style={{ width: 13, height: 13 }} />
+                            </button>
+                          )}
+                        </span>
+                      )}
                     </div>
                   ))}
                 </div>

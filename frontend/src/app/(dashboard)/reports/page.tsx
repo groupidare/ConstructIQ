@@ -284,7 +284,8 @@ function buildExcessData(records: ExcessWasteRecord[], costImpact: ExcessCostImp
       .map(r => [
         r.projectName, r.materialName, r.excessType, num(r.loggedQuantity), r.unit,
         `${num(r.excessPercent)}%`,
-        r.isReusable ? "Yes" : "No", r.redistributionStatus ?? "—",
+        r.isReusable ? "Yes" : "No",
+        [r.redistributionStatus, ...(r.warehouseReleases ?? []).map(w => `Released to ${w.projectName} (${num(w.quantity)} ${r.unit})`)].filter(Boolean).join("; ") || "—",
         r.recordedBy, formatDate(r.recordedAt),
       ]),
   };
@@ -407,9 +408,13 @@ function buildRedistributionData(items: RedistributionRecommendation[]): ReportV
 
 interface ApiSupplier { id: number; name: string; rating: number; onTimePct: number; deliveries: number; }
 
+// A PO's own status — no "Delayed" is worked out from its estimated delivery.
 function poEffectiveStatus(po: PurchaseOrder): string {
-  if (po.status === "Delivered" || po.status === "DeliveryInProgress") return po.status;
-  return new Date(po.expectedDate).getTime() < Date.now() ? "Delayed" : po.status;
+  return po.status;
+}
+// Deliveries Warehouse rated as late — a real record, not a past-the-estimate guess.
+function lateDeliveries(orders: PurchaseOrder[]): number {
+  return orders.filter(po => po.deliveredOnTime === false).length;
 }
 function isPreferredSupplier(s: ApiSupplier): boolean {
   return s.deliveries > 0 && s.rating >= 4.5 && s.onTimePct >= 90;
@@ -427,12 +432,12 @@ function buildProcurementData(
   weatherRisk: string | null,
   weatherAdvisory: string | null,
 ): ReportViewData {
-  const byStatus = new Map<string, number>([["Pending", 0], ["Approved", 0], ["DeliveryInProgress", 0], ["Delivered", 0], ["Delayed", 0]]);
+  const byStatus = new Map<string, number>([["Pending", 0], ["Approved", 0], ["DeliveryInProgress", 0], ["Delivered", 0], ["Cancelled", 0]]);
   for (const po of orders) {
     const s = poEffectiveStatus(po);
     byStatus.set(s, (byStatus.get(s) ?? 0) + 1);
   }
-  const delayed = byStatus.get("Delayed") ?? 0;
+  const late = lateDeliveries(orders);
   const avgOnTime = avg(suppliers.map(s => s.onTimePct));
   const preferredCount = suppliers.filter(isPreferredSupplier).length;
 
@@ -450,7 +455,7 @@ function buildProcurementData(
     subtitle: `${orders.length} purchase order(s) · ${suppliers.length} supplier(s)`,
     stats: [
       { label: "TOTAL POs",        value: String(orders.length), sub: "All statuses" },
-      { label: "DELAYED",          value: String(delayed),       sub: "Past expected delivery date" },
+      { label: "LATE DELIVERIES",  value: String(late),          sub: "Rated late by Warehouse" },
       { label: "AVG ON-TIME RATE", value: suppliers.length > 0 ? `${avgOnTime.toFixed(0)}%` : "—", sub: "Across rated suppliers" },
     ],
     chartTitle: "PO Status Breakdown",
@@ -462,7 +467,7 @@ function buildProcurementData(
     ],
     aiInsight: (orders.length === 0
       ? "No purchase orders yet."
-      : `${delayed} PO(s) are past their expected delivery date. ${preferredCount} of ${suppliers.length} supplier(s) qualify as Preferred (4.5+ rating, 90%+ on-time).`) + weatherNote,
+      : `${late} deliver${late === 1 ? "y was" : "ies were"} rated late by Warehouse. ${preferredCount} of ${suppliers.length} supplier(s) qualify as Preferred (4.5+ rating, 90%+ on-time).`) + weatherNote,
     detailTables: [
       { title: "Purchase Orders (by material line)", table: poTable },
       { title: "Suppliers", table: supplierTable },
@@ -479,7 +484,7 @@ function buildSystemData(
   const real = projects.filter(p => !p.isHistorical);
   const active = real.filter(p => p.status === "Active").length;
   const zeroStock = stockItems.filter(i => i.balance <= 0).length;
-  const activePOs = orders.filter(po => poEffectiveStatus(po) !== "Delivered").length;
+  const activePOs = orders.filter(po => poEffectiveStatus(po) !== "Delivered" && po.status !== "Cancelled").length;
   const activeRedistribution = redistribution.filter(r => REDISTRIBUTION_ACTIVE.includes(r.status)).length;
 
   const summaryTable: ReportTable = {
@@ -524,7 +529,7 @@ function buildSystemData(
     healthTitle: "Attention Needed",
     health: [
       { label: "Zero-Stock Items",       pct: String(zeroStock),            color: zeroStock > 0 ? "#ef4444" : "#22c55e" },
-      { label: "Delayed POs",            pct: String(orders.filter(po => poEffectiveStatus(po) === "Delayed").length), color: "#f97316" },
+      { label: "Late Deliveries",        pct: String(lateDeliveries(orders)), color: "#f97316" },
       { label: "Redistribution Pending", pct: String(activeRedistribution), color: "#3b82f6" },
     ],
     aiInsight: weatherAdvisory

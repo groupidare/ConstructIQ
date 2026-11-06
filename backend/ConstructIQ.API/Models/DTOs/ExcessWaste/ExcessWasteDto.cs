@@ -56,6 +56,15 @@ public class ExcessWasteResponseDto
     // request against it — lets the log show where the material actually went.
     public string? RedistributionStatus            { get; set; }
     public string? RedistributionTargetProjectName { get; set; }
+    // Where the warehouse released this excess to when approving a request, per
+    // project. Separate from the above: one entry can go to several projects.
+    public List<ExcessWarehouseReleaseDto> WarehouseReleases { get; set; } = [];
+}
+
+public class ExcessWarehouseReleaseDto
+{
+    public string  ProjectName { get; set; } = string.Empty;
+    public decimal Quantity    { get; set; }
 }
 
 public class ExcessAnalyticsSummaryDto

@@ -17,7 +17,7 @@ namespace ConstructIQ.API.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.20")
+                .HasAnnotation("ProductVersion", "9.0.22")
                 .HasAnnotation("Relational:MaxIdentifierLength", 64);
 
             MySqlModelBuilderExtensions.AutoIncrementColumns(modelBuilder);
@@ -1753,6 +1753,32 @@ namespace ConstructIQ.API.Migrations
                     b.ToTable("Users");
                 });
 
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.WarehouseReleaseSource", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("ExcessWasteRecordId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("Quantity")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<int>("WarehouseRequestId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExcessWasteRecordId");
+
+                    b.HasIndex("WarehouseRequestId");
+
+                    b.ToTable("WarehouseReleaseSources");
+                });
+
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.WarehouseRequest", b =>
                 {
                     b.Property<int>("Id")
@@ -1790,6 +1816,16 @@ namespace ConstructIQ.API.Migrations
 
                     b.Property<decimal>("RequestedQuantity")
                         .HasColumnType("decimal(18,4)");
+
+                    b.Property<string>("SheetSyncError")
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<bool>("SheetSyncPending")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime?>("SheetSyncedAt")
+                        .HasColumnType("datetime(6)");
 
                     b.Property<int>("Status")
                         .HasColumnType("int");
@@ -2521,6 +2557,25 @@ namespace ConstructIQ.API.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.WarehouseReleaseSource", b =>
+                {
+                    b.HasOne("ConstructIQ.API.Models.Entities.ExcessWasteRecord", "ExcessWasteRecord")
+                        .WithMany()
+                        .HasForeignKey("ExcessWasteRecordId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("ConstructIQ.API.Models.Entities.WarehouseRequest", "WarehouseRequest")
+                        .WithMany("ReleaseSources")
+                        .HasForeignKey("WarehouseRequestId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("ExcessWasteRecord");
+
+                    b.Navigation("WarehouseRequest");
+                });
+
             modelBuilder.Entity("ConstructIQ.API.Models.Entities.WarehouseRequest", b =>
                 {
                     b.HasOne("ConstructIQ.API.Models.Entities.User", "ApprovedBy")
@@ -2668,6 +2723,11 @@ namespace ConstructIQ.API.Migrations
                     b.Navigation("ManagedProjects");
 
                     b.Navigation("TrustedDevices");
+                });
+
+            modelBuilder.Entity("ConstructIQ.API.Models.Entities.WarehouseRequest", b =>
+                {
+                    b.Navigation("ReleaseSources");
                 });
 #pragma warning restore 612, 618
         }

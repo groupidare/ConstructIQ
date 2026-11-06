@@ -570,29 +570,40 @@ export default function ExcessAnalyticsPage() {
                                           </td>
                                           <td style={{ padding:"10px", fontSize:"0.8rem", color:"#9ca3af" }}>{e.unit}</td>
                                           <td style={{ padding:"10px" }}>
-                                            {!e.isReusable ? null : e.redistributionTargetProjectName && APPROVED_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "") ? (
-                                              <span style={{
-                                                display:"inline-flex", alignItems:"center", gap:5, padding:"3px 9px", borderRadius:999,
-                                                background: REDISTRIBUTION_STATUS_STYLE[e.redistributionStatus!]?.bg ?? "#f3f4f6",
-                                                color: REDISTRIBUTION_STATUS_STYLE[e.redistributionStatus!]?.color ?? "#6b7280",
-                                                fontSize:"0.72rem", fontWeight:600, whiteSpace:"nowrap",
-                                              }}>
-                                                <Recycle style={{ width:11, height:11 }} /> {e.redistributionTargetProjectName}
-                                              </span>
-                                            ) : (
-                                              <span style={{ color:"#d1d5db", fontSize:"0.8rem" }}>—</span>
-                                            )}
+                                            {(() => {
+                                              if (!e.isReusable) return null;
+                                              const transferred = e.redistributionTargetProjectName && APPROVED_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "");
+                                              const releases = e.warehouseReleases ?? [];
+                                              if (!transferred && releases.length === 0) return <span style={{ color:"#d1d5db", fontSize:"0.8rem" }}>—</span>;
+                                              const chip: React.CSSProperties = { display:"inline-flex", alignItems:"center", gap:5, width:"fit-content", padding:"3px 9px", borderRadius:999, fontSize:"0.72rem", fontWeight:600, whiteSpace:"nowrap" };
+                                              return (
+                                                <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                                                  {transferred && (
+                                                    <span style={{ ...chip, background: REDISTRIBUTION_STATUS_STYLE[e.redistributionStatus!]?.bg ?? "#f3f4f6", color: REDISTRIBUTION_STATUS_STYLE[e.redistributionStatus!]?.color ?? "#6b7280" }}>
+                                                      <Recycle style={{ width:11, height:11 }} /> {e.redistributionTargetProjectName}
+                                                    </span>
+                                                  )}
+                                                  {releases.map(r => (
+                                                    <span key={r.projectName} title="Released by the warehouse when it approved this project's request" style={{ ...chip, background: REDISTRIBUTION_STATUS_STYLE.Approved.bg, color: REDISTRIBUTION_STATUS_STYLE.Approved.color }}>
+                                                      <Recycle style={{ width:11, height:11 }} /> {r.projectName} · {r.quantity.toLocaleString()} {e.unit}
+                                                    </span>
+                                                  ))}
+                                                </div>
+                                              );
+                                            })()}
                                           </td>
                                           <td style={{ padding:"10px" }}>
                                             <div style={{ display:"flex", gap:6 }}>
                                               {canManageExcess && (() => {
                                                 const alreadyRedistributed = APPROVED_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "");
+                                                const released = !!e.warehouseReleases?.length;
+                                                const isBlocked = alreadyRedistributed || released;
                                                 return (
                                                   <button
-                                                    onClick={() => !alreadyRedistributed && setEditTarget(e)}
-                                                    disabled={alreadyRedistributed}
-                                                    title={alreadyRedistributed ? `Already redistributed to ${e.redistributionTargetProjectName} — can't be edited.` : undefined}
-                                                    style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb", background: alreadyRedistributed ? "#f3f4f6" : "#fff", color: alreadyRedistributed ? "#9ca3af" : "#374151", fontSize:"0.7rem", fontWeight:600, cursor: alreadyRedistributed ? "not-allowed" : "pointer", whiteSpace:"nowrap" }}
+                                                    onClick={() => !isBlocked && setEditTarget(e)}
+                                                    disabled={isBlocked}
+                                                    title={alreadyRedistributed ? `Already redistributed to ${e.redistributionTargetProjectName} — can't be edited.` : released ? "Part of this has been released by the warehouse — can't be edited." : undefined}
+                                                    style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb", background: isBlocked ? "#f3f4f6" : "#fff", color: isBlocked ? "#9ca3af" : "#374151", fontSize:"0.7rem", fontWeight:600, cursor: isBlocked ? "not-allowed" : "pointer", whiteSpace:"nowrap" }}
                                                   >
                                                     <Pencil style={{ width:11, height:11 }} /> Edit
                                                   </button>
@@ -620,12 +631,13 @@ export default function ExcessAnalyticsPage() {
                                               {canManageExcess && (() => {
                                                 const isActive = ACTIVE_REDISTRIBUTION_STATUSES.has(e.redistributionStatus ?? "");
                                                 const isDeleting = deletingId === e.id;
-                                                const isBlocked = isActive || isDeleting;
+                                                const released = !!e.warehouseReleases?.length;
+                                                const isBlocked = isActive || released || isDeleting;
                                                 return (
                                                   <button
                                                     onClick={() => !isBlocked && handleDelete(e)}
                                                     disabled={isBlocked}
-                                                    title={isActive ? `Already redistributed to ${e.redistributionTargetProjectName} — can't be deleted.` : undefined}
+                                                    title={isActive ? `Already redistributed to ${e.redistributionTargetProjectName} — can't be deleted.` : released ? "Part of this has been released by the warehouse — can't be deleted." : undefined}
                                                     style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 10px", borderRadius:8, border:"1px solid #fecaca", background: isBlocked ? "#f3f4f6" : "#fff", color: isBlocked ? "#9ca3af" : "#dc2626", fontSize:"0.7rem", fontWeight:600, cursor: isBlocked ? "not-allowed" : "pointer", whiteSpace:"nowrap" }}
                                                   >
                                                     <Trash2 style={{ width:11, height:11 }} /> {isDeleting ? "Deleting…" : "Delete"}

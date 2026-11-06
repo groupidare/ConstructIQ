@@ -103,6 +103,6 @@ public static class StockInSheetRows
         return found.Count == 1 ? found[0] : null;
     }
 
-    internal static string NameKey(string name) =>
+    public static string NameKey(string name) =>
         string.Join(' ', name.Trim().ToLowerInvariant().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 }

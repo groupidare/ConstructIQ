@@ -2,7 +2,7 @@
 // DeliveryInProgress (3) was missing here even though it's a real, reachable
 // status (see PurchaseOrderStatus enum's own comment on why it's out of
 // numeric order).
-export type PurchaseOrderStatus = "Pending" | "Approved" | "Delivered" | "DeliveryInProgress";
+export type PurchaseOrderStatus = "Pending" | "Approved" | "Delivered" | "DeliveryInProgress" | "Cancelled";
 
 export interface PurchaseOrderMaterial {
   id?: number;
@@ -36,6 +36,8 @@ export interface PurchaseOrder {
   originalPoNumber?: string | null;
   // Storage path of the PO's file (an imported PO keeps its document's).
   poFileUrl?: string | null;
+  // Warehouse's rating of the delivery: on time or late. Null until rated.
+  deliveredOnTime?: boolean | null;
 }
 
 export interface ImportPurchaseOrderRequest {

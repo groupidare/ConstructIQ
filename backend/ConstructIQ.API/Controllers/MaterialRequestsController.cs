@@ -180,6 +180,34 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         return Ok(groups);
     }
 
+    // For whoever can request materials for the project, unlike the worklist
+    // below: everything asked for, on a PO or not, without prices or quotes.
+    // A price check isn't asking for material, so it isn't one of these.
+    [HttpGet("project/{projectId:int}/sent")]
+    [Authorize(Roles = "Admin,ProjectManager,SiteEngineer")]
+    public async Task<IActionResult> GetSent(int projectId, [FromServices] Services.Interfaces.IProjectAccessService projectAccess)
+    {
+        var role = User.FindFirst(ClaimTypes.Role)?.Value ?? string.Empty;
+        if (!await projectAccess.CanEditProjectAsync(projectId, CurrentUserId, role))
+            return Forbid();
+
+        var sent = await db.MaterialRequests
+            .Where(r => r.ProjectId == projectId && !r.IsPriceInquiry)
+            .OrderByDescending(r => r.CreatedAt).ThenByDescending(r => r.Id)
+            .Select(r => new
+            {
+                Dto = new SentMaterialRequestDto
+                {
+                    Id = r.Id, BOQItemId = r.BOQItemId, MaterialName = r.Material.Name,
+                    Quantity = r.Quantity, Unit = r.Unit, IsAdditional = r.IsAdditional, CreatedAt = r.CreatedAt,
+                    PoNumber = r.FulfilledByPurchaseOrder != null ? r.FulfilledByPurchaseOrder.Number : null,
+                },
+                PoStatus = r.FulfilledByPurchaseOrder != null ? (PurchaseOrderStatus?)r.FulfilledByPurchaseOrder.Status : null,
+            })
+            .ToListAsync();
+        return Ok(sent.Select(r => r.Dto with { PoStatus = r.PoStatus?.ToString() }).ToList());
+    }
+
     [HttpGet("project/{projectId:int}")]
     [Authorize(Roles = ManageRoles)]
     public async Task<IActionResult> GetForProject(int projectId, [FromQuery] bool? priceInquiry = null)
@@ -197,7 +225,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         var materialIds = requests.Select(r => r.MaterialId).Distinct().ToList();
         // "Last paid": the latest priced PO line, this system's or a historical project's.
         var pricedLines = (await db.PurchaseOrderMaterials
-                .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value))
+                .Where(m => m.UnitPrice != null && m.MaterialId != null && materialIds.Contains(m.MaterialId.Value)
+                    && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
                 .Select(m => new { MaterialId = m.MaterialId!.Value, m.Unit, Price = m.UnitPrice!.Value, Supplier = (string?)m.PurchaseOrder.Supplier.Name, Date = m.PurchaseOrder.OrderDate })
                 .ToListAsync())
             .Concat(await db.HistoricalMaterialSupplies
@@ -336,39 +365,46 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
     // (by rating), then everyone else by overall rating — so a material with
     // no order history yet still gets a usable, non-empty list.
     // With ?unit=, each supplier also carries its own last price for this
-    // material in that unit — what the quote auto-fills when it's picked.
+    // material in that unit — what the quote auto-fills when it's picked —
+    // and, for the form's auto-fill when that history is thin, its last price
+    // for a similar material in that unit and whether it supplies the same
+    // kind of material (see MaterialNameMatch). A supplier saved under two
+    // spellings is listed once, with its latest, lowest price.
     [HttpGet("suggested-suppliers/{materialId:int}")]
     [Authorize(Roles = ManageRoles)]
     public async Task<IActionResult> GetSuggestedSuppliers(int materialId, [FromQuery] string? unit = null)
     {
-        // Who has supplied this material, from this system's POs and from
-        // historical projects' PO lines (HistoricalMaterialSupply, dated by
-        // its PO DATE, else the project's end).
-        var supplierIdsWithHistory = (await db.PurchaseOrderMaterials
-            .Include(m => m.PurchaseOrder)
-            .Where(m => m.MaterialId == materialId)
-            .Select(m => m.PurchaseOrder.SupplierId)
-            .Distinct()
-            .ToListAsync())
-            .Concat(await db.HistoricalMaterialSupplies
-                .Where(h => h.BOQItem.MaterialId == materialId && h.SupplierId != null)
-                .Select(h => h.SupplierId!.Value)
-                .Distinct()
-                .ToListAsync())
-            .ToHashSet();
+        var targetName = await db.Materials.Where(m => m.Id == materialId).Select(m => m.Name).FirstOrDefaultAsync() ?? "";
+        var catalog = await db.Materials.Where(m => m.Id != materialId).Select(m => new { m.Id, m.Name }).ToListAsync();
+        var similarIds = catalog.Where(m => MaterialNameMatch.IsSimilar(targetName, m.Name)).Select(m => m.Id).ToHashSet();
+        var kindIds = catalog.Where(m => MaterialNameMatch.IsSameKind(targetName, m.Name)).Select(m => m.Id).ToHashSet();
+        var nameOf = catalog.ToDictionary(m => m.Id, m => m.Name);
+        var relevant = similarIds.Concat(kindIds).Append(materialId).Distinct().ToList();
 
-        var lastPrices = (string.IsNullOrWhiteSpace(unit) ? [] : (await db.PurchaseOrderMaterials
-                .Where(m => m.MaterialId == materialId && m.UnitPrice != null)
-                .Select(m => new SupplierPrice(m.PurchaseOrder.SupplierId, m.Unit, m.UnitPrice!.Value, m.PurchaseOrder.OrderDate))
+        // Supply lines for this material and the related ones, from this
+        // system's POs and historical projects' PO lines (HistoricalMaterialSupply,
+        // dated by its PO DATE, else the project's end).
+        var lines = (await db.PurchaseOrderMaterials
+                .Where(m => m.MaterialId != null && relevant.Contains(m.MaterialId.Value) && m.PurchaseOrder.Status != PurchaseOrderStatus.Cancelled)
+                .Select(m => new SupplyLine(m.PurchaseOrder.SupplierId, m.MaterialId!.Value, m.Unit, m.UnitPrice, m.PurchaseOrder.OrderDate))
                 .ToListAsync())
             .Concat(await db.HistoricalMaterialSupplies
-                .Where(h => h.BOQItem.MaterialId == materialId && h.SupplierId != null && h.UnitCost != null)
-                .Select(h => new SupplierPrice(h.SupplierId!.Value, h.Unit, h.UnitCost!.Value, h.PoDate ?? h.BOQItem.Project.TargetEndDate))
-                .ToListAsync()))
-            .Where(p => SameUnit(p.Unit, unit))
-            .GroupBy(p => p.SupplierId)
-            // Each supplier's price on its latest PO; the lower one if two share that date.
-            .ToDictionary(g => g.Key, g => g.OrderByDescending(p => p.Date.Date).ThenBy(p => p.Price).First());
+                .Where(h => h.SupplierId != null && relevant.Contains(h.BOQItem.MaterialId))
+                .Select(h => new SupplyLine(h.SupplierId!.Value, h.BOQItem.MaterialId, h.Unit, h.UnitCost, h.PoDate ?? h.BOQItem.Project.TargetEndDate))
+                .ToListAsync())
+            .ToList();
+
+        // Each supplier's price on its latest PO; the lower one if two share that date.
+        Dictionary<int, SupplyLine> LatestPrices(Func<SupplyLine, bool> which) => string.IsNullOrWhiteSpace(unit)
+            ? []
+            : lines.Where(l => l.Price != null && which(l) && SameUnit(l.Unit, unit))
+                .GroupBy(l => l.SupplierId)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(l => l.Date.Date).ThenBy(l => l.Price).First());
+
+        var supplierIdsWithHistory = lines.Where(l => l.MaterialId == materialId).Select(l => l.SupplierId).ToHashSet();
+        var lastPrices = LatestPrices(l => l.MaterialId == materialId);
+        var similarPrices = LatestPrices(l => similarIds.Contains(l.MaterialId));
+        var kindSupplierIds = lines.Where(l => l.MaterialId != materialId).Select(l => l.SupplierId).ToHashSet();
 
         var suppliers = await db.Suppliers
             .Include(s => s.PurchaseOrders).ThenInclude(po => po.Evaluation)
@@ -378,12 +414,33 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
             .Select(s =>
             {
                 var (rating, onTimePct, deliveries) = ComputeStats(s);
+                var own = lastPrices.GetValueOrDefault(s.Id);
+                var similar = similarPrices.GetValueOrDefault(s.Id);
                 return new SuggestedSupplierDto
                 {
                     Id = s.Id, Name = s.Name, Rating = rating, OnTimePct = onTimePct, Deliveries = deliveries,
                     HasHistoryWithMaterial = supplierIdsWithHistory.Contains(s.Id),
-                    LastUnitPrice = lastPrices.GetValueOrDefault(s.Id)?.Price,
-                    LastPriceDate = lastPrices.GetValueOrDefault(s.Id)?.Date,
+                    LastUnitPrice = own?.Price,
+                    LastPriceDate = own?.Date,
+                    SimilarUnitPrice = similar?.Price,
+                    SimilarPriceDate = similar?.Date,
+                    SimilarMaterialName = similar is null ? null : nameOf.GetValueOrDefault(similar.MaterialId),
+                    SuppliesSameKind = kindSupplierIds.Contains(s.Id),
+                };
+            })
+            // One entry per supplier, however its name was written: the one
+            // with the latest, lowest price for this material.
+            .GroupBy(s => MaterialNameMatch.SupplierKey(s.Name))
+            .Select(g =>
+            {
+                var pick = g.OrderByDescending(s => s.LastPriceDate?.Date).ThenBy(s => s.LastUnitPrice ?? decimal.MaxValue)
+                    .ThenByDescending(s => s.SimilarPriceDate?.Date).ThenBy(s => s.SimilarUnitPrice ?? decimal.MaxValue)
+                    .ThenByDescending(s => s.Deliveries)
+                    .First();
+                return pick with
+                {
+                    HasHistoryWithMaterial = g.Any(s => s.HasHistoryWithMaterial),
+                    SuppliesSameKind = g.Any(s => s.SuppliesSameKind),
                 };
             })
             .OrderByDescending(s => s.HasHistoryWithMaterial)
@@ -393,6 +450,8 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
 
         return Ok(ranked);
     }
+
+    private sealed record SupplyLine(int SupplierId, int MaterialId, string Unit, decimal? Price, DateTime Date);
 
     // One PurchaseOrder per unique supplier named across the assignments —
     // materials sharing a supplier land on the same PO/number; a request is
@@ -519,8 +578,6 @@ public class MaterialRequestsController(AppDbContext db, Services.Interfaces.INo
         var onTimePct = (int)Math.Round(rated.Count(e => e.OnTime) * 100.0 / rated.Count);
         return (Math.Round(rating, 1), onTimePct, deliveries);
     }
-
-    private sealed record SupplierPrice(int SupplierId, string Unit, decimal Price, DateTime Date);
 
     public const int DefaultLeadDays = 7;
 

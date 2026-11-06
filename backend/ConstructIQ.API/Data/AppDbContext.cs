@@ -43,6 +43,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<PurchaseRequest>          PurchaseRequests          => Set<PurchaseRequest>();
     public DbSet<RedistributionRequest>    RedistributionRequests    => Set<RedistributionRequest>();
     public DbSet<WarehouseRequest>         WarehouseRequests         => Set<WarehouseRequest>();
+    public DbSet<WarehouseReleaseSource>   WarehouseReleaseSources   => Set<WarehouseReleaseSource>();
     public DbSet<HistoricalMaterialSupply> HistoricalMaterialSupplies => Set<HistoricalMaterialSupply>();
     public DbSet<ActivityLog>              ActivityLogs              => Set<ActivityLog>();
     public DbSet<Measurement>              Measurements              => Set<Measurement>();
@@ -115,6 +116,19 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .WithMany()
             .HasForeignKey(w => w.BOQItemId)
             .OnDelete(DeleteBehavior.SetNull);
+
+        mb.Entity<WarehouseReleaseSource>()
+            .HasOne(s => s.WarehouseRequest)
+            .WithMany(w => w.ReleaseSources)
+            .HasForeignKey(s => s.WarehouseRequestId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Only goes when its project does; ExcessWasteService refuses otherwise.
+        mb.Entity<WarehouseReleaseSource>()
+            .HasOne(s => s.ExcessWasteRecord)
+            .WithMany()
+            .HasForeignKey(s => s.ExcessWasteRecordId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         mb.Entity<MaterialRequest>()
             .HasOne(m => m.BOQItem)

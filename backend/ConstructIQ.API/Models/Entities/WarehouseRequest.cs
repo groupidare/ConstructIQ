@@ -50,4 +50,15 @@ public class WarehouseRequest
     public int?  ApprovedByUserId { get; set; }
     public User? ApprovedBy       { get; set; }
     public DateTime? ApprovedAt   { get; set; }
+
+    // Whose logged Excess this release used up, if any.
+    public List<WarehouseReleaseSource> ReleaseSources { get; set; } = [];
+
+    // An approved release also goes into the warehouse Google Sheet's STOCK OUT
+    // (ExcessSheetSyncService). Pending until written; a failed write stays
+    // pending and is retried. SheetSyncError carries the last failure, or why
+    // it wasn't written.
+    public bool SheetSyncPending { get; set; }
+    public DateTime? SheetSyncedAt { get; set; }
+    [MaxLength(300)] public string? SheetSyncError { get; set; }
 }

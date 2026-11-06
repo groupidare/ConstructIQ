@@ -20,6 +20,8 @@ export interface WarehouseRequest {
   linkedStockName?: string | null;
   linkedStockUnit?: string | null;
   linkedStockBalance?: number | null;
+  // Whose logged excess this release used up, oldest first.
+  releaseSources?: { projectName: string; quantity: number }[];
 }
 
 // Several rows' requests sent at once, to the warehouse or to Procurement.

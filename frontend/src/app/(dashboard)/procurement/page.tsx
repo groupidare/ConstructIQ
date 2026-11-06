@@ -16,6 +16,7 @@ import { useAuthStore } from "@/store/authStore";
 import { RISK_VISUALS, RISK_VISUALS_DARK } from "@/lib/weather";
 import { computeWeatherAtRiskOrders } from "@/lib/deliveryRisk";
 import api from "@/lib/api";
+import { displayPoNumber } from "@/lib/poNumber";
 import { resolveUploadUrl } from "@/lib/avatar";
 import { formatCurrency, formatDate } from "@/lib/utils";
 
@@ -36,7 +37,7 @@ function toDisplayDate(dateStr: string): string {
 
 // ── Types & data ──────────────────────────────────────────────────────────────
 
-type POStatus = "PENDING" | "APPROVED" | "DELIVERY_IN_PROGRESS" | "DELIVERED" | "DELAYED";
+type POStatus = "PENDING" | "APPROVED" | "DELIVERY_IN_PROGRESS" | "DELIVERED" | "CANCELLED";
 
 interface POMaterial {
   name: string;
@@ -79,18 +80,18 @@ interface PO {
   originalPoNumber: string | null;
 }
 
-// "Imported · PO 2024-118" under an imported PO's number.
+// A small "Imported" tag beside an imported PO's number.
 function ImportedTag({ po }: { po: PO }) {
   if (!po.isImported) return null;
   return (
-    <span style={{ display: "block", fontSize: "0.65rem", color: "#6b7280", fontWeight: 500, marginTop: 2 }}>
-      Imported{po.originalPoNumber ? ` · original PO ${po.originalPoNumber}` : ""}
+    <span title={`An existing PO imported from a file — not made in ConstructIQ (system no. ${po.number})`}
+      style={{ display: "inline-block", marginTop: 3, fontSize: "0.58rem", fontWeight: 700, padding: "1px 6px", borderRadius: 999, background: "#ede9fe", color: "#6d28d9" }}>
+      IMPORTED
     </span>
   );
 }
 
-// DELAYED is never manually selectable — it's derived from the expected date
-// having passed while the order is still PENDING/APPROVED. DELIVERED isn't
+// DELIVERED isn't
 // offered here at all — only WarehousePersonnel can click it (see their own
 // dropdown further down), since they're the only ones who physically receive
 // the goods; Admin/ProjectManager/ProcurementOfficer manage the lifecycle up
@@ -102,19 +103,14 @@ const PO_STATUS_STYLE: Record<POStatus, { bg: string; color: string }> = {
   APPROVED:              { bg: "#dcfce7", color: "#15803d"  },
   DELIVERY_IN_PROGRESS:  { bg: "#e0e7ff", color: "#4338ca"  },
   DELIVERED:             { bg: "#f3f4f6", color: "#374151"  },
-  DELAYED:               { bg: "#fee2e2", color: "#dc2626"  },
+  CANCELLED:             { bg: "#fee2e2", color: "#b91c1c"  },
 };
 
-const STATUS_SORT_ORDER: Record<POStatus, number> = { DELAYED: 0, PENDING: 1, APPROVED: 2, DELIVERY_IN_PROGRESS: 3, DELIVERED: 4 };
+const STATUS_SORT_ORDER: Record<POStatus, number> = { PENDING: 0, APPROVED: 1, DELIVERY_IN_PROGRESS: 2, DELIVERED: 3, CANCELLED: 4 };
 
-// A non-delivered, not-yet-in-progress order becomes DELAYED the moment its
-// expected date passes — this is computed, never stored, so it can't drift
-// out of sync or be set by hand. Once delivery has actually started, the real
-// status is more useful than a stale "was this late" guess.
+// The status shown is the PO's own — no "Delayed" is worked out from the
+// expected date any more (POs no longer get one entered by hand).
 function getEffectiveStatus(po: PO): POStatus {
-  if (po.status === "DELIVERED" || po.status === "DELIVERY_IN_PROGRESS") return po.status;
-  const expected = new Date(po.expectedDate).getTime();
-  if (!Number.isNaN(expected) && expected < Date.now()) return "DELAYED";
   return po.status;
 }
 
@@ -333,6 +329,9 @@ interface QuoteDraft {
   price: string;
   // True while the price is the supplier's last recorded price, untouched.
   fromHistory: boolean;
+  // Why an auto-filled slot holds this supplier/price, when it isn't the
+  // material's own PO history (a similar material, or the same kind).
+  note?: string;
 }
 
 interface RequestRow {
@@ -370,6 +369,12 @@ interface SuggestedSupplier {
   hasHistoryWithMaterial: boolean;
   lastUnitPrice: number | null;
   lastPriceDate: string | null;
+  // Its latest price for a similar material in this unit, when it has none of its own.
+  similarUnitPrice?: number | null;
+  similarPriceDate?: string | null;
+  similarMaterialName?: string | null;
+  // Has supplied a material of the same kind.
+  suppliesSameKind?: boolean;
 }
 
 interface ApiProjectWithRequests { projectId: number; projectName: string; pendingCount: number; forApprovalCount?: number; }
@@ -385,6 +390,8 @@ interface ApiMaterialRequest {
 interface ApiSuggestedSupplier {
   id: number; name: string; rating: number; onTimePct: number; deliveries: number; hasHistoryWithMaterial: boolean;
   lastUnitPrice?: number | null; lastPriceDate?: string | null;
+  similarUnitPrice?: number | null; similarPriceDate?: string | null; similarMaterialName?: string | null;
+  suppliesSameKind?: boolean;
 }
 interface ApiGeneratedResult {
   purchaseOrders: unknown[];
@@ -415,22 +422,53 @@ function mapRequestRow(a: ApiMaterialRequest): RequestRow {
   };
 }
 
-// Fills a material's empty supplier slots with the suppliers who sold it
-// most recently in its unit, at their latest PO price — skipping any already
-// listed. Slots already filled in are left as they are.
+// One supplier written two ways ("… Trading" / "… Trading Corp.") is one
+// supplier — the same folding as the server's MaterialNameMatch.SupplierKey.
+const COMPANY_SUFFIXES = new Set(["inc", "incorporated", "corp", "corporation", "co", "company", "ltd", "limited", "llc", "opc", "phil", "phils", "philippines"]);
+function supplierKey(name: string): string {
+  return name.toLowerCase().replace(/&/g, " and ").split(/[^a-z0-9]+/).filter(w => w && !COMPANY_SUFFIXES.has(w)).join(" ");
+}
+
+// Fills a material's empty supplier slots, each with a different supplier:
+// first those who sold this material in its unit (latest PO price), then
+// those who sold a similar material in that unit (their price, marked as
+// such), then suppliers of the same kind of material (no price — type it
+// in). Slots already filled in are left as they are; fewer suppliers on
+// record means fewer slots filled, never the same supplier twice.
 function prefillSuppliers(row: RequestRow, suggested: SuggestedSupplier[]): RequestRow {
   if (row.forApproval) return row;
-  const listed = new Set(row.quotes.map(q => q.supplierName.trim().toLowerCase()).filter(Boolean));
-  const latest = suggested
-    .filter(x => x.lastUnitPrice != null && !listed.has(x.name.trim().toLowerCase()))
-    .sort((a, b) => (b.lastPriceDate ?? "").localeCompare(a.lastPriceDate ?? ""));
-  if (latest.length === 0) return row;
+  // An auto-filled slot repeating a supplier already listed is cleared first.
+  const seen = new Set<string>();
+  row = { ...row, quotes: row.quotes.map(q => {
+    const key = supplierKey(q.supplierName);
+    if (!key) return q;
+    if (seen.has(key) && q.fromHistory) return emptyQuote();
+    seen.add(key);
+    return q;
+  }) };
+  const listed = new Set(row.quotes.map(q => supplierKey(q.supplierName)).filter(Boolean));
+  const byDate = (a?: string | null, b?: string | null) => (b ?? "").localeCompare(a ?? "");
+  const candidates: QuoteDraft[] = [];
+  const take = (x: SuggestedSupplier, quote: QuoteDraft) => {
+    const key = supplierKey(x.name);
+    if (!key || listed.has(key)) return;
+    listed.add(key);
+    candidates.push(quote);
+  };
+  suggested.filter(x => x.lastUnitPrice != null)
+    .sort((a, b) => byDate(a.lastPriceDate, b.lastPriceDate) || a.lastUnitPrice! - b.lastUnitPrice!)
+    .forEach(x => take(x, { supplierName: x.name, price: String(x.lastUnitPrice), fromHistory: true }));
+  suggested.filter(x => x.lastUnitPrice == null && x.similarUnitPrice != null)
+    .sort((a, b) => byDate(a.similarPriceDate, b.similarPriceDate) || a.similarUnitPrice! - b.similarUnitPrice!)
+    .forEach(x => take(x, { supplierName: x.name, price: String(x.similarUnitPrice), fromHistory: true,
+      note: `Price from a similar material: ${x.similarMaterialName ?? "—"}` }));
+  suggested.filter(x => x.lastUnitPrice == null && x.similarUnitPrice == null && x.suppliesSameKind)
+    .sort((a, b) => b.rating - a.rating || b.deliveries - a.deliveries)
+    .forEach(x => take(x, { supplierName: x.name, price: "", fromHistory: false,
+      note: "Supplies this kind of material — enter a price" }));
+  if (candidates.length === 0) return row;
   let next = 0;
-  const quotes = row.quotes.map(q => {
-    if (q.supplierName.trim() || next >= latest.length) return q;
-    const x = latest[next++];
-    return { supplierName: x.name, price: String(x.lastUnitPrice), fromHistory: true };
-  });
+  const quotes = row.quotes.map(q => (q.supplierName.trim() || next >= candidates.length ? q : candidates[next++]));
   return { ...row, quotes };
 }
 
@@ -449,6 +487,15 @@ function selectedSlot(row: RequestRow): number {
   const priced = named.filter(x => quotePrice(x.q) != null);
   if (priced.length > 0) return priced.reduce((a, b) => (quotePrice(b.q)! < quotePrice(a.q)! ? b : a)).i;
   return named.length > 0 ? named[0].i : -1;
+}
+
+// The review's recommended supplier: the lowest price; on a tie, the better
+// delivery rating. -1 with fewer than two priced suppliers to compare.
+function recommendedSlot(row: RequestRow, ratingOf: (supplierName: string) => number): number {
+  const priced = row.quotes.map((q, i) => ({ q, i, price: quotePrice(q) })).filter(x => x.q.supplierName.trim() && x.price != null);
+  if (priced.length < 2) return -1;
+  return priced.reduce((a, b) =>
+    b.price! < a.price! || (b.price === a.price && ratingOf(b.q.supplierName) > ratingOf(a.q.supplierName)) ? b : a).i;
 }
 
 function lowestSlot(row: RequestRow): number {
@@ -481,7 +528,7 @@ function rowQty(row: RequestRow): number | null {
 function quoteProblem(row: RequestRow): string | null {
   if (rowQty(row) == null) return `${row.materialName}: quantity must be greater than zero.`;
   const named = row.quotes.filter(q => q.supplierName.trim());
-  const names = named.map(q => q.supplierName.trim().toLowerCase());
+  const names = named.map(q => supplierKey(q.supplierName));
   if (new Set(names).size !== names.length) return `${row.materialName}: the same supplier is listed twice.`;
   for (const q of named) {
     if (q.price.trim() && (quotePrice(q) == null || quotePrice(q)! < 0))
@@ -493,8 +540,8 @@ function quoteProblem(row: RequestRow): string | null {
 // ── Export CSV ────────────────────────────────────────────────────────────────
 
 function exportPOs(orders: PO[]) {
-  const header = ["PO Number","Project Name","Supplier","Status","Expected Date","Materials"];
-  const rows = orders.map(p => [p.number, `"${p.projectName}"`, `"${p.supplier}"`, getEffectiveStatus(p), p.expectedDate, `"${p.materials.map(m => `${m.name} (${m.qty})`).join("; ")}"`].join(","));
+  const header = ["PO Number","Project Name","Supplier","Status","Est. Delivery","Materials"];
+  const rows = orders.map(p => [displayPoNumber(p), `"${p.projectName}"`, `"${p.supplier}"`, getEffectiveStatus(p), p.expectedDate, `"${p.materials.map(m => `${m.name} (${m.qty})`).join("; ")}"`].join(","));
   const csv = [header.join(","), ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
@@ -593,7 +640,7 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
       } else if (current.fromHistory) {
         quotes[slot] = { supplierName, price: "", fromHistory: false };
       } else {
-        quotes[slot] = { ...current, supplierName };
+        quotes[slot] = { ...current, supplierName, note: undefined };
       }
       return { ...r, quotes };
     });
@@ -602,7 +649,7 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
   function setPrice(row: RequestRow, slot: number, price: string) {
     updateRow(row.id, r => {
       const quotes = [...r.quotes];
-      quotes[slot] = { ...quotes[slot], price, fromHistory: false };
+      quotes[slot] = { ...quotes[slot], price, fromHistory: false, note: undefined };
       return { ...r, quotes };
     });
   }
@@ -750,6 +797,53 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                     At the review, choose the one supplier to buy each material from; <b>Generate P.O. Number</b> then makes the purchase orders.</>
                 )}
               </p>
+              {rows.length === 0 && (
+                <p style={{ fontSize: "0.85rem", color: "#9ca3af", textAlign: "center", padding: "1.5rem 0" }}>
+                  {priceOnly ? "No materials waiting for a quotation." : "No pending requests for this project."}
+                </p>
+              )}
+              {(priceOnly
+                ? [{ key: "all", title: "", hint: "", list: rows }]
+                : [
+                    { key: "entry", title: "New requests", hint: "Fill in the suppliers and prices, then Save Request.", list: entryRows },
+                    { key: "review", title: "For Approval", hint: "Choose the one supplier to buy each material from, then Generate P.O. Number.", list: reviewRows },
+                  ]
+              ).filter(section => section.list.length > 0).map(section => (
+              <div key={section.key} style={priceOnly ? undefined : {
+                border: `1px solid ${section.key === "review" ? "#ddd6fe" : "#e5e7eb"}`, borderRadius: 12,
+                marginBottom: "1rem", overflow: "hidden", background: section.key === "review" ? "#fcfbff" : "#fff",
+              }}>
+              {!priceOnly && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "0.7rem 0.9rem",
+                  borderBottom: "1px solid #f3f4f6", background: section.key === "review" ? "#f5f3ff" : "#f9fafb" }}>
+                  <div>
+                    <p style={{ fontWeight: 800, fontSize: "0.85rem", color: section.key === "review" ? "#6d28d9" : "#111827", margin: 0 }}>
+                      {section.title} <span style={{ fontWeight: 600, color: "#9ca3af" }}>· {section.list.length}</span>
+                    </p>
+                    <p style={{ fontSize: "0.68rem", color: "#6b7280", margin: "2px 0 0" }}>{section.hint}</p>
+                  </div>
+                  {section.key === "entry" ? (
+                    <button onClick={handleSave} disabled={busy} style={{
+                      padding: "8px 16px", borderRadius: 8, border: "none", background: "#111827", color: "#fff",
+                      fontWeight: 700, fontSize: "0.8rem", cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.7 : 1,
+                    }}>
+                      {saving ? "Saving…" : "Save Request"}
+                    </button>
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {!allChosen && <span style={{ fontSize: "0.68rem", color: "#6b7280" }}>Choose a supplier for every material first.</span>}
+                      {/* Active only once every material here has its supplier chosen. */}
+                      <button onClick={handleGenerate} disabled={busy || !allChosen} style={{
+                        padding: "8px 16px", borderRadius: 8, border: "none",
+                        background: allChosen ? "#f97316" : "#e5e7eb", color: allChosen ? "#fff" : "#6b7280", fontWeight: 700, fontSize: "0.8rem",
+                        cursor: (busy || !allChosen) ? "not-allowed" : "pointer", opacity: busy ? 0.7 : 1,
+                      }}>
+                        {generating ? "Generating…" : "Generate P.O. Number"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
               <table style={{ width: "100%", minWidth: 1000, borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
@@ -763,16 +857,14 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.length === 0 && (
-                    <tr><td colSpan={10} style={{ ...td, textAlign: "center", color: "#9ca3af", padding: "1.5rem" }}>{priceOnly ? "No materials waiting for a quotation." : "No pending requests for this project."}</td></tr>
-                  )}
-                  {rows.map((r, idx) => {
+                  {section.list.map((r, idx) => {
                     const review = isReview(r);
                     const sel = selectedSlot(r);
                     const lowest = lowestSlot(r);
+                    const recommended = review ? recommendedSlot(r, name => historyFor(r, name)?.rating ?? 0) : -1;
                     const listId = datalistId(suggestionKey(r));
                     return (
-                      <tr key={r.id} style={{ background: review ? "#fafaff" : undefined }}>
+                      <tr key={r.id}>
                         <td style={{ ...td, color: "#9ca3af" }}>{idx + 1}</td>
                         <td style={{ ...td, fontWeight: 600, color: "#111827", minWidth: 150 }}>
                           {r.materialName}
@@ -825,11 +917,13 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                           // Requests tab: nothing is highlighted or recommended.
                           const chosenHere = review ? r.chosen === slot : priceOnly && slot === sel;
                           return (
-                            <td key={slot} style={{ ...td, background: named && chosenHere ? "#fff7ed" : undefined }}>
+                            <td key={slot} style={{ ...td, background: named && chosenHere && !review ? "#fff7ed" : undefined }}>
                               {review ? (
                                 named ? (
-                                  <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", padding: "4px 6px", borderRadius: 8,
-                                    border: `1px solid ${chosenHere ? "#fdba74" : "#e5e7eb"}` }}>
+                                  <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", padding: "6px 8px", borderRadius: 8,
+                                    // Chosen: solid orange. Recommended (not chosen yet): a faint orange tint.
+                                    border: `${chosenHere ? 2 : 1}px solid ${chosenHere ? "#f97316" : slot === recommended ? "#fed7aa" : "#e5e7eb"}`,
+                                    background: chosenHere ? "#fff7ed" : slot === recommended ? "#fffaf5" : "#fff" }}>
                                     <input type="radio" name={`mrf-choice-${r.id}`} checked={chosenHere}
                                       onChange={() => updateRow(r.id, x => ({ ...x, chosen: slot }))}
                                       aria-label={`Buy ${r.materialName} from ${q.supplierName}`} style={{ marginTop: 3 }} />
@@ -837,8 +931,21 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                                       <span style={{ fontWeight: chosenHere ? 700 : 500, color: "#111827" }}>{q.supplierName}</span>
                                       <span style={{ display: "block", color: "#6b7280" }}>{price != null ? `${formatCurrency(price)}/${r.unit}` : "No price"}</span>
                                       {price != null && <span style={{ display: "block", fontSize: "0.62rem", color: "#9ca3af" }}>Total {formatCurrency(price * (rowQty(r) ?? r.quantity))}</span>}
-                                      {slot === lowest && <span style={{ display: "block", fontSize: "0.62rem", color: "#15803d", fontWeight: 700 }}>Lowest price</span>}
-                                      {chosenHere && <span style={{ display: "block", fontSize: "0.62rem", color: "#c2410c", fontWeight: 700 }}>Chosen supplier</span>}
+                                      {past && (
+                                        <span style={{ display: "block", fontSize: "0.62rem", color: "#6b7280", marginTop: 2 }}
+                                          title="From Warehouse's delivery evaluations of this supplier's past POs">
+                                          {past.rating > 0
+                                            ? `★ ${past.rating.toFixed(1)} · ${past.onTimePct}% on time · ${past.deliveries} deliver${past.deliveries === 1 ? "y" : "ies"}`
+                                            : past.deliveries > 0 ? `No ratings yet · ${past.deliveries} deliver${past.deliveries === 1 ? "y" : "ies"}` : "No ratings yet"}
+                                        </span>
+                                      )}
+                                      {slot === recommended && (
+                                        <span title="Lowest price of the quotes; on a tie, the better-rated supplier"
+                                          style={{ display: "inline-block", marginTop: 4, padding: "1px 7px", borderRadius: 999, background: "#ffedd5", color: "#c2410c", fontSize: "0.6rem", fontWeight: 700 }}>
+                                          ★ RECOMMENDED · LOWEST PRICE
+                                        </span>
+                                      )}
+                                      {chosenHere && <span style={{ display: "block", marginTop: 4, fontSize: "0.62rem", color: "#c2410c", fontWeight: 700 }}>✓ Chosen supplier</span>}
                                     </span>
                                   </label>
                                 ) : <span style={{ color: "#d1d5db" }}>—</span>
@@ -872,7 +979,8 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                                       )}
                                       <span style={{ fontSize: "0.62rem", color: "#9ca3af", textAlign: "right" }}>
                                         {priceOnly && slot === lowest && <span style={{ color: "#15803d", fontWeight: 700 }}>Lowest · </span>}
-                                        {q.fromHistory && past?.lastPriceDate ? `Last PO ${formatDate(past.lastPriceDate)}` : q.price.trim() && !q.fromHistory ? "Entered" : past?.hasHistoryWithMaterial ? "" : "New supplier"}
+                                        {q.note ? <span style={{ color: "#b45309" }}>{q.note}</span>
+                                          : q.fromHistory && past?.lastPriceDate ? `Last PO ${formatDate(past.lastPriceDate)}` : q.price.trim() && !q.fromHistory ? "Entered" : past?.hasHistoryWithMaterial ? "" : "New supplier"}
                                       </span>
                                     </div>
                                   )}
@@ -923,6 +1031,8 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
                   })}
                 </tbody>
               </table>
+              </div>
+              ))}
               {/* One suggestion list per material + unit, shared by its supplier fields. */}
               {Object.entries(suggestions).map(([key, list]) => (
                 <datalist key={key} id={datalistId(key)}>
@@ -934,34 +1044,17 @@ function RequestsOverlayModal({ projectId, projectName, priceOnly, onClose, onCh
           )}
         </div>
 
-        <div style={{ padding: "1rem 1.5rem 1.25rem", flexShrink: 0, borderTop: "1px solid #f3f4f6", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "1rem", flexWrap: "wrap" }}>
-          {!priceOnly && reviewRows.length > 0 && !allChosen && (
-            <span style={{ fontSize: "0.72rem", color: "#6b7280" }}>
-              Choose one supplier for each material marked For Approval to generate the PO.
-            </span>
-          )}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {(priceOnly || entryRows.length > 0) && (
-              <button onClick={handleSave} disabled={busy || entryRows.length === 0} style={{
-                padding: "10px 16px", borderRadius: 8, border: priceOnly ? "1px solid #e5e7eb" : "none",
-                background: priceOnly ? "#fff" : "#111827", color: priceOnly ? "#374151" : "#fff",
-                fontWeight: 700, fontSize: "0.85rem", cursor: (busy || entryRows.length === 0) ? "not-allowed" : "pointer", opacity: (busy || entryRows.length === 0) ? 0.7 : 1,
-              }}>
-                {saving ? "Saving…" : priceOnly ? "Save Quotations" : "Save Request"}
-              </button>
-            )}
-            {/* Only once a request is saved, and active once every material has its supplier chosen. */}
-            {!priceOnly && reviewRows.length > 0 && (
-              <button onClick={handleGenerate} disabled={busy || !allChosen} style={{
-                display: "flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 8, border: "none",
-                background: allChosen ? "#f97316" : "#e5e7eb", color: allChosen ? "#fff" : "#6b7280", fontWeight: 700, fontSize: "0.85rem",
-                cursor: (busy || !allChosen) ? "not-allowed" : "pointer", opacity: busy ? 0.7 : 1,
-              }}>
-                {generating ? "Generating…" : "Generate P.O. Number"}
-              </button>
-            )}
+        {priceOnly && (
+          <div style={{ padding: "1rem 1.5rem 1.25rem", flexShrink: 0, borderTop: "1px solid #f3f4f6", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "1rem", flexWrap: "wrap" }}>
+            <button onClick={handleSave} disabled={busy || entryRows.length === 0} style={{
+              padding: "10px 16px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151",
+              fontWeight: 700, fontSize: "0.85rem", cursor: (busy || entryRows.length === 0) ? "not-allowed" : "pointer", opacity: (busy || entryRows.length === 0) ? 0.7 : 1,
+            }}>
+              {saving ? "Saving…" : "Save Quotations"}
+            </button>
           </div>
-        </div>
+        )}
+        {!priceOnly && <div style={{ height: "0.75rem", flexShrink: 0 }} />}
       </div>
     </div>
   );
@@ -976,10 +1069,10 @@ function ViewPOModal({ po, onClose }: { po: PO; onClose: () => void }) {
       <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, padding: "1.75rem", width: 440, boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>
           <div>
-            <p style={{ fontWeight: 800, fontSize: "1.05rem", color: "#f97316" }}>{po.number}</p>
+            <p style={{ fontWeight: 800, fontSize: "1.05rem", color: "#f97316" }}>{displayPoNumber(po)}</p>
             <ImportedTag po={po} />
             <p style={{ fontSize: "0.82rem", color: "#111827", fontWeight: 600, marginTop: 2 }}>{po.projectName}</p>
-            <p style={{ fontSize: "0.75rem", color: "#9ca3af", marginTop: 2 }}>{po.supplier} · {po.expectedDate}</p>
+            <p style={{ fontSize: "0.75rem", color: "#9ca3af", marginTop: 2 }} title="Estimated from the supplier's average lead time (7 days for a supplier with no deliveries yet)">{po.supplier} · Est. delivery {po.expectedDate}</p>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
         </div>
@@ -1509,7 +1602,7 @@ function DeliveryBatchModal({ po, onClose, onSaveBatch, onComplete }: {
             </div>
             <div>
               <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>Proof of Delivery</h2>
-              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{po.number} · {po.supplier}</p>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{displayPoNumber(po)} · {po.supplier}</p>
             </div>
           </div>
           <button onClick={handleClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
@@ -1682,7 +1775,7 @@ function RateSupplierModal({ po, supplier, onClose, onSubmit }: {
             </div>
             <div>
               <h2 style={{ fontWeight: 800, fontSize: "1.05rem", margin: 0 }}>Rate the Supplier</h2>
-              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{po.number} · {po.supplier}</p>
+              <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: 0 }}>{displayPoNumber(po)} · {po.supplier}</p>
             </div>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X style={{ width: 18, height: 18 }} /></button>
@@ -1736,7 +1829,7 @@ function RateSupplierModal({ po, supplier, onClose, onSubmit }: {
 
           <div style={{ background: "#f9fafb", borderRadius: 8, padding: "0.75rem 1rem" }}>
             <p style={{ fontSize: "0.75rem", color: "#9ca3af", fontStyle: "italic" }}>
-              This evaluation is logged against <strong style={{ color: "#374151" }}>{po.number}</strong> and will contribute to{" "}
+              This evaluation is logged against <strong style={{ color: "#374151" }}>{displayPoNumber(po)}</strong> and will contribute to{" "}
               <strong style={{ color: "#374151" }}>{po.supplier}</strong>&apos;s aggregate performance score.
             </p>
           </div>
@@ -1869,10 +1962,29 @@ function ProcurementContent() {
 
   function countByStatus(s: POStatus) { return orders.filter(p => getEffectiveStatus(p) === s).length; }
 
-  const sortedOrders = useMemo(
-    () => [...orders].sort((a, b) => STATUS_SORT_ORDER[getEffectiveStatus(a)] - STATUS_SORT_ORDER[getEffectiveStatus(b)]),
+  // Purchase Orders tab: one supplier or all, then grouped by project —
+  // POs made in ConstructIQ and imported ones together.
+  const [poSupplierFilter, setPoSupplierFilter] = useState("");
+  const poSupplierNames = useMemo(
+    () => [...new Set(orders.map(o => o.supplier).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
     [orders]
   );
+  const sortedOrders = useMemo(
+    () => orders
+      .filter(o => !poSupplierFilter || o.supplier === poSupplierFilter)
+      .sort((a, b) => STATUS_SORT_ORDER[getEffectiveStatus(a)] - STATUS_SORT_ORDER[getEffectiveStatus(b)]
+        || displayPoNumber(a).localeCompare(displayPoNumber(b), undefined, { numeric: true })),
+    [orders, poSupplierFilter]
+  );
+  const ordersByProject = useMemo(() => {
+    const groups = new Map<number, { projectName: string; orders: PO[] }>();
+    for (const po of sortedOrders) {
+      const g = groups.get(po.projectId) ?? { projectName: po.projectName, orders: [] };
+      g.orders.push(po);
+      groups.set(po.projectId, g);
+    }
+    return [...groups.values()].sort((a, b) => a.projectName.localeCompare(b.projectName));
+  }, [sortedOrders]);
 
   const filteredSuppliers = useMemo(() => {
     const q = supplierSearch.trim().toLowerCase();
@@ -1897,7 +2009,7 @@ function ProcurementContent() {
     pending:   countByStatus("PENDING"),
     approved:  countByStatus("APPROVED"),
     delivered: countByStatus("DELIVERED"),
-    delayed:   countByStatus("DELAYED"),
+    delivering: countByStatus("DELIVERY_IN_PROGRESS"),
   };
 
   // Progressing delivery (in-progress or delivered) always opens the batch
@@ -1911,7 +2023,7 @@ function ProcurementContent() {
     try {
       await api.patch(`/purchase-orders/${po.id}/status`, { status: frontendStatusToApi(status) });
       await refetch();
-      toast.success(`${po.number} marked ${status.toLowerCase()}`);
+      toast.success(`${displayPoNumber(po)} marked ${status.toLowerCase()}`);
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(message ?? "Failed to update status.");
@@ -1934,12 +2046,42 @@ function ProcurementContent() {
     }
   }
 
+  // An imported PO, or a Pending one made here: removed for good (an
+  // imported PO's file goes with it). Past Pending, a PO is cancelled instead.
+  async function handleDeletePO(po: PO) {
+    const what = po.isImported
+      ? `Delete ${displayPoNumber(po)}?\n\nThis removes the PO, its ${po.materials.length} material line${po.materials.length === 1 ? "" : "s"} and its uploaded file. It can't be undone.`
+      : `Delete ${displayPoNumber(po)}?\n\nIts materials go back to the Requests tab as For Approval, to choose a supplier again. It can't be undone.`;
+    if (!window.confirm(what)) return;
+    try {
+      await api.delete(`/purchase-orders/${po.id}`);
+      toast.success(`${displayPoNumber(po)} deleted.`);
+      refetch().catch(() => { /* the list just stays as it was */ });
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to delete the purchase order.");
+    }
+  }
+
+  async function handleCancelPO(po: PO) {
+    if (!window.confirm(`Cancel ${displayPoNumber(po)}?\n\nIt stays on record as Cancelled and stops counting toward ordered cost and prices. Its materials go back to the Requests tab as For Approval, to choose a supplier again.`)) return;
+    try {
+      await api.post(`/purchase-orders/${po.id}/cancel`, {});
+      toast.success(`${displayPoNumber(po)} cancelled.`);
+      refetch().catch(() => { /* the list just stays as it was */ });
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(message ?? "Failed to cancel the purchase order.");
+    }
+  }
+
   async function handleCompleteDelivery(po: PO) {
     try {
       await api.post(`/purchase-orders/${po.id}/complete-delivery`, {});
-      await refetch();
+      // Done — close now; the list refreshes behind it.
       setDeliveryPOId(null);
-      toast.success(`${po.number} marked delivered.`);
+      toast.success(`${displayPoNumber(po)} marked delivered.`);
+      refetch().catch(() => { /* the list just stays as it was */ });
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(message ?? "Failed to complete delivery.");
@@ -1958,9 +2100,9 @@ function ProcurementContent() {
         ActualLeadDays: submission.actualLeadDays,
         Comments: submission.comments || undefined,
       });
-      await refetch();
       setRatingPOId(null);
       toast.success(`${po.supplier} rated.`);
+      refetch().catch(() => { /* the list just stays as it was */ });
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(message ?? "Failed to submit delivery evaluation.");
@@ -2042,7 +2184,7 @@ function ProcurementContent() {
             { icon: Clock,        color: "#6b7280", bg: "#f3f4f6", label: "Pending POs",  value: counts.pending   },
             { icon: CheckCircle2, color: "#16a34a", bg: "#dcfce7", label: "Approved POs", value: counts.approved  },
             { icon: PackageCheck, color: "#1d4ed8", bg: "#dbeafe", label: "Delivered",    value: counts.delivered },
-            { icon: AlertTriangle,color: "#dc2626", bg: "#fee2e2", label: "Delayed",      value: counts.delayed   },
+            { icon: Truck,        color: "#4338ca", bg: "#e0e7ff", label: "In Delivery",  value: counts.delivering },
           ].map(s => {
             const Icon = s.icon;
             return (
@@ -2253,7 +2395,12 @@ function ProcurementContent() {
                 <ShoppingCart style={{ width: 16, height: 16, color: "#f97316" }} />
                 <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Purchase Orders</span>
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <select value={poSupplierFilter} onChange={e => setPoSupplierFilter(e.target.value)} aria-label="Filter by supplier"
+                  style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", maxWidth: 260 }}>
+                  <option value="">All suppliers</option>
+                  {poSupplierNames.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
                 <button onClick={() => exportPOs(sortedOrders)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontSize: "0.8rem", fontWeight: 500, cursor: "pointer" }}>
                   <Download style={{ width: 14, height: 14 }} /> Export
                 </button>
@@ -2264,29 +2411,43 @@ function ProcurementContent() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
-                  {["PO NUMBER","PROJECT NAME","SUPPLIER","STATUS","EXPECTED DATE","VIEW"].map(h => (
+                  {["PO NUMBER","SUPPLIER","STATUS","EST. DELIVERY","VIEW"].map(h => (
                     <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontSize: "0.65rem", fontWeight: 700, color: "#9ca3af", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {sortedOrders.length === 0 ? (
-                  <tr><td colSpan={6} style={{ padding: "2rem 12px", textAlign: "center", color: "#9ca3af", fontSize: "0.85rem" }}>No purchase orders yet.</td></tr>
-                ) : sortedOrders.map((po, i) => {
+                  <tr><td colSpan={5} style={{ padding: "2rem 12px", textAlign: "center", color: "#9ca3af", fontSize: "0.85rem" }}>
+                    {poSupplierFilter ? `No purchase orders from ${poSupplierFilter}.` : "No purchase orders yet."}
+                  </td></tr>
+                ) : ordersByProject.flatMap(group => [
+                  <tr key={`project-${group.projectName}`}>
+                    <td colSpan={5} style={{ padding: "16px 12px 6px", borderBottom: "1px solid #f3f4f6" }}>
+                      <span style={{ fontSize: "0.85rem", fontWeight: 800, color: "#111827" }}>{group.projectName}</span>
+                      <span style={{ marginLeft: 8, fontSize: "0.7rem", color: "#9ca3af" }}>
+                        {group.orders.length} PO{group.orders.length === 1 ? "" : "s"}
+                        {group.orders.some(o => o.isImported) && group.orders.some(o => !o.isImported)
+                          ? ` · ${group.orders.filter(o => o.isImported).length} imported` : ""}
+                      </span>
+                    </td>
+                  </tr>,
+                  ...group.orders.map(po => {
                   const status = getEffectiveStatus(po);
                   const st = PO_STATUS_STYLE[status];
                   return (
-                    <tr key={po.id} style={{ borderBottom: i < sortedOrders.length - 1 ? "1px solid #f9fafb" : "none" }}>
+                    <tr key={po.id} style={{ borderBottom: "1px solid #f9fafb" }}>
                       <td style={{ padding: "14px 12px" }}>
-                        <span style={{ fontWeight: 700, fontSize: "0.8rem", color: "#f97316" }}>{po.number}</span>
+                        <span style={{ fontWeight: 700, fontSize: "0.8rem", color: "#f97316", display: "block" }}>{displayPoNumber(po)}</span>
                         <ImportedTag po={po} />
-                      </td>
-                      <td style={{ padding: "14px 12px" }}>
-                        <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#111827" }}>{po.projectName}</span>
                       </td>
                       <td style={{ padding: "14px 12px", fontSize: "0.78rem", color: "#6b7280" }}>{po.supplier}</td>
                       <td style={{ padding: "14px 12px" }}>
-                        {status === "DELIVERY_IN_PROGRESS" ? (
+                        {status === "CANCELLED" ? (
+                          <span style={{ fontSize: "0.7rem", fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: st.bg, color: st.color, whiteSpace: "nowrap" }}>
+                            · CANCELLED
+                          </span>
+                        ) : status === "DELIVERY_IN_PROGRESS" ? (
                           // Neither role picks this from a dropdown twice — it's already
                           // selected, so re-opening means clicking the pill to add another
                           // batch or complete the delivery.
@@ -2322,16 +2483,15 @@ function ProcurementContent() {
                           // rather than setting the status directly — the backend rejects a
                           // direct PATCH to DeliveryInProgress/Delivered either way).
                           <select
-                            value={status === "DELAYED" ? "DELAYED" : canManagePOs ? po.status : status}
+                            value={canManagePOs ? po.status : status}
                             onChange={e => handleStatusSelect(po, e.target.value as POStatus)}
-                            title={status === "DELAYED" ? "Past its expected delivery date" : !canManagePOs ? "You can only mark this purchase order as delivered" : undefined}
+                            title={!canManagePOs ? "You can only mark this purchase order as delivered" : undefined}
                             style={{
                               fontSize: "0.7rem", fontWeight: 700, padding: "3px 8px", borderRadius: 999,
                               background: st.bg, color: st.color, border: "none", cursor: "pointer", outline: "none",
                               appearance: "none" as const,
                             }}
                           >
-                            {status === "DELAYED" && <option value="DELAYED" disabled hidden>DELAYED</option>}
                             {canManagePOs
                               ? PO_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)
                               : <option value={status} disabled hidden>{statusLabel(status)}</option>}
@@ -2345,13 +2505,28 @@ function ProcurementContent() {
                       </td>
                       <td style={{ padding: "14px 12px", fontSize: "0.78rem", color: "#6b7280", whiteSpace: "nowrap" }}>{po.expectedDate}</td>
                       <td style={{ padding: "14px 12px" }}>
-                        <button title="View materials" onClick={() => setViewingPOId(po.id)} style={{ color: "#9ca3af", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-                          <Eye style={{ width: 16, height: 16 }} />
-                        </button>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <button title="View materials" onClick={() => setViewingPOId(po.id)} style={{ color: "#9ca3af", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                            <Eye style={{ width: 16, height: 16 }} />
+                          </button>
+                          {canManagePOs && (po.isImported || status === "PENDING") && (
+                            <button title={po.isImported ? "Delete this imported PO and its file" : "Delete this Pending PO"} onClick={() => handleDeletePO(po)}
+                              style={{ color: "#dc2626", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                              <Trash2 style={{ width: 15, height: 15 }} />
+                            </button>
+                          )}
+                          {canManagePOs && !po.isImported && status === "APPROVED" && (
+                            <button title="Cancel this PO" onClick={() => handleCancelPO(po)}
+                              style={{ fontSize: "0.65rem", fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", cursor: "pointer", whiteSpace: "nowrap" }}>
+                              Cancel PO
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
-                })}
+                  }),
+                ])}
               </tbody>
             </table>
             </div>

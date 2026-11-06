@@ -4,7 +4,7 @@ import type { BulkRequestItem, BulkRequestResult } from '@/types/warehouseReques
 import type {
   MaterialRequest, ProjectWithRequests, SuggestedSupplier,
   CreateMaterialRequestPayload, GeneratePOsFromRequestsPayload, GeneratedPOsResult,
-  RemainingRequestable,
+  RemainingRequestable, SentMaterialRequest,
 } from '@/types/materialRequest';
 
 export function useMaterialRequests() {
@@ -35,6 +35,11 @@ export function useMaterialRequests() {
     return data;
   }
 
+  async function fetchSent(projectId: number): Promise<SentMaterialRequest[]> {
+    const { data } = await api.get<SentMaterialRequest[]>(`/material-requests/project/${projectId}/sent`);
+    return data;
+  }
+
   // Authoritative "how much more can be requested" per material — accounts
   // for the BOQ estimate minus redistribution, warehouse-approved quantity,
   // and Procurement asks already made. The Material Plan tab uses this
@@ -57,6 +62,6 @@ export function useMaterialRequests() {
 
   return {
     projectsWithPending, loading,
-    createRequest, createBulk, fetchProjectsWithPending, fetchForProject, fetchSuggestedSuppliers, generatePOs, fetchRemaining,
+    createRequest, createBulk, fetchProjectsWithPending, fetchForProject, fetchSent, fetchSuggestedSuppliers, generatePOs, fetchRemaining,
   };
 }

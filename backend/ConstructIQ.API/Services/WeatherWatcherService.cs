@@ -11,10 +11,7 @@ namespace ConstructIQ.API.Services;
 // minutes, checks each active project's real (geocoded) coordinates against
 // Open-Meteo, using the same risk thresholds as the client-side weather chip
 // (frontend/src/lib/weather.ts's assessConstructionRisk) so both sides agree
-// on what counts as a delay risk. Also sweeps overdue purchase orders in the
-// same cycle — both are "periodic, side-effect-free until something actually
-// crosses a threshold" jobs, so one BackgroundService covers both rather than
-// standing up two near-identical hosted services.
+// on what counts as a delay risk.
 public class WeatherWatcherService(IServiceScopeFactory scopeFactory, IHttpClientFactory httpFactory,
     ILogger<WeatherWatcherService> logger) : BackgroundService
 {
@@ -40,7 +37,9 @@ public class WeatherWatcherService(IServiceScopeFactory scopeFactory, IHttpClien
         var notifications = scope.ServiceProvider.GetRequiredService<INotificationService>();
 
         await CheckWeatherAsync(db, notifications, ct);
-        await CheckDelayedPurchaseOrdersAsync(db, notifications, ct);
+        // No "overdue PO" sweep any more: a PO's delivery date is only the
+        // system's estimate from the supplier's lead time, so passing it isn't
+        // a delay. Late deliveries come from Warehouse's on-time rating.
     }
 
     private async Task CheckWeatherAsync(AppDbContext db, INotificationService notifications, CancellationToken ct)
@@ -98,28 +97,6 @@ public class WeatherWatcherService(IServiceScopeFactory scopeFactory, IHttpClien
             await notifications.CreateForRoleAsync(UserRole.ProcurementOfficer, NotificationKind.Weather,
                 $"{message} Potential delivery delays for this project's open purchase orders.",
                 project.ProjectManagerId, projectId: project.Id, actionLink: "/procurement");
-        }
-    }
-
-    // PurchaseOrderStatus intentionally has no persisted "Delayed" member (see
-    // PurchaseOrder.cs) — it's derived on read from ExpectedDate vs. now, so
-    // this sweep is what turns that derived fact into an actual notification.
-    private async Task CheckDelayedPurchaseOrdersAsync(AppDbContext db, INotificationService notifications, CancellationToken ct)
-    {
-        var overdue = await db.PurchaseOrders
-            .Include(po => po.Project)
-            .Where(po => po.Status != PurchaseOrderStatus.Delivered && po.ExpectedDate < DateTime.UtcNow)
-            .ToListAsync(ct);
-
-        foreach (var po in overdue)
-        {
-            var alreadyNotified = await db.Notifications.AnyAsync(n =>
-                n.Kind == NotificationKind.PurchaseOrderDelayed && n.ProjectId == po.ProjectId && n.Message.Contains(po.Number), ct);
-            if (alreadyNotified) continue;
-
-            await notifications.CreateForRoleAsync(UserRole.ProjectManager, NotificationKind.PurchaseOrderDelayed,
-                $"{po.Number} ({po.Project.Name}) is overdue — expected {po.ExpectedDate:MMM d} and still not delivered.",
-                po.CreatedByUserId, projectId: po.ProjectId, actionLink: "/procurement");
         }
     }
 

@@ -238,8 +238,20 @@ public class DocumentService(
         var doc = await db.ProjectDocuments.FindAsync(documentId);
         if (doc is null) return false;
 
-        try { await storage.DeleteAsync(doc.StoragePath); }
-        catch (Exception ex) { logger.LogWarning(ex, "Couldn't delete R2 object for document {DocumentId}.", documentId); }
+        // An imported PO read from this file goes with it (see PurchaseOrderRemoval).
+        var importedPos = await db.PurchaseOrders
+            .Where(po => po.IsImported && po.ProjectId == doc.ProjectId && po.PoFileUrl == doc.StoragePath)
+            .ToListAsync();
+        db.PurchaseOrders.RemoveRange(importedPos);
+
+        // A PO made in ConstructIQ never comes from this folder; should one
+        // still point at the file, the file itself is kept for it.
+        var usedByOtherPo = await db.PurchaseOrders.AnyAsync(po => !po.IsImported && po.PoFileUrl == doc.StoragePath);
+        if (!usedByOtherPo)
+        {
+            try { await storage.DeleteAsync(doc.StoragePath); }
+            catch (Exception ex) { logger.LogWarning(ex, "Couldn't delete R2 object for document {DocumentId}.", documentId); }
+        }
 
         db.ProjectDocuments.Remove(doc);
         await db.SaveChangesAsync();
