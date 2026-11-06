@@ -5,87 +5,12 @@ import toast from "react-hot-toast";
 import Header from "@/components/layout/Header";
 import { useAuthStore } from "@/store/authStore";
 import { useProcurement } from "@/hooks/useProcurement";
-import type { ExcessRelease, RedistributionRecommendation, RedistributionStatus } from "@/types/procurement";
+import { UNDECIDED_STATUSES, buildProjectOverviews, movementsOf, type ProjectOverview } from "@/lib/redistributionMovements";
 import { Package, ClipboardCheck, Repeat, CheckSquare, X, ChevronDown, ChevronRight, ArrowUpRight, ArrowDownLeft, LayoutList } from "lucide-react";
 
-// What's moved between projects: a project's logged Excess released by the
-// warehouse for another project's request, and transfers approved here before
-// that became the only route. The Excess Recording Log's "Redistributed To"
-// shows the same movements from the other side. Read-only, apart from the
-// transfers still waiting for a decision: each one holds its excess until
-// someone approves or rejects it.
-
-const UNDECIDED_STATUSES: RedistributionStatus[] = ["AiSuggested", "PendingApproval"];
-const REDISTRIBUTED_STATUSES: RedistributionStatus[] = ["Approved", "InTransit", "Completed"];
-
-// ── Overview per project ─────────────────────────────────────────────────────
-
-interface Movement {
-  key: string;
-  materialName: string;
-  quantity: number;
-  unit: string;
-  sourceProjectId: number;
-  sourceProjectName: string;
-  targetProjectId: number;
-  targetProjectName: string;
-  at: string;
-  throughWarehouse: boolean;
-}
-
-function movementsOf(transfers: RedistributionRecommendation[], releases: ExcessRelease[]): Movement[] {
-  return [
-    ...transfers.filter(t => REDISTRIBUTED_STATUSES.includes(t.status)).map(t => ({
-      key: `transfer-${t.id}`,
-      materialName: t.materialName, quantity: t.transferQuantity, unit: t.unit,
-      sourceProjectId: t.sourceProjectId, sourceProjectName: t.sourceProjectName,
-      targetProjectId: t.targetProjectId, targetProjectName: t.targetProjectName,
-      at: t.approvedAt ?? t.generatedAt, throughWarehouse: false,
-    })),
-    ...releases.map(r => ({
-      key: `release-${r.id}`,
-      materialName: r.materialName, quantity: r.quantity, unit: r.unit,
-      sourceProjectId: r.sourceProjectId, sourceProjectName: r.sourceProjectName,
-      targetProjectId: r.targetProjectId, targetProjectName: r.targetProjectName,
-      at: r.releasedAt, throughWarehouse: true,
-    })),
-  ];
-}
-
-interface ProjectMovement {
-  movement: Movement;
-  sent: boolean;
-  otherProject: string;
-}
-
-interface ProjectOverview {
-  projectId: number;
-  projectName: string;
-  sentCount: number;
-  receivedCount: number;
-  movements: ProjectMovement[];
-}
-
-// Each movement shows under both projects: sent by one, received by the other.
-function buildProjectOverviews(movements: Movement[]): ProjectOverview[] {
-  const byProject = new Map<number, ProjectOverview>();
-  const add = (projectId: number, projectName: string, entry: ProjectMovement) => {
-    const overview = byProject.get(projectId) ?? { projectId, projectName, sentCount: 0, receivedCount: 0, movements: [] };
-    overview.movements.push(entry);
-    if (entry.sent) overview.sentCount++; else overview.receivedCount++;
-    byProject.set(projectId, overview);
-  };
-
-  for (const m of movements) {
-    add(m.sourceProjectId, m.sourceProjectName, { movement: m, sent: true, otherProject: m.targetProjectName });
-    add(m.targetProjectId, m.targetProjectName, { movement: m, sent: false, otherProject: m.sourceProjectName });
-  }
-
-  const newestFirst = (a: ProjectMovement, b: ProjectMovement) => new Date(b.movement.at).getTime() - new Date(a.movement.at).getTime();
-  const overviews = [...byProject.values()];
-  overviews.forEach(o => o.movements.sort(newestFirst));
-  return overviews.sort((a, b) => newestFirst(a.movements[0], b.movements[0]));
-}
+// The movements themselves come from lib/redistributionMovements. Read-only,
+// apart from the transfers still waiting for a decision: each one holds its
+// excess until someone approves or rejects it.
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -158,7 +83,6 @@ function RedistributionOverview({ overviews }: { overviews: ProjectOverview[] })
                                 <th style={OVERVIEW_TH}>PROJECT</th>
                                 <th style={OVERVIEW_TH}>QTY</th>
                                 <th style={OVERVIEW_TH}>UNIT</th>
-                                <th style={OVERVIEW_TH}>VIA</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -176,7 +100,6 @@ function RedistributionOverview({ overviews }: { overviews: ProjectOverview[] })
                                     <td style={OVERVIEW_TD}>{otherProject}</td>
                                     <td style={OVERVIEW_TD}>{m.quantity.toLocaleString()}</td>
                                     <td style={{ ...OVERVIEW_TD, color: "#9ca3af" }}>{m.unit}</td>
-                                    <td style={{ ...OVERVIEW_TD, color: "#6b7280", whiteSpace: "nowrap" }}>{m.throughWarehouse ? "Warehouse release" : "Approved transfer"}</td>
                                   </tr>
                                 );
                               })}

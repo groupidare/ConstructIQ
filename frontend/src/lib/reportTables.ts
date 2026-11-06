@@ -70,13 +70,18 @@ export function buildMaterialUsageTable(items: BOQItem[]): ReportTable {
   };
 }
 
+// The status as the Procurement page words it.
+export function poStatusLabel(status: string): string {
+  return status === "DeliveryInProgress" ? "In Delivery" : status;
+}
+
 export function buildProcurementSummaryTable(orders: PurchaseOrder[], from: Date, to: Date): ReportTable {
   const rows: (string | number)[][] = [];
   orders
     .filter(o => inRange(o.orderDate, from, to))
     .forEach(o => {
       o.materials.forEach(m => {
-        rows.push([o.number, o.supplierName, o.status, formatDate(o.orderDate), formatDate(o.expectedDate), m.name, num(m.quantity), m.unit]);
+        rows.push([o.number, o.supplierName, poStatusLabel(o.status), formatDate(o.orderDate), formatDate(o.expectedDate), m.name, num(m.quantity), m.unit]);
       });
     });
   return {

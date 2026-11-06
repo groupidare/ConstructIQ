@@ -8,25 +8,28 @@ import { useWeatherStore } from "@/store/weatherStore";
 import { useAuthStore } from "@/store/authStore";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import type { ReportTable } from "@/lib/reportTables";
-import { buildProcurementSummaryTable } from "@/lib/reportTables";
+import { buildProcurementSummaryTable, poStatusLabel } from "@/lib/reportTables";
+import { excessOverviewOf } from "@/lib/excessOverview";
+import type { FlaggedExcessItem, MaterialOption } from "@/types/boq";
 import type { Project } from "@/types/project";
 import type { WarehouseStockItem } from "@/types/warehouseStock";
 import type { WarehouseRequest } from "@/types/warehouseRequest";
 import { canSeeCostImpact, shareOfPurchases, type ExcessCostImpact, type ExcessWasteRecord } from "@/types/excess";
 import type { ForecastResult, ForecastAccuracyReport, ModelStatus } from "@/types/forecast";
-import type { RedistributionRecommendation, RedistributionStatus } from "@/types/procurement";
+import type { ExcessRelease, RedistributionRecommendation } from "@/types/procurement";
+import { REDISTRIBUTED_STATUSES, UNDECIDED_STATUSES, buildProjectOverviews, movementsOf } from "@/lib/redistributionMovements";
 import type { PurchaseOrder } from "@/types/purchaseOrder";
 import {
-  LayoutDashboard, TrendingUp, Package, ShoppingCart,
+  TrendingUp, Package, ShoppingCart,
   Trash2, FolderKanban, Network,
   Eye, Download, FileText, Search, Filter, X, Zap, BarChart3,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer,
+  Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 
-// ── Report definitions — one per sidebar page, in the same order ────────────
+// ── Report definitions — in sidebar order; System Overview has none ────────────
 
 interface Report {
   id: string;
@@ -41,20 +44,9 @@ const REPORTS: Report[] = [
   { id: "inventory",   title: "Inventory",         desc: "Warehouse stock balance, zero-stock items, pending requests", icon: Package,         category: "Operations" },
   { id: "forecasting", title: "Forecasting",       desc: "Demand forecasts and model accuracy",                         icon: TrendingUp,      category: "Analytics"  },
   { id: "excess",      title: "Excess",            desc: "Waste rate, excess rate, reusable materials",                 icon: Trash2,          category: "Analytics"  },
-  { id: "redistribution", title: "Redistribution", desc: "Surplus material opportunities, approvals, and priority",          icon: Network,         category: "Operations" },
+  { id: "redistribution", title: "Redistribution", desc: "Excess moved between projects, sent out and received",          icon: Network,         category: "Operations" },
   { id: "procurement", title: "Procurement",       desc: "Purchase order status, supplier performance and ratings",     icon: ShoppingCart,    category: "Operations" },
-  { id: "system",      title: "System Overview",   desc: "Cross-system snapshot — projects, stock, orders, weather",    icon: LayoutDashboard, category: "Overview"   },
 ];
-
-// Mirrors the shape returned by GET /v1/activity-logs (see
-// components/auth/ActivityLogView.tsx) — only the fields this report uses.
-interface ActivityLog {
-  id: number;
-  userDisplay: string;
-  action: string;
-  details?: string;
-  createdAt: string;
-}
 
 // ── Per-report view data (computed live from real API data) ─────────────────
 
@@ -62,7 +54,9 @@ interface ReportViewData {
   subtitle: string;
   stats: { label: string; value: string; sub: string }[];
   chartTitle: string;
-  chartData: { name: string; value: number }[];
+  chartData: { name: string; value: number; value2?: number }[];
+  // Only for a chart with two bars per name.
+  chartBars?: { key: "value" | "value2"; name: string; color: string }[];
   healthTitle: string;
   health: { label: string; pct: string; color: string }[];
   aiInsight: string;
@@ -91,34 +85,33 @@ const PROJECT_STATUS_COLORS: Record<string, string> = {
   Active: "#22c55e", Planning: "#f97316", OnHold: "#f59e0b", Completed: "#9ca3af", Cancelled: "#ef4444",
 };
 
+// Split as the Projects page's two tabs are, on the same Progress Tracker figure.
 function buildProjectsData(projects: Project[]): ReportViewData {
-  const tracked = projects;
+  const tracked = projects.filter(p => !p.isHistorical);
+  const historical = projects.filter(p => p.isHistorical);
   const byStatus = new Map<string, number>([["Active", 0], ["Planning", 0], ["Completed", 0]]);
   for (const p of tracked) byStatus.set(p.status, (byStatus.get(p.status) ?? 0) + 1);
 
-  const allPhases = tracked.flatMap(p => p.phases);
-  const avgProgress = avg(allPhases.map(ph => ph.progressPercent));
+  const avgProgress = avg(tracked.map(p => p.progress));
   const active = byStatus.get("Active") ?? 0;
 
-  // Every project, including historical ones (flagged) — the report is
-  // meant to be a comprehensive record, not just the live board.
-  const projectsTable: ReportTable = {
-    columns: ["Name", "Type", "Status", "Progress %", "Location", "Project Manager", "Site Engineer/PIC", "Start Date", "Target End Date", "Historical"],
-    rows: projects.map(p => [
+  const tableOf = (list: Project[]): ReportTable => ({
+    columns: ["Name", "Type", "Status", "Progress %", "Location", "Project Manager", "Site Engineer/PIC", "Start Date", "Target End Date"],
+    rows: list.map(p => [
       p.name, p.type, p.status,
-      `${num(avg(p.phases.map(ph => ph.progressPercent)))}%`,
+      `${num(p.progress)}%`,
       p.location, p.projectManagerName, p.siteEngineerName ?? "—",
       formatDate(p.startDate), formatDate(p.targetEndDate),
-      p.isHistorical ? "Yes" : "No",
     ]),
-  };
+  });
 
   return {
-    subtitle: `${tracked.length} project(s) tracked`,
+    subtitle: `${tracked.length} project(s) · ${active} active · ${historical.length} in Historical Data`,
     stats: [
-      { label: "TOTAL PROJECTS", value: String(tracked.length), sub: "All projects, including completed records" },
-      { label: "ACTIVE",         value: String(active),      sub: `${pct(active, tracked.length)}% of total` },
-      { label: "AVG PHASE PROGRESS", value: `${avgProgress.toFixed(0)}%`, sub: `Across ${allPhases.length} phase(s)` },
+      { label: "PROJECTS",        value: String(tracked.length),     sub: "On the Projects tab" },
+      { label: "ACTIVE",          value: String(active),             sub: `${pct(active, tracked.length)}% of projects` },
+      { label: "AVG PROGRESS",    value: `${avgProgress.toFixed(0)}%`, sub: "From the Progress Tracker" },
+      { label: "HISTORICAL DATA", value: String(historical.length),  sub: "Finished projects, read-only" },
     ],
     chartTitle: "Projects by Status",
     chartData: Array.from(byStatus.entries()).map(([name, value]) => ({ name, value })),
@@ -126,10 +119,13 @@ function buildProjectsData(projects: Project[]): ReportViewData {
     health: Array.from(byStatus.entries()).map(([label, count]) => ({
       label, pct: `${pct(count, tracked.length)}%`, color: PROJECT_STATUS_COLORS[label] ?? "#9ca3af",
     })),
-    aiInsight: tracked.length === 0
+    aiInsight: projects.length === 0
       ? "No projects tracked yet — create a project to start seeing real progress data here."
-      : `${active} of ${tracked.length} project(s) are active, averaging ${avgProgress.toFixed(0)}% phase completion.`,
-    detailTables: [{ title: "All Projects", table: projectsTable }],
+      : `${active} of ${tracked.length} project(s) are active, averaging ${avgProgress.toFixed(0)}% progress. ${historical.length} finished project(s) are in Historical Data.`,
+    detailTables: [
+      { title: "Projects", table: tableOf(tracked) },
+      { title: "Historical Data", table: tableOf(historical) },
+    ],
   };
 }
 
@@ -140,23 +136,27 @@ function buildInventoryData(items: WarehouseStockItem[], requests: WarehouseRequ
   const topItems = [...items].sort((a, b) => b.balance - a.balance).slice(0, 8);
 
   const stockTable: ReportTable = {
-    columns: ["Material", "Unit", "Balance", "Last Synced"],
-    rows: items.map(i => [i.materialName, i.unit, num(i.balance), i.syncedAt ? formatDate(i.syncedAt) : "—"]),
+    columns: ["Material", "Unit", "Balance"],
+    rows: items.map(i => [i.materialName, i.unit, i.balance.toLocaleString()]),
   };
+  // Rejected ones have nothing left to act on, so the page's queue drops them too.
   const requestsTable: ReportTable = {
-    columns: ["Project", "Material", "Requested Qty", "Approved Qty", "Status", "Requested By", "Approved By"],
-    rows: requests.map(r => [
-      r.projectName, r.materialName, num(r.requestedQuantity),
-      r.approvedQuantity != null ? num(r.approvedQuantity) : "—",
-      r.status, r.requestedBy, r.approvedBy ?? "—",
+    columns: ["Project", "Material", "Requested Qty", "Approved Qty", "Unit", "Requested", "Status", "Excess From", "Requested By", "Approved By"],
+    rows: requests.filter(r => r.status !== "Rejected").map(r => [
+      r.projectName, r.isAdditional ? `${r.materialName} (Additional)` : r.materialName,
+      r.requestedQuantity.toLocaleString(),
+      r.approvedQuantity != null ? r.approvedQuantity.toLocaleString() : "—",
+      r.unit, formatDate(r.requestedAt), r.status,
+      r.releaseSources?.map(x => `${x.projectName} (${x.quantity.toLocaleString()} ${r.unit})`).join(", ") || "—",
+      r.requestedBy, r.approvedBy ?? "—",
     ]),
   };
 
   return {
     subtitle: lastSynced ? `Last synced ${new Date(lastSynced).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" })}` : "Not synced yet",
     stats: [
-      { label: "TOTAL STOCK ITEMS", value: String(items.length),    sub: "Synced from warehouse sheet" },
-      { label: "ZERO-STOCK ITEMS",  value: String(zeroStock),       sub: "Need reorder" },
+      { label: "TOTAL MATERIALS",   value: String(items.length),    sub: "Synced from warehouse sheet" },
+      { label: "ZERO STOCK",        value: String(zeroStock),       sub: "Need reorder" },
       { label: "PENDING REQUESTS",  value: String(pendingRequests), sub: "Awaiting warehouse approval" },
     ],
     chartTitle: "Top Stock Items by Balance",
@@ -170,8 +170,8 @@ function buildInventoryData(items: WarehouseStockItem[], requests: WarehouseRequ
       ? "No warehouse stock data yet — sync the warehouse sheet from the Inventory page."
       : `${zeroStock} item(s) are at zero balance and may need reordering. ${pendingRequests} warehouse request(s) are awaiting approval.`,
     detailTables: [
-      { title: "Full Warehouse Stock", table: stockTable },
-      { title: "Warehouse Requests", table: requestsTable },
+      { title: "Stock Balance", table: stockTable },
+      { title: "Requests", table: requestsTable },
     ],
   };
 }
@@ -181,6 +181,8 @@ function buildForecastingData(
   accuracyReports: ForecastAccuracyReport[],
   projects: Project[],
   modelStatus: ModelStatus | null,
+  demandMaterials: MaterialOption[],
+  excluded: FlaggedExcessItem[],
 ): ReportViewData {
   const materials = forecasts.flatMap(f => f.forecastedMaterials);
   const forecastByMaterial = new Map<string, number>();
@@ -220,6 +222,17 @@ function buildForecastingData(
       projectName(f.projectId), m.materialName, num(m.forecastedQuantity),
     ])),
   };
+  const demandTable: ReportTable = {
+    columns: ["Material", "Unit", "Total Historical Demand"],
+    rows: demandMaterials.map(m => [m.materialName, m.unit, m.totalHistoricalDemand.toLocaleString()]),
+  };
+  const excludedTable: ReportTable = {
+    columns: ["Project", "Material", "Reason"],
+    rows: excluded.map(f => [f.projectName, f.materialName, f.reason]),
+  };
+  const excludedNote = excluded.length > 0
+    ? ` ${excluded.length} BOQ item(s) are excluded from the demand charts due to data issues.`
+    : "";
 
   return {
     subtitle: `${forecasts.length} project forecast(s) · most recent run per project`,
@@ -227,65 +240,62 @@ function buildForecastingData(
       { label: "PROJECTS FORECASTED", value: String(forecasts.length), sub: "Most recent run each" },
       { label: "FORECASTED MATERIALS", value: String(materials.length), sub: "Current forecast rows" },
       { label: "FORECAST COVERAGE", value: `${forecastCoverage}%`, sub: `${forecastedProjectIds.size} of ${eligibleProjects.length} active project(s)` },
-      { label: "MODEL ACCURACY",      value: avgAccuracy != null ? `${avgAccuracy.toFixed(1)}%` : trainedModelAccuracy != null ? `${trainedModelAccuracy.toFixed(1)}%` : "—", sub: avgAccuracy != null ? `Avg across ${withComparisons.length} project(s) with confirmed usage` : trainedModelAccuracy != null ? "Trained-model evaluation (R²)" : "Model evaluation unavailable" },
+      // Not the Forecasting page's "Model Accuracy (vs Purchased)": that one is scored per material.
+      { label: avgAccuracy != null ? "FORECAST VS ACTUAL USAGE" : "TRAINED MODEL SCORE", value: avgAccuracy != null ? `${avgAccuracy.toFixed(1)}%` : trainedModelAccuracy != null ? `${trainedModelAccuracy.toFixed(1)}%` : "—", sub: avgAccuracy != null ? `Avg across ${withComparisons.length} project(s) with confirmed usage` : trainedModelAccuracy != null ? "Trained-model evaluation (R²)" : "Model evaluation unavailable" },
+      { label: "MATERIALS WITH DEMAND DATA", value: String(demandMaterials.length), sub: "From completed projects" },
+      { label: "EXCLUDED BOQ ITEMS", value: String(excluded.length), sub: "Left out of the demand charts" },
     ],
     chartTitle: "Forecasted Quantity by Material",
     chartData: Array.from(forecastByMaterial.entries())
       .map(([name, value]) => ({ name: truncate(name, 14), value: Math.round(value * 100) / 100 }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 8),
-    healthTitle: "Forecast Run Coverage",
-    health: forecasts.map(f => ({
-      label: projectName(f.projectId),
-      pct: "100%",
-      color: "#f97316",
-    })),
+    healthTitle: "Forecast Coverage",
+    health: [
+      { label: "Forecasted",     pct: `${forecastCoverage}%`,       color: "#f97316" },
+      { label: "Not Forecasted", pct: `${100 - forecastCoverage}%`, color: "#9ca3af" },
+    ],
     aiInsight: forecasts.length === 0
-      ? "No forecasts have been generated yet — run a forecast from a project's Material Plan tab."
-      : `${materials.length} forecast material row(s) across ${forecasts.length} project(s). Accuracy measures how close the forecast was to confirmed actual usage (100% is an exact match). Variance is the difference between actual and forecasted quantity; a positive value means actual usage was higher, while a negative value means it was lower.`,
+      ? `No forecasts have been generated yet — run a forecast from a project's Material Plan tab.${excludedNote}`
+      : `${materials.length} forecast material row(s) across ${forecasts.length} project(s). Accuracy measures how close the forecast was to confirmed actual usage (100% is an exact match). Variance is the difference between actual and forecasted quantity; a positive value means actual usage was higher, while a negative value means it was lower.${excludedNote}`,
     detailTables: [
       { title: "Predicted vs. Actual Usage", table: comparisonTable },
       { title: "Current Forecast Detail", table: forecastDetailTable },
+      { title: "Materials in the Demand Chart", table: demandTable },
+      ...(excluded.length > 0 ? [{ title: "BOQ Items Excluded from the Charts", table: excludedTable }] : []),
     ],
   };
 }
 
-const EXCESS_TYPE_COLORS: Record<string, string> = {
-  Unused: "#9ca3af", Damaged: "#ef4444", Expired: "#f59e0b", Overordered: "#f97316",
-};
+// Same as the log's "Redistributed To" column.
+function redistributedTo(r: ExcessWasteRecord): string {
+  if (!r.isReusable) return "—";
+  const transferred = r.redistributionTargetProjectName
+    && REDISTRIBUTED_STATUSES.some(status => status === r.redistributionStatus);
+  return [
+    ...(transferred ? [r.redistributionTargetProjectName] : []),
+    ...(r.warehouseReleases ?? []).map(w => `${w.projectName} (${w.quantity.toLocaleString()} ${r.unit})`),
+  ].join("; ") || "—";
+}
 
 // costImpact is null for roles that can't see costs — the report is then
 // exactly the quantity-only version.
-function buildExcessData(records: ExcessWasteRecord[], costImpact: ExcessCostImpact | null): ReportViewData {
-  const totalWasteRate = avg(records.filter(e => !e.isReusable).map(e => e.excessPercent));
-  const totalExcessRate = avg(records.map(e => e.excessPercent));
-  const reusableMaterialsCount = new Set(records.filter(e => e.isReusable).map(e => e.materialId)).size;
-
-  const byProject = new Map<string, number[]>();
-  for (const r of records) {
-    const arr = byProject.get(r.projectName) ?? [];
-    arr.push(r.excessPercent);
-    byProject.set(r.projectName, arr);
-  }
-  const chartData = Array.from(byProject.entries())
-    .map(([name, pcts]) => ({ name: truncate(name, 14), value: Math.round(avg(pcts) * 10) / 10 }))
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 8);
-
-  const byType = new Map<string, number>();
-  for (const r of records) byType.set(r.excessType, (byType.get(r.excessType) ?? 0) + 1);
+function buildExcessData(records: ExcessWasteRecord[], costImpact: ExcessCostImpact | null, projects: Project[]): ReportViewData {
+  const { totalWasteRate, totalExcessRate, reusableMaterialsCount, chartData } = excessOverviewOf(records, projects);
+  const excessEntries = records.filter(r => r.isReusable).length;
+  const projectCount = new Set(records.map(r => r.projectId)).size;
 
   // Excess (reusable surplus) first, highest-impact first — waste
   // (non-reusable) still included, just lower priority in the ordering.
   const excessTable: ReportTable = {
-    columns: ["Project", "Material", "Type", "Quantity", "Unit", "Excess %", "Reusable", "Redistribution", "Recorded By", "Recorded At"],
+    columns: ["Project", "Material", "Type", "Quantity", "Left", "Unit", "Excess %", "Redistributed To", "Recorded By", "Recorded At"],
     rows: [...records]
       .sort((a, b) => Number(b.isReusable) - Number(a.isReusable) || b.excessPercent - a.excessPercent)
       .map(r => [
-        r.projectName, r.materialName, r.excessType, num(r.loggedQuantity), r.unit,
+        r.projectName, r.materialName, r.isReusable ? "Excess" : "Waste", r.loggedQuantity.toLocaleString(),
+        r.quantity > 0 && r.quantity < r.loggedQuantity ? r.quantity.toLocaleString() : "—", r.unit,
         `${num(r.excessPercent)}%`,
-        r.isReusable ? "Yes" : "No",
-        [r.redistributionStatus, ...(r.warehouseReleases ?? []).map(w => `Released to ${w.projectName} (${num(w.quantity)} ${r.unit})`)].filter(Boolean).join("; ") || "—",
+        redistributedTo(r),
         r.recordedBy, formatDate(r.recordedAt),
       ]),
   };
@@ -308,7 +318,7 @@ function buildExcessData(records: ExcessWasteRecord[], costImpact: ExcessCostImp
       },
     },
     ...(costImpact.monthlyTrend.length === 0 ? [] : [{
-      title: "Cost Impact by Month (excess/waste by month logged, redistribution by month approved)",
+      title: "Cost Impact by Month (excess/waste by month logged, redistribution by month it moved)",
       table: {
         columns: ["Month", "Excess Value", "Waste Cost", "Redistributed"],
         rows: costImpact.monthlyTrend.map(t => [
@@ -335,9 +345,9 @@ function buildExcessData(records: ExcessWasteRecord[], costImpact: ExcessCostImp
     (costImpact.unpricedRecords > 0 ? ` (${costImpact.unpricedRecords} excess/waste entr${costImpact.unpricedRecords === 1 ? "y has" : "ies have"} no recorded price and ${costImpact.unpricedRecords === 1 ? "is" : "are"} not included).` : ".");
 
   return {
-    subtitle: `${records.length} excess/waste record(s) across ${byProject.size} project(s)`,
+    subtitle: `${records.length} excess/waste record(s) across ${projectCount} project(s)`,
     stats: [
-      { label: "TOTAL WASTE RATE",   value: `${totalWasteRate.toFixed(1)}%`, sub: "Non-reusable excess" },
+      { label: "TOTAL WASTE RATE",   value: `${totalWasteRate.toFixed(1)}%`, sub: "Non-reusable waste" },
       { label: "TOTAL EXCESS RATE",  value: `${totalExcessRate.toFixed(1)}%`, sub: "All recorded excess" },
       { label: "REUSABLE MATERIALS", value: String(reusableMaterialsCount),  sub: "Distinct materials flagged reusable" },
       ...(hasCost ? [
@@ -348,61 +358,82 @@ function buildExcessData(records: ExcessWasteRecord[], costImpact: ExcessCostImp
           sub: share != null ? `Excess + waste of ${formatCurrency(costImpact.purchasedValue)} delivered` : "No priced deliveries yet" },
       ] : []),
     ],
-    chartTitle: "Avg Excess Rate by Project",
-    chartData,
-    healthTitle: "Excess by Type",
-    health: Array.from(byType.entries()).map(([label, count]) => ({
-      label, pct: `${pct(count, records.length)}%`, color: EXCESS_TYPE_COLORS[label] ?? "#9ca3af",
+    chartTitle: "Excess & Waste by Project",
+    chartData: chartData.map(d => ({
+      name: truncate(d.project, 14),
+      value: Math.round(d.excessRate * 10) / 10,
+      value2: Math.round(d.wasteRate * 10) / 10,
     })),
+    chartBars: [
+      { key: "value",  name: "Excess Rate (%)", color: "#fbbf24" },
+      { key: "value2", name: "Waste Rate (%)",  color: "#dc2626" },
+    ],
+    healthTitle: "Excess vs Waste",
+    health: [
+      { label: "Excess", pct: `${pct(excessEntries, records.length)}%`,                  color: "#b45309" },
+      { label: "Waste",  pct: `${pct(records.length - excessEntries, records.length)}%`, color: "#dc2626" },
+    ],
     aiInsight: records.length === 0
       ? "No excess or waste has been recorded yet."
-      : `Waste rate is running at ${totalWasteRate.toFixed(1)}%. ${reusableMaterialsCount} distinct material(s) are flagged reusable and are good redistribution candidates.${costInsight}`,
+      : `Excess rate stands at ${totalExcessRate.toFixed(1)}% and waste rate at ${totalWasteRate.toFixed(1)}% across all recorded entries. ${reusableMaterialsCount} distinct material(s) are reusable, so the warehouse can release them to other projects.${costInsight}`,
     detailTables: [...costTables, { title: "Excess & Waste Records (excess prioritized)", table: excessTable }],
   };
 }
 
-const REDISTRIBUTION_ACTIVE: RedistributionStatus[] = ["AiSuggested", "PendingApproval", "Approved", "InTransit"];
-const REDISTRIBUTION_APPROVABLE: RedistributionStatus[] = ["AiSuggested", "PendingApproval"];
-const PRIORITY_COLORS: Record<string, string> = { Low: "#22c55e", Medium: "#f59e0b", High: "#ef4444" };
+// Same movements, cards and overview as the Redistribution page.
+function buildRedistributionData(transfers: RedistributionRecommendation[], releases: ExcessRelease[]): ReportViewData {
+  const movements = movementsOf(transfers, releases);
+  const overviews = buildProjectOverviews(movements);
+  const undecided = transfers.filter(t => UNDECIDED_STATUSES.includes(t.status));
+  const sentProjects = overviews.filter(o => o.sentCount > 0).length;
+  const receivedProjects = overviews.filter(o => o.receivedCount > 0).length;
 
-function buildRedistributionData(items: RedistributionRecommendation[]): ReportViewData {
-  // items here is the FULL history (see /redistribution/history) — includes
-  // Completed and Rejected, which the live Redistribution page never shows.
-  const active = items.filter(r => REDISTRIBUTION_ACTIVE.includes(r.status));
-  const approvable = items.filter(r => REDISTRIBUTION_APPROVABLE.includes(r.status));
-  const surplusMaterialCount = new Set(items.map(r => `${r.sourceProjectId}-${r.sourceMaterialId}`)).size;
-
-  const byStatus = new Map<string, number>();
-  for (const r of items) byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
-  const byPriority = new Map<string, number>([["Low", 0], ["Medium", 0], ["High", 0]]);
-  for (const r of items) byPriority.set(r.priority, (byPriority.get(r.priority) ?? 0) + 1);
-
-  const redisTable: ReportTable = {
-    columns: ["Material", "Source Project", "Target Project", "Available Qty", "Needed Qty", "Transfer Qty", "Priority", "Status", "AI-Recommended", "Generated At"],
-    rows: items.map(r => [
-      r.materialName, r.sourceProjectName, r.targetProjectName,
-      num(r.availableQuantity), num(r.neededQuantity), num(r.transferQuantity),
-      r.priority, r.status, r.isAiRecommended ? "Yes" : "No", formatDate(r.generatedAt),
+  const overviewTable: ReportTable = {
+    columns: ["Project", "Sent Out", "Received", "Last Movement"],
+    rows: overviews.map(o => [o.projectName, o.sentCount, o.receivedCount, formatDate(o.movements[0].movement.at)]),
+  };
+  const movementsTable: ReportTable = {
+    columns: ["Date", "Material", "From", "To", "Quantity", "Unit"],
+    rows: movements.map(m => [
+      formatDate(m.at), m.materialName, m.sourceProjectName, m.targetProjectName,
+      m.quantity.toLocaleString(), m.unit,
     ]),
   };
+  const undecidedTable: ReportTable = {
+    columns: ["Material", "From", "To", "Quantity", "Unit"],
+    rows: undecided.map(t => [t.materialName, t.sourceProjectName, t.targetProjectName, t.transferQuantity.toLocaleString(), t.unit]),
+  };
+  const waiting = undecided.length > 0
+    ? ` ${undecided.length} transfer(s) are waiting for a decision and holding their excess until then.`
+    : "";
 
   return {
-    subtitle: `${items.length} recommendation(s) · ${surplusMaterialCount} surplus material(s)`,
+    subtitle: `${movements.length} redistributed · ${overviews.length} project(s)`,
     stats: [
-      { label: "ACTIVE OPPORTUNITIES", value: String(active.length),      sub: "AI-suggested through in-transit" },
-      { label: "PENDING APPROVAL",     value: String(approvable.length), sub: "Awaiting review" },
-      { label: "SURPLUS MATERIALS",    value: String(surplusMaterialCount),    sub: "Distinct source materials" },
+      { label: "MATERIALS REDISTRIBUTED",   value: String(movements.length), sub: "Logged excess that went to another project" },
+      { label: "PROJECTS THAT SENT EXCESS", value: String(sentProjects),     sub: "Sent out at least one material" },
+      { label: "PROJECTS THAT RECEIVED",    value: String(receivedProjects), sub: "Received at least one material" },
     ],
-    chartTitle: "Recommendations by Status",
-    chartData: Array.from(byStatus.entries()).map(([name, value]) => ({ name, value })),
-    healthTitle: "By Priority",
-    health: Array.from(byPriority.entries()).map(([label, count]) => ({
-      label, pct: `${pct(count, items.length)}%`, color: PRIORITY_COLORS[label],
-    })),
-    aiInsight: items.length === 0
-      ? "No redistribution opportunities detected yet."
-      : `${approvable.length} recommendation(s) are awaiting approval across ${surplusMaterialCount} surplus material(s).`,
-    detailTables: [{ title: "Redistribution Log — All Statuses", table: redisTable }],
+    chartTitle: "Materials Sent Out by Project",
+    chartData: overviews
+      .filter(o => o.sentCount > 0)
+      .map(o => ({ name: truncate(o.projectName, 14), value: o.sentCount }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 8),
+    healthTitle: "Materials Received by Project",
+    health: overviews
+      .filter(o => o.receivedCount > 0)
+      .sort((a, b) => b.receivedCount - a.receivedCount)
+      .slice(0, 8)
+      .map(o => ({ label: o.projectName, pct: String(o.receivedCount), color: "#15803d" })),
+    aiInsight: movements.length === 0
+      ? `No materials have been redistributed yet.${waiting}`
+      : `${movements.length} logged excess movement(s) between projects: ${sentProjects} project(s) sent and ${receivedProjects} received.${waiting}`,
+    detailTables: [
+      { title: "Redistribution Overview per Project", table: overviewTable },
+      { title: "Redistributed Materials", table: movementsTable },
+      ...(undecided.length > 0 ? [{ title: "Transfers Waiting for a Decision", table: undecidedTable }] : []),
+    ],
   };
 }
 
@@ -440,11 +471,12 @@ function buildProcurementData(
   const late = lateDeliveries(orders);
   const avgOnTime = avg(suppliers.map(s => s.onTimePct));
   const preferredCount = suppliers.filter(isPreferredSupplier).length;
+  const statusCount = (status: string) => byStatus.get(status) ?? 0;
 
   const poTable = buildProcurementSummaryTable(orders, ALL_TIME_FROM, ALL_TIME_TO);
   const supplierTable: ReportTable = {
-    columns: ["Supplier", "Rating", "On-Time %", "Deliveries", "Preferred"],
-    rows: suppliers.map(s => [s.name, s.rating.toFixed(1), `${num(s.onTimePct)}%`, s.deliveries, isPreferredSupplier(s) ? "Yes" : "No"]),
+    columns: ["Supplier", "Rating", "On-Time %", "Deliveries", "Tier"],
+    rows: suppliers.map(s => [s.name, s.rating.toFixed(1), `${num(s.onTimePct)}%`, s.deliveries, isPreferredSupplier(s) ? "Preferred" : "Active"]),
   };
 
   const weatherNote = weatherAdvisory
@@ -454,12 +486,15 @@ function buildProcurementData(
   return {
     subtitle: `${orders.length} purchase order(s) · ${suppliers.length} supplier(s)`,
     stats: [
-      { label: "TOTAL POs",        value: String(orders.length), sub: "All statuses" },
+      { label: "PENDING POs",      value: String(statusCount("Pending")),            sub: "Waiting for approval" },
+      { label: "APPROVED POs",     value: String(statusCount("Approved")),           sub: "Approved, not yet delivering" },
+      { label: "DELIVERED",        value: String(statusCount("Delivered")),          sub: "Fully delivered" },
+      { label: "IN DELIVERY",      value: String(statusCount("DeliveryInProgress")), sub: "Delivery in progress" },
       { label: "LATE DELIVERIES",  value: String(late),          sub: "Rated late by Warehouse" },
       { label: "AVG ON-TIME RATE", value: suppliers.length > 0 ? `${avgOnTime.toFixed(0)}%` : "—", sub: "Across rated suppliers" },
     ],
     chartTitle: "PO Status Breakdown",
-    chartData: Array.from(byStatus.entries()).filter(([, v]) => v > 0 || byStatus.size <= 5).map(([name, value]) => ({ name, value })),
+    chartData: Array.from(byStatus.entries()).filter(([, v]) => v > 0 || byStatus.size <= 5).map(([name, value]) => ({ name: poStatusLabel(name), value })),
     healthTitle: "Supplier Tier",
     health: [
       { label: "Preferred", pct: `${pct(preferredCount, suppliers.length)}%`, color: "#22c55e" },
@@ -471,73 +506,6 @@ function buildProcurementData(
     detailTables: [
       { title: "Purchase Orders (by material line)", table: poTable },
       { title: "Suppliers", table: supplierTable },
-    ],
-  };
-}
-
-function buildSystemData(
-  projects: Project[], stockItems: WarehouseStockItem[], orders: PurchaseOrder[],
-  redistribution: RedistributionRecommendation[], excessRecords: ExcessWasteRecord[],
-  weatherRisk: string | null, weatherAdvisory: string | null,
-  activityLogs: ActivityLog[], isAdmin: boolean,
-): ReportViewData {
-  const real = projects.filter(p => !p.isHistorical);
-  const active = real.filter(p => p.status === "Active").length;
-  const zeroStock = stockItems.filter(i => i.balance <= 0).length;
-  const activePOs = orders.filter(po => poEffectiveStatus(po) !== "Delivered" && po.status !== "Cancelled").length;
-  const activeRedistribution = redistribution.filter(r => REDISTRIBUTION_ACTIVE.includes(r.status)).length;
-
-  const summaryTable: ReportTable = {
-    columns: ["Domain", "Key Metric", "Value"],
-    rows: [
-      ["Projects", "Active", String(active)],
-      ["Projects", "Total Tracked", String(real.length)],
-      ["Inventory", "Zero-Stock Items", String(zeroStock)],
-      ["Procurement", "Open Purchase Orders", String(activePOs)],
-      ["Excess", "Records Logged", String(excessRecords.length)],
-      ["Redistribution", "Active Opportunities", String(activeRedistribution)],
-      ["Weather", "Current Risk", weatherRisk ?? "—"],
-    ],
-  };
-  const activityTable: ReportTable = isAdmin
-    ? {
-        columns: ["Time", "User", "Action", "Details"],
-        rows: activityLogs.length > 0
-          ? activityLogs.map(l => [formatDate(l.createdAt), l.userDisplay, l.action, l.details ?? "—"])
-          : [["—", "—", "No activity recorded yet", "—"]],
-      }
-    : {
-        columns: ["Note"],
-        rows: [["Activity logs are only included in this report when generated by a System Administrator."]],
-      };
-
-  return {
-    subtitle: "Live cross-system snapshot",
-    stats: [
-      { label: "ACTIVE PROJECTS",  value: String(active),   sub: `${real.length} total tracked` },
-      { label: "OPEN PURCHASE ORDERS", value: String(activePOs), sub: `${orders.length} total` },
-      { label: "WEATHER RISK",     value: weatherRisk ?? "—", sub: weatherRisk ? "Current delivery risk" : "Not available" },
-    ],
-    chartTitle: "System Totals",
-    chartData: [
-      { name: "Projects", value: real.length },
-      { name: "Stock Items", value: stockItems.length },
-      { name: "POs", value: orders.length },
-      { name: "Redistribution", value: redistribution.length },
-      { name: "Excess Records", value: excessRecords.length },
-    ],
-    healthTitle: "Attention Needed",
-    health: [
-      { label: "Zero-Stock Items",       pct: String(zeroStock),            color: zeroStock > 0 ? "#ef4444" : "#22c55e" },
-      { label: "Late Deliveries",        pct: String(lateDeliveries(orders)), color: "#f97316" },
-      { label: "Redistribution Pending", pct: String(activeRedistribution), color: "#3b82f6" },
-    ],
-    aiInsight: weatherAdvisory
-      ? `${weatherAdvisory} ${activePOs} purchase order(s) are still open and ${zeroStock} stock item(s) are at zero balance.`
-      : `${active} of ${real.length} project(s) are active. ${activePOs} purchase order(s) are still open and ${zeroStock} stock item(s) are at zero balance.`,
-    detailTables: [
-      { title: "Cross-System Summary", table: summaryTable },
-      { title: "Recent Activity Log (latest 100)", table: activityTable },
     ],
   };
 }
@@ -756,7 +724,10 @@ function ViewModal({ report, data, lastUpdated, userName, onClose }: { report: R
                   <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
                   <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #e5e7eb", fontSize: "0.72rem" }} />
-                  <Bar dataKey="value" fill="#f97316" radius={[4, 4, 0, 0]} />
+                  {data.chartBars
+                    ? data.chartBars.map(b => <Bar key={b.key} dataKey={b.key} name={b.name} fill={b.color} radius={[4, 4, 0, 0]} />)
+                    : <Bar dataKey="value" fill="#f97316" radius={[4, 4, 0, 0]} />}
+                  {data.chartBars && <Legend wrapperStyle={{ fontSize: "0.7rem" }} />}
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -812,6 +783,7 @@ export default function ReportsPage() {
   const [stockItems, setStockItems] = useState<WarehouseStockItem[]>([]);
   const [warehouseRequests, setWarehouseRequests] = useState<WarehouseRequest[]>([]);
   const [redistribution, setRedistribution] = useState<RedistributionRecommendation[]>([]);
+  const [excessReleases, setExcessReleases] = useState<ExcessRelease[]>([]);
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [suppliers, setSuppliers] = useState<ApiSupplier[]>([]);
   const [excessRecords, setExcessRecords] = useState<ExcessWasteRecord[]>([]);
@@ -819,11 +791,11 @@ export default function ReportsPage() {
   const [forecasts, setForecasts] = useState<ForecastResult[]>([]);
   const [accuracyReports, setAccuracyReports] = useState<ForecastAccuracyReport[]>([]);
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
-  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
+  const [demandMaterials, setDemandMaterials] = useState<MaterialOption[]>([]);
+  const [excludedItems, setExcludedItems] = useState<FlaggedExcessItem[]>([]);
 
   const risk = useWeatherStore(s => s.risk);
   const user = useAuthStore(s => s.user);
-  const isAdmin = user?.role === "Admin";
   const showCostImpact = canSeeCostImpact(user?.role);
   const userName = user ? `${user.firstName} ${user.lastName}`.trim() : "ConstructIQ System";
 
@@ -831,13 +803,14 @@ export default function ReportsPage() {
     async function loadAll() {
       setLoading(true);
       try {
-        const [projectsRes, stockRes, whReqRes, redisRes, poRes, supRes] = await Promise.all([
+        const [projectsRes, stockRes, whReqRes, redisRes, releasesRes, poRes, supRes] = await Promise.all([
           api.get<Project[]>("/projects"),
           api.get<WarehouseStockItem[]>("/warehouse-stock"),
           api.get<WarehouseRequest[]>("/warehouse-requests"),
-          // Full history (incl. Completed/Rejected) — the live Redistribution
-          // page keeps using the active-only GET /redistribution elsewhere.
+          // Every request; the report keeps the same ones the Redistribution
+          // page shows, so Rejected ones are left out.
           api.get<RedistributionRecommendation[]>("/redistribution/history"),
+          api.get<ExcessRelease[]>("/redistribution/excess-releases"),
           api.get<PurchaseOrder[]>("/purchase-orders"),
           api.get<ApiSupplier[]>("/suppliers"),
         ]);
@@ -845,9 +818,12 @@ export default function ReportsPage() {
         setStockItems(stockRes.data);
         setWarehouseRequests(whReqRes.data);
         setRedistribution(redisRes.data);
+        setExcessReleases(releasesRes.data);
         setOrders(poRes.data);
         setSuppliers(supRes.data);
         api.get<ModelStatus>("/forecast/model-status").then(r => setModelStatus(r.data)).catch(() => setModelStatus(null));
+        api.get<MaterialOption[]>("/boq/material-options").then(r => setDemandMaterials(r.data)).catch(() => setDemandMaterials([]));
+        api.get<FlaggedExcessItem[]>("/boq/flagged-excess-items").then(r => setExcludedItems(r.data)).catch(() => setExcludedItems([]));
         // Only roles allowed to see costs — others skip the call (it would 403)
         // and get the quantity-only Excess report.
         if (showCostImpact) {
@@ -875,20 +851,6 @@ export default function ReportsPage() {
         setForecasts(forecastLists.flat());
         setAccuracyReports(accuracyLists.filter((a): a is ForecastAccuracyReport => a !== null));
 
-        // Admin-only, same gate as components/auth/ActivityLogView.tsx —
-        // skipped entirely for other roles rather than firing a call that
-        // would 403.
-        if (isAdmin) {
-          try {
-            const { data } = await api.get<{ items: ActivityLog[]; total: number }>("/v1/activity-logs", { params: { page: 1, pageSize: 100 } });
-            setActivityLogs(data.items);
-          } catch {
-            setActivityLogs([]);
-          }
-        } else {
-          setActivityLogs([]);
-        }
-
         setLastUpdated(new Date());
       } catch {
         toast.error("Failed to load report data.");
@@ -905,20 +867,16 @@ export default function ReportsPage() {
       document.removeEventListener("visibilitychange", refreshOnFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, showCostImpact]);
+  }, [showCostImpact]);
 
   const REPORT_DATA = useMemo<Record<string, ReportViewData>>(() => ({
     projects: buildProjectsData(projects),
     inventory: buildInventoryData(stockItems, warehouseRequests),
-    forecasting: buildForecastingData(forecasts, accuracyReports, projects, modelStatus),
-    excess: buildExcessData(excessRecords, excessCostImpact),
-    redistribution: buildRedistributionData(redistribution),
+    forecasting: buildForecastingData(forecasts, accuracyReports, projects, modelStatus, demandMaterials, excludedItems),
+    excess: buildExcessData(excessRecords, excessCostImpact, projects),
+    redistribution: buildRedistributionData(redistribution, excessReleases),
     procurement: buildProcurementData(orders, suppliers, risk?.level ?? null, risk?.advisory ?? null),
-    system: buildSystemData(
-      projects, stockItems, orders, redistribution, excessRecords,
-      risk?.level ?? null, risk?.advisory ?? null, activityLogs, isAdmin,
-    ),
-  }), [projects, stockItems, warehouseRequests, forecasts, accuracyReports, modelStatus, excessRecords, excessCostImpact, redistribution, orders, suppliers, risk, activityLogs, isAdmin]);
+  }), [projects, stockItems, warehouseRequests, forecasts, accuracyReports, modelStatus, demandMaterials, excludedItems, excessRecords, excessCostImpact, redistribution, excessReleases, orders, suppliers, risk]);
 
   const filtered = useMemo(() => REPORTS.filter(r => {
     const matchSearch   = r.title.toLowerCase().includes(search.toLowerCase()) || r.desc.toLowerCase().includes(search.toLowerCase());
@@ -960,7 +918,7 @@ export default function ReportsPage() {
             />
           </div>
           <select value={category} onChange={e => setCategory(e.target.value)} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", fontSize: "0.875rem", color: "#374151", outline: "none", cursor: "pointer", appearance: "none" as const }}>
-            {["All Categories", "Overview", "Analytics", "Operations", "Management"].map(c => <option key={c}>{c}</option>)}
+            {["All Categories", "Analytics", "Operations", "Management"].map(c => <option key={c}>{c}</option>)}
           </select>
           <span style={{ ...btnOutline, cursor: "default" }} title="Report data reflects the current state of each page — there's no historical date range to filter yet">
             <Filter style={{ width: 13, height: 13 }} /> {loading ? "Loading…" : lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" })}` : "Live"}
